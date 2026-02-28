@@ -533,6 +533,9 @@ struct ChannelHistoryQuery {
     /// Optional thread parent ID to filter by. If provided, return the parent
     /// message itself plus all replies to it.
     thread_parent_id: Option<String>,
+    /// Maximum number of messages to return (default: 500). Only applies to
+    /// non-thread queries; thread queries always return all replies.
+    limit: Option<usize>,
 }
 
 /// Get channel message history
@@ -562,35 +565,46 @@ async fn api_channel_history(
         })?
     };
 
-    let messages = channel.read_all_async().await.map_err(|e| {
-        error!("Failed to read channel: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
     let response: Vec<ChannelMessageData> = match params.thread_parent_id {
-        // Thread history query: return the parent message + its replies.
-        // Including the parent makes the response self-contained so the frontend
-        // doesn't need to hope the parent is in the local message store.
-        Some(parent_id) => messages
-            .into_iter()
-            .filter(|m| is_in_thread(m, &parent_id))
-            .map(|m| {
-                let channel = m.channel_name().to_string();
-                ChannelMessageData {
-                    id: m.id.clone(),
-                    from: m.from,
-                    content: m.content,
-                    timestamp: m.timestamp.to_rfc3339(),
-                    msg_type: format!("{:?}", m.message_type).to_lowercase(),
-                    channel,
-                    thread_parent_id: m.thread_parent_id,
-                    reply_count: None,
-                    last_reply: None,
-                }
-            })
-            .collect(),
-        // Default history query: top-level only, annotated with thread reply metadata.
+        // Thread history query: read ALL messages so we find every reply regardless
+        // of how far back it was posted. Thread responses are small, so this is safe.
+        Some(parent_id) => {
+            let messages = channel.read_all_async().await.map_err(|e| {
+                error!("Failed to read channel: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+            messages
+                .into_iter()
+                .filter(|m| is_in_thread(m, &parent_id))
+                .map(|m| {
+                    let channel = m.channel_name().to_string();
+                    ChannelMessageData {
+                        id: m.id.clone(),
+                        from: m.from,
+                        content: m.content,
+                        timestamp: m.timestamp.to_rfc3339(),
+                        msg_type: format!("{:?}", m.message_type).to_lowercase(),
+                        channel,
+                        thread_parent_id: m.thread_parent_id,
+                        reply_count: None,
+                        last_reply: None,
+                    }
+                })
+                .collect()
+        }
+        // Default history query: load only the most recent N messages, then
+        // return top-level messages annotated with thread reply metadata.
         None => {
+            let limit = params.limit.unwrap_or(500);
+            let (messages, _count) =
+                channel
+                    .read_last_n_messages_async(limit)
+                    .await
+                    .map_err(|e| {
+                        error!("Failed to read channel: {}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    })?;
+
             let mut reply_meta: std::collections::HashMap<String, (usize, ThreadReplySummary)> =
                 std::collections::HashMap::new();
             for msg in &messages {
