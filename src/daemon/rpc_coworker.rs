@@ -461,28 +461,39 @@ pub(super) async fn handle_coworker_report_state(
                     tid
                 );
             } else {
-                warn!(
-                    "Task !{} reported completed by {} but has no PR — nudging to open PR",
+                // No open PR — complete the task directly.
+                // This handles legitimate no-PR tasks (release management, ops,
+                // investigations) without entering a respawn loop (!1879).
+                // Previously, the daemon nudged "open a PR first" and cleared
+                // the assignment but left the task in_progress, causing
+                // dispatch_via_sessions to repeatedly respawn the coworker.
+                info!(
+                    "Task !{} reported completed by {} with no PR — completing directly",
                     tid, name
                 );
-                let nudge_effects = vec![
-                    effects::Effect::nudge_session(
-                        state.session_id_for_name(name),
-                        format!(
-                            "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
-                            tid
-                        ),
-                    ),
-                    effects::Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: format!(
-                            "⚠️ {} reported task !{} completed without a PR — nudged to open PR first",
-                            name, tid
-                        ),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    },
-                ];
-                effects::execute_effects(nudge_effects, state).await;
+                if let Err(e) = crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
+                    warn!("Failed to complete task !{}: {}", tid, e);
+                }
+                if let Err(e) = crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name) {
+                    warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
+                }
+                // Mark worktree as completed (for time-based cleanup)
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(tid) {
+                        ps.worktree_registry
+                            .mark_completed(&wt_id, chrono::Utc::now());
+                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            warn!("Failed to save worktree completion timestamp: {}", e);
+                        }
+                    }
+                }
+                let completion_effects = vec![effects::Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
+                    channel: Some(OPS_CHANNEL.to_string()),
+                }];
+                effects::execute_effects(completion_effects, state).await;
             }
         }
 
