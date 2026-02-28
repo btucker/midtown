@@ -1,10 +1,10 @@
 use super::*;
 use serde_json::json;
 
-// ── extract_lead_text tests ─────────────────────────────────────────
+// ── extract_assistant_text tests ─────────────────────────────────────────
 
 #[test]
-fn test_extract_lead_text_single_text_block() {
+fn test_extract_assistant_text_single_text_block() {
     let events = vec![StreamEvent::Assistant {
         message: json!({
             "content": [{"type": "text", "text": "Hello world"}]
@@ -12,11 +12,11 @@ fn test_extract_lead_text_single_text_block() {
         session_id: None,
         extra: json!(null),
     }];
-    assert_eq!(extract_lead_text(&events), "Hello world");
+    assert_eq!(extract_assistant_text(&events), "Hello world");
 }
 
 #[test]
-fn test_extract_lead_text_aggregates_multiple_events() {
+fn test_extract_assistant_text_aggregates_multiple_events() {
     let events = vec![
         StreamEvent::Assistant {
             message: json!({
@@ -33,11 +33,11 @@ fn test_extract_lead_text_aggregates_multiple_events() {
             extra: json!(null),
         },
     ];
-    assert_eq!(extract_lead_text(&events), "Hello world");
+    assert_eq!(extract_assistant_text(&events), "Hello world");
 }
 
 #[test]
-fn test_extract_lead_text_skips_non_text_blocks() {
+fn test_extract_assistant_text_skips_non_text_blocks() {
     let events = vec![StreamEvent::Assistant {
         message: json!({
             "content": [
@@ -48,21 +48,21 @@ fn test_extract_lead_text_skips_non_text_blocks() {
         session_id: None,
         extra: json!(null),
     }];
-    assert_eq!(extract_lead_text(&events), "Reading file...");
+    assert_eq!(extract_assistant_text(&events), "Reading file...");
 }
 
 #[test]
-fn test_extract_lead_text_empty_content_array() {
+fn test_extract_assistant_text_empty_content_array() {
     let events = vec![StreamEvent::Assistant {
         message: json!({"content": []}),
         session_id: None,
         extra: json!(null),
     }];
-    assert_eq!(extract_lead_text(&events), "");
+    assert_eq!(extract_assistant_text(&events), "");
 }
 
 #[test]
-fn test_extract_lead_text_no_text_blocks() {
+fn test_extract_assistant_text_no_text_blocks() {
     let events = vec![StreamEvent::Assistant {
         message: json!({
             "content": [{"type": "tool_use", "id": "123", "name": "Read"}]
@@ -70,11 +70,11 @@ fn test_extract_lead_text_no_text_blocks() {
         session_id: None,
         extra: json!(null),
     }];
-    assert_eq!(extract_lead_text(&events), "");
+    assert_eq!(extract_assistant_text(&events), "");
 }
 
 #[test]
-fn test_extract_lead_text_non_assistant_events() {
+fn test_extract_assistant_text_non_assistant_events() {
     let events = vec![
         StreamEvent::System {
             subtype: "init".to_string(),
@@ -87,11 +87,11 @@ fn test_extract_lead_text_non_assistant_events() {
             extra: json!({}),
         },
     ];
-    assert_eq!(extract_lead_text(&events), "");
+    assert_eq!(extract_assistant_text(&events), "");
 }
 
 #[test]
-fn test_extract_lead_text_codex_completed_supersedes_deltas() {
+fn test_extract_assistant_text_codex_completed_supersedes_deltas() {
     let events = vec![
         StreamEvent::Assistant {
             message: json!({
@@ -116,11 +116,11 @@ fn test_extract_lead_text_codex_completed_supersedes_deltas() {
         },
     ];
 
-    assert_eq!(extract_lead_text(&events), "smoke-ack");
+    assert_eq!(extract_assistant_text(&events), "smoke-ack");
 }
 
 #[test]
-fn test_extract_lead_text_codex_ignores_delta_after_completed() {
+fn test_extract_assistant_text_codex_ignores_delta_after_completed() {
     let events = vec![
         StreamEvent::Assistant {
             message: json!({
@@ -138,11 +138,11 @@ fn test_extract_lead_text_codex_ignores_delta_after_completed() {
         },
     ];
 
-    assert_eq!(extract_lead_text(&events), "Done");
+    assert_eq!(extract_assistant_text(&events), "Done");
 }
 
 #[test]
-fn test_extract_lead_text_codex_delta_only_not_emitted() {
+fn test_extract_assistant_text_codex_delta_only_not_emitted() {
     let events = vec![StreamEvent::Assistant {
         message: json!({
             "content": [{"type": "text", "text": "delta-only"}]
@@ -151,7 +151,7 @@ fn test_extract_lead_text_codex_delta_only_not_emitted() {
         extra: json!({"provider": "codex"}),
     }];
 
-    assert_eq!(extract_lead_text(&events), "");
+    assert_eq!(extract_assistant_text(&events), "");
 }
 
 // ── process_lead_output tests ───────────────────────────────────────

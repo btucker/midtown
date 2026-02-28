@@ -203,8 +203,10 @@ fn test_task_thread_id_stored_in_persistent_state() {
     );
 }
 
-/// When `thread_id` is `None` and no announcement message ID is available,
-/// the task_thread_id mapping in DaemonPersistentState is not modified.
+/// When `thread_id` is `None` and no announcement message ID is available yet,
+/// the task_thread_id mapping is not modified by the explicit thread_id path alone.
+/// (In practice, task_thread_id is populated shortly after by defaulting to the
+/// announcement message ID — see `test_task_thread_id_defaults_to_announcement_message_id`.)
 #[test]
 fn test_task_thread_id_not_stored_when_none() {
     use crate::daemon::state::DaemonPersistentState;
@@ -213,7 +215,8 @@ fn test_task_thread_id_not_stored_when_none() {
     let task_id = "42";
     let thread_id: Option<&str> = None;
 
-    // Replicate the handle_task_create storage logic (explicit thread_id path)
+    // Replicate only the explicit --thread-id path of handle_task_create.
+    // (The default-to-announcement path is tested separately.)
     if let Some(tid) = thread_id {
         ps.task_thread_id
             .insert(task_id.to_string(), tid.to_string());

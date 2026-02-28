@@ -1444,3 +1444,60 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
         "message should carry the bound thread parent ID"
     );
 }
+
+// ── DM separator tests ──────────────────────────────────────────────
+
+/// SpawnSession for a non-reviewer task produces a PostSystemMessage separator
+/// targeting the coworker's DM channel (dm-<name>).
+#[test]
+fn test_dm_separator_produced_for_dev_session() {
+    let effect = build_dm_separator_effect("park", "42", Some("Fix auth bug"), false);
+    assert!(
+        effect.is_some(),
+        "non-reviewer session should produce a DM separator"
+    );
+    if let Some(Effect::PostSystemMessage { message, channel }) = effect {
+        assert_eq!(channel, Some("dm-park".to_string()));
+        assert!(
+            message.contains("Task !42"),
+            "separator should contain the task ID, got: {}",
+            message
+        );
+        assert!(
+            message.contains("Fix auth bug"),
+            "separator should contain the task subject, got: {}",
+            message
+        );
+    } else {
+        panic!("expected PostSystemMessage effect");
+    }
+}
+
+/// SpawnSession for a non-reviewer task without a subject still produces a separator.
+#[test]
+fn test_dm_separator_without_subject() {
+    let effect = build_dm_separator_effect("madison", "99", None, false);
+    assert!(
+        effect.is_some(),
+        "should produce separator even without task subject"
+    );
+    if let Some(Effect::PostSystemMessage { message, channel }) = effect {
+        assert_eq!(channel, Some("dm-madison".to_string()));
+        assert!(
+            message.contains("Task !99"),
+            "separator should contain the task ID, got: {}",
+            message
+        );
+    }
+}
+
+/// Reviewer sessions do not produce DM separator effects since they are
+/// ephemeral PR-scoped sessions without DM channels.
+#[test]
+fn test_dm_separator_skipped_for_reviewer_session() {
+    let effect = build_dm_separator_effect("riverside", "42", Some("Review PR"), true);
+    assert!(
+        effect.is_none(),
+        "reviewer session should not produce a DM separator"
+    );
+}

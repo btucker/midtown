@@ -179,13 +179,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_execution_skill: HashMap<String, String>,
 
-    /// Task-to-thread-ID mapping for fork session routing.
+    /// Task-to-thread-ID mapping for thread routing.
     ///
-    /// Maps task ID → thread_parent_id. When a fork session creates a task with
-    /// `--thread-id`, coworker updates for that task are automatically tagged with
-    /// this thread_parent_id so they appear in the fork session's thread. The daemon
-    /// sets `bound_thread_id` on the spawned coworker's `SessionRecord` using this
-    /// mapping, wiring the coworker's channel output into the correct thread.
+    /// Maps task ID → thread_parent_id. Populated in two ways:
+    /// 1. Explicitly via `--thread-id` on `midtown task create` (e.g., from fork sessions).
+    /// 2. Auto-defaulted to the task's announcement message ID when no explicit
+    ///    thread ID is provided, ensuring coworker posts route to the task thread.
+    ///
+    /// The daemon sets `bound_thread_id` on the spawned coworker's `SessionRecord`
+    /// using this mapping, wiring the coworker's channel output into the correct thread.
     #[serde(default)]
     pub task_thread_id: HashMap<String, String>,
 

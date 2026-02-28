@@ -258,7 +258,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 **Data flow:**
 - `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Entries are "pending" (spawn in progress) or a real session ID. Used by both auto-fork and thread-reply routing in `handle_channel_post`.
 - `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
-- `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. When `midtown task create` is called with `--thread-id` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), `handle_task_create` stores the binding so `SpawnSession` can attach future coworkers to the same thread.
+- `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. Populated in two ways: (1) explicitly via `--thread-id` on `midtown task create` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), or (2) automatically defaulted to the task's announcement message ID when no explicit thread ID is provided. This ensures every task's coworker posts route to the task announcement thread by default. `SpawnSession` reads this mapping to set `bound_thread_id` on the spawned coworker's `SessionRecord`.
 - `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
 - `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since `spawn_fork` consumes the init event before the event loop sees it.
 
@@ -501,10 +501,25 @@ StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
 
 - **Types** (`mod.rs`): `UniversalItem`, `ItemKind`, `ContentPart`, `ItemStatus` — agent-agnostic, extensible to other providers.
 - **Claude converter** (`claude.rs`): Pure function `extract_tool_events()` that extracts both `tool_use` content blocks from `StreamEvent::Assistant` events and `tool_result` blocks from `StreamEvent::User` events. Each tool call is emitted with a `semantic_header` (human-readable description of the operation) and each tool result carries success/error status.
-- **Integration** (`daemon/stream.rs`): `process_universal_events()` accepts the `channel_lead_sessions` map and emits `BroadcastUniversalItems` effects for the main lead (channel=None) and for each active channel lead (channel=Some(channel_name)). Coworker tool calls are never broadcast.
+- **Integration** (`daemon/stream.rs`): `process_universal_events()` accepts the `channel_lead_sessions` map and emits `BroadcastUniversalItems` effects for the main lead (channel=None) and for each active channel lead (channel=Some(channel_name)). Coworker tool calls are not broadcast to the universal events pipeline (they are only visible via DM channels — see below).
 - **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients and updates `DaemonState.recent_tool_items` (a `RwLock<HashMap<String, Vec<UniversalItem>>>`, capped at `MAX_TOOL_ITEMS_PER_AGENT=20` items per agent). Agent name and optional channel are carried at the envelope level (`UniversalItemsData`). The web UI stores items keyed by channel name (`'midtown'` for the main lead, or the topic channel name for channel leads) so each channel view shows only the relevant tool calls.
 - **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
 - **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
+
+## DM Channel Streaming
+
+Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>`), mirroring how channel leads stream their output to topic channels. This allows the web UI and TUI to show real-time coworker activity when viewing a specific coworker's DM channel.
+
+**Data flow:**
+```
+StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
+    → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>") }
+    → channel JSONL file + WebSocket broadcast
+```
+
+- **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`.
+- **Session separator**: When `SpawnSession` spawns a non-reviewer coworker, a `PostSystemMessage` separator (e.g., "─── Task !42: Fix auth bug ───") is posted to `dm-<name>` to visually delineate session boundaries. Reviewer sessions skip DM separators since they are ephemeral PR-scoped sessions.
+- **Reviewer exclusion**: Reviewer sessions do not stream output to DM channels and do not receive DM separators, keeping the DM channel system focused on persistent dev coworkers.
 
 ## Workflow Script System
 
