@@ -1190,6 +1190,29 @@ impl DaemonState {
             // Cache positive results permanently (reviews are monotonic — they don't disappear)
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
+
+            // Collect review comment IDs for Gate 3 if not already populated.
+            // This is the polling-path counterpart to the webhook path which
+            // gets the comment ID directly from the webhook payload.
+            if ps.github.get_review_comment_ids(pr_number).is_empty() {
+                // Get the full repo name (e.g., "owner/repo") for the REST API call
+                let repo_full_name = self
+                    .all_repo_paths
+                    .first()
+                    .map(|p| self.get_repo_full_name(p))
+                    .unwrap_or_default();
+                if !repo_full_name.is_empty() {
+                    let ids = pr::fetch_review_comment_ids(&repo_full_name, pr_number);
+                    for id in ids {
+                        debug!(
+                            "Polling: recording review comment ID {} for PR #{}",
+                            id, pr_number
+                        );
+                        ps.github.add_review_comment_id(pr_number, id);
+                    }
+                }
+            }
+
             drop(ps);
             // Clear placeholder cache: review is done, no need to track placeholder anymore
             let mut placeholder_cache = self.reviewer_placeholder_cache.lock().unwrap();
@@ -3329,6 +3352,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                     let mut ps = state.persistent_state.lock().await;
                     ps.github.mark_reviewed_pr(pr_number);
+                    // Persist review comment ID for Gate 3 merge gating
+                    if let Some(comment_id) = webhook_event.review_comment_id {
+                        debug!(
+                            "Webhook: recording review comment ID {} for PR #{}",
+                            comment_id, pr_number
+                        );
+                        ps.github.add_review_comment_id(pr_number, comment_id);
+                    }
                     drop(ps);
                     // Clear placeholder cache: review is done
                     let mut placeholder_cache =

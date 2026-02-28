@@ -757,9 +757,9 @@ pub fn parse_addresses_review_tag(body: &str) -> Option<u64> {
 /// For each review comment ID, checks that at least one other comment in the PR
 /// contains an `<!-- addresses-review: {id} -->` tag referencing it.
 ///
-/// Returns `Ok(true)` if all feedback is addressed (or there are no review comments),
-/// `Ok(false)` if some review comments remain unaddressed.
-/// The second element of the tuple contains the unaddressed comment IDs.
+/// Returns a tuple `(all_addressed, unaddressed_ids)`:
+/// - `(true, [])` if all feedback is addressed (or there are no review comments)
+/// - `(false, [...])` if some review comments remain unaddressed
 pub fn all_review_feedback_addressed(
     review_comment_ids: &[u64],
     all_pr_comments: &[serde_json::Value],

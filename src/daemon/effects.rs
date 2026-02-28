@@ -2976,11 +2976,14 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     use super::helpers::truncate_str;
 
-    let output = match tokio::process::Command::new("gh")
-        .args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"])
-        .output()
-        .await
-    {
+    // Use the first repo path for current_dir so `gh` can identify the target repo
+    let repo_path = state.all_repo_paths.first().cloned();
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(["pr", "merge", &pr_number.to_string(), "--squash", "--auto"]);
+    if let Some(ref path) = repo_path {
+        cmd.current_dir(path);
+    }
+    let output = match cmd.output().await {
         Ok(output) => output,
         Err(e) => {
             warn!("Failed to run gh pr merge for PR #{}: {}", pr_number, e);

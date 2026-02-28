@@ -60,6 +60,15 @@ Attach to a headless coworker's session in an interactive terminal pane for debu
 | Command | Description |
 |---------|-------------|
 | `midtown pr list` | List pull requests |
+| `midtown pr merge --pr <N>` | Merge a PR after daemon-gated checks pass |
+
+`midtown pr merge` enforces three gates before allowing the merge:
+
+1. **Gate 1 — Review exists**: A completed code review comment must be present on the PR
+2. **Gate 2 — CI passes**: All GitHub status checks must be passing. Also rejects PRs with `reviewDecision: CHANGES_REQUESTED`
+3. **Gate 3 — Feedback addressed**: Every review comment must have a matching `<!-- addresses-review: {id} -->` tag in a reply
+
+If any gate fails, the command returns a clear error listing which gates failed. Coworkers should never run `gh pr merge` directly — always use `midtown pr merge` so gate checks are enforced.
 
 ## Project Management
 
