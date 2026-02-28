@@ -720,6 +720,162 @@ async fn fetch_pr_json_for_review(
     Ok(pr)
 }
 
+// ============================================================================
+// PR merge handler
+// ============================================================================
+
+/// Handle `pr.merge` RPC method — daemon-gated PR merge with gate checks.
+///
+/// Checks three gates before allowing merge:
+/// 1. Review completed (via `is_pr_reviewed()`)
+/// 2. CI passing (via `all_ci_checks_passed()`)
+/// 3. All review feedback addressed (via `addresses-review` tags)
+///
+/// On success, executes `Effect::MergePr` to enable auto-merge.
+/// On failure, returns a clear error listing which gates failed.
+pub(super) async fn handle_pr_merge(
+    id: RequestId,
+    pr_number: u64,
+    state: &DaemonState,
+) -> Response {
+    info!("Merge requested for PR #{}", pr_number);
+
+    let mut failed_gates: Vec<String> = Vec::new();
+
+    // Gate 1: Review completed
+    let reviewed = state.is_pr_reviewed(pr_number).await;
+    if !reviewed {
+        failed_gates.push("Review not completed: no completed review found for this PR".into());
+    }
+
+    // Fetch PR data for CI check and title (needed for merge message)
+    let pr_data = match fetch_pr_for_merge(pr_number, state).await {
+        Ok(data) => data,
+        Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
+    };
+
+    let title = pr_data
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("untitled")
+        .to_string();
+
+    // Gate 2: CI passing
+    if !super::helpers::all_ci_checks_passed(&pr_data) {
+        failed_gates
+            .push("CI checks not passing: one or more checks are failing or pending".into());
+    }
+
+    // Gate 3: All review feedback addressed
+    let review_comment_ids = {
+        let ps = state.persistent_state.lock().await;
+        ps.github.get_review_comment_ids(pr_number).to_vec()
+    };
+
+    if !review_comment_ids.is_empty() {
+        let comments = pr_data
+            .get("comments")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let (all_addressed, unaddressed) =
+            super::helpers::all_review_feedback_addressed(&review_comment_ids, &comments);
+
+        if !all_addressed {
+            failed_gates.push(format!(
+                "Review feedback not addressed: {} review comment(s) still unaddressed (IDs: {})",
+                unaddressed.len(),
+                unaddressed
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
+    if !failed_gates.is_empty() {
+        let message = format!(
+            "Cannot merge PR #{}: {} gate(s) failed:\n{}",
+            pr_number,
+            failed_gates.len(),
+            failed_gates
+                .iter()
+                .enumerate()
+                .map(|(i, g)| format!("  {}. {}", i + 1, g))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        warn!("{}", message);
+        return Response::error(id, RpcError::new(-32603, message));
+    }
+
+    // All gates passed — execute merge
+    info!(
+        "All merge gates passed for PR #{}, enabling auto-merge",
+        pr_number
+    );
+    let effects = vec![super::effects::Effect::MergePr {
+        pr_number,
+        title: title.clone(),
+    }];
+    super::effects::execute_effects(effects, state).await;
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "message": format!("Auto-merge enabled for PR #{} ({})", pr_number, title)
+        }),
+    )
+}
+
+/// Fetch PR data needed for merge gate checks.
+///
+/// Retrieves title, CI status, and comments in a single API call.
+async fn fetch_pr_for_merge(
+    pr_number: u64,
+    state: &DaemonState,
+) -> Result<serde_json::Value, String> {
+    let all_repo_paths = state.all_repo_paths.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut last_err = String::from("no repo paths configured");
+        for repo_path in &all_repo_paths {
+            let output = std::process::Command::new("gh")
+                .args([
+                    "pr",
+                    "view",
+                    &pr_number.to_string(),
+                    "--json",
+                    "title,state,statusCheckRollup,comments,mergeable,reviewDecision",
+                ])
+                .current_dir(repo_path)
+                .output();
+
+            match output {
+                Ok(out) if out.status.success() => return Ok(out.stdout),
+                Ok(out) => {
+                    last_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                }
+                Err(e) => {
+                    last_err = e.to_string();
+                }
+            }
+        }
+        Err(format!(
+            "PR #{} not found or not accessible: {}",
+            pr_number, last_err
+        ))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking error: {}", e))?
+    .and_then(|stdout| {
+        serde_json::from_slice(&stdout)
+            .map_err(|e| format!("Failed to parse gh pr view output: {}", e))
+    })
+}
+
 #[path = "rpc_prs_tests.rs"]
 #[cfg(test)]
 mod tests;

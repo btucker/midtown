@@ -304,10 +304,11 @@ midtown state idle
 
 Do NOT report `midtown state completed` — the daemon completes the task automatically when the PR merges. This ensures `blocked_by` dependencies only resolve when your code is on main.
 
-**CRITICAL: Do NOT enable auto-merge after opening the PR.** The daemon will assign a reviewer and send you a **ReviewComplete** nudge when the review is done. Only enable auto-merge AFTER receiving that nudge. Enabling auto-merge early causes the PR to merge as soon as CI passes — before the reviewer has a chance to review it.
+**CRITICAL: Do NOT attempt to merge after opening the PR.** The daemon will assign a reviewer and send you a **ReviewComplete** nudge when the review is done. Only call `midtown pr merge --pr <N>` AFTER receiving that nudge and addressing all feedback.
 
 Do NOT:
-- Enable auto-merge when creating or opening the PR — wait for the ReviewComplete nudge
+- Run `gh pr merge` directly — always use `midtown pr merge --pr <N>`
+- Attempt to merge when creating or opening the PR — wait for the ReviewComplete nudge
 - Watch or monitor the reviewer working on your PR
 - Poll GitHub for review status
 - Wait actively for feedback
@@ -405,11 +406,15 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
      ```
    - Make the fix
    - Push to the branch
-   - Edit your reply to confirm it's addressed:
+   - Edit your reply to confirm it's addressed, **including the `addresses-review` tag**:
      ```bash
      gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
-       -f body="✅ Addressed in $(git rev-parse --short HEAD)"
+       -f body="<!-- midtown: {your_name} -->
+     <!-- addresses-review: {review_comment_id} -->
+     ✅ Addressed in $(git rev-parse --short HEAD)"
      ```
+   - The `review_comment_id` is the GitHub comment ID of the reviewer's review comment. You can find it via `gh api` when listing issue comments.
+   - **You MUST include the `<!-- addresses-review: {id} -->` tag** — the daemon checks for this tag when you call `midtown pr merge` and will reject the merge if any review comments are unaddressed.
 
 2. **Unsure about a comment** - If you're not sure what the reviewer means or disagree:
    - Post a **GitHub PR comment** as a follow-up question to the reviewer. The daemon detects the new comment via webhook and automatically resumes the reviewer's session.
@@ -423,10 +428,12 @@ Creating a new branch when a PR already exists leaves orphaned remote branches t
      REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
      ```
    - Run `midtown task request "description"` to notify the lead
-   - Edit your reply to confirm the follow-up task was created:
+   - Edit your reply to confirm the follow-up task was created, **including the `addresses-review` tag**:
      ```bash
      gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
-       -f body="📋 Created follow-up task: [description]"
+       -f body="<!-- midtown: {your_name} -->
+     <!-- addresses-review: {review_comment_id} -->
+     📋 Created follow-up task: [description]"
      ```
 
 **Before merging**, complete ALL of these checks:
@@ -451,25 +458,25 @@ gh pr view <number> --comments --json comments --jq '.comments[-3:][] | "\(.auth
 ```
 The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-Only after all three checks are clean should you continue to the auto-merge commands below.
-
-**Verify a completed review exists** before enabling auto-merge. Accept any of:
-- A formal GitHub review (`reviewDecision` is `APPROVED` or `CHANGES_REQUESTED`)
-- A completed comment-based review (final "Code Review" comment, not a "review in progress" placeholder)
-- An issue comment containing `<!-- midtown:` with a completed review (not a placeholder)
-
-Do not enable auto-merge from a placeholder. If the daemon nudges you but the review still shows "review in progress," post to the channel with `@{project_name}` to get a new reviewer assigned.
+Only after all three checks are clean should you continue to merge.
 
 **Do not merge while review feedback is unresolved.** If `reviewDecision` is `CHANGES_REQUESTED`, keep working until feedback is addressed and re-reviewed.
 
-**After a completed review exists and all feedback is addressed**, enable auto-merge immediately:
+**After a completed review exists and all feedback is addressed**, use the daemon-gated merge command:
 ```bash
-gh pr merge --auto --squash
+midtown pr merge --pr <PR_NUMBER>
 ```
-This prevents the window between "feedback addressed" and "PR merged" where the task could be re-dispatched to another coworker.
+The daemon verifies three gates before allowing the merge:
+1. **Review completed** — a completed code review exists
+2. **CI passing** — all status checks have passed
+3. **Feedback addressed** — all review comments have a matching `<!-- addresses-review: {id} -->` tag
+
+If any gate fails, the daemon returns a clear error listing which gates failed. Fix the issues and retry.
+
+**CRITICAL: Do NOT run `gh pr merge` directly.** Always use `midtown pr merge --pr <N>` — this ensures the daemon's gate checks are enforced.
 
 **Never ignore review feedback.** Every suggestion must be either:
-- Addressed in the current PR, OR
+- Addressed in the current PR (with `<!-- addresses-review: {id} -->` tag), OR
 - Captured via `midtown task request`
 
 ```bash
@@ -488,14 +495,14 @@ We share a GitHub API rate limit across the daemon, lead, and all coworkers. **D
 **Don't poll for status:**
 - Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
 - Don't run `gh pr list` to check PR status — read the channel instead
-- **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR or deferred via `midtown task request` before merging.
+- **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR (with `<!-- addresses-review: {id} -->` tag) or deferred via `midtown task request` before merging.
 - If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
 - **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
 - **If the lead or user says NOT to merge**, stop immediately — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
-- **NEVER enable auto-merge until you receive a ReviewComplete nudge from the daemon** — this is the signal that the review is done and it's safe to merge
-- **NEVER enable auto-merge when creating the PR** — the reviewer hasn't been assigned yet
-- **NEVER enable auto-merge based on a "review in progress" placeholder** — see the verification steps above for how to confirm a review is complete
-- After a completed review exists and all feedback is addressed/deferred, enable auto-merge: `gh pr merge --auto --squash`
+- **NEVER run `gh pr merge` directly** — always use `midtown pr merge --pr <N>` so the daemon can verify gates
+- **NEVER attempt to merge until you receive a ReviewComplete nudge from the daemon** — this is the signal that the review is done and it's safe to merge
+- **NEVER attempt to merge when creating the PR** — the reviewer hasn't been assigned yet
+- After a completed review exists and all feedback is addressed/deferred, merge via: `midtown pr merge --pr <N>`
 
 **Using `gh` to investigate (after notification) is fine:**
 - `gh pr create` — creating your PR

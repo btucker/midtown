@@ -950,3 +950,72 @@ fn resolve_model_for_role_matches_default_when_no_config() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Addressed-review tag tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_addresses_review_tag_extracts_id() {
+    let body =
+        "<!-- midtown: broadway -->\n<!-- addresses-review: 12345 -->\n✅ Addressed in abc1234";
+    assert_eq!(parse_addresses_review_tag(body), Some(12345));
+}
+
+#[test]
+fn parse_addresses_review_tag_with_whitespace() {
+    let body = "<!-- addresses-review:  67890  -->\nDone";
+    assert_eq!(parse_addresses_review_tag(body), Some(67890));
+}
+
+#[test]
+fn parse_addresses_review_tag_no_tag() {
+    let body = "<!-- midtown: broadway -->\n✅ Addressed in abc1234";
+    assert_eq!(parse_addresses_review_tag(body), None);
+}
+
+#[test]
+fn parse_addresses_review_tag_invalid_id() {
+    let body = "<!-- addresses-review: not-a-number -->";
+    assert_eq!(parse_addresses_review_tag(body), None);
+}
+
+#[test]
+fn all_review_feedback_addressed_empty_review_ids() {
+    let (addressed, unaddressed) = all_review_feedback_addressed(&[], &[]);
+    assert!(addressed);
+    assert!(unaddressed.is_empty());
+}
+
+#[test]
+fn all_review_feedback_addressed_all_addressed() {
+    let review_ids = vec![111, 222];
+    let comments = vec![
+        json!({"body": "<!-- addresses-review: 111 -->\n✅ Fixed"}),
+        json!({"body": "<!-- addresses-review: 222 -->\n✅ Also fixed"}),
+    ];
+    let (addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &comments);
+    assert!(addressed);
+    assert!(unaddressed.is_empty());
+}
+
+#[test]
+fn all_review_feedback_addressed_some_unaddressed() {
+    let review_ids = vec![111, 222, 333];
+    let comments = vec![
+        json!({"body": "<!-- addresses-review: 111 -->\n✅ Fixed"}),
+        json!({"body": "Just a normal comment, no tag"}),
+    ];
+    let (addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &comments);
+    assert!(!addressed);
+    assert_eq!(unaddressed, vec![222, 333]);
+}
+
+#[test]
+fn all_review_feedback_addressed_no_comments() {
+    let review_ids = vec![111];
+    let comments: Vec<serde_json::Value> = vec![];
+    let (addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &comments);
+    assert!(!addressed);
+    assert_eq!(unaddressed, vec![111]);
+}

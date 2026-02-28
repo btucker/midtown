@@ -52,6 +52,14 @@ pub struct GitHubState {
     /// Fetched periodically to enable adaptive throttling when quotas run low.
     #[serde(default)]
     pub rate_limit: crate::github_rate_limit::GitHubRateLimit,
+
+    /// Map of PR number -> review comment IDs.
+    ///
+    /// When a completed review is detected, the GitHub comment ID is stored here.
+    /// The `pr.merge` RPC uses this to verify that all review feedback has been
+    /// addressed (via `<!-- addresses-review: {id} -->` tags) before allowing merge.
+    #[serde(default)]
+    pub pr_review_comment_ids: HashMap<u64, Vec<u64>>,
 }
 
 /// A pending reviewer spawn triggered by a webhook event.
@@ -650,6 +658,25 @@ impl GitHubState {
                     .map(|task_id| (task_id.clone(), *pr_number))
             })
             .collect()
+    }
+
+    /// Record a review comment ID for a PR.
+    ///
+    /// Called when a completed review is detected to track which comments
+    /// need to be addressed before merge is allowed.
+    pub fn add_review_comment_id(&mut self, pr_number: u64, comment_id: u64) {
+        let ids = self.pr_review_comment_ids.entry(pr_number).or_default();
+        if !ids.contains(&comment_id) {
+            ids.push(comment_id);
+        }
+    }
+
+    /// Get the review comment IDs for a PR.
+    pub fn get_review_comment_ids(&self, pr_number: u64) -> &[u64] {
+        self.pr_review_comment_ids
+            .get(&pr_number)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -1391,5 +1418,44 @@ mod tests {
             "expired assignment for shut-down reviewer must be removed by \
              cleanup_expired_preserving to open the re-spawn path"
         );
+    }
+
+    #[test]
+    fn test_add_review_comment_id() {
+        let mut state = GitHubState::default();
+        state.add_review_comment_id(42, 1001);
+        state.add_review_comment_id(42, 1002);
+        assert_eq!(state.get_review_comment_ids(42), &[1001, 1002]);
+    }
+
+    #[test]
+    fn test_add_review_comment_id_deduplicates() {
+        let mut state = GitHubState::default();
+        state.add_review_comment_id(42, 1001);
+        state.add_review_comment_id(42, 1001); // duplicate
+        assert_eq!(state.get_review_comment_ids(42), &[1001]);
+    }
+
+    #[test]
+    fn test_get_review_comment_ids_empty() {
+        let state = GitHubState::default();
+        assert!(state.get_review_comment_ids(99).is_empty());
+    }
+
+    #[test]
+    fn test_review_comment_ids_serialize_roundtrip() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("state.json");
+
+        let mut state = GitHubState::default();
+        state.add_review_comment_id(42, 1001);
+        state.add_review_comment_id(42, 1002);
+        state.add_review_comment_id(99, 2001);
+        state.save(&path).unwrap();
+
+        let loaded = GitHubState::load(&path).unwrap();
+        assert_eq!(loaded.get_review_comment_ids(42), &[1001, 1002]);
+        assert_eq!(loaded.get_review_comment_ids(99), &[2001]);
+        assert!(loaded.get_review_comment_ids(1).is_empty());
     }
 }

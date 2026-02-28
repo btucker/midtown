@@ -223,6 +223,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "auth.switch"
             | "auth.pool-toggle"
             | "pr.review"
+            | "pr.merge"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
@@ -415,6 +416,13 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 return Response::error(request.id, RpcError::invalid_params());
             };
             super::rpc_prs::handle_pr_review(request.id, pr_number, state).await
+        }
+
+        "pr.merge" => {
+            let Some(pr_number) = params.u64_param("pr") else {
+                return Response::error(request.id, RpcError::invalid_params());
+            };
+            super::rpc_prs::handle_pr_merge(request.id, pr_number, state).await
         }
 
         "coworkers.status" => super::rpc_coworker::handle_coworkers_status(request.id, state).await,

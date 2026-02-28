@@ -490,6 +490,13 @@ pub enum Effect {
     /// a session is suspended (process stopped but session state preserved for later resume).
     ReleaseName { name: String },
 
+    /// Merge a PR using `gh pr merge --squash --auto`.
+    ///
+    /// Gated by the `pr.merge` RPC — coworkers must call `midtown pr merge`
+    /// instead of running `gh pr merge` directly. The daemon verifies review
+    /// completion, CI status, and addressed feedback before executing.
+    MergePr { pr_number: u64, title: String },
+
     /// Invoke the channel's workflow script with a domain event.
     ///
     /// When a workflow script exists for the event's channel (resolved via
@@ -2877,6 +2884,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
 
+            Effect::MergePr { pr_number, title } => {
+                auto_merge_pr(state, pr_number, &title).await;
+            }
+
             Effect::EmitWorkflowEvent(event) => {
                 invoke_workflow_script(state, event).await;
             }
@@ -2936,11 +2947,10 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
     }
 }
 
-/// Auto-merge a PR using `gh pr merge --squash`.
+/// Auto-merge a PR using `gh pr merge --squash --auto`.
 ///
 /// Posts a channel message on success or failure.
-/// TODO: Wire up to Effect::AutoMergePr when auto-merge logic is complete.
-#[allow(dead_code)]
+/// Invoked by `Effect::MergePr` after the `pr.merge` RPC verifies all gates.
 async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     use super::helpers::truncate_str;
 

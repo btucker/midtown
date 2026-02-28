@@ -640,6 +640,10 @@ impl DaemonClient {
         self.send("pr.review", Some(serde_json::json!({ "pr": pr_number })))
     }
 
+    pub fn pr_merge(&self, pr_number: u64) -> Result<Response, String> {
+        self.send("pr.merge", Some(serde_json::json!({ "pr": pr_number })))
+    }
+
     // Daemon commands
 
     pub fn check_pending(&self) -> Result<Response, String> {

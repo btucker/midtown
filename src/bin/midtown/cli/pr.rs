@@ -12,11 +12,18 @@ pub enum PrCommand {
         /// The PR number to review
         pr_number: u64,
     },
+    /// Merge a PR (daemon-gated: checks review, CI, and addressed feedback)
+    Merge {
+        /// The PR number to merge
+        #[arg(long)]
+        pr: u64,
+    },
 }
 
 pub fn handle(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
         PrCommand::List => client.pr_list(),
         PrCommand::Review { pr_number } => client.pr_review(*pr_number),
+        PrCommand::Merge { pr } => client.pr_merge(*pr),
     }
 }
