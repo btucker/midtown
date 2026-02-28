@@ -19,8 +19,8 @@
   }
 </script>
 
-{#if isMultiRepo}
-  <!-- Multi-repo: row of colored CI dots -->
+{#if isMultiRepo && $repoStatuses.some(r => r.ciStatus)}
+  <!-- Multi-repo: row of colored CI dots (only when CI data exists) -->
   <div class="mini-repo-status" title={$repoStatuses.map(r => `${r.label}: ${r.ciStatus || 'unknown'}`).join(', ')}>
     {#each $repoStatuses as repo}
       {@const ci = ciInfo(repo.ciStatus)}
@@ -50,6 +50,7 @@
     gap: 5px;
     margin-left: auto;
     padding-left: 8px;
+    padding-right: env(safe-area-inset-right, 0px);
     flex-shrink: 0;
   }
 
