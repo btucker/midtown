@@ -688,23 +688,47 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 
 /// Check if a task has an associated open PR.
 ///
-/// Returns true if any open PR has this task_id stored in its PrAuthorSession.
-/// This mapping is established when a coworker opens a PR - the daemon extracts
-/// the task ID from the PR title's "[Midtown !XXX]" marker and stores it in
-/// persistent state.
+/// Returns true if the task has an associated open PR, checking two sources:
 ///
-/// Presence in `pr_author_sessions` implies the PR is still open — closed PRs
-/// are cleaned up by `cleanup_closed_pr_state`.
+/// 1. **`pr_author_sessions` (in-memory persistent state)**: Presence implies
+///    the PR is still open — closed PRs are cleaned up by `cleanup_closed_pr_state`.
+///    This mapping is established when a coworker opens a PR and the daemon
+///    extracts the task ID from the PR title's `[Midtown !XXX]` marker.
 ///
-/// Used to decide whether to auto-complete a task when a coworker reports
-/// WorkflowPhase::Completed. Tasks with open PRs should complete on merge,
-/// not on phase transition.
+/// 2. **`task.pr` field on disk**: The task file may have an explicit PR number
+///    set via `--pr` or auto-detected. This survives daemon restarts (unlike
+///    `pr_author_sessions` which is rebuilt over time). If set, we treat it as
+///    an open PR to err on the side of deferring to the merge path.
+///
+/// Used to decide completion strategy when a coworker reports
+/// `WorkflowPhase::Completed`:
+/// - Tasks WITH open PRs defer completion to the merge path (auto-complete on merge).
+/// - Tasks WITHOUT open PRs are completed directly to avoid the respawn loop (!1879).
 async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
-    let ps = state.persistent_state.lock().await;
-    ps.github
-        .pr_author_sessions
-        .values()
-        .any(|session| session.task_id.as_deref() == Some(task_id))
+    // Source 1: in-memory pr_author_sessions
+    let in_memory = {
+        let ps = state.persistent_state.lock().await;
+        ps.github
+            .pr_author_sessions
+            .values()
+            .any(|session| session.task_id.as_deref() == Some(task_id))
+    };
+    if in_memory {
+        return true;
+    }
+
+    // Source 2: task.pr field on disk (survives daemon restarts)
+    if let Some(task) = crate::tasks::read_task_for_repo(task_id, &state.repo_name)
+        && let Some(pr_num) = task.pr
+    {
+        debug!(
+            "Task !{} has pr={} on disk — treating as having an open PR",
+            task_id, pr_num
+        );
+        return true;
+    }
+
+    false
 }
 
 // ============================================================================

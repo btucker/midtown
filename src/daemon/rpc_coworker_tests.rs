@@ -724,6 +724,74 @@ async fn test_completed_without_pr_marks_task_done() {
 }
 
 #[tokio::test]
+async fn test_completed_with_pr_on_disk_defers_to_merge_path() {
+    // Review feedback (!1879): After a daemon restart, pr_author_sessions is
+    // empty but the task's `pr` field on disk still has the PR number.
+    // task_has_open_pr must check the disk field to avoid orphaning the PR.
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a task file on disk WITH a pr field set (simulating post-restart state)
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9952";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Add new endpoint",
+            "status": "in_progress",
+            "owner": "riverside",
+            "pr": 99
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Set up in-memory task assignment
+    {
+        let mut assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments.insert(
+            "riverside".to_string(),
+            super::super::TaskAssignment {
+                task_id: task_id.to_string(),
+            },
+        );
+    }
+
+    // NOTE: pr_author_sessions is empty — simulates daemon restart.
+    // The task has pr=99 on disk but no in-memory PR tracking.
+
+    // Report completed — task.pr is set on disk
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "riverside",
+        "completed",
+        Some(9952u32),
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "completed report should succeed");
+
+    // Task should remain in_progress (deferred to merge path via disk pr field)
+    let content = std::fs::read_to_string(&task_file).expect("read task file");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    assert_eq!(
+        parsed["status"].as_str().unwrap(),
+        "in_progress",
+        "task with pr field on disk should remain in_progress (deferred to merge path)"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}
+
+#[tokio::test]
 async fn test_completed_with_open_pr_defers_to_merge_path() {
     // When a task HAS an open PR, reporting completed should NOT complete
     // the task on disk — it defers to the PR merge auto-completion path.

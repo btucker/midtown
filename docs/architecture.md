@@ -388,6 +388,14 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs three gates b
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
 
+## Task Completion
+
+Tasks complete through two paths depending on whether they produce a PR:
+
+1. **PR tasks** (most common): The coworker opens a PR and reports `midtown state idle`. The daemon auto-completes the task when the PR merges, via webhook or polling fallback. The task stays `in_progress` until merge — `task_has_open_pr()` in `rpc_coworker.rs` checks both `pr_author_sessions` (in-memory) and the `task.pr` field on disk (survives daemon restarts) to detect this.
+
+2. **No-PR tasks** (ops, release management, investigations): The coworker reports `midtown state completed`. Since no PR exists, the daemon completes the task directly on disk (same as `task.done` RPC), clears `blocked_by` dependencies, and marks the worktree as completed. This avoids the respawn loop that occurs when a task stays `in_progress` with no PR — dispatch would repeatedly recover and respawn the coworker.
+
 ## GitHub Integration
 
 The daemon receives real-time GitHub events via webhooks (PR creation, reviews, check runs) verified with HMAC-SHA256 signatures. PR polling runs as a backstop for missed webhook deliveries and handles time-based concerns like merge conflict detection and stuck PR identification.
