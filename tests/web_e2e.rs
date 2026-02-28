@@ -632,7 +632,7 @@ fn test_web_api_channel_history_thread_parent_id_filter() {
         "Top-level history should exclude thread replies"
     );
 
-    // Filter history by thread_parent_id — should only return the thread reply
+    // Filter history by thread_parent_id — should return parent + reply
     let url = format!(
         "{}/channels/history?thread_parent_id={}",
         fixture.api_base(),

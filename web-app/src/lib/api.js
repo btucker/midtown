@@ -826,7 +826,7 @@ export async function uploadFile(file) {
   }
 }
 
-// Fetch thread replies for a given parent message
+// Fetch thread history (parent message + replies) for a given parent message
 export async function fetchThread(channelName, parentMessageId) {
   try {
     const params = new URLSearchParams({

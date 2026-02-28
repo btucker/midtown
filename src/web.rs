@@ -518,13 +518,20 @@ async fn api_channels_create(
     ))
 }
 
+/// Returns true if a message belongs to the given thread: either it is the
+/// parent message itself or a reply to it. Used by `api_channel_history` and
+/// tested directly in unit tests.
+pub(crate) fn is_in_thread(msg: &crate::message::Message, parent_id: &str) -> bool {
+    msg.id == parent_id || msg.thread_parent_id.as_deref() == Some(parent_id)
+}
+
 /// Query parameters for channel history
 #[derive(Debug, Deserialize)]
 struct ChannelHistoryQuery {
     /// Optional channel name to filter by. If not provided, returns all messages from the main channel.
     channel: Option<String>,
-    /// Optional thread parent ID to filter by. If provided, only return messages
-    /// that are replies to the message with this ID.
+    /// Optional thread parent ID to filter by. If provided, return the parent
+    /// message itself plus all replies to it.
     thread_parent_id: Option<String>,
 }
 
@@ -532,7 +539,8 @@ struct ChannelHistoryQuery {
 ///
 /// Accepts an optional `?channel=name` query parameter to load a specific channel.
 /// If `thread_parent_id` is omitted, returns top-level messages only (with thread
-/// reply metadata). If `thread_parent_id` is provided, returns replies in that thread.
+/// reply metadata). If `thread_parent_id` is provided, returns the parent message
+/// plus all replies in that thread.
 async fn api_channel_history(
     State(state): State<Arc<WebState>>,
     Query(params): Query<ChannelHistoryQuery>,
@@ -565,9 +573,7 @@ async fn api_channel_history(
         // doesn't need to hope the parent is in the local message store.
         Some(parent_id) => messages
             .into_iter()
-            .filter(|m| {
-                m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id.as_str())
-            })
+            .filter(|m| is_in_thread(m, &parent_id))
             .map(|m| {
                 let channel = m.channel_name().to_string();
                 ChannelMessageData {

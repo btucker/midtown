@@ -893,11 +893,10 @@ fn test_thread_history_filter_includes_parent_message() {
 
     let messages = [parent, reply];
 
-    // Simulate the thread filter from api_channel_history (web.rs line ~564).
-    // This is the exact filter the handler uses when thread_parent_id is specified.
+    // Use the same is_in_thread() helper that api_channel_history uses.
     let thread_messages: Vec<_> = messages
         .iter()
-        .filter(|m| m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id.as_str()))
+        .filter(|m| is_in_thread(m, &parent_id))
         .collect();
 
     assert_eq!(
