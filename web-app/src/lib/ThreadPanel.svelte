@@ -8,6 +8,7 @@
   import MessageRow from './MessageRow.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskCard from './TaskCard.svelte'
+  import { clearMobileTextarea } from './mobileInput.js'
 
   const THREAD_SENDER_OVERRIDES = {
     midtown: '#585858',
@@ -158,11 +159,7 @@
     const parentId = $threadData.parentMessage?.id ?? null
     sendMessage(replyText.trim(), $threadData.channelName, parentId)
     replyText = ''
-    if (textareaEl) {
-      textareaEl.value = ''
-      textareaEl.blur()
-      textareaEl.focus()
-    }
+    clearMobileTextarea(textareaEl, () => { replyText = '' })
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true
     if (thinkingTimeout) clearTimeout(thinkingTimeout)

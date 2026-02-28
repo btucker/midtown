@@ -56,6 +56,28 @@ test.describe('Thread panel', () => {
     await expect(input).toHaveValue('')
   })
 
+  test('submit does not programmatically blur the thread textarea', async ({ page }) => {
+    const summary = page.getByTestId('thread-summary').first()
+    await expect(summary).toBeVisible()
+    await summary.click()
+    await expect(page.getByTestId('thread-panel')).toBeVisible()
+    const input = page.getByTestId('thread-input').first()
+    await input.fill('Reply blur test')
+
+    await page.evaluate(() => {
+      const ta = document.querySelector('[data-testid="thread-input"]')
+      window.__programmaticBlurCount = 0
+      const origBlur = ta.blur.bind(ta)
+      ta.blur = () => { window.__programmaticBlurCount++; origBlur() }
+    })
+
+    await page.keyboard.press('Enter')
+
+    const blurCount = await page.evaluate(() => window.__programmaticBlurCount)
+    expect(blurCount).toBe(0)
+    await expect(input).toHaveValue('')
+  })
+
   test('Escape key closes the thread panel', async ({ page }) => {
     await page.getByTestId('thread-summary').first().click()
     const panel = page.getByTestId('thread-panel')
