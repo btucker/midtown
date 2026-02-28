@@ -143,3 +143,65 @@ jobs:
             --tag ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }} \
             --tag ${{ env.IMAGE_NAME }}:latest \
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+  # ─── Build platform-specific binaries and upload as release assets ─────
+  # Uses native runners for each platform — no cross-compilation needed.
+  binaries:
+    name: Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset: midtown-darwin-arm64
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            asset: midtown-darwin-amd64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: midtown-linux-amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: midtown-linux-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Verify version matches release tag
+        id: version
+        run: |
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          RELEASE_TAG="${{ github.event.release.tag_name }}"
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          if [ "$CARGO_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match release tag ($RELEASE_VERSION)"
+            exit 1
+          fi
+          echo "version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package binary
+        run: |
+          mkdir -p staging
+          cp target/release/midtown staging/
+          cd staging
+          tar czf ../${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz midtown
+
+      - name: Upload release asset
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            ${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
