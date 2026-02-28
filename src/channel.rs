@@ -394,6 +394,104 @@ impl Channel {
         &self.channel_file
     }
 
+    /// Get the path to the history directory for this channel.
+    ///
+    /// Derived from `channel_file` (which is always `…/history/current.jsonl`)
+    /// so it works for both active and archived channels.
+    fn history_dir(&self) -> PathBuf {
+        self.channel_file
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
+    }
+
+    /// List all `.jsonl` history files in chronological order.
+    ///
+    /// Returns date-named archives (`YYYY-MM-DD.jsonl`) sorted ascending,
+    /// followed by `current.jsonl` last. Excludes temp files (`.rotating`).
+    fn list_all_history_files(&self) -> Vec<PathBuf> {
+        let history_dir = self.history_dir();
+        let mut dated_files: Vec<PathBuf> = Vec::new();
+        let mut has_current = false;
+
+        if let Ok(entries) = fs::read_dir(&history_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "jsonl")
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    if name == "current.jsonl" {
+                        has_current = true;
+                    } else if !name.contains(".rotating") {
+                        dated_files.push(path);
+                    }
+                }
+            }
+        }
+
+        // Sort date-named files ascending (oldest first)
+        dated_files.sort();
+
+        // Append current.jsonl last (it always has the newest messages)
+        if has_current {
+            dated_files.push(self.channel_file.clone());
+        }
+
+        dated_files
+    }
+
+    /// Read all messages from a single JSONL file, skipping malformed lines.
+    fn read_messages_from_file(path: &Path) -> Result<Vec<Message>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(path)?;
+
+        // Try to acquire shared lock with bounded retries
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => break,
+                Err(_) if attempt < 9 => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "Failed to acquire shared lock after {} attempts: {}",
+                            attempt + 1,
+                            e
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        let reader = BufReader::new(file);
+        let mut messages = Vec::new();
+
+        for (line_num, line) in reader.lines().enumerate() {
+            let line = line?;
+            if !line.trim().is_empty() {
+                match serde_json::from_str::<Message>(&line) {
+                    Ok(message) => messages.push(message),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping malformed line {} in {}: {}",
+                            line_num + 1,
+                            path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        Ok(messages)
+    }
+
     /// Get the path to the notes directory for this channel
     ///
     /// Channel leads store domain knowledge as markdown files in this directory.
@@ -806,64 +904,22 @@ impl Channel {
         Ok(())
     }
 
-    /// Read all messages from the channel
+    /// Read all messages from the channel, including rotated archives.
     ///
-    /// Messages are sorted by timestamp to ensure chronological order,
-    /// regardless of the order they were written to the file.
-    ///
-    /// Uses bounded retries to acquire a shared lock when there's lock contention.
-    /// Retries up to 10 times with 50ms delays (500ms total) to handle transient
-    /// lock contention from writers. Returns an error if the lock can't be acquired
-    /// after 500ms.
+    /// Reads every `.jsonl` file in the history directory (date-named archives
+    /// in ascending order, then `current.jsonl`). Messages are sorted by
+    /// timestamp to ensure chronological order. Each file is locked
+    /// individually via `read_messages_from_file`.
     pub fn read_all(&self) -> Result<Vec<Message>> {
-        if !self.channel_file.exists() {
+        let history_files = self.list_all_history_files();
+
+        if history_files.is_empty() {
             return Ok(Vec::new());
         }
 
-        let file = File::open(&self.channel_file)?;
-
-        // Try to acquire shared lock with bounded retries. In high-concurrency scenarios
-        // (e.g., E2E tests), a write lock may be held briefly after a write completes due
-        // to OS-level file handle cleanup. Retry with short delays to avoid spurious failures.
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => break,
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!(
-                            "Failed to acquire shared lock after {} attempts: {}",
-                            attempt + 1,
-                            e
-                        ),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        let reader = BufReader::new(file);
         let mut messages = Vec::new();
-
-        for (line_num, line) in reader.lines().enumerate() {
-            let line = line?;
-            if !line.trim().is_empty() {
-                match serde_json::from_str::<Message>(&line) {
-                    Ok(message) => messages.push(message),
-                    Err(e) => {
-                        // Skip malformed lines rather than failing completely.
-                        // This allows reading the channel even if some lines are corrupted.
-                        tracing::warn!(
-                            "Skipping malformed line {} in channel file: {}",
-                            line_num + 1,
-                            e
-                        );
-                    }
-                }
-            }
+        for path in &history_files {
+            messages.extend(Self::read_messages_from_file(path)?);
         }
 
         // Sort by timestamp to ensure chronological order
@@ -989,8 +1045,11 @@ impl Channel {
         agent: &str,
         session_id: &str,
     ) -> Result<(u64, Option<String>)> {
-        // Read the last message ID so that unread-count calculations
-        // (which key off last_message_id) correctly treat the channel as fully read.
+        // `position` is a byte offset in current.jsonl — used by
+        // `read_messages_from_position` to stream new messages as they
+        // arrive. `last_message_id` comes from all history files (via
+        // `read_last_n_messages`) so unread-count calculations correctly
+        // treat the channel as fully read even after rotation.
         let last_message_id = self
             .read_last_n_messages(1)
             .ok()
@@ -1027,205 +1086,99 @@ impl Channel {
     /// Read the last N messages from the channel
     ///
     /// Returns a tuple of (messages, start_position) where start_position is
-    /// the byte offset where these messages begin. This can be used for
-    /// subsequent calls to load more history.
+    /// the number of messages loaded from the tail. This count is passed to
+    /// `read_messages_before_position` to load the next page of history.
     ///
     /// If the channel has fewer than N messages, returns all messages with
-    /// start_position = 0.
+    /// start_position = 0 (all history loaded).
     pub fn read_last_n_messages(&self, n: usize) -> Result<(Vec<Message>, u64)> {
-        if !self.channel_file.exists() {
+        let history_files = self.list_all_history_files();
+
+        if history_files.is_empty() {
             return Ok((Vec::new(), 0));
         }
 
-        let file = File::open(&self.channel_file)?;
-
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        // This prevents failures when a writer is still releasing its exclusive lock.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
-
-        let file_size = file.metadata()?.len();
-        if file_size == 0 {
-            return Ok((Vec::new(), 0));
-        }
-
-        // Strategy: estimate where to start reading to get ~N messages.
-        // Average JSONL line is ~200 bytes, so estimate N*300 bytes from end
-        // to have some buffer.
-        let estimated_bytes = (n as u64) * 300;
-        let start_estimate = file_size.saturating_sub(estimated_bytes);
-
-        let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(start_estimate))?;
-
-        // If we're not at the start, skip to next newline to avoid partial line
-        let mut actual_start = start_estimate;
-        if start_estimate > 0 {
-            let mut skip_buf = String::new();
-            let bytes_skipped = reader.read_line(&mut skip_buf)?;
-            actual_start = start_estimate + bytes_skipped as u64;
-        }
-
-        // Read all remaining lines
+        // Read files in reverse order (current.jsonl first, then newest archive)
+        // and stop as soon as we have enough messages.
         let mut all_messages = Vec::new();
-        let mut line_buf = String::new();
-        loop {
-            line_buf.clear();
-            let bytes_read = reader.read_line(&mut line_buf)?;
-            if bytes_read == 0 {
+        let total_files = history_files.len();
+        let mut files_read = 0;
+
+        for path in history_files.iter().rev() {
+            let file_messages = Self::read_messages_from_file(path)?;
+            all_messages.extend(file_messages);
+            files_read += 1;
+
+            if all_messages.len() >= n {
                 break;
             }
-            let line = line_buf.trim();
-            if !line.is_empty()
-                && let Ok(message) = serde_json::from_str::<Message>(line)
-            {
-                all_messages.push(message);
-            }
         }
 
-        // If we got more than N messages, keep only the last N
-        // and recalculate the actual start position
-        if all_messages.len() > n {
-            let to_skip = all_messages.len() - n;
-            all_messages = all_messages.split_off(to_skip);
-            // Signal that there's more history available by using non-zero position
-            // (0 means "all history loaded", non-zero means "more history exists")
-            actual_start = actual_start.max(1);
-        } else if start_estimate == 0 {
-            actual_start = 0;
-        }
-
-        // Sort by timestamp
+        // Sort all collected messages by timestamp
         all_messages.sort_by_key(|m| m.timestamp);
 
-        Ok((all_messages, actual_start))
+        let total = all_messages.len();
+        let read_all = files_read == total_files;
+
+        if total <= n && read_all {
+            // All history loaded
+            Ok((all_messages, 0))
+        } else if total <= n {
+            // Read fewer files than exist but still have <= n messages
+            // (e.g., unread files might have more). Signal count loaded so far.
+            Ok((all_messages, total as u64))
+        } else {
+            // More messages than requested — keep only last N
+            all_messages = all_messages.split_off(total - n);
+            Ok((all_messages, n as u64))
+        }
     }
 
-    /// Read messages before a given byte position (for loading history)
+    /// Read messages before the already-loaded tail (for loading history)
     ///
-    /// Reads up to N messages that appear before the specified position.
-    /// Returns (messages, new_start_position). If new_start_position is 0,
-    /// all history has been loaded.
+    /// `position` is the number of messages already loaded from the tail
+    /// (as returned by `read_last_n_messages` or a previous call to this method).
+    /// Returns up to N messages just before those, plus a new position for the
+    /// next page. If new_start_position is 0, all history has been loaded.
     pub fn read_messages_before_position(
         &self,
         position: u64,
         n: usize,
     ) -> Result<(Vec<Message>, u64)> {
-        if !self.channel_file.exists() || position == 0 {
+        if position == 0 {
             return Ok((Vec::new(), 0));
         }
 
-        let file = File::open(&self.channel_file)?;
+        let skip = position as usize;
 
-        // Try to acquire shared lock with bounded retries to handle lock contention.
-        let mut acquired = false;
-        for attempt in 0..10 {
-            match file.try_lock_shared() {
-                Ok(()) => {
-                    acquired = true;
-                    break;
-                }
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        format!("Failed to acquire shared lock after 500ms: {}", e),
-                    )
-                    .into());
-                }
-            }
+        // Read all messages from all history files
+        let history_files = self.list_all_history_files();
+        let mut all_messages = Vec::new();
+        for path in &history_files {
+            all_messages.extend(Self::read_messages_from_file(path)?);
+        }
+        all_messages.sort_by_key(|m| m.timestamp);
+
+        let total = all_messages.len();
+        if total <= skip {
+            // Caller already has all messages
+            return Ok((Vec::new(), 0));
         }
 
-        if !acquired {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Failed to acquire shared lock after 500ms",
-            )
-            .into());
-        }
+        // Messages before the already-loaded tail
+        let available = total - skip;
+        let take = available.min(n);
+        let start_idx = available - take;
 
-        // Estimate where to start reading
-        let estimated_bytes = (n as u64) * 300;
-        let start_estimate = position.saturating_sub(estimated_bytes);
+        let page = all_messages[start_idx..start_idx + take].to_vec();
 
-        let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(start_estimate))?;
-
-        // Skip partial line if not at start
-        let mut actual_start = start_estimate;
-        if start_estimate > 0 {
-            let mut skip_buf = String::new();
-            let bytes_skipped = reader.read_line(&mut skip_buf)?;
-            actual_start = start_estimate + bytes_skipped as u64;
-        }
-
-        // Read lines until we reach the target position
-        let mut messages = Vec::new();
-        let mut line_buf = String::new();
-        let mut current_pos = actual_start;
-
-        loop {
-            if current_pos >= position {
-                break;
-            }
-            line_buf.clear();
-            let bytes_read = reader.read_line(&mut line_buf)?;
-            if bytes_read == 0 {
-                break;
-            }
-            current_pos += bytes_read as u64;
-
-            let line = line_buf.trim();
-            if !line.is_empty()
-                && let Ok(message) = serde_json::from_str::<Message>(line)
-            {
-                messages.push(message);
-            }
-        }
-
-        // Keep only last N messages if we got more
-        let final_start = if messages.len() > n {
-            let to_skip = messages.len() - n;
-            messages = messages.split_off(to_skip);
-            // There's still more history
-            actual_start.max(1) // Non-zero means more history available
-        } else if start_estimate == 0 {
+        let new_position = if start_idx == 0 {
             0 // All history loaded
         } else {
-            actual_start
+            (skip + take) as u64
         };
 
-        // Sort by timestamp
-        messages.sort_by_key(|m| m.timestamp);
-
-        Ok((messages, final_start))
+        Ok((page, new_position))
     }
 
     /// Rotate the channel log file.

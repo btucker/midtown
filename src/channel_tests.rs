@@ -532,11 +532,15 @@ fn test_rotate_archives_old_messages() {
     let archived = channel.rotate(60).unwrap();
     assert_eq!(archived, 3, "3 old messages should be archived");
 
-    // Only recent messages remain in channel
+    // read_all() now includes archived messages — all 5 should be present
     let remaining = read_all_with_retry(&channel, 5).unwrap();
-    assert_eq!(remaining.len(), 2);
-    assert!(remaining[0].content.starts_with("Recent"));
-    assert!(remaining[1].content.starts_with("Recent"));
+    assert_eq!(
+        remaining.len(),
+        5,
+        "read_all() should return archived + current messages"
+    );
+    assert!(remaining[0].content.starts_with("Old"));
+    assert!(remaining[3].content.starts_with("Recent"));
 
     // Archive file should exist with old messages
     let today = Utc::now().format("%Y-%m-%d").to_string();
@@ -1716,4 +1720,321 @@ fn test_channel_info_is_dm_only_with_dm_prefix() {
     let channels = Channel::list(temp_dir.path(), false, None).unwrap();
     let dmz = channels.iter().find(|c| c.name == "dmz").unwrap();
     assert!(!dmz.is_dm, "channel 'dmz' (no dash) should not be is_dm");
+}
+
+// --- Tests for reading across rotated archive files ---
+
+/// Helper: write a message directly to a specific JSONL file (bypassing channel.send)
+fn write_message_to_file(path: &std::path::Path, msg: &Message) {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap();
+    writeln!(file, "{}", serde_json::to_string(msg).unwrap()).unwrap();
+}
+
+fn make_message(id: &str, content: &str, timestamp: chrono::DateTime<chrono::Utc>) -> Message {
+    Message {
+        id: id.to_string(),
+        timestamp,
+        from: "test".to_string(),
+        content: content.to_string(),
+        message_type: MessageType::Text,
+        channel: None,
+        session_id: None,
+        thread_parent_id: None,
+    }
+}
+
+#[test]
+fn test_read_all_includes_rotated_archives() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    // Write messages to a dated archive file (simulating rotation)
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+    let archive_path = history_dir.join("2026-02-25.jsonl");
+
+    let old_msg1 = make_message("old-1", "Archived message 1", now - Duration::hours(48));
+    let old_msg2 = make_message("old-2", "Archived message 2", now - Duration::hours(47));
+    write_message_to_file(&archive_path, &old_msg1);
+    write_message_to_file(&archive_path, &old_msg2);
+
+    // Write a message to current.jsonl via channel.send
+    channel
+        .send(&Message::text("test", "Current message"))
+        .unwrap();
+
+    // read_all should return all 3 messages (2 archived + 1 current)
+    let messages = read_all_with_retry(&channel, 5).unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Should include archived + current messages"
+    );
+    assert_eq!(messages[0].content, "Archived message 1");
+    assert_eq!(messages[1].content, "Archived message 2");
+    assert_eq!(messages[2].content, "Current message");
+}
+
+#[test]
+fn test_read_all_multiple_archive_files_chronological_order() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    // Two archive files from different dates
+    let archive1 = history_dir.join("2026-02-24.jsonl");
+    let archive2 = history_dir.join("2026-02-25.jsonl");
+
+    write_message_to_file(
+        &archive1,
+        &make_message("day1", "Day 1 msg", now - Duration::hours(72)),
+    );
+    write_message_to_file(
+        &archive2,
+        &make_message("day2", "Day 2 msg", now - Duration::hours(48)),
+    );
+    channel.send(&Message::text("test", "Today")).unwrap();
+
+    let messages = read_all_with_retry(&channel, 5).unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].content, "Day 1 msg");
+    assert_eq!(messages[1].content, "Day 2 msg");
+    assert_eq!(messages[2].content, "Today");
+}
+
+#[test]
+fn test_read_last_n_includes_archives_when_current_insufficient() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    // Archive has 3 messages
+    let archive_path = history_dir.join("2026-02-25.jsonl");
+    for i in 0..3 {
+        write_message_to_file(
+            &archive_path,
+            &make_message(
+                &format!("old-{i}"),
+                &format!("Old {i}"),
+                now - Duration::hours(48) + Duration::minutes(i as i64),
+            ),
+        );
+    }
+
+    // Current has 2 messages
+    channel.send(&Message::text("test", "Current 1")).unwrap();
+    channel.send(&Message::text("test", "Current 2")).unwrap();
+
+    // Ask for last 4 messages — should span both files
+    let (messages, start_pos) = read_last_n_with_retry(&channel, 4, 5).unwrap();
+    assert_eq!(messages.len(), 4, "Should pull from archive + current");
+    assert!(
+        messages[0].content.starts_with("Old"),
+        "Oldest should be from archive"
+    );
+    assert_eq!(messages[3].content, "Current 2");
+    // More history exists (5 total, asked for 4)
+    assert_ne!(start_pos, 0, "Should signal more history available");
+}
+
+#[test]
+fn test_read_last_n_returns_zero_start_when_all_history_fits() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    let archive_path = history_dir.join("2026-02-25.jsonl");
+    write_message_to_file(
+        &archive_path,
+        &make_message("old-1", "Old", now - Duration::hours(48)),
+    );
+
+    channel.send(&Message::text("test", "Current")).unwrap();
+
+    // Ask for 10 but only 2 exist — should return all with start_pos=0
+    let (messages, start_pos) = read_last_n_with_retry(&channel, 10, 5).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(start_pos, 0, "All history loaded — start_pos should be 0");
+}
+
+#[test]
+fn test_read_all_after_rotation_preserves_history() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    // Write an old message and a recent message directly to current.jsonl
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(channel.channel_file_path())
+            .unwrap();
+        let old_msg = Message {
+            id: "old-1".to_string(),
+            timestamp: now - Duration::hours(3),
+            from: "agent1".to_string(),
+            content: "Old message".to_string(),
+            message_type: MessageType::Text,
+            channel: None,
+            session_id: None,
+            thread_parent_id: None,
+        };
+        writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
+    }
+    channel.send(&Message::text("test", "Recent")).unwrap();
+
+    // Before rotation: 2 messages
+    let before = read_all_with_retry(&channel, 5).unwrap();
+    assert_eq!(before.len(), 2);
+
+    // Rotate with 60-minute retention — old message should be archived
+    let archived = channel.rotate(60).unwrap();
+    assert_eq!(archived, 1);
+
+    // After rotation: read_all should still return all messages
+    // (this was the bug — it used to only return messages from current.jsonl)
+    let after = read_all_with_retry(&channel, 5).unwrap();
+    assert_eq!(
+        after.len(),
+        2,
+        "read_all() must include rotated archive messages"
+    );
+    assert_eq!(after[0].content, "Old message");
+    assert_eq!(after[1].content, "Recent");
+}
+
+#[test]
+fn test_list_all_history_files_ignores_rotating_temp() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    // Create a temp file that would exist during rotation
+    std::fs::write(history_dir.join("current.jsonl.rotating"), "").unwrap();
+    // Create a real archive
+    std::fs::write(history_dir.join("2026-02-25.jsonl"), "").unwrap();
+
+    let files = channel.list_all_history_files();
+    let filenames: Vec<&str> = files
+        .iter()
+        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+        .collect();
+
+    assert!(
+        !filenames.contains(&"current.jsonl.rotating"),
+        "Should exclude .rotating temp files"
+    );
+    assert!(filenames.contains(&"2026-02-25.jsonl"));
+    assert!(filenames.contains(&"current.jsonl"));
+    // current.jsonl should be last
+    assert_eq!(
+        filenames.last().copied(),
+        Some("current.jsonl"),
+        "current.jsonl should be last"
+    );
+}
+
+#[test]
+fn test_pagination_across_archives() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    // Archive with 5 messages
+    let archive_path = history_dir.join("2026-02-25.jsonl");
+    for i in 0..5 {
+        write_message_to_file(
+            &archive_path,
+            &make_message(
+                &format!("old-{i}"),
+                &format!("Old {i}"),
+                now - Duration::hours(48) + Duration::minutes(i as i64),
+            ),
+        );
+    }
+
+    // Current with 5 messages
+    for i in 0..5 {
+        channel
+            .send(&Message::text("test", format!("Current {i}")))
+            .unwrap();
+    }
+
+    // Total: 10 messages. Load last 3.
+    let (page1, pos1) = read_last_n_with_retry(&channel, 3, 5).unwrap();
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page1[0].content, "Current 2");
+    assert_eq!(page1[2].content, "Current 4");
+    assert_ne!(pos1, 0, "More history should exist");
+
+    // Load next 3 (should be Current 0, Current 1, and possibly Old 4)
+    let (page2, pos2) = read_before_pos_with_retry(&channel, pos1, 3, 5).unwrap();
+    assert_eq!(page2.len(), 3);
+    assert_ne!(pos2, 0, "Still more history");
+
+    // Load next 3 (spanning into archive)
+    let (page3, pos3) = read_before_pos_with_retry(&channel, pos2, 3, 5).unwrap();
+    assert_eq!(page3.len(), 3);
+
+    // Load remaining (should be 1 message left)
+    let (page4, pos4) = read_before_pos_with_retry(&channel, pos3, 3, 5).unwrap();
+    assert_eq!(page4.len(), 1);
+    assert_eq!(pos4, 0, "All history should be loaded now");
+    assert_eq!(page4[0].content, "Old 0");
+
+    // Requesting more when all loaded returns empty
+    let (page5, pos5) = read_before_pos_with_retry(&channel, pos4, 3, 5).unwrap();
+    assert!(page5.is_empty());
+    assert_eq!(pos5, 0);
 }
