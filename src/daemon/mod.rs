@@ -1171,7 +1171,13 @@ impl DaemonState {
                     );
                     return true;
                 }
-                // IDs empty — fall through to backfill (lock dropped here)
+                // IDs empty — fall through to backfill (lock dropped here).
+                // Clear stale negative cache entry: the review exists (cached via
+                // webhook), so the negative cache must not suppress the backfill.
+                {
+                    let mut neg_cache = self.pr_review_negative_cache.lock().unwrap();
+                    neg_cache.remove(&pr_number);
+                }
                 debug!(
                     "PR #{} has cached review but no comment IDs — backfilling",
                     pr_number

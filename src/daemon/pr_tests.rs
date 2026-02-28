@@ -3052,6 +3052,45 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
     );
 }
 
+// ── is_pr_reviewed negative cache interaction tests ─────────────────────
+
+/// Regression test: when a review is cached (e.g. via webhook) but comment IDs
+/// are empty, the fast path falls through to backfill. If a stale negative cache
+/// entry exists for the same PR, it must not suppress the backfill by returning
+/// false.
+///
+/// Sequence that triggers the bug:
+///   1. Poll tick finds no review → negative cache populated
+///   2. Webhook caches review (mark_reviewed_pr) but no comment IDs recorded
+///   3. Next poll: fast path sees cached review, IDs empty → falls through
+///   4. BUG: negative cache hit → returns false (backfill never runs)
+#[tokio::test]
+async fn test_negative_cache_does_not_suppress_cached_review_backfill() {
+    let (state, _temp_dir, _guard) = make_test_state("neg-cache-test");
+    let pr_number = 77777u64;
+
+    // Step 1: Populate the negative cache (simulates a prior poll finding no review)
+    {
+        let mut neg_cache = state.pr_review_negative_cache.lock().unwrap();
+        neg_cache.insert(pr_number, std::time::Instant::now());
+    }
+
+    // Step 2: Webhook arrives and caches the review, but no comment IDs
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+        // Deliberately do NOT add any comment IDs — this is the scenario
+    }
+
+    // Step 3: Call is_pr_reviewed — should return true (review is cached)
+    let result = state.is_pr_reviewed(pr_number).await;
+    assert!(
+        result,
+        "is_pr_reviewed should return true for a cached review, \
+         even when a stale negative cache entry exists"
+    );
+}
+
 // ── extract_review_comment_ids_from_json tests ──────────────────────────
 
 #[test]
