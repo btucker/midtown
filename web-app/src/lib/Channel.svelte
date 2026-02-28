@@ -9,6 +9,7 @@
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
   import MessageRow from './MessageRow.svelte'
+  import { clearMobileTextarea } from './mobileInput.js'
 
   let inputText = $state('')
   let scrollAreaViewport = $state(null)
@@ -526,7 +527,7 @@
         }, 30000)
       }
       inputText = ''
-      if (textareaElement) textareaElement.value = ''
+      clearMobileTextarea(textareaElement, () => { inputText = '' })
     }
   }
 
