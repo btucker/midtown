@@ -36,6 +36,22 @@ test.describe('Message input behaviors', () => {
     await expect(dropdown).toBeHidden()
   })
 
+  test('input clears after sending via Enter', async ({ page }) => {
+    const input = page.getByTestId('channel-input')
+    await input.fill('Test message')
+    await page.keyboard.press('Enter')
+
+    await expect(input).toHaveValue('')
+  })
+
+  test('input clears after sending via Send button', async ({ page }) => {
+    const input = page.getByTestId('channel-input')
+    await input.fill('Button send test')
+    await page.getByTestId('send-button').click()
+
+    await expect(input).toHaveValue('')
+  })
+
   test('pasting an image shows a removable preview', async ({ page }) => {
     await page.evaluate(() => {
       const input = document.querySelector('[data-testid="channel-input"]')

@@ -44,6 +44,18 @@ test.describe('Thread panel', () => {
     )
   })
 
+  test('thread reply input clears after sending', async ({ page }) => {
+    const summary = page.getByTestId('thread-summary').first()
+    await expect(summary).toBeVisible()
+    await summary.click()
+    await expect(page.getByTestId('thread-panel')).toBeVisible()
+    const input = page.getByTestId('thread-input').first()
+    await input.fill('Reply clear test')
+    await page.keyboard.press('Enter')
+
+    await expect(input).toHaveValue('')
+  })
+
   test('Escape key closes the thread panel', async ({ page }) => {
     await page.getByTestId('thread-summary').first().click()
     const panel = page.getByTestId('thread-panel')
