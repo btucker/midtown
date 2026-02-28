@@ -457,7 +457,7 @@ async fn test_channel_read_with_channel_parameter() {
     let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
 
     // Reading from the topic channel should return only the topic message
-    let response = handle_channel_read(999.into(), true, None, None, Some("auth"), &state);
+    let response = handle_channel_read(999.into(), true, None, None, Some("auth"), &state).await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -557,7 +557,7 @@ async fn test_channel_read_includes_thread_parent_id() {
     )
     .await;
 
-    let response = handle_channel_read(999.into(), true, None, None, None, &state);
+    let response = handle_channel_read(999.into(), true, None, None, None, &state).await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -589,7 +589,7 @@ async fn test_channel_read_with_last_parameter() {
     }
 
     // Request last 3 messages
-    let response = handle_channel_read(999.into(), false, Some(3), None, None, &state);
+    let response = handle_channel_read(999.into(), false, Some(3), None, None, &state).await;
 
     // Verify we got exactly 3 messages
     assert!(response.error.is_none(), "channel.read should succeed");

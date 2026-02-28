@@ -469,6 +469,45 @@ impl Channel {
             }
         }
 
+        Self::parse_messages_from_file(file, path)
+    }
+
+    /// Async variant of [`read_messages_from_file`] that uses `tokio::time::sleep`
+    /// instead of `std::thread::sleep` to avoid blocking the tokio runtime during
+    /// lock retries.
+    async fn read_messages_from_file_async(path: &Path) -> Result<Vec<Message>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let file = File::open(path)?;
+
+        // Try to acquire shared lock with bounded retries (async-friendly)
+        for attempt in 0..10 {
+            match file.try_lock_shared() {
+                Ok(()) => break,
+                Err(_) if attempt < 9 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        format!(
+                            "Failed to acquire shared lock after {} attempts: {}",
+                            attempt + 1,
+                            e
+                        ),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        Self::parse_messages_from_file(file, path)
+    }
+
+    /// Parse messages from an already-opened and locked file.
+    fn parse_messages_from_file(file: File, path: &Path) -> Result<Vec<Message>> {
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
 
@@ -928,6 +967,25 @@ impl Channel {
         Ok(messages)
     }
 
+    /// Async variant of [`read_all`] that yields the tokio runtime during lock retries.
+    pub async fn read_all_async(&self) -> Result<Vec<Message>> {
+        let history_files = self.list_all_history_files();
+
+        if history_files.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut messages = Vec::new();
+        for path in &history_files {
+            messages.extend(Self::read_messages_from_file_async(path).await?);
+        }
+
+        // Sort by timestamp to ensure chronological order
+        messages.sort_by_key(|m| m.timestamp);
+
+        Ok(messages)
+    }
+
     /// Read new messages starting from `position` without acquiring a file lock.
     ///
     /// Returns `(messages, new_position, last_message_id)`. Safe to call
@@ -1134,6 +1192,44 @@ impl Channel {
         }
     }
 
+    /// Async variant of [`read_last_n_messages`] that yields the tokio runtime
+    /// during lock retries.
+    pub async fn read_last_n_messages_async(&self, n: usize) -> Result<(Vec<Message>, u64)> {
+        let history_files = self.list_all_history_files();
+
+        if history_files.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let mut all_messages = Vec::new();
+        let total_files = history_files.len();
+        let mut files_read = 0;
+
+        for path in history_files.iter().rev() {
+            let file_messages = Self::read_messages_from_file_async(path).await?;
+            all_messages.extend(file_messages);
+            files_read += 1;
+
+            if all_messages.len() >= n {
+                break;
+            }
+        }
+
+        all_messages.sort_by_key(|m| m.timestamp);
+
+        let total = all_messages.len();
+        let read_all = files_read == total_files;
+
+        if total <= n && read_all {
+            Ok((all_messages, 0))
+        } else if total <= n {
+            Ok((all_messages, total as u64))
+        } else {
+            all_messages = all_messages.split_off(total - n);
+            Ok((all_messages, n as u64))
+        }
+    }
+
     /// Read messages before the already-loaded tail (for loading history)
     ///
     /// `position` is the number of messages already loaded from the tail
@@ -1166,6 +1262,46 @@ impl Channel {
         }
 
         // Messages before the already-loaded tail
+        let available = total - skip;
+        let take = available.min(n);
+        let start_idx = available - take;
+
+        let page = all_messages[start_idx..start_idx + take].to_vec();
+
+        let new_position = if start_idx == 0 {
+            0 // All history loaded
+        } else {
+            (skip + take) as u64
+        };
+
+        Ok((page, new_position))
+    }
+
+    /// Async variant of [`read_messages_before_position`] that yields the tokio
+    /// runtime during lock retries.
+    pub async fn read_messages_before_position_async(
+        &self,
+        position: u64,
+        n: usize,
+    ) -> Result<(Vec<Message>, u64)> {
+        if position == 0 {
+            return Ok((Vec::new(), 0));
+        }
+
+        let skip = position as usize;
+
+        let history_files = self.list_all_history_files();
+        let mut all_messages = Vec::new();
+        for path in &history_files {
+            all_messages.extend(Self::read_messages_from_file_async(path).await?);
+        }
+        all_messages.sort_by_key(|m| m.timestamp);
+
+        let total = all_messages.len();
+        if total <= skip {
+            return Ok((Vec::new(), 0));
+        }
+
         let available = total - skip;
         let take = available.min(n);
         let start_idx = available - take;

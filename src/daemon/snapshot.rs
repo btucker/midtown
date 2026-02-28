@@ -501,10 +501,11 @@ impl WorldSnapshot {
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
     /// normal tick collection. This avoids file I/O overhead on every daemon tick.
-    pub fn with_debug_context(mut self, channel: &crate::channel::Channel) -> Self {
+    pub async fn with_debug_context(mut self, channel: &crate::channel::Channel) -> Self {
         // Read recent channel messages
         self.channel_messages = channel
-            .read_last_n_messages(SNAPSHOT_CHANNEL_MESSAGE_COUNT)
+            .read_last_n_messages_async(SNAPSHOT_CHANNEL_MESSAGE_COUNT)
+            .await
             .map(|(msgs, _)| msgs)
             .unwrap_or_default();
 
