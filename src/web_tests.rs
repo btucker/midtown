@@ -879,6 +879,47 @@ fn test_validate_channel_name_rejects_invalid_dm_channels() {
     );
 }
 
+/// Regression test for task !1863: thread history response should include the parent
+/// message itself, not just the replies. Without the parent, the frontend has to fall
+/// back to a synthetic stub (wrong sender, no timestamp, incomplete content).
+#[test]
+fn test_thread_history_filter_includes_parent_message() {
+    // Set up: parent message + thread reply
+    let parent = crate::message::Message::text("park", "Top-level announcement");
+    let parent_id = parent.id.clone();
+
+    let mut reply = crate::message::Message::text("york", "Thread reply");
+    reply.thread_parent_id = Some(parent_id.clone());
+
+    let messages = [parent, reply];
+
+    // Use the same is_in_thread() helper that api_channel_history uses.
+    let thread_messages: Vec<_> = messages
+        .iter()
+        .filter(|m| is_in_thread(m, &parent_id))
+        .collect();
+
+    assert_eq!(
+        thread_messages.len(),
+        2,
+        "Thread history should include parent message + reply (got {})",
+        thread_messages.len()
+    );
+    assert_eq!(
+        thread_messages[0].id, parent_id,
+        "First message should be the parent"
+    );
+    assert!(
+        thread_messages[0].thread_parent_id.is_none(),
+        "Parent should have no thread_parent_id"
+    );
+    assert_eq!(
+        thread_messages[1].thread_parent_id.as_deref(),
+        Some(parent_id.as_str()),
+        "Second message should be the reply"
+    );
+}
+
 #[test]
 fn test_validate_channel_name_rejects_main_channel() {
     // The main channel name (whatever it is) cannot be used for new channels

@@ -632,7 +632,7 @@ fn test_web_api_channel_history_thread_parent_id_filter() {
         "Top-level history should exclude thread replies"
     );
 
-    // Filter history by thread_parent_id — should only return the thread reply
+    // Filter history by thread_parent_id — should return parent + reply
     let url = format!(
         "{}/channels/history?thread_parent_id={}",
         fixture.api_base(),
@@ -653,14 +653,26 @@ fn test_web_api_channel_history_thread_parent_id_filter() {
     let messages: Vec<serde_json::Value> = response.json().unwrap();
     assert_eq!(
         messages.len(),
-        1,
-        "Filtered history should return only the thread reply, got {} messages",
+        2,
+        "Thread history should return parent + reply, got {} messages",
         messages.len()
     );
+    // First message should be the parent (chronological order)
     assert_eq!(
         messages[0].get("from").and_then(|v| v.as_str()),
+        Some("park"),
+        "First message should be the parent (from park)"
+    );
+    assert_eq!(
+        messages[0].get("id").and_then(|v| v.as_str()),
+        Some(parent_id.as_str()),
+        "First message should have the parent ID"
+    );
+    // Second message should be the reply
+    assert_eq!(
+        messages[1].get("from").and_then(|v| v.as_str()),
         Some("york"),
-        "Filtered message should be from york"
+        "Second message should be the reply (from york)"
     );
 }
 
