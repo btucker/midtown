@@ -852,7 +852,7 @@ export function openThread(parentMessage, channelName) {
   const tasks = allTasks.filter((t) => t.message_id === parentMessage.id)
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
-  fetchThread(channelName, parentMessage.id).then((replies) => {
+  fetchThread(channelName, parentMessage.id).then((fetched) => {
     // Guard against stale fetch: the user may have opened a different thread
     // (or closed the panel) while this fetch was in flight. Only apply results
     // if the panel still refers to the same parent message. Also merge rather
@@ -860,10 +860,18 @@ export function openThread(parentMessage, channelName) {
     // are preserved (append them after the fetched history).
     threadData.update((td) => {
       if (!td || td.parentMessage?.id !== parentMessage.id) return td
+      // The backend includes the parent message in the response — extract it
+      // so we can upgrade parentMessage with real data from the API.
+      const fetchedParent = fetched.find((m) => m.id === parentMessage.id)
+      const replies = fetched.filter((m) => m.id !== parentMessage.id)
       // Deduplicate: WS may have already appended some replies
       const fetchedIds = new Set(replies.map((r) => r.id))
       const wsOnly = td.messages.filter((r) => !fetchedIds.has(r.id))
-      return { ...td, messages: [...replies, ...wsOnly] }
+      return {
+        ...td,
+        parentMessage: fetchedParent ?? td.parentMessage,
+        messages: [...replies, ...wsOnly],
+      }
     })
   })
 }
@@ -902,12 +910,19 @@ export function openTaskThread(task, channelName) {
   const parentMessage = channelMsgs.find((m) => m.id === parentMessageId)
     ?? { id: parentMessageId, from: 'lead', content: task.subject }
   threadData.set({ parentMessage, channelName, messages: [], tasks })
-  fetchThread(channelName, parentMessageId).then((replies) => {
+  fetchThread(channelName, parentMessageId).then((fetched) => {
     threadData.update((td) => {
       if (!td || td.parentMessage?.id !== parentMessageId) return td
+      // Extract parent from response — replaces synthetic stub with real data
+      const fetchedParent = fetched.find((m) => m.id === parentMessageId)
+      const replies = fetched.filter((m) => m.id !== parentMessageId)
       const fetchedIds = new Set(replies.map((r) => r.id))
       const wsOnly = td.messages.filter((r) => !fetchedIds.has(r.id))
-      return { ...td, messages: [...replies, ...wsOnly] }
+      return {
+        ...td,
+        parentMessage: fetchedParent ?? td.parentMessage,
+        messages: [...replies, ...wsOnly],
+      }
     })
   })
 }

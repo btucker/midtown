@@ -560,10 +560,14 @@ async fn api_channel_history(
     })?;
 
     let response: Vec<ChannelMessageData> = match params.thread_parent_id {
-        // Thread history query: return replies for one parent only.
+        // Thread history query: return the parent message + its replies.
+        // Including the parent makes the response self-contained so the frontend
+        // doesn't need to hope the parent is in the local message store.
         Some(parent_id) => messages
             .into_iter()
-            .filter(|m| m.thread_parent_id.as_deref() == Some(parent_id.as_str()))
+            .filter(|m| {
+                m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id.as_str())
+            })
             .map(|m| {
                 let channel = m.channel_name().to_string();
                 ChannelMessageData {
