@@ -14,6 +14,7 @@
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
+  import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
@@ -202,6 +203,7 @@
               <span class="channel-hash">#</span>{$activeChannel}
             {/if}
           </div>
+          <MiniRepoStatus />
         </header>
 
         {#if activeView === 'board'}
