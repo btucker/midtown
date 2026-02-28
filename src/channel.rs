@@ -452,10 +452,7 @@ impl Channel {
         for attempt in 0..10 {
             match file.try_lock_shared() {
                 Ok(()) => break,
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
+                Err(e) if attempt == 9 => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         format!(
@@ -465,6 +462,9 @@ impl Channel {
                         ),
                     )
                     .into());
+                }
+                Err(_) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             }
         }
@@ -486,10 +486,7 @@ impl Channel {
         for attempt in 0..10 {
             match file.try_lock_shared() {
                 Ok(()) => break,
-                Err(_) if attempt < 9 => {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                }
-                Err(e) => {
+                Err(e) if attempt == 9 => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
                         format!(
@@ -499,6 +496,9 @@ impl Channel {
                         ),
                     )
                     .into());
+                }
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             }
         }

@@ -501,6 +501,7 @@ impl WorldSnapshot {
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
     /// normal tick collection. This avoids file I/O overhead on every daemon tick.
+    /// Async because it uses the non-blocking channel read variant.
     pub async fn with_debug_context(mut self, channel: &crate::channel::Channel) -> Self {
         // Read recent channel messages
         self.channel_messages = channel
