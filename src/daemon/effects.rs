@@ -2468,19 +2468,21 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                         // Post session separator to the coworker's DM channel.
                         // Reviewers are ephemeral PR-scoped sessions — skip DM
-                        // separators since they don't have DM channels.
-                        let task_subject =
-                            crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
-                                .into_iter()
-                                .find(|t| t.id == task_id)
-                                .map(|t| t.subject);
-                        if let Some(separator_effect) = build_dm_separator_effect(
-                            &name,
-                            &task_id,
-                            task_subject.as_deref(),
-                            is_reviewer,
-                        ) {
-                            Box::pin(execute_effects(vec![separator_effect], state)).await;
+                        // separators (and the task file scan) entirely.
+                        if !is_reviewer {
+                            let task_subject =
+                                crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                    .into_iter()
+                                    .find(|t| t.id == task_id)
+                                    .map(|t| t.subject);
+                            if let Some(separator_effect) = build_dm_separator_effect(
+                                &name,
+                                &task_id,
+                                task_subject.as_deref(),
+                                is_reviewer,
+                            ) {
+                                Box::pin(execute_effects(vec![separator_effect], state)).await;
+                            }
                         }
 
                         state.broadcast_coworker_update(&name, "running", None);
