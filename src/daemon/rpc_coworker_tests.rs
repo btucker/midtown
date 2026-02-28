@@ -645,3 +645,226 @@ async fn test_report_state_without_pr_number_succeeds() {
         "report state without pr_number should succeed"
     );
 }
+
+// ============================================================================
+// handle_coworker_report_state — completed phase without PR (!1879)
+// ============================================================================
+
+#[tokio::test]
+async fn test_completed_without_pr_marks_task_done() {
+    // Bug !1879: When a coworker reports completed on a task with no PR,
+    // the daemon should complete the task on disk instead of nudging to
+    // open a PR (which caused a respawn loop).
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a task file on disk in in_progress status
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9950";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Merge PR and tag release",
+            "status": "in_progress",
+            "owner": "riverside"
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Set up in-memory task assignment so the Completed handler can resolve it
+    {
+        let mut assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments.insert(
+            "riverside".to_string(),
+            super::super::TaskAssignment {
+                task_id: task_id.to_string(),
+            },
+        );
+    }
+
+    // Report completed — no PR exists for this task
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "riverside",
+        "completed",
+        Some(9950u32),
+        None,
+        None, // no pr_number
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "completed report should succeed");
+
+    // Verify task is marked as completed on disk
+    let content = std::fs::read_to_string(&task_file).expect("read task file");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    assert_eq!(
+        parsed["status"].as_str().unwrap(),
+        "completed",
+        "task should be marked completed on disk (not left in_progress)"
+    );
+
+    // Verify the coworker's assignment was cleared
+    {
+        let assignments = state.coworker_task_assignments.lock().unwrap();
+        assert!(
+            !assignments.contains_key("riverside"),
+            "coworker assignment should be cleared after completion"
+        );
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}
+
+#[tokio::test]
+async fn test_completed_with_pr_on_disk_defers_to_merge_path() {
+    // Review feedback (!1879): After a daemon restart, pr_author_sessions is
+    // empty but the task's `pr` field on disk still has the PR number.
+    // task_has_open_pr must check the disk field to avoid orphaning the PR.
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a task file on disk WITH a pr field set (simulating post-restart state)
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9952";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Add new endpoint",
+            "status": "in_progress",
+            "owner": "riverside",
+            "pr": 99
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Set up in-memory task assignment
+    {
+        let mut assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments.insert(
+            "riverside".to_string(),
+            super::super::TaskAssignment {
+                task_id: task_id.to_string(),
+            },
+        );
+    }
+
+    // NOTE: pr_author_sessions is empty — simulates daemon restart.
+    // The task has pr=99 on disk but no in-memory PR tracking.
+
+    // Report completed — task.pr is set on disk
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "riverside",
+        "completed",
+        Some(9952u32),
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "completed report should succeed");
+
+    // Task should remain in_progress (deferred to merge path via disk pr field)
+    let content = std::fs::read_to_string(&task_file).expect("read task file");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    assert_eq!(
+        parsed["status"].as_str().unwrap(),
+        "in_progress",
+        "task with pr field on disk should remain in_progress (deferred to merge path)"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}
+
+#[tokio::test]
+async fn test_completed_with_open_pr_defers_to_merge_path() {
+    // When a task HAS an open PR, reporting completed should NOT complete
+    // the task on disk — it defers to the PR merge auto-completion path.
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a task file on disk
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9951";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Add new feature",
+            "status": "in_progress",
+            "owner": "park"
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Set up task assignment
+    {
+        let mut assignments = state.coworker_task_assignments.lock().unwrap();
+        assignments.insert(
+            "park".to_string(),
+            super::super::TaskAssignment {
+                task_id: task_id.to_string(),
+            },
+        );
+    }
+
+    // Simulate an open PR for this task via pr_author_sessions
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.pr_author_sessions.insert(
+            42,
+            crate::github_state::PrAuthorSession {
+                session_id: "session-42".to_string(),
+                branch: "park/add-new-feature".to_string(),
+                original_author: "park".to_string(),
+                stored_at: chrono::Utc::now(),
+                task_id: Some(task_id.to_string()),
+            },
+        );
+    }
+
+    // Report completed — task HAS an open PR
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        "park",
+        "completed",
+        Some(9951u32),
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "completed report should succeed");
+
+    // Task should still be in_progress (deferred to merge path)
+    let content = std::fs::read_to_string(&task_file).expect("read task file");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    assert_eq!(
+        parsed["status"].as_str().unwrap(),
+        "in_progress",
+        "task with open PR should remain in_progress (deferred to merge path)"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}

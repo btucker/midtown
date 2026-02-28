@@ -461,28 +461,48 @@ pub(super) async fn handle_coworker_report_state(
                     tid
                 );
             } else {
-                warn!(
-                    "Task !{} reported completed by {} but has no PR — nudging to open PR",
+                // No open PR — complete the task directly.
+                // This handles legitimate no-PR tasks (release management, ops,
+                // investigations) without entering a respawn loop (!1879).
+                // Previously, the daemon nudged "open a PR first" and cleared
+                // the assignment but left the task in_progress, causing
+                // dispatch_via_sessions to repeatedly respawn the coworker.
+                info!(
+                    "Task !{} reported completed by {} with no PR — completing directly",
                     tid, name
                 );
-                let nudge_effects = vec![
-                    effects::Effect::nudge_session(
-                        state.session_id_for_name(name),
-                        format!(
-                            "Task !{} has no PR yet. Please open a PR for your changes and then go idle with `midtown state idle`. The daemon will complete the task when the PR merges.",
-                            tid
-                        ),
-                    ),
-                    effects::Effect::PostToChannel {
-                        sender: "midtown".to_string(),
-                        message: format!(
-                            "⚠️ {} reported task !{} completed without a PR — nudged to open PR first",
-                            name, tid
-                        ),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    },
-                ];
-                effects::execute_effects(nudge_effects, state).await;
+                match crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
+                    Err(e) => {
+                        warn!("Failed to complete task !{}: {}", tid, e);
+                        // Don't proceed with downstream cleanup (blocked_by,
+                        // worktree, channel post) — the task is still in_progress
+                        // on disk and the coworker will be respawned to retry.
+                    }
+                    Ok(()) => {
+                        if let Err(e) =
+                            crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name)
+                        {
+                            warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
+                        }
+                        // Mark worktree as completed (for time-based cleanup)
+                        {
+                            let mut ps = state.persistent_state.lock().await;
+                            if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(tid) {
+                                ps.worktree_registry
+                                    .mark_completed(&wt_id, chrono::Utc::now());
+                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    warn!("Failed to save worktree completion timestamp: {}", e);
+                                }
+                            }
+                        }
+                        let completion_effects = vec![effects::Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
+                            channel: Some(OPS_CHANNEL.to_string()),
+                        }];
+                        effects::execute_effects(completion_effects, state).await;
+                    }
+                }
             }
         }
 
@@ -668,23 +688,47 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 
 /// Check if a task has an associated open PR.
 ///
-/// Returns true if any open PR has this task_id stored in its PrAuthorSession.
-/// This mapping is established when a coworker opens a PR - the daemon extracts
-/// the task ID from the PR title's "[Midtown !XXX]" marker and stores it in
-/// persistent state.
+/// Returns true if the task has an associated open PR, checking two sources:
 ///
-/// Presence in `pr_author_sessions` implies the PR is still open — closed PRs
-/// are cleaned up by `cleanup_closed_pr_state`.
+/// 1. **`pr_author_sessions` (in-memory persistent state)**: Presence implies
+///    the PR is still open — closed PRs are cleaned up by `cleanup_closed_pr_state`.
+///    This mapping is established when a coworker opens a PR and the daemon
+///    extracts the task ID from the PR title's `[Midtown !XXX]` marker.
 ///
-/// Used to decide whether to auto-complete a task when a coworker reports
-/// WorkflowPhase::Completed. Tasks with open PRs should complete on merge,
-/// not on phase transition.
+/// 2. **`task.pr` field on disk**: The task file may have an explicit PR number
+///    set via `--pr` or auto-detected. This survives daemon restarts (unlike
+///    `pr_author_sessions` which is rebuilt over time). If set, we treat it as
+///    an open PR to err on the side of deferring to the merge path.
+///
+/// Used to decide completion strategy when a coworker reports
+/// `WorkflowPhase::Completed`:
+/// - Tasks WITH open PRs defer completion to the merge path (auto-complete on merge).
+/// - Tasks WITHOUT open PRs are completed directly to avoid the respawn loop (!1879).
 async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
-    let ps = state.persistent_state.lock().await;
-    ps.github
-        .pr_author_sessions
-        .values()
-        .any(|session| session.task_id.as_deref() == Some(task_id))
+    // Source 1: in-memory pr_author_sessions
+    let in_memory = {
+        let ps = state.persistent_state.lock().await;
+        ps.github
+            .pr_author_sessions
+            .values()
+            .any(|session| session.task_id.as_deref() == Some(task_id))
+    };
+    if in_memory {
+        return true;
+    }
+
+    // Source 2: task.pr field on disk (survives daemon restarts)
+    if let Some(task) = crate::tasks::read_task_for_repo(task_id, &state.repo_name)
+        && let Some(pr_num) = task.pr
+    {
+        debug!(
+            "Task !{} has pr={} on disk — treating as having an open PR",
+            task_id, pr_num
+        );
+        return true;
+    }
+
+    false
 }
 
 // ============================================================================

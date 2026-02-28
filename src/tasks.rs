@@ -79,7 +79,14 @@ pub fn read_tasks_for_session(session_id: &str) -> Vec<Task> {
 /// Returns None if the task doesn't exist or can't be parsed.
 pub fn read_task(task_id: &str) -> Option<Task> {
     let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let task_list_id = crate::paths::task_list_id_for_repo(&repo);
+    read_task_for_repo(task_id, &repo)
+}
+
+/// Read a single task by ID for a specific repository.
+///
+/// Returns None if the task doesn't exist or can't be parsed.
+pub fn read_task_for_repo(task_id: &str, repo_name: &str) -> Option<Task> {
+    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
 
     let home = dirs::home_dir()?;
 
