@@ -471,29 +471,38 @@ pub(super) async fn handle_coworker_report_state(
                     "Task !{} reported completed by {} with no PR — completing directly",
                     tid, name
                 );
-                if let Err(e) = crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
-                    warn!("Failed to complete task !{}: {}", tid, e);
-                }
-                if let Err(e) = crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name) {
-                    warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
-                }
-                // Mark worktree as completed (for time-based cleanup)
-                {
-                    let mut ps = state.persistent_state.lock().await;
-                    if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(tid) {
-                        ps.worktree_registry
-                            .mark_completed(&wt_id, chrono::Utc::now());
-                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                            warn!("Failed to save worktree completion timestamp: {}", e);
+                match crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
+                    Err(e) => {
+                        warn!("Failed to complete task !{}: {}", tid, e);
+                        // Don't proceed with downstream cleanup (blocked_by,
+                        // worktree, channel post) — the task is still in_progress
+                        // on disk and the coworker will be respawned to retry.
+                    }
+                    Ok(()) => {
+                        if let Err(e) =
+                            crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name)
+                        {
+                            warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
                         }
+                        // Mark worktree as completed (for time-based cleanup)
+                        {
+                            let mut ps = state.persistent_state.lock().await;
+                            if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(tid) {
+                                ps.worktree_registry
+                                    .mark_completed(&wt_id, chrono::Utc::now());
+                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    warn!("Failed to save worktree completion timestamp: {}", e);
+                                }
+                            }
+                        }
+                        let completion_effects = vec![effects::Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
+                            channel: Some(OPS_CHANNEL.to_string()),
+                        }];
+                        effects::execute_effects(completion_effects, state).await;
                     }
                 }
-                let completion_effects = vec![effects::Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                }];
-                effects::execute_effects(completion_effects, state).await;
             }
         }
 
