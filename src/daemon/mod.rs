@@ -1160,11 +1160,22 @@ impl DaemonState {
         {
             let ps = self.persistent_state.lock().await;
             if ps.github.has_cached_review(pr_number) {
+                // Bug #3 fix: even on the fast path, ensure review comment IDs
+                // are backfilled for Gate 3. Without this, reviews cached via
+                // webhook (where the comment ID wasn't recorded) would have
+                // empty IDs, causing Gate 3 to trivially pass.
+                if !ps.github.get_review_comment_ids(pr_number).is_empty() {
+                    debug!(
+                        "PR #{} has cached completed review with IDs (skipping API call)",
+                        pr_number
+                    );
+                    return true;
+                }
+                // IDs empty — fall through to backfill (lock dropped here)
                 debug!(
-                    "PR #{} has cached completed review (skipping API call)",
+                    "PR #{} has cached review but no comment IDs — backfilling",
                     pr_number
                 );
-                return true;
             }
         }
 
@@ -1183,34 +1194,37 @@ impl DaemonState {
             }
         }
 
-        // Slow path: check via API calls
-        let has_review = pr::pr_has_completed_review_uncached(pr_number);
+        // Slow path: check via API calls (no lock held)
+        let has_review = {
+            let ps = self.persistent_state.lock().await;
+            ps.github.has_cached_review(pr_number)
+        } || pr::pr_has_completed_review_uncached(pr_number);
 
         if has_review {
-            // Cache positive results permanently (reviews are monotonic — they don't disappear)
+            // Bug #2 fix: do all blocking I/O (subprocess calls) BEFORE
+            // acquiring the async mutex. Running blocking calls under an
+            // async mutex starves the Tokio runtime.
+            let repo_full_name = self
+                .all_repo_paths
+                .first()
+                .map(|p| self.get_repo_full_name(p))
+                .unwrap_or_default();
+            let ids = if !repo_full_name.is_empty() {
+                pr::fetch_review_comment_ids(&repo_full_name, pr_number)
+            } else {
+                vec![]
+            };
+
+            // Now acquire the mutex only for the mutation operations
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
 
-            // Backfill review comment IDs for Gate 3 via the REST API.
-            // Always run this (not just when empty) so that review comments
-            // missed by partial webhook delivery are recovered.
-            // `add_review_comment_id` deduplicates, so re-fetching is safe.
-            {
-                let repo_full_name = self
-                    .all_repo_paths
-                    .first()
-                    .map(|p| self.get_repo_full_name(p))
-                    .unwrap_or_default();
-                if !repo_full_name.is_empty() {
-                    let ids = pr::fetch_review_comment_ids(&repo_full_name, pr_number);
-                    for id in ids {
-                        debug!(
-                            "Polling: recording review comment ID {} for PR #{}",
-                            id, pr_number
-                        );
-                        ps.github.add_review_comment_id(pr_number, id);
-                    }
-                }
+            for id in &ids {
+                debug!(
+                    "Polling: recording review comment ID {} for PR #{}",
+                    id, pr_number
+                );
+                ps.github.add_review_comment_id(pr_number, *id);
             }
 
             drop(ps);

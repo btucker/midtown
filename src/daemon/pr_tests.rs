@@ -3051,3 +3051,63 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
         effects[0]
     );
 }
+
+// ── extract_review_comment_ids_from_json tests ──────────────────────────
+
+#[test]
+fn extract_review_comment_ids_filters_review_comments() {
+    let comments: Vec<serde_json::Value> = serde_json::from_value(json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nLooks good!"},
+        {"id": 1002, "body": "Just a regular comment"},
+        {"id": 1003, "body": "🤖 Reviewed by park\n\nAll checks pass."},
+    ]))
+    .unwrap();
+
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert_eq!(ids, vec![1001, 1003]);
+}
+
+#[test]
+fn extract_review_comment_ids_empty_on_no_reviews() {
+    let comments: Vec<serde_json::Value> = serde_json::from_value(json!([
+        {"id": 1, "body": "Nice work!"},
+        {"id": 2, "body": "LGTM"},
+    ]))
+    .unwrap();
+
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert!(ids.is_empty());
+}
+
+/// Demonstrates why `--slurp` is required: `gh api --paginate` without
+/// `--slurp` produces concatenated JSON arrays that fail to parse as a
+/// single `Vec<Value>`. With `--slurp`, gh merges pages into one array.
+#[test]
+fn concatenated_json_pages_fail_without_slurp() {
+    // This is what `gh api --paginate` produces without `--slurp`:
+    // two separate JSON arrays concatenated together.
+    let page1 = json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nPage 1 review"},
+    ]);
+    let page2 = json!([
+        {"id": 1002, "body": "## Code Review by park\n\nPage 2 review"},
+    ]);
+    let concatenated = format!("{}{}", page1, page2);
+
+    // Without --slurp, serde_json cannot parse concatenated arrays
+    let parse_result: Result<Vec<serde_json::Value>, _> = serde_json::from_str(&concatenated);
+    assert!(
+        parse_result.is_err(),
+        "Concatenated JSON should fail to parse as Vec<Value> — \
+         this is why --slurp is required on gh api --paginate"
+    );
+
+    // With --slurp, gh merges into a single array that parses correctly
+    let slurped = json!([
+        {"id": 1001, "body": "## Code Review by madison\n\nPage 1 review"},
+        {"id": 1002, "body": "## Code Review by park\n\nPage 2 review"},
+    ]);
+    let comments: Vec<serde_json::Value> = serde_json::from_value(slurped).unwrap();
+    let ids = extract_review_comment_ids_from_json(&comments);
+    assert_eq!(ids, vec![1001, 1002]);
+}

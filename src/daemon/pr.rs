@@ -3216,6 +3216,25 @@ pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
         }
     }
 }
+/// Extract review comment IDs from a JSON array of GitHub issue comments.
+///
+/// Filters for comments containing a review signature and returns their
+/// numeric database IDs. This is the pure parsing core shared by
+/// `fetch_review_comment_ids` (which handles the `gh api` subprocess call).
+pub(super) fn extract_review_comment_ids_from_json(comments: &[serde_json::Value]) -> Vec<u64> {
+    comments
+        .iter()
+        .filter_map(|comment| {
+            let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+            if text_contains_review_signature(body) {
+                comment.get("id").and_then(|id| id.as_u64())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Fetch the database IDs of review comments on a PR via the GitHub REST API.
 ///
 /// Uses `gh api repos/{full_name}/issues/{pr}/comments` to get comments with
@@ -3227,7 +3246,7 @@ pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
 pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> Vec<u64> {
     let endpoint = format!("repos/{}/issues/{}/comments", repo_full_name, pr_number);
     let output = std::process::Command::new("gh")
-        .args(["api", "--paginate", &endpoint])
+        .args(["api", "--paginate", "--slurp", &endpoint])
         .output();
 
     match output {
@@ -3244,17 +3263,7 @@ pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> 
                 }
             };
 
-            comments
-                .iter()
-                .filter_map(|comment| {
-                    let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                    if text_contains_review_signature(body) {
-                        comment.get("id").and_then(|id| id.as_u64())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+            extract_review_comment_ids_from_json(&comments)
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
