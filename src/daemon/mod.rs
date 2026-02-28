@@ -3513,10 +3513,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
-                // Process lead and channel lead text output + tool call universal events.
+                // Process lead, channel lead, and coworker text output + tool call universal events.
                 // Routes through Effect pipeline to maintain architecture consistency.
-                // Both functions need channel_lead_sessions — acquire the lock once.
-                let (lead_effects, universal_effects) = {
+                // All functions need channel_lead_sessions — acquire the lock once.
+                let (lead_effects, coworker_effects, universal_effects) = {
                     let ps = state.persistent_state.lock().await;
                     let fork_bound_channels = state.fork_bound_channels.lock().unwrap();
                     let lead_effects = stream::process_lead_output(
@@ -3525,15 +3525,34 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         &state.repo_name,
                         &fork_bound_channels,
                     );
+
+                    // Build coworker name set: all active session names minus lead,
+                    // channel leads, and fork-bound sessions.
+                    let coworker_names: std::collections::HashSet<String> = state
+                        .name_to_session
+                        .lock()
+                        .unwrap()
+                        .keys()
+                        .filter(|name| {
+                            *name != &state.repo_name
+                                && !ps.channel_lead_sessions.contains_key(*name)
+                                && !fork_bound_channels.contains_key(*name)
+                        })
+                        .cloned()
+                        .collect();
+                    let coworker_effects =
+                        stream::process_coworker_output(&events, &coworker_names);
+
                     let universal_effects = stream::process_universal_events(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.repo_name,
                         &fork_bound_channels,
                     );
-                    (lead_effects, universal_effects)
+                    (lead_effects, coworker_effects, universal_effects)
                 };
                 effects::execute_effects(lead_effects, &state).await;
+                effects::execute_effects(coworker_effects, &state).await;
                 effects::execute_effects(universal_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch

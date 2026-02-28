@@ -2424,6 +2424,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                         record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
 
+                        // Post session separator to the coworker's DM channel.
+                        let task_subject =
+                            crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                .into_iter()
+                                .find(|t| t.id == task_id)
+                                .map(|t| t.subject);
+                        let separator = match task_subject {
+                            Some(subject) => {
+                                format!("─── Task !{}: {} ───", task_id, subject)
+                            }
+                            None => format!("─── Task !{} ───", task_id),
+                        };
+                        let separator_effect = Effect::PostSystemMessage {
+                            message: separator,
+                            channel: Some(format!("dm-{}", name)),
+                        };
+                        Box::pin(execute_effects(vec![separator_effect], state)).await;
+
                         state.broadcast_coworker_update(&name, "running", None);
                     }
                     Err(e) => {

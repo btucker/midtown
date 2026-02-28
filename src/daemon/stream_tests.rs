@@ -765,3 +765,194 @@ fn test_process_universal_events_forked_session_tool_use_is_scoped_to_channel() 
         _ => panic!("Expected BroadcastUniversalItems effect"),
     }
 }
+
+// ── process_coworker_output tests ────────────────────────────────────
+
+#[test]
+fn test_process_coworker_output_no_events() {
+    let events = HashMap::new();
+    let coworker_names = HashSet::from(["park".to_string()]);
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert!(effects.is_empty());
+}
+
+#[test]
+fn test_process_coworker_output_posts_to_dm_channel() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Working on auth endpoint"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+        } => {
+            assert_eq!(sender, "park");
+            assert_eq!(message, "Working on auth endpoint");
+            assert_eq!(channel.as_deref(), Some("dm-park"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_coworker_output_multiple_coworkers() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Park's message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    events.insert(
+        "madison".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Madison's message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string(), "madison".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 2);
+
+    let park_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "park"));
+    assert!(park_effect.is_some());
+    if let Some(Effect::PostToChannel { channel, .. }) = park_effect {
+        assert_eq!(channel.as_deref(), Some("dm-park"));
+    }
+
+    let madison_effect = effects
+        .iter()
+        .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "madison"));
+    assert!(madison_effect.is_some());
+    if let Some(Effect::PostToChannel { channel, .. }) = madison_effect {
+        assert_eq!(channel.as_deref(), Some("dm-madison"));
+    }
+}
+
+#[test]
+fn test_process_coworker_output_empty_text_not_posted() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert!(
+        effects.is_empty(),
+        "Should not post if no text content found"
+    );
+}
+
+#[test]
+fn test_process_coworker_output_whitespace_only_not_posted() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "\n\n  \n"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert!(
+        effects.is_empty(),
+        "Should not post whitespace-only messages"
+    );
+}
+
+#[test]
+fn test_process_coworker_output_ignores_non_coworker_events() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Lead message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Coworker message"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    // Only "park" is a coworker — "lead" events should be ignored.
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { sender, .. } => {
+            assert_eq!(sender, "park");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_coworker_output_trims_text() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "\n\nHello from park\n\n"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { message, .. } => {
+            assert_eq!(message, "Hello from park");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
