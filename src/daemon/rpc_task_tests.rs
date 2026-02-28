@@ -203,8 +203,8 @@ fn test_task_thread_id_stored_in_persistent_state() {
     );
 }
 
-/// When `thread_id` is `None`, the task_thread_id mapping in
-/// DaemonPersistentState is not modified.
+/// When `thread_id` is `None` and no announcement message ID is available,
+/// the task_thread_id mapping in DaemonPersistentState is not modified.
 #[test]
 fn test_task_thread_id_not_stored_when_none() {
     use crate::daemon::state::DaemonPersistentState;
@@ -213,7 +213,7 @@ fn test_task_thread_id_not_stored_when_none() {
     let task_id = "42";
     let thread_id: Option<&str> = None;
 
-    // Replicate the handle_task_create storage logic
+    // Replicate the handle_task_create storage logic (explicit thread_id path)
     if let Some(tid) = thread_id {
         ps.task_thread_id
             .insert(task_id.to_string(), tid.to_string());
@@ -222,6 +222,82 @@ fn test_task_thread_id_not_stored_when_none() {
     assert!(
         ps.task_thread_id.is_empty(),
         "task_thread_id should remain empty when thread_id is None"
+    );
+}
+
+/// When no explicit `thread_id` is provided, task_thread_id should default
+/// to the announcement message ID after the task-created message is posted.
+/// This ensures SpawnSession picks up a bound_thread_id so coworker messages
+/// auto-route to the task announcement thread.
+#[test]
+fn test_task_thread_id_defaults_to_announcement_message_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+    let announcement_message_id = "msg-uuid-abc-123";
+
+    // No explicit thread_id was provided during task creation
+    let thread_id: Option<&str> = None;
+    if let Some(tid) = thread_id {
+        ps.task_thread_id
+            .insert(task_id.to_string(), tid.to_string());
+    }
+
+    // Replicate the post-announcement defaulting logic: if task_thread_id
+    // was not set by an explicit --thread-id, default to the announcement
+    // message ID.
+    ps.task_message_id
+        .insert(task_id.to_string(), announcement_message_id.to_string());
+    if !ps.task_thread_id.contains_key(task_id) {
+        ps.task_thread_id
+            .insert(task_id.to_string(), announcement_message_id.to_string());
+    }
+
+    assert_eq!(
+        ps.task_thread_id.get("42"),
+        Some(&announcement_message_id.to_string()),
+        "task_thread_id should default to announcement message ID"
+    );
+    assert_eq!(
+        ps.task_thread_id.get("42"),
+        ps.task_message_id.get("42"),
+        "task_thread_id and task_message_id should be equal when no explicit thread_id"
+    );
+}
+
+/// When an explicit `thread_id` is provided, it should NOT be overwritten
+/// by the announcement message ID.
+#[test]
+fn test_task_thread_id_explicit_not_overwritten_by_announcement() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+    let explicit_thread_id = "explicit-thread-uuid";
+    let announcement_message_id = "msg-uuid-abc-123";
+
+    // Explicit thread_id was provided during task creation
+    ps.task_thread_id
+        .insert(task_id.to_string(), explicit_thread_id.to_string());
+
+    // Replicate the post-announcement defaulting logic
+    ps.task_message_id
+        .insert(task_id.to_string(), announcement_message_id.to_string());
+    if !ps.task_thread_id.contains_key(task_id) {
+        ps.task_thread_id
+            .insert(task_id.to_string(), announcement_message_id.to_string());
+    }
+
+    assert_eq!(
+        ps.task_thread_id.get("42"),
+        Some(&explicit_thread_id.to_string()),
+        "explicit thread_id should not be overwritten by announcement message ID"
+    );
+    assert_ne!(
+        ps.task_thread_id.get("42"),
+        ps.task_message_id.get("42"),
+        "task_thread_id should differ from task_message_id when explicit thread_id was provided"
     );
 }
 

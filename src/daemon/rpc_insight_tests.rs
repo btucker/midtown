@@ -194,6 +194,135 @@ async fn test_insight_routes_to_task_channel_when_no_explicit_channel() {
     );
 }
 
+/// When a coworker reports an insight without specifying a channel and they are
+/// assigned to a task with a task_thread_id, the insight is posted as a thread
+/// reply under the task announcement (not a top-level channel message).
+#[tokio::test]
+async fn test_insight_routes_to_task_thread_when_thread_id_exists() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-42";
+
+    // Assign coworker1 to task 42 with channel "my-feature" and a thread binding
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("42".to_string()),
+                purpose: "task !42: some task".to_string(),
+                ..Default::default()
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "my-feature".to_string());
+        ps.task_thread_id
+            .insert("42".to_string(), thread_parent_id.to_string());
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "A threaded insight",
+        None, // No explicit channel — should auto-route to "my-feature" thread
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // Read the channel file and verify the message has thread_parent_id set
+    let task_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("my-feature")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        task_channel_file.exists(),
+        "insight should be posted to the task channel"
+    );
+    let content = std::fs::read_to_string(&task_channel_file).unwrap();
+    assert!(
+        content.contains("A threaded insight"),
+        "insight text should be in task channel file"
+    );
+    // Verify thread_parent_id is present in the serialized message
+    assert!(
+        content.contains(thread_parent_id),
+        "insight message should contain thread_parent_id pointing to announcement"
+    );
+    // Parse the JSONL line and verify the thread_parent_id field
+    let line = content
+        .lines()
+        .find(|l| l.contains("A threaded insight"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        msg["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "thread_parent_id should match the task announcement message ID"
+    );
+}
+
+/// When a coworker reports an insight without specifying a channel and their
+/// task has no task_thread_id, the insight is posted as a top-level message.
+#[tokio::test]
+async fn test_insight_no_thread_when_no_thread_id() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    // Assign coworker1 to task 42 with channel "my-feature" but NO thread binding
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("42".to_string()),
+                purpose: "task !42: some task".to_string(),
+                ..Default::default()
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "my-feature".to_string());
+        // Deliberately NOT setting task_thread_id
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "An unthreaded insight",
+        None,
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // Read the channel file and verify the message has NO thread_parent_id
+    let task_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("my-feature")
+        .join("history")
+        .join("current.jsonl");
+    let content = std::fs::read_to_string(&task_channel_file).unwrap();
+    let line = content
+        .lines()
+        .find(|l| l.contains("An unthreaded insight"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert!(
+        msg.get("thread_parent_id").is_none() || msg["thread_parent_id"].is_null(),
+        "message should not have thread_parent_id when task has no thread binding"
+    );
+}
+
 /// When a channel lead session reports an insight, the RPC should return early
 /// with posted=false and reason="channel_lead" — their output already reaches
 /// the channel via the normal auto-posting path.

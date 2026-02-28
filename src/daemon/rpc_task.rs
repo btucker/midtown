@@ -330,7 +330,15 @@ pub(super) async fn handle_task_create(
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
             let mut ps = state.persistent_state.lock().await;
-            ps.task_message_id.insert(task_id.clone(), message_id);
+            ps.task_message_id
+                .insert(task_id.clone(), message_id.clone());
+            // Default task_thread_id to the announcement message ID when no
+            // explicit --thread-id was provided. This ensures SpawnSession
+            // picks up a bound_thread_id so coworker messages auto-route to
+            // the task announcement thread.
+            if !ps.task_thread_id.contains_key(&task_id) {
+                ps.task_thread_id.insert(task_id.clone(), message_id);
+            }
             if let Err(e) = ps.save_for_repo(&repo_name) {
                 warn!("Failed to save task message_id mapping: {}", e);
             }
