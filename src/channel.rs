@@ -441,6 +441,9 @@ impl Channel {
     }
 
     /// Read all messages from a single JSONL file, skipping malformed lines.
+    ///
+    /// Blocks the calling thread during lock retries (`std::thread::sleep`).
+    /// In async contexts, prefer [`read_messages_from_file_async`] instead.
     fn read_messages_from_file(path: &Path) -> Result<Vec<Message>> {
         if !path.exists() {
             return Ok(Vec::new());
@@ -949,6 +952,9 @@ impl Channel {
     /// in ascending order, then `current.jsonl`). Messages are sorted by
     /// timestamp to ensure chronological order. Each file is locked
     /// individually via `read_messages_from_file`.
+    ///
+    /// Blocks the calling thread during lock retries. In async contexts,
+    /// use [`read_all_async`] instead to avoid stalling the tokio runtime.
     pub fn read_all(&self) -> Result<Vec<Message>> {
         let history_files = self.list_all_history_files();
 
