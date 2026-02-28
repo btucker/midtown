@@ -1191,11 +1191,11 @@ impl DaemonState {
             let mut ps = self.persistent_state.lock().await;
             ps.github.mark_reviewed_pr(pr_number);
 
-            // Collect review comment IDs for Gate 3 if not already populated.
-            // This is the polling-path counterpart to the webhook path which
-            // gets the comment ID directly from the webhook payload.
-            if ps.github.get_review_comment_ids(pr_number).is_empty() {
-                // Get the full repo name (e.g., "owner/repo") for the REST API call
+            // Backfill review comment IDs for Gate 3 via the REST API.
+            // Always run this (not just when empty) so that review comments
+            // missed by partial webhook delivery are recovered.
+            // `add_review_comment_id` deduplicates, so re-fetching is safe.
+            {
                 let repo_full_name = self
                     .all_repo_paths
                     .first()
