@@ -176,14 +176,20 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Get version
+      - name: Verify version matches release tag
         id: version
         run: |
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           RELEASE_TAG="${{ github.event.release.tag_name }}"
-          echo "version=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
+          RELEASE_VERSION="${RELEASE_TAG#v}"
+          if [ "$CARGO_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "Error: Cargo.toml version ($CARGO_VERSION) does not match release tag ($RELEASE_VERSION)"
+            exit 1
+          fi
+          echo "version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build release binary
+        run: cargo build --release
 
       - name: Package binary
         run: |
