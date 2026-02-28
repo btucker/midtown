@@ -420,3 +420,74 @@ fn test_task_created_message_sub_channel_routing() {
         "sub-channel tasks should be attributed to channel lead"
     );
 }
+
+// ── apply_task_channel_mapping clears task_thread_id tests ───────────────────
+
+/// When channel is changed via apply_task_channel_mapping, any existing
+/// task_thread_id should be cleared to prevent stale cross-channel thread
+/// references. This tests the pattern used in handle_task_update.
+#[test]
+fn test_channel_change_clears_task_thread_id() {
+    let mut task_channel = HashMap::new();
+    let mut task_thread_id = HashMap::new();
+
+    // Initial state: task 42 in "ch-a" with a thread binding
+    task_channel.insert("42".to_string(), "ch-a".to_string());
+    task_thread_id.insert("42".to_string(), "msg-in-ch-a".to_string());
+
+    // Change channel to "ch-b" — mirrors handle_task_update logic
+    if apply_task_channel_mapping(&mut task_channel, "42", Some("ch-b"), true) {
+        task_thread_id.remove("42");
+    }
+
+    assert_eq!(task_channel.get("42"), Some(&"ch-b".to_string()));
+    assert!(
+        !task_thread_id.contains_key("42"),
+        "task_thread_id should be cleared when channel changes"
+    );
+}
+
+/// When channel is cleared (empty string on update), task_thread_id should
+/// also be cleared.
+#[test]
+fn test_channel_clear_clears_task_thread_id() {
+    let mut task_channel = HashMap::new();
+    let mut task_thread_id = HashMap::new();
+
+    task_channel.insert("42".to_string(), "ch-a".to_string());
+    task_thread_id.insert("42".to_string(), "msg-in-ch-a".to_string());
+
+    // Clear channel — mirrors handle_task_update logic
+    if apply_task_channel_mapping(&mut task_channel, "42", Some(""), true) {
+        task_thread_id.remove("42");
+    }
+
+    assert!(!task_channel.contains_key("42"));
+    assert!(
+        !task_thread_id.contains_key("42"),
+        "task_thread_id should be cleared when channel is cleared"
+    );
+}
+
+/// When channel is unchanged (None on update), task_thread_id should
+/// be preserved.
+#[test]
+fn test_no_channel_change_preserves_task_thread_id() {
+    let mut task_channel = HashMap::new();
+    let mut task_thread_id = HashMap::new();
+
+    task_channel.insert("42".to_string(), "ch-a".to_string());
+    task_thread_id.insert("42".to_string(), "msg-in-ch-a".to_string());
+
+    // No channel change (None) — task_thread_id should be preserved
+    if apply_task_channel_mapping(&mut task_channel, "42", None, true) {
+        task_thread_id.remove("42");
+    }
+
+    assert_eq!(task_channel.get("42"), Some(&"ch-a".to_string()));
+    assert_eq!(
+        task_thread_id.get("42"),
+        Some(&"msg-in-ch-a".to_string()),
+        "task_thread_id should be preserved when channel is unchanged"
+    );
+}

@@ -466,3 +466,239 @@ async fn test_insight_deduplication() {
     assert_eq!(second_result["posted"], false);
     assert_eq!(second_result["reason"], "duplicate");
 }
+
+/// Bug 3: When a coworker reports an insight with an explicit --channel that
+/// matches the task channel, the insight should still thread under the task
+/// announcement. Previously, the `if channel.is_none()` guard skipped thread
+/// resolution entirely when an explicit channel was provided, causing insights
+/// to post as top-level messages instead of thread replies.
+#[tokio::test]
+async fn test_insight_explicit_channel_still_resolves_thread() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-99";
+
+    // Assign coworker1 to task 99 with channel "my-feature" and a thread binding
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("99".to_string()),
+                purpose: "task !99: some task".to_string(),
+                ..Default::default()
+            },
+        );
+        ps.task_channel
+            .insert("99".to_string(), "my-feature".to_string());
+        ps.task_thread_id
+            .insert("99".to_string(), thread_parent_id.to_string());
+    }
+
+    // Report insight with explicit --channel matching the task channel
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "Explicit channel insight",
+        Some("my-feature"), // Explicit channel matching task channel
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // Read the channel file and verify the message is threaded
+    let task_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("my-feature")
+        .join("history")
+        .join("current.jsonl");
+    let content = std::fs::read_to_string(&task_channel_file).unwrap();
+    let line = content
+        .lines()
+        .find(|l| l.contains("Explicit channel insight"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        msg["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "insight with explicit --channel matching task channel should still thread under task announcement"
+    );
+}
+
+/// Bug 4a: When task_thread_id is set but task_channel is not (inconsistent state),
+/// the insight should post as a top-level message in the default channel rather
+/// than creating a cross-channel thread reference. Previously, resolved_channel
+/// and resolved_thread_id were computed independently, so a None task_channel
+/// with a Some task_thread_id would create a thread reply in the default channel
+/// referencing a thread ID from a different (unknown) channel.
+#[tokio::test]
+async fn test_insight_no_cross_channel_thread_when_task_channel_missing() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    let stale_thread_id = "stale-thread-from-old-channel";
+
+    // Assign coworker1 to task 50 with a thread binding but NO task_channel
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("50".to_string()),
+                purpose: "task !50: some task".to_string(),
+                ..Default::default()
+            },
+        );
+        // Deliberately NOT setting task_channel
+        ps.task_thread_id
+            .insert("50".to_string(), stale_thread_id.to_string());
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "Orphaned thread insight",
+        None,
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // The insight should be posted to the default channel (midtown) as a top-level message
+    let main_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history")
+        .join("current.jsonl");
+    let content = std::fs::read_to_string(&main_channel_file).unwrap();
+    let line = content
+        .lines()
+        .find(|l| l.contains("Orphaned thread insight"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert!(
+        msg.get("thread_parent_id").is_none() || msg["thread_parent_id"].is_null(),
+        "insight should NOT have thread_parent_id when task_channel is missing (prevents cross-channel thread reference)"
+    );
+}
+
+/// Bug 4b: When task_channel is *changed* (not cleared) via task.update, the
+/// old task_thread_id becomes stale — it still points to a message in the
+/// previous channel. The insight handler's filter at line 95-96 compares
+/// task_channel with channel_name, but since both now resolve to the new channel,
+/// the filter passes and the stale thread_id creates a cross-channel reference.
+///
+/// This test calls handle_task_update to change the channel, then verifies that
+/// task_thread_id was cleared and subsequent insights post as top-level messages.
+#[tokio::test]
+async fn test_insight_no_cross_channel_thread_when_task_channel_changed() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    let stale_thread_id = "announcement-in-ch-a";
+
+    // Create a real task on disk so handle_task_update can find it
+    let task_id = crate::tasks::create_task_for_repo(
+        "Test task",
+        "desc",
+        "Testing",
+        "",
+        "testrepo",
+        None,
+        Some("ch-a"),
+        None,
+    )
+    .expect("create task");
+
+    // Set up: task starts in channel "ch-a" with a thread binding
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some(task_id.clone()),
+                purpose: format!("task !{}: some task", task_id),
+                ..Default::default()
+            },
+        );
+        ps.task_channel.insert(task_id.clone(), "ch-a".to_string());
+        ps.task_thread_id
+            .insert(task_id.clone(), stale_thread_id.to_string());
+    }
+
+    // Use handle_task_update to change the channel from "ch-a" to "ch-b".
+    // The fix clears task_thread_id when channel changes.
+    let update_response = super::super::rpc_task::handle_task_update(
+        RequestId::Number(100),
+        &task_id,
+        None,
+        None,
+        None,
+        None,
+        Some("ch-b"),
+        None,
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        update_response.result.is_some(),
+        "task update should succeed"
+    );
+
+    // Verify the fix: task_thread_id should have been cleared
+    {
+        let ps = state.persistent_state.lock().await;
+        assert_eq!(
+            ps.task_channel.get(&task_id),
+            Some(&"ch-b".to_string()),
+            "task_channel should be updated to ch-b"
+        );
+        assert!(
+            !ps.task_thread_id.contains_key(&task_id),
+            "task_thread_id should be cleared when channel changes"
+        );
+    }
+
+    // Now report an insight — it should resolve to "ch-b" (from task_channel)
+    // and post as a top-level message (no stale thread reference)
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "Insight after channel change",
+        None,
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // The insight should be posted to "ch-b" as a TOP-LEVEL message (no thread)
+    let new_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("ch-b")
+        .join("history")
+        .join("current.jsonl");
+    let content = std::fs::read_to_string(&new_channel_file).unwrap();
+    let line = content
+        .lines()
+        .find(|l| l.contains("Insight after channel change"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert!(
+        msg.get("thread_parent_id").is_none() || msg["thread_parent_id"].is_null(),
+        "insight should NOT have thread_parent_id after task channel was changed (stale thread_id from old channel)"
+    );
+}

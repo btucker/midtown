@@ -1377,3 +1377,70 @@ fn test_auto_detach_suffix_channel_lead_gets_channel_message() {
         " Channel lead session will be respawned for its channel."
     );
 }
+
+// ── PostToChannel thread resolution tests ─────────────────────────────────────
+
+/// When PostToChannel has `channel: None` and the sender has a fork_bound_threads
+/// entry, the message should be posted to the default channel with thread_parent_id —
+/// not dropped due to an empty channel name.
+///
+/// Regression test for PR #1591 review feedback: the original code used
+/// `channel_name.unwrap_or_default()` which produced "" when channel was None,
+/// causing Channel::new("") to reject the message.
+#[tokio::test]
+async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
+    let (state, project_dir, _guard) = make_workflow_test_state("bound-thread-repo");
+
+    let sender = "test-agent".to_string();
+    let thread_id = "thread-parent-123".to_string();
+
+    // Insert a fork_bound_threads entry for the sender
+    {
+        let mut threads = state.fork_bound_threads.lock().unwrap();
+        threads.insert(sender.clone(), thread_id.clone());
+    }
+
+    // Execute PostToChannel with channel: None — should fall back to default channel
+    execute_effects(
+        vec![Effect::PostToChannel {
+            sender: sender.clone(),
+            message: "hello from bound thread".into(),
+            channel: None,
+        }],
+        &state,
+    )
+    .await;
+
+    // The message should land in the default channel ("midtown") JSONL file
+    let channel_file = project_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        channel_file.exists(),
+        "message should be written to the default channel, not dropped"
+    );
+
+    let content = std::fs::read_to_string(&channel_file).unwrap();
+    let messages: Vec<crate::message::Message> = content
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+
+    assert_eq!(messages.len(), 1, "exactly one message should be posted");
+    let msg = &messages[0];
+    assert_eq!(msg.from, sender);
+    assert_eq!(msg.content, "hello from bound thread");
+    assert_eq!(
+        msg.channel,
+        Some("midtown".to_string()),
+        "message should be in the default channel"
+    );
+    assert_eq!(
+        msg.thread_parent_id,
+        Some(thread_id),
+        "message should carry the bound thread parent ID"
+    );
+}

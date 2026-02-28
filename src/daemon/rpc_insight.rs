@@ -69,30 +69,32 @@ pub(super) async fn handle_insight_report(
         }
     }
 
-    // Resolve channel and thread: explicit > coworker's task channel/thread > main.
-    // When a coworker reports an insight without --channel, auto-route to their
-    // assigned task's channel so insights don't flood the main channel.
-    // Also resolve the task's thread binding so insights thread under the task
-    // announcement (parallels fork_bound_threads for channel.post).
-    let (resolved_channel, resolved_thread_id): (Option<String>, Option<String>) =
-        if channel.is_none() {
-            let ps = state.persistent_state.lock().await;
-            let task_id = ps
-                .sessions
-                .values()
-                .find(|r| r.current_name.as_deref() == Some(agent))
-                .and_then(|r| r.task_id.as_deref());
-            let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
-            let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
-            (ch, thread)
-        } else {
-            (None, None)
-        };
+    // Resolve channel and thread from the coworker's task binding.
+    // Always look these up regardless of explicit --channel, so that insights
+    // with an explicit --channel matching the task channel still thread correctly.
+    let (task_channel, task_thread_id): (Option<String>, Option<String>) = {
+        let ps = state.persistent_state.lock().await;
+        let task_id = ps
+            .sessions
+            .values()
+            .find(|r| r.current_name.as_deref() == Some(agent))
+            .and_then(|r| r.task_id.as_deref());
+        let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
+        let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
+        (ch, thread)
+    };
 
-    // Post insight to specified channel (or main if None)
+    // Determine the final channel: explicit > task_channel > default
     let channel_name: &str = channel
-        .or(resolved_channel.as_deref())
+        .or(task_channel.as_deref())
         .unwrap_or_else(|| state.channel_router.default_channel_name());
+
+    // Only use the task thread if the final channel matches the task's channel.
+    // This prevents cross-channel thread references when state is inconsistent
+    // (e.g., task_channel cleared but task_thread_id persists).
+    let resolved_thread_id =
+        task_thread_id.filter(|_| task_channel.as_deref() == Some(channel_name));
+
     let insight_content = format!("💡 {}", insight);
     let msg = if let Some(ref thread_id) = resolved_thread_id {
         crate::message::Message::thread_reply(

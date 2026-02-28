@@ -425,8 +425,10 @@ pub(super) async fn handle_task_update(
         let mut ps = state.persistent_state.lock().await;
         let mut needs_save = false;
 
-        // Apply channel mapping
+        // Apply channel mapping — when the channel changes, clear the stale
+        // task_thread_id since it points to a message in the old channel.
         if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true) {
+            ps.task_thread_id.remove(task_id);
             needs_save = true;
         }
 
