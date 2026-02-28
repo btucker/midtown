@@ -24,12 +24,12 @@ fn extract_text_blocks(message: &serde_json::Value) -> String {
     text
 }
 
-/// Extract and aggregate text content from headless lead `StreamEvent::Assistant` events.
+/// Extract and aggregate text content from `StreamEvent::Assistant` events.
 ///
 /// Collects all text blocks from all Assistant events in a single drain cycle,
 /// returning a single aggregated string. This avoids flooding the channel with
 /// per-token or per-event messages during streaming.
-pub fn extract_lead_text(events: &[StreamEvent]) -> String {
+pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
     let mut aggregated = String::new();
 
     for event in events {
@@ -66,7 +66,7 @@ pub fn extract_lead_text(events: &[StreamEvent]) -> String {
 ///
 /// - The main lead's text is posted to the main channel (`channel: None`).
 /// - Each channel lead's text is posted to its respective topic channel.
-/// - Coworker text is never posted.
+/// - Coworker text is handled separately by [`process_coworker_output()`].
 ///
 /// `channel_lead_sessions` maps channel name → session ID for active channel leads.
 pub fn process_lead_output(
@@ -79,7 +79,7 @@ pub fn process_lead_output(
 
     // Main lead → posts to main channel.
     if let Some(lead_events) = events.get(main_lead_session_name) {
-        let trimmed = extract_lead_text(lead_events).trim().to_string();
+        let trimmed = extract_assistant_text(lead_events).trim().to_string();
         if !trimmed.is_empty() {
             effects.push(Effect::PostToChannel {
                 sender: main_lead_session_name.to_string(),
@@ -92,7 +92,7 @@ pub fn process_lead_output(
     // Channel leads → each posts to its respective topic channel.
     for channel_name in channel_lead_sessions.keys() {
         if let Some(cl_events) = events.get(channel_name.as_str()) {
-            let trimmed = extract_lead_text(cl_events).trim().to_string();
+            let trimmed = extract_assistant_text(cl_events).trim().to_string();
             if !trimmed.is_empty() {
                 effects.push(Effect::PostToChannel {
                     sender: channel_name.clone(),
@@ -106,7 +106,7 @@ pub fn process_lead_output(
     // Forked channel leads → posts to the channel they were inherited from.
     for (fork_name, channel_name) in fork_bound_channels {
         if let Some(fork_events) = events.get(fork_name.as_str()) {
-            let trimmed = extract_lead_text(fork_events).trim().to_string();
+            let trimmed = extract_assistant_text(fork_events).trim().to_string();
             if !trimmed.is_empty() {
                 effects.push(Effect::PostToChannel {
                     sender: fork_name.clone(),
@@ -136,7 +136,7 @@ pub fn process_coworker_output(
 
     for name in coworker_names {
         if let Some(coworker_events) = events.get(name.as_str()) {
-            let trimmed = extract_lead_text(coworker_events).trim().to_string();
+            let trimmed = extract_assistant_text(coworker_events).trim().to_string();
             if !trimmed.is_empty() {
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),

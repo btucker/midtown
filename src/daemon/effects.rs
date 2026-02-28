@@ -43,6 +43,30 @@ fn build_resume_handoff_prompt(
     prompt
 }
 
+/// Build a DM separator `PostSystemMessage` for a newly spawned session.
+///
+/// Returns `Some(Effect::PostSystemMessage)` targeting `dm-<name>` for non-reviewer
+/// sessions, or `None` for reviewer sessions (which are ephemeral and don't have
+/// DM channels).
+pub(super) fn build_dm_separator_effect(
+    name: &str,
+    task_id: &str,
+    task_subject: Option<&str>,
+    is_reviewer: bool,
+) -> Option<Effect> {
+    if is_reviewer {
+        return None;
+    }
+    let separator = match task_subject {
+        Some(subject) => format!("─── Task !{}: {} ───", task_id, subject),
+        None => format!("─── Task !{} ───", task_id),
+    };
+    Some(Effect::PostSystemMessage {
+        message: separator,
+        channel: Some(format!("dm-{}", name)),
+    })
+}
+
 /// A side effect that the daemon should execute.
 ///
 /// Pure evaluation functions return `Vec<Effect>` instead of performing side
@@ -95,6 +119,7 @@ pub enum Effect {
     ///
     /// **Thread resolution**: If the sender has an entry in `fork_bound_threads`,
     /// the message is posted as a thread reply under the bound thread parent.
+    /// DM channels (`dm-*`) skip thread resolution — messages are always top-level.
     /// This mirrors the RPC path in `rpc_channel.rs`.
     PostToChannel {
         sender: String,
@@ -2444,22 +2469,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Post session separator to the coworker's DM channel.
                         // Reviewers are ephemeral PR-scoped sessions — skip DM
                         // separators since they don't have DM channels.
-                        if !is_reviewer {
-                            let task_subject =
-                                crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
-                                    .into_iter()
-                                    .find(|t| t.id == task_id)
-                                    .map(|t| t.subject);
-                            let separator = match task_subject {
-                                Some(subject) => {
-                                    format!("─── Task !{}: {} ───", task_id, subject)
-                                }
-                                None => format!("─── Task !{} ───", task_id),
-                            };
-                            let separator_effect = Effect::PostSystemMessage {
-                                message: separator,
-                                channel: Some(format!("dm-{}", name)),
-                            };
+                        let task_subject =
+                            crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                .into_iter()
+                                .find(|t| t.id == task_id)
+                                .map(|t| t.subject);
+                        if let Some(separator_effect) = build_dm_separator_effect(
+                            &name,
+                            &task_id,
+                            task_subject.as_deref(),
+                            is_reviewer,
+                        ) {
                             Box::pin(execute_effects(vec![separator_effect], state)).await;
                         }
 
