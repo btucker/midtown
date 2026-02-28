@@ -3527,7 +3527,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
 
                     // Build coworker name set: all active session names minus lead,
-                    // channel leads, and fork-bound sessions.
+                    // channel leads, fork-bound sessions, and reviewers.
+                    // Reviewers are ephemeral PR-scoped sessions that shouldn't
+                    // have DM channels or streaming output.
+                    let reviewer_names: std::collections::HashSet<&str> = ps
+                        .sessions
+                        .values()
+                        .filter(|r| r.is_reviewer && r.is_running)
+                        .filter_map(|r| r.current_name.as_deref())
+                        .collect();
                     let coworker_names: std::collections::HashSet<String> = state
                         .name_to_session
                         .lock()
@@ -3537,6 +3545,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             *name != &state.repo_name
                                 && !ps.channel_lead_sessions.contains_key(*name)
                                 && !fork_bound_channels.contains_key(*name)
+                                && !reviewer_names.contains(name.as_str())
                         })
                         .cloned()
                         .collect();

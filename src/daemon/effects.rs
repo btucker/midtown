@@ -2369,7 +2369,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 }
                             }
                             // Look up task_thread_id so coworker posts route to the
-                            // fork session's thread (if the task was created with --thread-id).
+                            // task's thread. This is set either explicitly via --thread-id
+                            // or auto-defaulted to the task announcement message ID.
                             let bound_thread_id = ps.task_thread_id.get(&task_id).cloned();
                             // Populate in-memory cache so handle_channel_post can auto-tag
                             // the coworker's posts without touching persistent state.
@@ -2434,22 +2435,26 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
 
                         // Post session separator to the coworker's DM channel.
-                        let task_subject =
-                            crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
-                                .into_iter()
-                                .find(|t| t.id == task_id)
-                                .map(|t| t.subject);
-                        let separator = match task_subject {
-                            Some(subject) => {
-                                format!("─── Task !{}: {} ───", task_id, subject)
-                            }
-                            None => format!("─── Task !{} ───", task_id),
-                        };
-                        let separator_effect = Effect::PostSystemMessage {
-                            message: separator,
-                            channel: Some(format!("dm-{}", name)),
-                        };
-                        Box::pin(execute_effects(vec![separator_effect], state)).await;
+                        // Reviewers are ephemeral PR-scoped sessions — skip DM
+                        // separators since they don't have DM channels.
+                        if !is_reviewer {
+                            let task_subject =
+                                crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                    .into_iter()
+                                    .find(|t| t.id == task_id)
+                                    .map(|t| t.subject);
+                            let separator = match task_subject {
+                                Some(subject) => {
+                                    format!("─── Task !{}: {} ───", task_id, subject)
+                                }
+                                None => format!("─── Task !{} ───", task_id),
+                            };
+                            let separator_effect = Effect::PostSystemMessage {
+                                message: separator,
+                                channel: Some(format!("dm-{}", name)),
+                            };
+                            Box::pin(execute_effects(vec![separator_effect], state)).await;
+                        }
 
                         state.broadcast_coworker_update(&name, "running", None);
                     }
