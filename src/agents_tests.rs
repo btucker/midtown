@@ -294,6 +294,57 @@ fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
 }
 
 #[test]
+fn test_channel_lead_notes_path_is_absolute() {
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown");
+    assert!(
+        prompt.contains("~/.midtown/projects/midtown/channels/web/notes/"),
+        "Channel lead prompt should use absolute project-level path for notes, got: {}",
+        prompt
+            .lines()
+            .find(|l| l.contains("notes/"))
+            .unwrap_or("no notes line found")
+    );
+    assert!(
+        !prompt.contains("`channels/web/notes/`"),
+        "Channel lead prompt should NOT use a relative path for notes"
+    );
+}
+
+#[test]
+fn test_channel_lead_notes_triggers_present() {
+    let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown");
+    assert!(
+        prompt.contains("When to Write Notes"),
+        "Channel lead prompt should have a 'When to Write Notes' section with actionable triggers"
+    );
+    assert!(
+        prompt.contains("brainstorming session concludes"),
+        "Channel lead prompt should trigger note-writing after brainstorming"
+    );
+    assert!(
+        prompt.contains("significant PR merges"),
+        "Channel lead prompt should trigger note-writing after PR merges"
+    );
+    assert!(
+        prompt.contains("coworker shares a valuable insight"),
+        "Channel lead prompt should trigger note-writing for valuable insights"
+    );
+}
+
+#[test]
+fn test_lead_notes_path_is_absolute() {
+    let prompt = main_lead_system_prompt("midtown");
+    assert!(
+        prompt.contains("~/.midtown/projects/midtown/channels/midtown/notes/"),
+        "Lead prompt should use absolute project-level path for notes"
+    );
+    assert!(
+        !prompt.contains("`channels/midtown/notes/`"),
+        "Lead prompt should NOT use a relative path for notes"
+    );
+}
+
+#[test]
 fn test_coworker_prompt_prevents_orphaned_branches() {
     let prompt = coworker_system_prompt("park", "midtown");
 
