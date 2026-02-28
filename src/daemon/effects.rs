@@ -943,12 +943,21 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Thread resolution: if the sender is a forked session with a bound
                 // thread, auto-apply the thread_parent_id so auto-posted output appears
                 // in the correct thread. Mirrors the RPC path in rpc_channel.rs.
-                let bound_thread: Option<String> = state
-                    .fork_bound_threads
-                    .lock()
-                    .unwrap()
-                    .get(&sender)
-                    .cloned();
+                // Skip for DM channels — they don't have task announcement threads,
+                // so messages should always be top-level.
+                let is_dm_channel = channel_name
+                    .as_ref()
+                    .is_some_and(|ch| ch.starts_with("dm-"));
+                let bound_thread: Option<String> = if is_dm_channel {
+                    None
+                } else {
+                    state
+                        .fork_bound_threads
+                        .lock()
+                        .unwrap()
+                        .get(&sender)
+                        .cloned()
+                };
 
                 let msg = if let Some(parent_id) = bound_thread {
                     let ch = channel_name
