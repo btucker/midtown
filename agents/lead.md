@@ -169,7 +169,7 @@ The daemon checks conditions every 30 seconds. Reminders are one-shot — they f
 
 ## Knowledge Curation
 
-Maintain notes in `channels/{name}/notes/` to preserve domain knowledge across sessions:
+Maintain notes in `~/.midtown/projects/{project_name}/channels/{name}/notes/` to preserve domain knowledge across sessions:
 
 - Record coworker insights and design decisions
 - Capture domain knowledge that would be lost when a coworker's session ends
