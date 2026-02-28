@@ -6,7 +6,7 @@
 
 use super::effects::Effect;
 use crate::headless::StreamEvent;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 fn extract_text_blocks(message: &serde_json::Value) -> String {
     let mut text = String::new();
@@ -112,6 +112,36 @@ pub fn process_lead_output(
                     sender: fork_name.clone(),
                     message: trimmed,
                     channel: Some(channel_name.clone()),
+                });
+            }
+        }
+    }
+
+    effects
+}
+
+/// Process coworker output and generate DM channel posting effects.
+///
+/// For each coworker session that produced text output, posts the aggregated text
+/// to the coworker's DM channel (`dm-<name>`). This mirrors how channel leads
+/// stream their output to topic channels.
+///
+/// `coworker_names` is the set of active coworker session names (excluding the
+/// main lead, channel leads, and fork-bound sessions).
+pub fn process_coworker_output(
+    events: &HashMap<String, Vec<StreamEvent>>,
+    coworker_names: &HashSet<String>,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for name in coworker_names {
+        if let Some(coworker_events) = events.get(name.as_str()) {
+            let trimmed = extract_lead_text(coworker_events).trim().to_string();
+            if !trimmed.is_empty() {
+                effects.push(Effect::PostToChannel {
+                    sender: name.clone(),
+                    message: trimmed,
+                    channel: Some(format!("dm-{}", name)),
                 });
             }
         }
