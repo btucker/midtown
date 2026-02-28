@@ -69,30 +69,47 @@ pub(super) async fn handle_insight_report(
         }
     }
 
-    // Resolve channel: explicit > coworker's task channel > main.
+    // Resolve channel and thread: explicit > coworker's task channel/thread > main.
     // When a coworker reports an insight without --channel, auto-route to their
     // assigned task's channel so insights don't flood the main channel.
-    let resolved_channel: Option<String> = if channel.is_none() {
-        let ps = state.persistent_state.lock().await;
-        ps.sessions
-            .values()
-            .find(|r| r.current_name.as_deref() == Some(agent))
-            .and_then(|r| r.task_id.as_deref())
-            .and_then(|tid| ps.task_channel.get(tid).cloned())
-    } else {
-        None
-    };
+    // Also resolve the task's thread binding so insights thread under the task
+    // announcement (parallels fork_bound_threads for channel.post).
+    let (resolved_channel, resolved_thread_id): (Option<String>, Option<String>) =
+        if channel.is_none() {
+            let ps = state.persistent_state.lock().await;
+            let task_id = ps
+                .sessions
+                .values()
+                .find(|r| r.current_name.as_deref() == Some(agent))
+                .and_then(|r| r.task_id.as_deref());
+            let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
+            let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
+            (ch, thread)
+        } else {
+            (None, None)
+        };
 
     // Post insight to specified channel (or main if None)
     let channel_name: &str = channel
         .or(resolved_channel.as_deref())
         .unwrap_or_else(|| state.channel_router.default_channel_name());
-    let msg = crate::message::Message::for_channel(
-        channel_name,
-        agent,
-        format!("💡 {}", insight),
-        crate::message::MessageType::Text,
-    );
+    let insight_content = format!("💡 {}", insight);
+    let msg = if let Some(ref thread_id) = resolved_thread_id {
+        crate::message::Message::thread_reply(
+            channel_name,
+            agent,
+            insight_content,
+            thread_id,
+            crate::message::MessageType::Text,
+        )
+    } else {
+        crate::message::Message::for_channel(
+            channel_name,
+            agent,
+            insight_content,
+            crate::message::MessageType::Text,
+        )
+    };
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("insight.report: failed to post to channel: {}", e);
         return Response::error(
