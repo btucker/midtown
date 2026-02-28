@@ -158,7 +158,11 @@
     const parentId = $threadData.parentMessage?.id ?? null
     sendMessage(replyText.trim(), $threadData.channelName, parentId)
     replyText = ''
-    if (textareaEl) textareaEl.value = ''
+    if (textareaEl) {
+      textareaEl.value = ''
+      textareaEl.blur()
+      textareaEl.focus()
+    }
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true
     if (thinkingTimeout) clearTimeout(thinkingTimeout)

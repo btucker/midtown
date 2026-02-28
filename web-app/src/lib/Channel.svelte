@@ -509,7 +509,11 @@
           }, 30000)
         }
         inputText = ''
-        if (textareaElement) textareaElement.value = ''
+        if (textareaElement) {
+          textareaElement.value = ''
+          textareaElement.blur()
+          textareaElement.focus()
+        }
         pendingFile = null
       } else {
         alert(`Upload failed: ${result.error}`)
@@ -526,7 +530,11 @@
         }, 30000)
       }
       inputText = ''
-      if (textareaElement) textareaElement.value = ''
+      if (textareaElement) {
+        textareaElement.value = ''
+        textareaElement.blur()
+        textareaElement.focus()
+      }
     }
   }
 
