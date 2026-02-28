@@ -366,6 +366,24 @@ In addition to the shared channel, the daemon can deliver targeted messages to i
 
 Together these create a layered defence: the early warning reaches the author at PR creation time, and the spawn notification confirms who is reviewing.
 
+## PR Merge Gating
+
+When a coworker calls `midtown pr merge --pr <N>`, the daemon runs three gates before enabling auto-merge:
+
+1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set (populated by webhooks or polling fallback).
+
+2. **Gate 2 — CI passing**: Checks `statusCheckRollup` from `gh pr view` and also verifies `reviewDecision != "CHANGES_REQUESTED"`. The PR must be in `OPEN` state (merged/closed PRs are rejected before gate checks).
+
+3. **Gate 3 — Feedback addressed**: For each review comment ID in `pr_review_comment_ids`, checks that a subsequent PR comment contains `<!-- addresses-review: {id} -->`. Unaddressed feedback blocks the merge.
+
+**Review comment ID collection**: Review comment database IDs are collected via two paths:
+- **Webhook path** (primary): When `handle_issue_comment` detects a code review (via `is_review_comment()`), the `WebhookEvent.review_comment_id` field carries the comment's database ID. The daemon handler persists it via `add_review_comment_id()`.
+- **Polling fallback**: When `is_pr_reviewed()` first detects a review via `pr_has_completed_review_uncached()`, it calls `fetch_review_comment_ids()` to retrieve comment IDs from the GitHub REST API.
+
+**State**: `pr_review_comment_ids: HashMap<u64, Vec<u64>>` in `GitHubState` maps PR numbers to lists of review comment database IDs. Persisted in `daemon-state.json`.
+
+**Effect**: On success, `Effect::MergePr` calls `gh pr merge --squash --auto` with `current_dir` set to the repo path.
+
 ## Worktree Lifecycle
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.

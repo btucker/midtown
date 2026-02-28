@@ -1019,3 +1019,99 @@ fn all_review_feedback_addressed_no_comments() {
     assert!(!addressed);
     assert_eq!(unaddressed, vec![111]);
 }
+
+/// Integration test: simulates the full Gate 3 flow as used in `handle_pr_merge`.
+///
+/// 1. Populate `pr_review_comment_ids` (via `add_review_comment_id`)
+/// 2. Simulate PR comments with/without `addresses-review` tags
+/// 3. Verify Gate 3 correctly identifies unaddressed feedback
+///
+/// This mirrors the Gate 3 logic in `rpc_prs.rs::handle_pr_merge`:
+/// ```ignore
+/// let review_comment_ids = ps.github.get_review_comment_ids(pr_number);
+/// if !review_comment_ids.is_empty() {
+///     let (all_addressed, unaddressed) = all_review_feedback_addressed(&ids, &comments);
+///     if !all_addressed { /* reject merge */ }
+/// }
+/// ```
+#[test]
+fn gate3_blocks_merge_when_feedback_unaddressed() {
+    use crate::github_state::GitHubState;
+
+    // Step 1: Simulate webhook recording a review comment ID
+    let mut github_state = GitHubState::default();
+    github_state.add_review_comment_id(42, 98765);
+
+    // Step 2: Get the review comment IDs (as handle_pr_merge does)
+    let review_comment_ids = github_state.get_review_comment_ids(42).to_vec();
+    assert_eq!(review_comment_ids, vec![98765]);
+
+    // Step 3a: No addresses-review tags exist → Gate 3 should block
+    let comments_no_address: Vec<serde_json::Value> = vec![
+        json!({"body": "<!-- midtown: columbus -->\n✅ Addressed in abc1234"}),
+        json!({"body": "Thanks for the fix!"}),
+    ];
+    let (all_addressed, unaddressed) =
+        all_review_feedback_addressed(&review_comment_ids, &comments_no_address);
+    assert!(
+        !all_addressed,
+        "Gate 3 should block: no addresses-review tag for comment 98765"
+    );
+    assert_eq!(unaddressed, vec![98765]);
+
+    // Step 3b: Correct addresses-review tag exists → Gate 3 should pass
+    let comments_addressed: Vec<serde_json::Value> = vec![
+        json!({"body": "<!-- midtown: columbus -->\n<!-- addresses-review: 98765 -->\n✅ Addressed in abc1234"}),
+    ];
+    let (all_addressed, unaddressed) =
+        all_review_feedback_addressed(&review_comment_ids, &comments_addressed);
+    assert!(
+        all_addressed,
+        "Gate 3 should pass: addresses-review tag matches comment 98765"
+    );
+    assert!(unaddressed.is_empty());
+}
+
+/// Integration test: Gate 3 with multiple review comments (multiple reviewers).
+#[test]
+fn gate3_tracks_multiple_review_comments() {
+    use crate::github_state::GitHubState;
+
+    let mut github_state = GitHubState::default();
+    // Two separate review comments on the same PR
+    github_state.add_review_comment_id(42, 111);
+    github_state.add_review_comment_id(42, 222);
+
+    let review_ids = github_state.get_review_comment_ids(42).to_vec();
+
+    // Only one addressed → should block
+    let comments = vec![json!({"body": "<!-- addresses-review: 111 -->\n✅ Fixed"})];
+    let (all_addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &comments);
+    assert!(!all_addressed);
+    assert_eq!(unaddressed, vec![222]);
+
+    // Both addressed → should pass
+    let comments = vec![
+        json!({"body": "<!-- addresses-review: 111 -->\n✅ Fixed"}),
+        json!({"body": "<!-- addresses-review: 222 -->\n✅ Also fixed"}),
+    ];
+    let (all_addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &comments);
+    assert!(all_addressed);
+    assert!(unaddressed.is_empty());
+}
+
+/// Gate 3 is a no-op when no review comment IDs are recorded
+/// (e.g., for formal GitHub reviews that don't use issue comments).
+#[test]
+fn gate3_passes_when_no_review_comment_ids() {
+    use crate::github_state::GitHubState;
+
+    let github_state = GitHubState::default();
+    let review_ids = github_state.get_review_comment_ids(42).to_vec();
+    assert!(review_ids.is_empty());
+
+    // Empty review_ids → Gate 3 is not checked (always passes)
+    let (all_addressed, unaddressed) = all_review_feedback_addressed(&review_ids, &[]);
+    assert!(all_addressed);
+    assert!(unaddressed.is_empty());
+}

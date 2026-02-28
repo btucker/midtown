@@ -3216,6 +3216,65 @@ pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
         }
     }
 }
+/// Fetch the database IDs of review comments on a PR via the GitHub REST API.
+///
+/// Uses `gh api repos/{full_name}/issues/{pr}/comments` to get comments with
+/// their numeric database IDs, then filters for comments that contain a review
+/// signature (per `text_contains_review_signature`).
+///
+/// This is the polling-path counterpart to the webhook path which gets the
+/// comment ID directly from the webhook payload.
+pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> Vec<u64> {
+    let endpoint = format!("repos/{}/issues/{}/comments", repo_full_name, pr_number);
+    let output = std::process::Command::new("gh")
+        .args(["api", "--paginate", &endpoint])
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let comments: Vec<serde_json::Value> = match serde_json::from_str(&stdout) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(
+                        "Failed to parse REST API comments for PR #{}: {}",
+                        pr_number, e
+                    );
+                    return vec![];
+                }
+            };
+
+            comments
+                .iter()
+                .filter_map(|comment| {
+                    let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                    if text_contains_review_signature(body) {
+                        comment.get("id").and_then(|id| id.as_u64())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "Failed to fetch REST API comments for PR #{}: {}",
+                pr_number,
+                stderr.trim()
+            );
+            vec![]
+        }
+        Err(e) => {
+            warn!(
+                "Failed to execute gh api for PR #{} comments: {}",
+                pr_number, e
+            );
+            vec![]
+        }
+    }
+}
+
 /// Check whether a PR has an unupdated "Review in progress" placeholder comment.
 ///
 /// Returns the comment database ID if found, or None if no placeholder exists

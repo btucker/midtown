@@ -99,6 +99,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
 | `midtown pr list` | List pull requests |
+| `midtown pr merge --pr <N>` | Merge a PR after passing 3-gate checks (review exists, CI passes, feedback addressed) |
 | `midtown config get/set/list` | Manage [configuration](docs/configuration.md) |
 | `midtown auth` | Manage [auth profiles](docs/authentication.md) (multiple accounts supported) |
 

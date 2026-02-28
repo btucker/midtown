@@ -57,6 +57,10 @@ pub struct WebhookEvent {
     /// PR number that received a completed review (formal or comment-based).
     /// Set when webhook payload confirms a real review completion.
     pub reviewed_pr: Option<u64>,
+    /// The database ID of the review comment (issue comment) that triggered `reviewed_pr`.
+    /// Used to populate `pr_review_comment_ids` for Gate 3 merge gating.
+    /// Only set for issue comments that are code reviews (not formal GitHub reviews).
+    pub review_comment_id: Option<u64>,
     /// A formal review state change (approved / changes_requested) — triggers immediate
     /// nudge of the PR owner instead of waiting for the next polling cycle.
     pub review_state_change: Option<PrReviewStateChange>,
@@ -91,6 +95,7 @@ impl WebhookEvent {
             pr_merged_info: None,
             ci_failed_on_default_branch: None,
             reviewed_pr: None,
+            review_comment_id: None,
             review_state_change: None,
             pr_ci_failure: None,
             check_duration: None,
@@ -893,8 +898,15 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     );
 
     // Check if this comment is a Claude code review (for review status caching)
-    let reviewed_pr = if is_review_comment(&event.comment.body) {
+    let is_review = is_review_comment(&event.comment.body);
+    let reviewed_pr = if is_review {
         Some(event.issue.number)
+    } else {
+        None
+    };
+    // Track the review comment's database ID for Gate 3 merge gating
+    let review_comment_id = if is_review {
+        Some(event.comment.id)
     } else {
         None
     };
@@ -911,6 +923,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             repo_full_name: Some(event.repository.full_name),
         }),
         reviewed_pr,
+        review_comment_id,
         ..WebhookEvent::github(content)
     }))
 }
@@ -1774,6 +1787,82 @@ mod tests {
             "btucker commented on PR #42: Regular comment without signature"
         );
         assert_eq!(event.message.from, "github");
+    }
+
+    #[test]
+    fn test_issue_comment_review_sets_review_comment_id() {
+        // When an issue comment IS a code review, review_comment_id should be set
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 98765,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: columbus -->\n\n## Code Review by columbus\n\nFound 2 issues:\n1. Bug here\n2. Bug there"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(event.reviewed_pr, Some(42));
+        assert_eq!(
+            event.review_comment_id,
+            Some(98765),
+            "review_comment_id should be the database ID of the review comment"
+        );
+    }
+
+    #[test]
+    fn test_issue_comment_non_review_no_review_comment_id() {
+        // When an issue comment is NOT a code review, review_comment_id should be None
+        let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 12345,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: columbus -->\n\nLGTM! Nice fix."
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(event.reviewed_pr, None);
+        assert_eq!(
+            event.review_comment_id, None,
+            "non-review comments should not set review_comment_id"
+        );
+    }
+
+    #[test]
+    fn test_formal_review_no_review_comment_id() {
+        // Formal GitHub reviews set reviewed_pr but NOT review_comment_id
+        // (only issue comment reviews populate review_comment_id for Gate 3)
+        let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 100,
+                "state": "approved",
+                "user": {"login": "madison"}
+            },
+            "pull_request": {"number": 42},
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_pull_request_review(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.reviewed_pr, Some(42));
+        assert_eq!(
+            event.review_comment_id, None,
+            "formal reviews should not set review_comment_id (they don't have issue comment IDs)"
+        );
     }
 
     #[test]

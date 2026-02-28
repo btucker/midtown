@@ -754,6 +754,20 @@ pub(super) async fn handle_pr_merge(
         Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
     };
 
+    // Pre-gate: PR must be open (reject merged/closed PRs before checking gates)
+    let pr_state = pr_data
+        .get("state")
+        .and_then(|s| s.as_str())
+        .unwrap_or("UNKNOWN");
+    if pr_state != "OPEN" {
+        let message = format!(
+            "Cannot merge PR #{}: PR is {} (expected OPEN)",
+            pr_number, pr_state
+        );
+        warn!("{}", message);
+        return Response::error(id, RpcError::new(-32603, message));
+    }
+
     let title = pr_data
         .get("title")
         .and_then(|t| t.as_str())
@@ -764,6 +778,17 @@ pub(super) async fn handle_pr_merge(
     if !super::helpers::all_ci_checks_passed(&pr_data) {
         failed_gates
             .push("CI checks not passing: one or more checks are failing or pending".into());
+    }
+
+    // Gate 2b: Formal review decision must not be CHANGES_REQUESTED
+    let review_decision = pr_data
+        .get("reviewDecision")
+        .and_then(|d| d.as_str())
+        .unwrap_or("");
+    if review_decision == "CHANGES_REQUESTED" {
+        failed_gates.push(
+            "Review decision is CHANGES_REQUESTED: reviewer formally requested changes".into(),
+        );
     }
 
     // Gate 3: All review feedback addressed
@@ -832,7 +857,8 @@ pub(super) async fn handle_pr_merge(
 
 /// Fetch PR data needed for merge gate checks.
 ///
-/// Retrieves title, CI status, and comments in a single API call.
+/// Retrieves title, state, CI status, comments, mergeable status, and
+/// review decision in a single API call.
 async fn fetch_pr_for_merge(
     pr_number: u64,
     state: &DaemonState,
