@@ -904,15 +904,12 @@ impl Channel {
         Ok(())
     }
 
-    /// Read all messages from the channel
+    /// Read all messages from the channel, including rotated archives.
     ///
-    /// Messages are sorted by timestamp to ensure chronological order,
-    /// regardless of the order they were written to the file.
-    ///
-    /// Uses bounded retries to acquire a shared lock when there's lock contention.
-    /// Retries up to 10 times with 50ms delays (500ms total) to handle transient
-    /// lock contention from writers. Returns an error if the lock can't be acquired
-    /// after 500ms.
+    /// Reads every `.jsonl` file in the history directory (date-named archives
+    /// in ascending order, then `current.jsonl`). Messages are sorted by
+    /// timestamp to ensure chronological order. Each file is locked
+    /// individually via `read_messages_from_file`.
     pub fn read_all(&self) -> Result<Vec<Message>> {
         let history_files = self.list_all_history_files();
 
@@ -1048,8 +1045,11 @@ impl Channel {
         agent: &str,
         session_id: &str,
     ) -> Result<(u64, Option<String>)> {
-        // Read the last message ID so that unread-count calculations
-        // (which key off last_message_id) correctly treat the channel as fully read.
+        // `position` is a byte offset in current.jsonl — used by
+        // `read_messages_from_position` to stream new messages as they
+        // arrive. `last_message_id` comes from all history files (via
+        // `read_last_n_messages`) so unread-count calculations correctly
+        // treat the channel as fully read even after rotation.
         let last_message_id = self
             .read_last_n_messages(1)
             .ok()
