@@ -264,7 +264,7 @@ async fn project_channel(
         StatusCode::NOT_FOUND
     })?;
 
-    let messages = channel.read_all().map_err(|e| {
+    let messages = channel.read_all_async().await.map_err(|e| {
         warn!("Failed to read channel for project {}: {}", name, e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

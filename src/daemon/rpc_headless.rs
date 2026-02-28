@@ -68,7 +68,8 @@ pub(super) async fn handle_snapshot(id: RequestId, state: &DaemonState) -> Respo
     };
     let snapshot = super::snapshot::collect_world_snapshot(state)
         .await
-        .with_debug_context(&default_channel);
+        .with_debug_context(&default_channel)
+        .await;
     match serde_json::to_value(&snapshot) {
         Ok(value) => Response::success(id, value),
         Err(e) => Response::error(

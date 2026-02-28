@@ -554,7 +554,7 @@ async fn api_channel_history(
         })?
     };
 
-    let messages = channel.read_all().map_err(|e| {
+    let messages = channel.read_all_async().await.map_err(|e| {
         error!("Failed to read channel: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

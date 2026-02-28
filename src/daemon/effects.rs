@@ -2078,7 +2078,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 };
 
                 // Read messages from source
-                let messages = match from_channel.read_all() {
+                let messages = match from_channel.read_all_async().await {
                     Ok(msgs) => msgs,
                     Err(e) => {
                         warn!("Failed to read messages from channel '{}': {}", from, e);

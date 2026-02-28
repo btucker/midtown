@@ -762,7 +762,7 @@ pub(super) fn handle_channel_list(
 /// Accepts an optional `channel` parameter to read from a topic channel.
 /// If not provided, defaults to the main channel. Respects `MIDTOWN_CHANNEL`
 /// when called via the CLI client.
-pub(super) fn handle_channel_read(
+pub(super) async fn handle_channel_read(
     id: RequestId,
     all: bool,
     last: Option<usize>,
@@ -796,7 +796,7 @@ pub(super) fn handle_channel_read(
     let messages = if let Some(n) = last {
         // Use --last flag: read last N messages
         info!("Reading last {} messages", n);
-        match target_channel.read_last_n_messages(n) {
+        match target_channel.read_last_n_messages_async(n).await {
             Ok((msgs, _)) => {
                 info!(
                     "read_last_n_messages({}) returned {} messages",
@@ -830,7 +830,7 @@ pub(super) fn handle_channel_read(
 
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(duration).unwrap();
 
-        match target_channel.read_all() {
+        match target_channel.read_all_async().await {
             Ok(msgs) => msgs.into_iter().filter(|m| m.timestamp >= cutoff).collect(),
             Err(e) => {
                 error!("Failed to read channel: {}", e);
@@ -839,7 +839,7 @@ pub(super) fn handle_channel_read(
         }
     } else if all {
         // Read all messages
-        match target_channel.read_all() {
+        match target_channel.read_all_async().await {
             Ok(msgs) => msgs,
             Err(e) => {
                 error!("Failed to read channel: {}", e);
@@ -848,7 +848,7 @@ pub(super) fn handle_channel_read(
         }
     } else {
         // Read recent messages (last 20)
-        match target_channel.read_all() {
+        match target_channel.read_all_async().await {
             Ok(msgs) => {
                 let total = msgs.len();
                 if total > 20 {
