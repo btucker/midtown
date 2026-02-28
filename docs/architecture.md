@@ -298,6 +298,31 @@ channels/
 
 Migration runs once per `base_dir` per process (via `OnceLock`) and is idempotent.
 
+### Multi-File History Reads
+
+Channel reads span all `.jsonl` files in the history directory — date-named archives plus `current.jsonl` — so history is preserved across daily rotation. The key helpers live in `src/channel.rs`:
+
+- **`list_all_history_files()`** — Lists all `.jsonl` files in the history directory. Date-named archives (`YYYY-MM-DD.jsonl`) are sorted ascending (oldest first), with `current.jsonl` appended last. Temp files (`.rotating`) are excluded.
+
+- **`read_messages_from_file()` / `read_messages_from_file_async()`** — Reads all messages from a single `.jsonl` file. Each file is locked individually (shared lock with bounded retries — up to 10 attempts at 50ms intervals). The async variant uses `tokio::time::sleep` instead of `std::thread::sleep` to avoid blocking the runtime.
+
+**Read paths:**
+
+| Method | Behavior | File ordering |
+|---|---|---|
+| `read_all()` | Reads every history file, sorts all messages by timestamp | Forward (oldest archive → current) |
+| `read_last_n_messages()` | Reads files in reverse order, stops early once ≥N messages collected | Reverse (current → oldest archive) |
+| `read_messages_before_position()` | Reads all files, skips the tail `position` messages, returns next N | Forward (all files) |
+| `read_messages_from_position()` | Byte-offset seek in `current.jsonl` only (streaming hot path) | Single file |
+
+**Pagination uses message counts, not byte offsets.** `read_last_n_messages` returns a `start_position` representing the count of messages loaded from the tail. `read_messages_before_position` uses this count to compute the correct page across all archive files. If `start_position == 0`, all history has been loaded.
+
+**Dual-purpose cursors:** `set_cursor_to_end()` sets two distinct values:
+- `position` — byte offset in `current.jsonl`, used by `read_messages_from_position()` for streaming new messages (the hot path, no lock needed due to `O_APPEND` atomicity).
+- `last_message_id` — drawn from all history files (via `read_last_n_messages(1)`), used for unread-count calculations so rotation doesn't cause a false spike in unread messages.
+
+**Rotation** (`rotate()`) moves messages older than `retain_minutes` from `current.jsonl` to `YYYY-MM-DD.jsonl` archives. It acquires an exclusive lock on `current.jsonl`, partitions messages by timestamp, appends archived messages to the date-named file (creating or appending), writes retained messages to a `.rotating` temp file, and atomically renames it over `current.jsonl`. After rotation, all cursor files are reset to 0 because byte positions in `current.jsonl` have changed.
+
 **Channel RPC methods** (handled by `src/daemon/rpc_channel.rs`):
 - `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication
 - `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, and per-channel filtering)
