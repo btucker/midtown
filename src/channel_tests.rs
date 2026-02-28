@@ -1976,3 +1976,65 @@ fn test_list_all_history_files_ignores_rotating_temp() {
         "current.jsonl should be last"
     );
 }
+
+#[test]
+fn test_pagination_across_archives() {
+    use chrono::{Duration, Utc};
+
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+    let now = Utc::now();
+
+    let history_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("midtown")
+        .join("history");
+
+    // Archive with 5 messages
+    let archive_path = history_dir.join("2026-02-25.jsonl");
+    for i in 0..5 {
+        write_message_to_file(
+            &archive_path,
+            &make_message(
+                &format!("old-{i}"),
+                &format!("Old {i}"),
+                now - Duration::hours(48) + Duration::minutes(i as i64),
+            ),
+        );
+    }
+
+    // Current with 5 messages
+    for i in 0..5 {
+        channel
+            .send(&Message::text("test", format!("Current {i}")))
+            .unwrap();
+    }
+
+    // Total: 10 messages. Load last 3.
+    let (page1, pos1) = read_last_n_with_retry(&channel, 3, 5).unwrap();
+    assert_eq!(page1.len(), 3);
+    assert_eq!(page1[0].content, "Current 2");
+    assert_eq!(page1[2].content, "Current 4");
+    assert_ne!(pos1, 0, "More history should exist");
+
+    // Load next 3 (should be Current 0, Current 1, and possibly Old 4)
+    let (page2, pos2) = read_before_pos_with_retry(&channel, pos1, 3, 5).unwrap();
+    assert_eq!(page2.len(), 3);
+    assert_ne!(pos2, 0, "Still more history");
+
+    // Load next 3 (spanning into archive)
+    let (page3, pos3) = read_before_pos_with_retry(&channel, pos2, 3, 5).unwrap();
+    assert_eq!(page3.len(), 3);
+
+    // Load remaining (should be 1 message left)
+    let (page4, pos4) = read_before_pos_with_retry(&channel, pos3, 3, 5).unwrap();
+    assert_eq!(page4.len(), 1);
+    assert_eq!(pos4, 0, "All history should be loaded now");
+    assert_eq!(page4[0].content, "Old 0");
+
+    // Requesting more when all loaded returns empty
+    let (page5, pos5) = read_before_pos_with_retry(&channel, pos4, 3, 5).unwrap();
+    assert!(page5.is_empty());
+    assert_eq!(pos5, 0);
+}
