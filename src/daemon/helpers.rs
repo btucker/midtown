@@ -735,6 +735,58 @@ pub(super) fn extract_pr_number(content: &str) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
+// Addressed-review helpers
+// ---------------------------------------------------------------------------
+
+/// Extract a review comment ID from an `<!-- addresses-review: {id} -->` tag.
+///
+/// Coworkers post this tag in their response comments to indicate they have
+/// addressed the feedback from a specific review comment. The `pr.merge` RPC
+/// checks that all review comment IDs have a corresponding addressed tag.
+pub fn parse_addresses_review_tag(body: &str) -> Option<u64> {
+    let marker = "<!-- addresses-review:";
+    let start = body.find(marker)?;
+    let after = &body[start + marker.len()..];
+    let end = after.find("-->")?;
+    let id_str = after[..end].trim();
+    id_str.parse::<u64>().ok()
+}
+
+/// Check that all review feedback has been addressed for a PR.
+///
+/// For each review comment ID, checks that at least one other comment in the PR
+/// contains an `<!-- addresses-review: {id} -->` tag referencing it.
+///
+/// Returns `Ok(true)` if all feedback is addressed (or there are no review comments),
+/// `Ok(false)` if some review comments remain unaddressed.
+/// The second element of the tuple contains the unaddressed comment IDs.
+pub fn all_review_feedback_addressed(
+    review_comment_ids: &[u64],
+    all_pr_comments: &[serde_json::Value],
+) -> (bool, Vec<u64>) {
+    if review_comment_ids.is_empty() {
+        return (true, vec![]);
+    }
+
+    // Collect all addressed review IDs from PR comments
+    let addressed_ids: std::collections::HashSet<u64> = all_pr_comments
+        .iter()
+        .filter_map(|comment| {
+            let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+            parse_addresses_review_tag(body)
+        })
+        .collect();
+
+    let unaddressed: Vec<u64> = review_comment_ids
+        .iter()
+        .filter(|id| !addressed_ids.contains(id))
+        .copied()
+        .collect();
+
+    (unaddressed.is_empty(), unaddressed)
+}
+
+// ---------------------------------------------------------------------------
 // Task prompt helpers
 // ---------------------------------------------------------------------------
 
