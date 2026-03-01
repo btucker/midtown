@@ -144,11 +144,42 @@ jobs:
             --tag ${{ env.IMAGE_NAME }}:latest \
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
+  # ─── Build web-app (platform-independent) ─────────────────────────────
+  # Builds the Svelte PWA once, shares via artifact for binary packaging.
+  web-app:
+    name: Build web-app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Build web-app
+        working-directory: web-app
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload web-app dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-app-dist
+          path: web-app/dist/
+          if-no-files-found: error
+          retention-days: 1
+
   # ─── Build platform-specific binaries and upload as release assets ─────
   # Uses native runners where possible; cross-compiles x86_64-apple-darwin
   # on arm64 macOS (macos-13 Intel runners were retired by GitHub).
+  # Includes web-app/dist/ alongside the binary so resolve_web_dir() finds it.
   binaries:
     name: Binary (${{ matrix.target }})
+    needs: web-app
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -194,12 +225,17 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Package binary
+      - name: Download web-app dist
+        uses: actions/download-artifact@v4
+        with:
+          name: web-app-dist
+          path: staging/web-app/dist
+
+      - name: Package binary with web-app
         run: |
-          mkdir -p staging
           cp target/${{ matrix.target }}/release/midtown staging/
           cd staging
-          tar czf ../${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz midtown
+          tar czf ../${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz midtown web-app/
 
       - name: Upload release asset
         run: |

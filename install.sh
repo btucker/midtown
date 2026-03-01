@@ -72,6 +72,13 @@ mkdir -p "$INSTALL_DIR"
 mv "${TMP_DIR}/midtown" "${INSTALL_DIR}/midtown"
 chmod +x "${INSTALL_DIR}/midtown"
 
+# Install bundled web-app if present in the tarball
+if [ -d "${TMP_DIR}/web-app" ]; then
+    rm -rf "${INSTALL_DIR}/web-app"
+    mv "${TMP_DIR}/web-app" "${INSTALL_DIR}/web-app"
+    echo "Installed web UI to ${INSTALL_DIR}/web-app/"
+fi
+
 echo ""
 echo "Installed midtown ${VERSION} to ${INSTALL_DIR}/midtown"
 

@@ -26,7 +26,13 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-# ─── Stage 3: Build ─────────────────────────────────────────────────────────
+# ─── Stage 3: Web-app build ───────────────────────────────────────────────
+FROM node:22-slim AS web-builder
+WORKDIR /app/web-app
+COPY web-app/ .
+RUN npm ci && npm run build
+
+# ─── Stage 4: Rust build ─────────────────────────────────────────────────────
 FROM chef AS builder
 
 # System dependencies for building
@@ -42,7 +48,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release
 
-# ─── Stage 4: Runtime ───────────────────────────────────────────────────────
+# ─── Stage 5: Runtime ───────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
 # Runtime dependencies:
@@ -107,10 +113,11 @@ RUN git config --global user.email "midtown@docker.local" \
     && git config --global user.name "Midtown Docker" \
     && git config --global init.defaultBranch main
 
-# Copy the binary from builder LAST so code changes don't invalidate
-# the CLI install layers above.
+# Copy the binary and web-app from builder LAST so code changes don't
+# invalidate the CLI install layers above.
 USER root
 COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
+COPY --from=web-builder /app/web-app/dist /usr/local/bin/web-app/dist
 USER midtown
 
 ENTRYPOINT ["midtown"]
