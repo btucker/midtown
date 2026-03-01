@@ -14,20 +14,34 @@ use std::thread;
 /// The install script, baked in at compile time.
 const INSTALL_SH: &str = include_str!("../install.sh");
 
-/// Reads an HTTP request from a TCP stream (up to 8KB, which is plenty
-/// for the simple GET/HEAD requests the install script sends).
+/// Reads an HTTP request from a TCP stream by looping until the
+/// `\r\n\r\n` header terminator is found (or the 8KB buffer fills).
 fn read_request(stream: &mut std::net::TcpStream) -> String {
     let mut buf = [0u8; 8192];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    String::from_utf8_lossy(&buf[..n]).to_string()
+    let mut total = 0;
+    loop {
+        if total >= buf.len() {
+            break;
+        }
+        let n = stream.read(&mut buf[total..]).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        total += n;
+        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf[..total]).to_string()
 }
 
 #[test]
+#[ignore] // E2E: requires curl, spawns TCP listener and child processes.
 fn test_install_script_curl_bash() {
     let tmp = tempfile::tempdir().expect("failed to create temp dir");
 
     // ── Build a fake binary ──────────────────────────────────────────
-    // A shell script that responds to `--version` like the real binary.
+    // A shell script that unconditionally prints a version string.
     let staging = tmp.path().join("staging");
     fs::create_dir_all(staging.join("web-app")).unwrap();
 
@@ -74,7 +88,7 @@ fn test_install_script_curl_bash() {
     let serve_sh = modified_sh.clone();
     let serve_tarball = tarball_bytes;
 
-    thread::spawn(move || {
+    let server = thread::spawn(move || {
         // The install flow makes exactly 3 requests:
         //   1. GET  /install.sh           (outer curl piped to sh)
         //   2. HEAD /.../releases/latest   (version detection inside the script)
@@ -186,11 +200,15 @@ fn test_install_script_curl_bash() {
         stdout.contains("not in your PATH"),
         "PATH warning not shown. Full stdout:\n{stdout}"
     );
+
+    // Clean up the server thread.
+    let _ = server.join();
 }
 
 /// Verify that the install script handles an already-existing web-app/
 /// directory (atomic swap: rename old → .old, move new, delete .old).
 #[test]
+#[ignore] // E2E: requires curl, spawns TCP listener and child processes.
 fn test_install_script_replaces_existing_web_app() {
     let tmp = tempfile::tempdir().expect("failed to create temp dir");
 
@@ -240,7 +258,7 @@ fn test_install_script_replaces_existing_web_app() {
     let serve_sh = modified_sh.clone();
     let serve_tarball = tarball_bytes;
 
-    thread::spawn(move || {
+    let server = thread::spawn(move || {
         for stream in listener.incoming().take(10) {
             let Ok(mut stream) = stream else { continue };
             let request = read_request(&mut stream);
@@ -316,4 +334,7 @@ fn test_install_script_replaces_existing_web_app() {
         !install_dir.join("web-app.old").exists(),
         "web-app.old should have been cleaned up"
     );
+
+    // Clean up the server thread.
+    let _ = server.join();
 }
