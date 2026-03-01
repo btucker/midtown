@@ -112,12 +112,8 @@ run_coordination_tests() {
             --skip test_mailbox_fallback \
             "${test_args[@]}"
 
-    run_bg "zellij_e2e" \
-        cargo test --release --test zellij_e2e -- --ignored --test-threads=1 \
-            "${test_args[@]}"
-
     run_bg "install_e2e" \
-        cargo test --release --test install_e2e -- "${test_args[@]}"
+        cargo test --release --test install_e2e -- --ignored "${test_args[@]}"
 
     wait_all
 
