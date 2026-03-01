@@ -53,19 +53,23 @@ echo "Latest version: ${VERSION}"
 
 # ── Download and install ─────────────────────────────────────────────────────
 
-ASSET="midtown-${OS}-${ARCH}-${VERSION}.tar.gz"
+# Normalize version: strip leading "v" to get the bare version number.
+# Asset naming must match .github/workflows/publish.yml which produces
+# midtown-<os>-<arch>-v<bare_version>.tar.gz
+BARE_VERSION="${VERSION#v}"
+ASSET="midtown-${OS}-${ARCH}-v${BARE_VERSION}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
 
 echo "Downloading ${ASSET}..."
 
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
-curl -fsSL "$URL" -o "${TMPDIR}/${ASSET}"
-tar xzf "${TMPDIR}/${ASSET}" -C "$TMPDIR"
+curl -fsSL "$URL" -o "${TMP_DIR}/${ASSET}"
+tar xzf "${TMP_DIR}/${ASSET}" -C "$TMP_DIR"
 
 mkdir -p "$INSTALL_DIR"
-mv "${TMPDIR}/midtown" "${INSTALL_DIR}/midtown"
+mv "${TMP_DIR}/midtown" "${INSTALL_DIR}/midtown"
 chmod +x "${INSTALL_DIR}/midtown"
 
 echo ""
