@@ -882,6 +882,11 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
         emit_startup_progress(96, "shared webserver already running");
     }
 
+    // Non-blocking version check (respects 1-hour cooldown)
+    if let Some(notice) = super::update::check_for_update_notice() {
+        messages.push(notice);
+    }
+
     // Build response message
     messages.push("Open view with: midtown view".to_string());
     emit_startup_progress(100, "startup complete");

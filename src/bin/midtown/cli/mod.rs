@@ -14,6 +14,7 @@ mod response;
 mod session;
 mod session_render;
 mod task;
+pub mod update;
 
 pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
@@ -197,6 +198,11 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.
 pub fn handle_config(cmd: &ConfigCommand) -> Result<Response, String> {
     config::handle(cmd)
+}
+
+/// Handle `midtown update` — check for and install the latest release.
+pub fn handle_update(check_only: bool) -> Result<Response, String> {
+    update::handle_update(check_only)
 }
 
 /// Handle `midtown webserver stop` command

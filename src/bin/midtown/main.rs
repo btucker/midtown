@@ -252,6 +252,12 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Update midtown to the latest release
+    Update {
+        /// Only check for updates, don't install
+        #[arg(long)]
+        check: bool,
+    },
     /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
     Oneshot {
@@ -658,6 +664,13 @@ fn main() {
         return;
     }
 
+    // Update command (no daemon required - checks GitHub releases)
+    if let Commands::Update { check } = &command {
+        let result = cli::handle_update(*check);
+        handle_result(format, result);
+        return;
+    }
+
     // State command (no daemon required - writes state file directly)
     if let Commands::State {
         phase,
@@ -1005,7 +1018,8 @@ fn main() {
         | Commands::Hook { .. }
         | Commands::Diagram { .. }
         | Commands::Log { .. }
-        | Commands::Webserver { .. } => unreachable!(),
+        | Commands::Webserver { .. }
+        | Commands::Update { .. } => unreachable!(),
     };
 
     handle_result(format, result);
