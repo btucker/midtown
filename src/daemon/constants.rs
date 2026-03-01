@@ -27,6 +27,12 @@ pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 
+/// Minimum time between nudging about orphaned PR issues (30 minutes).
+/// Orphaned PRs have no active coworker to fix them, so alerts repeat until
+/// a human intervenes. A longer cooldown prevents alert spam in #ops while
+/// still periodically reminding about unresolved issues.
+pub const ORPHANED_PR_NUDGE_COOLDOWN_SECS: u64 = 1800;
+
 /// Minimum age in seconds before a PR is eligible for auto-review (45 seconds).
 /// Tradeoff: Faster reviewer spawn vs. sufficient time for CI startup and author context.
 /// Reduced from 60s to 45s to improve throughput while maintaining buffer for CI checks

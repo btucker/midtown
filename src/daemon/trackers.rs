@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use super::constants::{PR_NUDGE_COOLDOWN_SECS, STUCK_NUDGE_COOLDOWN_SECS};
+use super::constants::{
+    ORPHANED_PR_NUDGE_COOLDOWN_SECS, PR_NUDGE_COOLDOWN_SECS, STUCK_NUDGE_COOLDOWN_SECS,
+};
 
 // ---------------------------------------------------------------------------
 // PrIssueType
@@ -83,6 +85,21 @@ impl PrIssueTracker {
         }
     }
 
+    /// Check if we should nudge for this issue using a custom cooldown duration.
+    /// Used for orphaned PRs which need a longer suppression window since there's
+    /// no active coworker to address the issue.
+    pub fn should_nudge_with_cooldown(
+        &self,
+        pr_number: u64,
+        issue_type: PrIssueType,
+        cooldown_secs: u64,
+    ) -> bool {
+        match self.nudged.get(&(pr_number, issue_type)) {
+            Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(cooldown_secs),
+            None => true,
+        }
+    }
+
     /// Record that we nudged for this issue
     pub fn record_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
         self.nudged.insert((pr_number, issue_type), Instant::now());
@@ -98,9 +115,11 @@ impl PrIssueTracker {
         self.nudged.contains_key(&(pr_number, issue_type))
     }
 
-    /// Clean up old entries (older than cooldown period)
+    /// Clean up old entries (older than the longest cooldown period).
+    /// Uses ORPHANED_PR_NUDGE_COOLDOWN_SECS since orphaned PR alerts use a
+    /// longer suppression window than the standard PR_NUDGE_COOLDOWN_SECS.
     pub fn cleanup(&mut self) {
-        let cutoff = Duration::from_secs(PR_NUDGE_COOLDOWN_SECS);
+        let cutoff = Duration::from_secs(ORPHANED_PR_NUDGE_COOLDOWN_SECS);
         self.nudged
             .retain(|_, last_nudge| last_nudge.elapsed() < cutoff);
     }

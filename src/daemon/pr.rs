@@ -548,7 +548,11 @@ async fn collect_orphaned_pr_effects(
             PrIssueType::MergeConflict | PrIssueType::CiFailed => {
                 let should_nudge = {
                     let tracker = state.pr_issue_tracker.lock().await;
-                    tracker.should_nudge(pr_number, *issue_type)
+                    tracker.should_nudge_with_cooldown(
+                        pr_number,
+                        *issue_type,
+                        ORPHANED_PR_NUDGE_COOLDOWN_SECS,
+                    )
                 };
                 if should_nudge {
                     let warning = format!(

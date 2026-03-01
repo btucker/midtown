@@ -71,10 +71,10 @@ fn tracker_allows_different_prs() {
 fn tracker_cleanup_removes_expired() {
     let mut tracker = PrIssueTracker::new();
 
-    // Insert an entry with an expired timestamp
+    // Insert an entry past the longest cooldown (orphaned PR = 30 min)
     tracker.nudged.insert(
         (42, PrIssueType::CiFailed),
-        Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 1),
+        Instant::now() - Duration::from_secs(ORPHANED_PR_NUDGE_COOLDOWN_SECS + 1),
     );
 
     tracker.cleanup();
@@ -82,6 +82,80 @@ fn tracker_cleanup_removes_expired() {
     assert!(
         tracker.nudged.is_empty(),
         "expired entries should be removed by cleanup"
+    );
+}
+
+#[test]
+fn tracker_cleanup_retains_entries_within_orphaned_cooldown() {
+    let mut tracker = PrIssueTracker::new();
+
+    // Insert an entry past standard cooldown but within orphaned cooldown
+    tracker.nudged.insert(
+        (42, PrIssueType::MergeConflict),
+        Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 60),
+    );
+
+    tracker.cleanup();
+
+    assert!(
+        !tracker.nudged.is_empty(),
+        "entries within orphaned cooldown should be retained by cleanup"
+    );
+}
+
+// -------------------------------------------------------------------------
+// PrIssueTracker — extended cooldown for orphaned PR alerts
+// -------------------------------------------------------------------------
+
+/// Bug: Orphaned PR alerts fire every 10 minutes (PR_NUDGE_COOLDOWN_SECS)
+/// even though nobody is actively working on them. The cooldown should be
+/// longer for orphaned PRs since there's no coworker to address the issue.
+#[test]
+fn orphaned_pr_alert_suppressed_during_extended_cooldown() {
+    let mut tracker = PrIssueTracker::new();
+
+    // Simulate a nudge that happened 11 minutes ago (past standard 10-min cooldown)
+    tracker.nudged.insert(
+        (42, PrIssueType::MergeConflict),
+        Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 60),
+    );
+
+    // Standard cooldown expired — regular should_nudge would allow it
+    assert!(
+        tracker.should_nudge(42, PrIssueType::MergeConflict),
+        "standard cooldown should have expired after 11 minutes"
+    );
+
+    // Extended cooldown for orphaned PRs should still suppress
+    assert!(
+        !tracker.should_nudge_with_cooldown(
+            42,
+            PrIssueType::MergeConflict,
+            ORPHANED_PR_NUDGE_COOLDOWN_SECS
+        ),
+        "orphaned PR alert should be suppressed during extended cooldown window"
+    );
+}
+
+/// After the extended cooldown expires, orphaned PR alerts should fire again.
+#[test]
+fn orphaned_pr_alert_fires_after_extended_cooldown_expires() {
+    let mut tracker = PrIssueTracker::new();
+
+    // Simulate a nudge that happened beyond the extended cooldown
+    tracker.nudged.insert(
+        (42, PrIssueType::MergeConflict),
+        Instant::now() - Duration::from_secs(ORPHANED_PR_NUDGE_COOLDOWN_SECS + 1),
+    );
+
+    // Extended cooldown also expired — should allow re-nudging
+    assert!(
+        tracker.should_nudge_with_cooldown(
+            42,
+            PrIssueType::MergeConflict,
+            ORPHANED_PR_NUDGE_COOLDOWN_SECS
+        ),
+        "orphaned PR alert should fire after extended cooldown expires"
     );
 }
 
