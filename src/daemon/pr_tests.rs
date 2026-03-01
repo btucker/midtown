@@ -1239,6 +1239,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         task_channel: std::collections::HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     }
 }
 
@@ -1249,6 +1250,7 @@ fn make_pr_context_empty() -> PrContext {
         task_channel: std::collections::HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     }
 }
 
@@ -1542,6 +1544,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         task_channel: HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1596,6 +1599,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         task_channel: HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     };
 
     let effects = comment_action_to_effects(
@@ -1646,6 +1650,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         task_channel: HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1699,6 +1704,7 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         task_channel: HashMap::new(),
         session_context: None,
         task_session_id: None,
+        has_active_reviewer: false,
     };
 
     let effects = review_complete_action_to_effects(
@@ -3149,4 +3155,251 @@ fn concatenated_json_pages_fail_without_slurp() {
     let comments: Vec<serde_json::Value> = serde_json::from_value(slurped).unwrap();
     let ids = extract_review_comment_ids_from_json(&comments);
     assert_eq!(ids, vec![1001, 1002]);
+}
+
+/// Helper to create a PrContext with a task association AND task_channel mapping,
+/// so that workflow events are emitted (requires both channel and task_id).
+fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) -> PrContext {
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(pr_number, task_id.to_string());
+    let mut task_channel = HashMap::new();
+    task_channel.insert(task_id.to_string(), channel.to_string());
+    PrContext {
+        pr_task_associations,
+        task_channel,
+        session_context: None,
+        task_session_id: None,
+        has_active_reviewer: false,
+    }
+}
+
+/// Helper: extract EmitWorkflowEvent effects from an effect list.
+fn extract_workflow_events(effects: &[Effect]) -> Vec<&crate::workflow::WorkflowEvent> {
+    effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::EmitWorkflowEvent(ev) = e {
+                Some(ev)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Gate !1902: PrApproved workflow event is suppressed while reviewer is active.
+///
+/// When a GitHub approved review arrives but the reviewer coworker is still working,
+/// the PrApproved event must NOT be emitted. This keeps the workflow script contract
+/// clean: "pr.approved = safe to merge".
+#[test]
+fn pr_approved_suppressed_while_reviewer_active() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    ctx.has_active_reviewer = true;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+
+    let workflow_events = extract_workflow_events(&effects);
+    assert!(
+        workflow_events.is_empty(),
+        "PrApproved should NOT be emitted while reviewer is active, got: {:?}",
+        workflow_events
+    );
+}
+
+/// Gate !1902: PrApproved workflow event IS emitted when no reviewer is active.
+///
+/// Once the reviewer has finished (assignment cleared, not in reviewing phase),
+/// the PrApproved event should fire normally.
+#[test]
+fn pr_approved_emitted_when_no_reviewer_active() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    // has_active_reviewer defaults to false
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "PrApproved should be emitted when no reviewer is active"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
+        ),
+        "Event should be PrApproved for PR #42"
+    );
+}
+
+/// Gate !1902: Other workflow events (e.g., CiFailed) are NOT affected by the reviewer gate.
+///
+/// The has_active_reviewer flag only gates PrApproved, not other event types.
+#[test]
+fn non_approved_events_unaffected_by_reviewer_gate() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    ctx.has_active_reviewer = true;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — CI failed".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::CiFailed,
+        &state,
+        &ctx,
+    );
+
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "CiFailed should be emitted regardless of reviewer state"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrCiFailed { pr_number: 42, .. }
+        ),
+        "Event should be PrCiFailed for PR #42"
+    );
+}
+
+/// Gate !1902: Full suppression → cooldown → clear → re-emit flow.
+///
+/// Verifies the Codex review fix: when PrApproved is suppressed due to active
+/// reviewer, the nudge cooldown is recorded. After clearing the cooldown (as
+/// happens when the reviewer finishes), the next tick successfully emits PrApproved.
+#[test]
+fn pr_approved_re_emitted_after_reviewer_clears() {
+    use crate::daemon::trackers::PrIssueTracker;
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42;
+
+    // Step 1: Reviewer is active → PrApproved suppressed
+    let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    ctx.has_active_reviewer = true;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        pr_number,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+    assert!(
+        extract_workflow_events(&effects).is_empty(),
+        "PrApproved should be suppressed while reviewer is active"
+    );
+
+    // Step 2: Simulate effect execution — nudge cooldown recorded
+    let mut tracker = PrIssueTracker::new();
+    tracker.record_nudge(pr_number, PrIssueType::Approved);
+    assert!(
+        !tracker.should_nudge(pr_number, PrIssueType::Approved),
+        "Nudge should be on cooldown after recording"
+    );
+
+    // Step 3: Reviewer finishes → clear nudge cooldown (as done in review-complete path)
+    tracker.clear_nudge(pr_number, PrIssueType::Approved);
+    assert!(
+        tracker.should_nudge(pr_number, PrIssueType::Approved),
+        "Nudge should be unblocked after clearing cooldown"
+    );
+
+    // Step 4: Next tick — reviewer cleared, PrApproved fires
+    let mut ctx_cleared = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    ctx_cleared.has_active_reviewer = false;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        pr_number,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx_cleared,
+    );
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "PrApproved should fire after reviewer clears"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
+        ),
+        "Event should be PrApproved for PR #42"
+    );
+}
+
+/// Gate !1902: has_cached_review bypass — PrApproved is NOT suppressed when the
+/// review is already cached, even if get_reviewer() still returns Some.
+///
+/// This handles the race between webhook review completion (which caches the
+/// review) and the poll tick that clears the reviewer assignment.
+#[tokio::test]
+async fn pr_approved_not_suppressed_when_review_cached() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42;
+
+    // Simulate: reviewer is assigned BUT review is already cached (complete)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            "lexington",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Build PrContext — should detect cached review and NOT flag active reviewer
+    let ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number)
+    };
+
+    assert!(
+        !ctx.has_active_reviewer,
+        "has_active_reviewer should be false when review is cached (race bypass)"
+    );
 }
