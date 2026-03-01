@@ -370,7 +370,9 @@ Together these create a layered defence: the early warning reaches the author at
 
 ## PR Merge Gating
 
-When a coworker calls `midtown pr merge --pr <N>`, the daemon runs three gates before enabling auto-merge:
+When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate and three gates before enabling auto-merge:
+
+**Pre-gate — Reviewer active**: Checks `get_reviewer(pr_number)` for raw assignment presence in `pr_reviewers`. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Uses non-expiring assignment presence (not the 600s timeout from `is_assigned()`), so long-running reviews are never bypassed. The assignment is only removed when the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
 
 1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set (populated by webhooks or polling fallback).
 
