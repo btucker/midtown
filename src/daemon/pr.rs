@@ -2460,6 +2460,22 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 }
             }
 
+            // Clear the Approved nudge cooldown so the next tick re-evaluates PrApproved.
+            // When the reviewer was active, PrApproved was suppressed (!1902) but
+            // RecordPrNudge still fired (the author still got nudged about the approval).
+            // Without clearing, the 600s cooldown blocks re-entry into pr_action_to_effects,
+            // delaying the PrApproved event even after the reviewer finishes.
+            {
+                let mut tracker = state.pr_issue_tracker.lock().await;
+                if tracker.has_nudge(pr_number, PrIssueType::Approved) {
+                    debug!(
+                        "PR #{} reviewer cleared, resetting Approved nudge cooldown for PrApproved re-evaluation",
+                        pr_number
+                    );
+                    tracker.clear_nudge(pr_number, PrIssueType::Approved);
+                }
+            }
+
             // Nudge the PR author — review is complete but PR is still open
             let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
             let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");

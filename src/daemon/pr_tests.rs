@@ -3293,3 +3293,80 @@ fn non_approved_events_unaffected_by_reviewer_gate() {
         "Event should be PrCiFailed for PR #42"
     );
 }
+
+/// Gate !1902: Full suppression → cooldown → clear → re-emit flow.
+///
+/// Verifies the Codex review fix: when PrApproved is suppressed due to active
+/// reviewer, the nudge cooldown is recorded. After clearing the cooldown (as
+/// happens when the reviewer finishes), the next tick successfully emits PrApproved.
+#[test]
+fn pr_approved_re_emitted_after_reviewer_clears() {
+    use crate::daemon::trackers::PrIssueTracker;
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42;
+
+    // Step 1: Reviewer is active → PrApproved suppressed
+    let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    ctx.has_active_reviewer = true;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        pr_number,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+    assert!(
+        extract_workflow_events(&effects).is_empty(),
+        "PrApproved should be suppressed while reviewer is active"
+    );
+
+    // Step 2: Simulate effect execution — nudge cooldown recorded
+    let mut tracker = PrIssueTracker::new();
+    tracker.record_nudge(pr_number, PrIssueType::Approved);
+    assert!(
+        !tracker.should_nudge(pr_number, PrIssueType::Approved),
+        "Nudge should be on cooldown after recording"
+    );
+
+    // Step 3: Reviewer finishes → clear nudge cooldown (as done in review-complete path)
+    tracker.clear_nudge(pr_number, PrIssueType::Approved);
+    assert!(
+        tracker.should_nudge(pr_number, PrIssueType::Approved),
+        "Nudge should be unblocked after clearing cooldown"
+    );
+
+    // Step 4: Next tick — reviewer cleared, PrApproved fires
+    let mut ctx_cleared = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    ctx_cleared.has_active_reviewer = false;
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        pr_number,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx_cleared,
+    );
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "PrApproved should fire after reviewer clears"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
+        ),
+        "Event should be PrApproved for PR #42"
+    );
+}
