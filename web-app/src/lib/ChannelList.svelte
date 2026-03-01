@@ -1,12 +1,13 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
-  import { fetchHistory, fetchChannels, getApiBase, closeThread, selectDm } from './api.js'
+  import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
   import {
     getChannelTaskCount,
     getChannelCiStatus,
     computeExpandedAfterTriangleClick,
     computeExpandedAfterChannelNameClick,
+    computeVisibleDmChannels,
   } from './channelUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
@@ -28,16 +29,34 @@
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
 
-  // DM section: collapsed by default, shows only unread when expanded
+  // DM section: collapsed by default, shows unread + active + visited DMs when expanded
   let dmSectionExpanded = false
   let showAllDms = false
+  let visitedDms = new SvelteSet()
+
+  // Auto-expand DM section when navigating to a DM (e.g., via CoworkerStatus click)
+  // and track the DM as visited so it remains visible after collapse/re-expand
+  $: if ($activeChannel && dmChannels.some((ch) => ch.name === $activeChannel)) {
+    dmSectionExpanded = true
+    visitedDms.add($activeChannel)
+  }
 
   $: unreadDmCount = dmChannels.filter((ch) => ch.unread > 0).length
-  $: visibleDmChannels = dmSectionExpanded
-    ? showAllDms
-      ? dmChannels
-      : dmChannels.filter((ch) => ch.unread > 0 || ch.name === $activeChannel)
-    : []
+  $: visibleDmChannels = computeVisibleDmChannels(dmChannels, {
+    expanded: dmSectionExpanded,
+    showAll: showAllDms,
+    activeChannel: $activeChannel,
+    visitedDms,
+  })
+  // Base visible count: what visibleDmChannels.length would be with showAll=false.
+  // Used for the "show less" guard — only show the button when collapsing would
+  // actually hide channels (i.e., total DMs > filtered DMs).
+  $: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
+    expanded: true,
+    showAll: false,
+    activeChannel: $activeChannel,
+    visitedDms,
+  }).length
 
   function selectChannel(channelName) {
     // Switch channel immediately for instant UI response (non-blocking).
@@ -320,7 +339,7 @@
         >
           show all ({dmChannels.length})
         </button>
-      {:else if showAllDms && dmChannels.length > unreadDmCount}
+      {:else if showAllDms && dmChannels.length > baseDmVisibleCount}
         <button
           class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
           onclick={() => showAllDms = false}
