@@ -181,19 +181,35 @@ pub(crate) fn task_created_message_author(task_channel: &str, main_channel: &str
     }
 }
 
-/// Resolve the effective channel for task announcement and nudge routing.
+/// Resolve the effective channel for task routing, announcement, and nudge.
 ///
 /// When a task is created with `--channel <name>` pointing to an archived
 /// channel (e.g., "daemon"), messages cannot be posted there and no channel
 /// lead is active for it. Falls back to the ops channel so the ops channel
 /// lead tracks the task instead.
 ///
-/// The original channel value is still stored in task metadata for
-/// organizational purposes — this only affects where the announcement
-/// message is posted and which channel lead gets nudged.
-pub(crate) fn resolve_effective_task_channel(task_channel: &str, is_archived: bool) -> &str {
+/// The effective channel is stored in both the task JSON and `ps.task_channel`
+/// so that all downstream routing (MIDTOWN_CHANNEL injection, insight posting,
+/// thread routing via `handle_task_metadata`) uses the correct channel.
+///
+/// If the ops channel is itself archived (defensive edge case), falls back to
+/// `main_channel` to avoid a silent routing failure.
+pub(crate) fn resolve_effective_task_channel<'a>(
+    task_channel: &'a str,
+    is_archived: bool,
+    is_ops_archived: bool,
+    main_channel: &'a str,
+) -> &'a str {
     if is_archived {
-        super::constants::OPS_CHANNEL
+        if is_ops_archived {
+            warn!(
+                "Both channel '{}' and ops channel are archived — falling back to main channel",
+                task_channel
+            );
+            main_channel
+        } else {
+            super::constants::OPS_CHANNEL
+        }
     } else {
         task_channel
     }
@@ -259,8 +275,29 @@ pub(super) async fn handle_task_create(
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
 
-    // Create the task with the specified channel (or the repo name as default)
-    let task_channel = channel.unwrap_or(&repo_name);
+    // Determine the requested channel, then resolve to an effective channel.
+    // Archived channels (e.g., "daemon") cannot receive messages and have no
+    // active channel lead, so we redirect to ops. The effective channel is stored
+    // in both the task JSON and ps.task_channel so all downstream routing
+    // (MIDTOWN_CHANNEL injection, insight posting, thread routing) is consistent.
+    let requested_channel = channel.unwrap_or(&repo_name);
+    let is_archived = state.channel_router.is_channel_archived(requested_channel);
+    let is_ops_archived = is_archived
+        && state
+            .channel_router
+            .is_channel_archived(super::constants::OPS_CHANNEL);
+    let effective_channel = resolve_effective_task_channel(
+        requested_channel,
+        is_archived,
+        is_ops_archived,
+        state.default_channel_name(),
+    );
+    if is_archived {
+        info!(
+            "Task channel '{}' is archived — redirecting to '{}'",
+            requested_channel, effective_channel
+        );
+    }
 
     let task_id = match crate::tasks::create_task_for_repo(
         subject,
@@ -269,7 +306,7 @@ pub(super) async fn handle_task_create(
         "",
         &repo_name,
         blocked_by,
-        Some(task_channel),
+        Some(effective_channel),
         pr,
     ) {
         Ok(id) => id,
@@ -281,11 +318,17 @@ pub(super) async fn handle_task_create(
         }
     };
 
-    // Persist channel mapping (explicit --channel or default repo name)
+    // Persist channel mapping using the effective channel so downstream reads
+    // (handle_task_metadata, WorldSnapshot.task_channel, MIDTOWN_CHANNEL) all
+    // see the routable channel.
     {
         let mut ps = state.persistent_state.lock().await;
-        if apply_task_channel_mapping(&mut ps.task_channel, &task_id, Some(task_channel), false)
-            && let Err(e) = ps.save_for_repo(&repo_name)
+        if apply_task_channel_mapping(
+            &mut ps.task_channel,
+            &task_id,
+            Some(effective_channel),
+            false,
+        ) && let Err(e) = ps.save_for_repo(&repo_name)
         {
             warn!("Failed to save task channel mapping: {}", e);
         }
@@ -332,12 +375,6 @@ pub(super) async fn handle_task_create(
             );
         }
     }
-
-    // Resolve the effective channel for announcement and nudge routing.
-    // Archived channels (e.g., "daemon") cannot receive messages, so we redirect
-    // to the ops channel. The original channel is still stored in task metadata.
-    let is_archived = state.channel_router.is_channel_archived(task_channel);
-    let effective_channel = resolve_effective_task_channel(task_channel, is_archived);
 
     // Post to the effective channel so the right team sees it, attributed to the
     // channel lead. Capture message ID for task-as-thread feature.

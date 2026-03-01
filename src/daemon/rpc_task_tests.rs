@@ -502,24 +502,34 @@ fn test_no_channel_change_preserves_task_thread_id() {
 /// were spawning a "daemon" channel lead with wrong attribution.
 #[test]
 fn test_resolve_effective_task_channel_archived_falls_back_to_ops() {
-    let effective = resolve_effective_task_channel("daemon", true);
+    let effective = resolve_effective_task_channel("daemon", true, false, "midtown");
     assert_eq!(effective, "ops", "archived channels should route to ops");
 }
 
 /// A non-archived topic channel should pass through unchanged.
 #[test]
 fn test_resolve_effective_task_channel_active_channel_unchanged() {
-    let effective = resolve_effective_task_channel("notes", false);
+    let effective = resolve_effective_task_channel("notes", false, false, "midtown");
     assert_eq!(effective, "notes", "active channels should pass through");
 }
 
 /// The main channel should pass through unchanged (it's never archived).
 #[test]
 fn test_resolve_effective_task_channel_main_channel_unchanged() {
-    let effective = resolve_effective_task_channel("midtown", false);
+    let effective = resolve_effective_task_channel("midtown", false, false, "midtown");
     assert_eq!(
         effective, "midtown",
         "main channel should pass through unchanged"
+    );
+}
+
+/// When the ops channel is also archived, fall back to the main channel.
+#[test]
+fn test_resolve_effective_task_channel_ops_also_archived_falls_back_to_main() {
+    let effective = resolve_effective_task_channel("daemon", true, true, "midtown");
+    assert_eq!(
+        effective, "midtown",
+        "when ops is also archived, should fall back to main channel"
     );
 }
 
@@ -528,7 +538,7 @@ fn test_resolve_effective_task_channel_main_channel_unchanged() {
 /// should be authored by "ops" (the effective channel lead), not "daemon".
 #[test]
 fn test_archived_channel_announcement_uses_ops_author() {
-    let effective = resolve_effective_task_channel("daemon", true);
+    let effective = resolve_effective_task_channel("daemon", true, false, "midtown");
     let author = task_created_message_author(effective, "midtown");
     assert_eq!(
         author, "ops",
@@ -539,10 +549,50 @@ fn test_archived_channel_announcement_uses_ops_author() {
 /// Combined test: active channel with announcement routing stays correct.
 #[test]
 fn test_active_channel_announcement_uses_channel_author() {
-    let effective = resolve_effective_task_channel("notes", false);
+    let effective = resolve_effective_task_channel("notes", false, false, "midtown");
     let author = task_created_message_author(effective, "midtown");
     assert_eq!(
         author, "notes",
         "active channel tasks should be announced by the channel lead"
+    );
+}
+
+/// The effective channel should be what gets stored in ps.task_channel,
+/// so downstream routing (insights, MIDTOWN_CHANNEL, handle_task_metadata)
+/// all use the correct routable channel.
+#[test]
+fn test_archived_channel_stores_effective_in_task_channel_mapping() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+
+    // Simulate what handle_task_create now does: resolve effective channel
+    // first, then store it in ps.task_channel.
+    let effective = resolve_effective_task_channel("daemon", true, false, "midtown");
+    apply_task_channel_mapping(&mut ps.task_channel, task_id, Some(effective), false);
+
+    assert_eq!(
+        ps.task_channel.get("42"),
+        Some(&"ops".to_string()),
+        "ps.task_channel should store the effective channel (ops), not the archived name (daemon)"
+    );
+}
+
+/// When ops is also archived, the main channel should be stored.
+#[test]
+fn test_ops_archived_stores_main_channel_in_task_channel_mapping() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+
+    let effective = resolve_effective_task_channel("daemon", true, true, "midtown");
+    apply_task_channel_mapping(&mut ps.task_channel, task_id, Some(effective), false);
+
+    assert_eq!(
+        ps.task_channel.get("42"),
+        Some(&"midtown".to_string()),
+        "when ops is archived, ps.task_channel should store the main channel"
     );
 }
