@@ -103,7 +103,12 @@
   // Stable thread identity: changes only when a different thread is opened or closed.
   // Using $derived ensures the clearing effect below re-runs only on actual thread switches,
   // not on every message-array update (which reassigns $threadData but keeps the same id).
-  let currentThreadId = $derived($threadData?.parentMessage?.id ?? null)
+  // Falls back to a task-based key for task threads without a parent message (openTaskThread
+  // with no message_id), so drafts and thinking state still work for card-only threads.
+  let currentThreadId = $derived(
+    $threadData?.parentMessage?.id
+      ?? ($threadData?.tasks?.[0]?.id != null ? `task-${$threadData.tasks[0].id}` : null)
+  )
 
   // Clear thinking when the thread is closed or switched to a different thread.
   $effect(() => {
