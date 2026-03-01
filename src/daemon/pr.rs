@@ -149,6 +149,10 @@ struct PrContext {
     /// Session-centric resume info: if the PR's task has a stopped session,
     /// this holds the session_id for resume.
     task_session_id: Option<String>,
+    /// Whether this PR has an active reviewer (assigned or in reviewing phase).
+    /// Used to suppress `PrApproved` workflow events while a reviewer is still working,
+    /// so the workflow script contract remains: "pr.approved = safe to merge".
+    has_active_reviewer: bool,
 }
 
 impl PrContext {
@@ -178,11 +182,17 @@ impl PrContext {
                 .map(|s| s.session_id.clone())
         });
 
+        // Gate check: reviewer assigned in github-state (raw presence, no timeout).
+        // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event
+        // layer stays consistent with the merge enforcement layer.
+        let has_active_reviewer = ps.github.get_reviewer(pr_number).is_some();
+
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
             task_session_id,
+            has_active_reviewer,
         }
     }
 
@@ -193,6 +203,7 @@ impl PrContext {
             task_channel: ps.task_channel.clone(),
             session_context: None,
             task_session_id: None,
+            has_active_reviewer: false,
         }
     }
 
@@ -200,6 +211,61 @@ impl PrContext {
     fn get_channel(&self, pr_number: u64) -> Option<String> {
         let task_id = self.pr_task_associations.get(&pr_number)?;
         self.task_channel.get(task_id).cloned()
+    }
+
+    /// Defense-in-depth: check if any coworker in `reviewing_phase_coworkers`
+    /// (from the snapshot) is assigned to review this PR.
+    ///
+    /// Catches the edge case where the reviewer assignment has been cleared
+    /// but the coworker session is still in Reviewing workflow phase.
+    fn augment_reviewer_from_snapshot(
+        &mut self,
+        pr_number: u64,
+        snap: &super::snapshot::WorldSnapshot,
+    ) {
+        if self.has_active_reviewer {
+            return; // Already flagged via get_reviewer()
+        }
+        self.has_active_reviewer = snap
+            .reviewing_phase_coworkers
+            .iter()
+            .any(|name| snap.reviewer_pr_assignments.get(name).copied() == Some(pr_number));
+    }
+
+    /// Async version of the reviewing-phase check, reading coworker records
+    /// and reviewer assignments directly from state. Used by webhook handlers
+    /// that don't have a snapshot available.
+    async fn augment_reviewer_from_coworker_records(
+        &mut self,
+        pr_number: u64,
+        state: &DaemonState,
+    ) {
+        if self.has_active_reviewer {
+            return; // Already flagged via get_reviewer()
+        }
+        let reviewing_names: std::collections::HashSet<String> = {
+            let records = state.coworker_records.read().await;
+            records
+                .iter()
+                .filter(|(_, rec)| {
+                    matches!(
+                        rec.workflow_phase,
+                        Some(crate::coworker_state::WorkflowPhase::Reviewing)
+                    )
+                })
+                .map(|(name, _)| name.to_lowercase())
+                .collect()
+        };
+        if reviewing_names.is_empty() {
+            return;
+        }
+        let ps = state.persistent_state.lock().await;
+        self.has_active_reviewer = reviewing_names.iter().any(|name| {
+            ps.github
+                .pr_for_reviewer(name)
+                .map(|assigned_pr| assigned_pr == pr_number)
+                .unwrap_or(false)
+        });
     }
 }
 
@@ -900,13 +966,18 @@ pub(super) async fn poll_prs_for_issues(
             );
 
             // Extract all decision context from persistent state in one lock
-            let (pr_ctx, channel_lead_names) = {
+            let (mut pr_ctx, channel_lead_names) = {
                 let ps = state.persistent_state.lock().await;
                 (
                     PrContext::from_persistent_state(&ps, pr_number),
                     ps.channel_lead_names(),
                 )
             };
+
+            // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
+            // Catches cases where the reviewer assignment is cleared but the coworker
+            // session is still in Reviewing phase.
+            pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
             // Decide action using pure decision function with handoff support
             let action = decide_pr_issue_action_with_handoff(
@@ -1124,13 +1195,16 @@ async fn collect_green_with_feedback_effects(
         );
 
         // Extract all decision context from persistent state in one lock
-        let (pr_ctx, channel_lead_names) = {
+        let (mut pr_ctx, channel_lead_names) = {
             let ps = state.persistent_state.lock().await;
             (
                 PrContext::from_persistent_state(&ps, pr_number),
                 ps.channel_lead_names(),
             )
         };
+
+        // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
+        pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
         // Decide action using handoff-aware decision function (matches webhook path)
         let action = crate::rules::decide_pr_issue_action_with_handoff(
@@ -1312,6 +1386,17 @@ fn pr_action_to_effects(
     // PR lifecycle events (approval, CI, conflicts) without modifying core logic.
     if let (Some(channel), Some(task_id)) = (&channel, ctx.pr_task_associations.get(&pr_number)) {
         let pr_event = match issue_type {
+            PrIssueType::Approved if ctx.has_active_reviewer => {
+                // Suppress PrApproved while a reviewer is still working.
+                // The event will be re-evaluated on the next tick or when the
+                // reviewer session ends / assignment clears. This keeps the
+                // workflow script contract clean: "pr.approved = safe to merge".
+                debug!(
+                    "PR #{}: suppressing PrApproved — reviewer still active",
+                    pr_number
+                );
+                None
+            }
             PrIssueType::Approved => Some(crate::workflow::WorkflowEvent::PrApproved {
                 channel: channel.clone(),
                 task_id: task_id.clone(),
@@ -3756,13 +3841,18 @@ pub(super) async fn handle_webhook_review_state_change(
         .collect();
 
     // Extract all decision context from persistent state in one lock
-    let (pr_ctx, channel_lead_names) = {
+    let (mut pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
         (
             PrContext::from_persistent_state(&ps, pr_number),
             ps.channel_lead_names(),
         )
     };
+
+    // Defense-in-depth: also check reviewing_phase_coworkers from coworker records.
+    pr_ctx
+        .augment_reviewer_from_coworker_records(pr_number, state)
+        .await;
 
     let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
