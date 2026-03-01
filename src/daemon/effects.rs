@@ -1566,6 +1566,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     // Clear task assignment tracking (coworker is now free)
                     state.clear_task_assignment_by_task(&task_id);
+
+                    // Push notification so mobile users know a task completed
+                    state.send_push_notification(
+                        &format!("Task !{} completed", task_id),
+                        &format!("Task !{} has been completed", task_id),
+                        "task_completed",
+                    );
                 }
             }
             Effect::ClearBlockedBy {

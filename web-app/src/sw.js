@@ -41,7 +41,18 @@ self.addEventListener('push', (event) => {
     },
   }
 
-  event.waitUntil(self.registration.showNotification(title, options))
+  // Skip notification if a client window is focused (user is already in the app)
+  event.waitUntil(
+    clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then((windowClients) => {
+        const hasFocusedClient = windowClients.some(
+          (client) => client.visibilityState === 'visible' && client.focused
+        )
+        if (hasFocusedClient) return
+        return self.registration.showNotification(title, options)
+      })
+  )
 })
 
 // Handle notification click - open or focus the PWA

@@ -230,7 +230,7 @@ impl PushManager {
         let builder = WebPushBuilder::new(endpoint, ua_public, ua_auth)
             .with_valid_duration(std::time::Duration::from_secs(12 * 3600));
 
-        let signed_builder = builder.with_vapid(kp, "mailto:midtown@localhost");
+        let signed_builder = builder.with_vapid(kp, "mailto:push@midtown.dev");
 
         let request = signed_builder
             .build(json_payload.as_bytes())
