@@ -744,7 +744,7 @@ pub(super) async fn handle_pr_merge(
 ) -> Response {
     info!("Merge requested for PR #{}", pr_number);
 
-    // Pre-gate: Block merge while a reviewer is assigned.
+    // Pre-gate: Block merge while a reviewer is actively working.
     //
     // This is a hard gate that prevents merging while the daemon knows a
     // reviewer coworker is still working on the PR. Unlike the soft
@@ -756,17 +756,29 @@ pub(super) async fn handle_pr_merge(
     // merges slip through for long-running reviews. Assignments are only
     // removed when the review actually completes or the PR is closed.
     //
+    // However, there is a window between the webhook marking the review
+    // as complete (`mark_reviewed_pr`) and the poll tick clearing the
+    // assignment (`remove_assignment`). To avoid blocking legitimate
+    // merges during this window, we skip the block if the review is
+    // already cached as complete.
+    //
     // Checked before any API calls for fast rejection.
     {
         let ps = state.persistent_state.lock().await;
         if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
-            let reviewer = reviewer.to_string();
-            let message = format!(
-                "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
-                pr_number, reviewer
+            if !ps.github.has_cached_review(pr_number) {
+                let reviewer = reviewer.to_string();
+                let message = format!(
+                    "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
+                    pr_number, reviewer
+                );
+                warn!("{}", message);
+                return Response::error(id, RpcError::new(-32603, message));
+            }
+            debug!(
+                "PR #{} has reviewer assigned but review is already complete — allowing merge",
+                pr_number
             );
-            warn!("{}", message);
-            return Response::error(id, RpcError::new(-32603, message));
         }
     }
 
