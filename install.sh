@@ -72,6 +72,16 @@ mkdir -p "$INSTALL_DIR"
 mv "${TMP_DIR}/midtown" "${INSTALL_DIR}/midtown"
 chmod +x "${INSTALL_DIR}/midtown"
 
+# Install bundled web-app if present in the tarball (atomic swap)
+if [ -d "${TMP_DIR}/web-app" ]; then
+    if [ -d "${INSTALL_DIR}/web-app" ]; then
+        mv "${INSTALL_DIR}/web-app" "${INSTALL_DIR}/web-app.old"
+    fi
+    mv "${TMP_DIR}/web-app" "${INSTALL_DIR}/web-app"
+    rm -rf "${INSTALL_DIR}/web-app.old"
+    echo "Installed web UI to ${INSTALL_DIR}/web-app/"
+fi
+
 echo ""
 echo "Installed midtown ${VERSION} to ${INSTALL_DIR}/midtown"
 

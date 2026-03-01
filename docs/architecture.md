@@ -478,6 +478,15 @@ The split-poll architecture ensures coworker phase changes appear in real-time (
 
 ## Web UI
 
+### Asset Resolution
+
+`resolve_web_dir()` (`src/lib.rs`) locates the built web-app static assets at runtime by checking two candidates in order:
+
+1. **`exe_dir/web-app/dist`** — next to the running binary (works for release tarballs, Docker, and curl installs)
+2. **`CARGO_MANIFEST_DIR/web-app/dist`** — source tree path baked in at compile time (works for `cargo install --path .` development builds)
+
+The release pipeline builds the web-app once (Node 22, `npm ci && npm run build`) as a platform-independent artifact, then bundles `web-app/dist/` alongside the binary in every platform tarball. The Docker image uses a separate `node:22-slim` build stage and copies the dist into `/usr/local/bin/web-app/dist`. The curl install script extracts and places `web-app/` next to the binary.
+
 The web interface is a Svelte 5 + Vite SPA served on port 47022:
 
 - Installable as a PWA for mobile use

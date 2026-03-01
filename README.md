@@ -18,7 +18,7 @@ Coworkers are the agents created to pick up and execute those tasks. Coworkers o
 
 1. Install the [GitHub CLI](https://cli.github.com/).
 2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
-3. Install [Node.js](https://nodejs.org/) (for the web app build — `midtown start` runs `npm run build` automatically).
+3. Install [Node.js](https://nodejs.org/) (only needed when building from source — release binaries and Docker images include a pre-built web app).
 
 ### 1. Install
 
