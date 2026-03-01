@@ -358,4 +358,25 @@ describe('computeVisibleDmChannels', () => {
     // dm-alice: unread > 0, dm-bob: visited, dm-carol: active
     expect(result.map((ch) => ch.name)).toEqual(['dm-alice', 'dm-bob', 'dm-carol'])
   })
+
+  it('"show less" is redundant when all DMs are visited (no hidden channels)', () => {
+    // Scenario: 3 DMs, all visited, none unread. Clicking "show all" then
+    // "show less" should return to the same set — so "show less" should not
+    // appear. We verify by checking that the filtered count (showAll=false)
+    // equals the total count, making the guard `total > filtered` false.
+    const allVisited = new Set(['dm-alice', 'dm-bob', 'dm-carol'])
+    const allDmsNoUnread = [
+      { name: 'dm-alice', unread: 0, is_dm: true },
+      { name: 'dm-bob', unread: 0, is_dm: true },
+      { name: 'dm-carol', unread: 0, is_dm: true },
+    ]
+    const filtered = computeVisibleDmChannels(allDmsNoUnread, {
+      expanded: true,
+      showAll: false,
+      activeChannel: 'midtown',
+      visitedDms: allVisited,
+    })
+    // All 3 are visited, so filtered set = full set → "show less" is redundant
+    expect(filtered.length).toBe(allDmsNoUnread.length)
+  })
 })

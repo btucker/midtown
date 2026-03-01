@@ -48,6 +48,15 @@
     activeChannel: $activeChannel,
     visitedDms,
   })
+  // Base visible count: what visibleDmChannels.length would be with showAll=false.
+  // Used for the "show less" guard — only show the button when collapsing would
+  // actually hide channels (i.e., total DMs > filtered DMs).
+  $: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
+    expanded: true,
+    showAll: false,
+    activeChannel: $activeChannel,
+    visitedDms,
+  }).length
 
   function selectChannel(channelName) {
     // Switch channel immediately for instant UI response (non-blocking).
@@ -330,7 +339,7 @@
         >
           show all ({dmChannels.length})
         </button>
-      {:else if showAllDms && dmChannels.length > unreadDmCount}
+      {:else if showAllDms && dmChannels.length > baseDmVisibleCount}
         <button
           class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
           onclick={() => showAllDms = false}
