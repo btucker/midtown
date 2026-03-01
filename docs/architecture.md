@@ -262,7 +262,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 - `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
 - `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. Populated in two ways: (1) explicitly via `--thread-id` on `midtown task create` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), or (2) automatically defaulted to the task's announcement message ID when no explicit thread ID is provided. This ensures every task's coworker posts route to the task announcement thread by default. `SpawnSession` reads this mapping to set `bound_thread_id` on the spawned coworker's `SessionRecord`.
 - `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
-- `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since `spawn_fork` consumes the init event before the event loop sees it.
+- `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since fork sessions (--resume --fork-session) never emit `system/init` and the session ID is pre-assigned via `--session-id`.
 
 **Architectural invariants:**
 - Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.

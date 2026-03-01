@@ -1203,7 +1203,15 @@ pub(super) async fn create_fork_session(
         setting_sources: None,
         auth_provider,
         env,
-        session_id: None,
+        // Pre-assign session_id for Claude/Zai fork sessions so the daemon
+        // controls the fork's ID immediately at spawn time. Forked sessions
+        // (--resume --fork-session) don't emit system/init, so the daemon
+        // cannot discover the ID from the event stream.
+        // Codex forks don't support --session-id, so leave it None for them.
+        session_id: match auth_provider {
+            crate::auth::AuthProvider::Codex => None,
+            _ => Some(uuid::Uuid::new_v4().to_string()),
+        },
         fork_session: true,
     };
 
@@ -1233,8 +1241,8 @@ pub(super) async fn create_fork_session(
     }
 
     // Backfill the data structures that the event loop normally populates from the
-    // init event. spawn_fork consumes the init event to extract the session_id, so
-    // the event loop never sees it. We must create the SessionRecord and populate
+    // init event. Fork sessions (--resume --fork-session) never emit system/init,
+    // so the event loop never sees one. We must create the SessionRecord and populate
     // the name↔session reverse maps ourselves.
     {
         let mut ps = state.persistent_state.lock().await;

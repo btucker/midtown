@@ -511,20 +511,19 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Spawn a forked session and wait for its init event to capture the session ID.
+    /// Spawn a forked session and return its session ID.
     ///
-    /// Unlike `spawn()`, this method blocks (with a timeout) until the forked Claude
-    /// process emits its `system/init` event. This gives us the new session_id before
-    /// returning — required so `session.fork` can record the `thread_parent_id →
-    /// session_id` mapping immediately in `topic_sessions`.
+    /// Two strategies for obtaining the fork's session ID:
     ///
-    /// After the init event, the session is registered in the sessions map and the
-    /// event loop picks it up for normal event processing.
+    /// 1. **Pre-assigned** (`config.session_id = Some(uuid)`): The UUID is passed
+    ///    to the CLI as `--session-id`, giving the daemon immediate control. Used
+    ///    for Claude/Zai forks whose `--resume --fork-session` mode does NOT emit
+    ///    `system/init`. A 2-second health check catches immediate startup failures.
     ///
-    /// **Important:** This method consumes the init event, so the event loop's normal
-    /// backfill path (which creates `SessionRecord` and populates `name_to_session` /
-    /// `session_to_name`) will NOT fire for fork sessions. The caller
-    /// (`handle_session_fork`) must perform this backfill itself.
+    /// 2. **Init-event discovery** (`config.session_id = None`): The daemon waits
+    ///    up to 30 seconds for the process to emit a `system/init` event containing
+    ///    the session/thread ID. Used for Codex forks, where the thread/start
+    ///    response generates a synthetic init event.
     ///
     /// **Architectural invariant:** Fork sessions are NOT registered in
     /// `CoworkerManager`. They bypass `spawn_coworker()` entirely. This means they
@@ -536,9 +535,8 @@ impl SessionManager {
         name: &str,
         config: HeadlessConfig,
     ) -> Result<String, crate::Error> {
-        use tokio::time;
-
         let slot_id = uuid::Uuid::new_v4().to_string();
+        let preassigned_session_id = config.session_id.clone();
 
         // Spawn the headless process (with fork_session: true in config)
         let mut session = HeadlessSession::spawn(&config)
@@ -556,33 +554,60 @@ impl SessionManager {
             });
         }
 
-        // Wait up to 30s for the init event to get the session_id
-        let fork_session_id = time::timeout(std::time::Duration::from_secs(30), async {
-            loop {
-                match session.next_event().await {
-                    Some(crate::headless::StreamEvent::System {
-                        ref subtype,
-                        ref session_id,
-                        ..
-                    }) if subtype == "init" => {
-                        return session_id.clone();
-                    }
-                    Some(_) => continue,
-                    None => return None,
-                }
+        let fork_session_id = if let Some(sid) = preassigned_session_id {
+            // Claude/Zai path: session_id was pre-assigned via --session-id flag.
+            // Forked sessions (--resume --fork-session) don't emit system/init,
+            // so we register immediately using the pre-assigned ID. A non-blocking
+            // try_wait() catches processes that crash during startup without
+            // penalizing healthy spawns with a fixed sleep. The event loop's
+            // dead-session detection handles later exits (same pattern as spawn_coworker).
+            if let Ok(Some(status)) = session.try_wait() {
+                let stderr = session.drain_stderr().await;
+                let stderr_summary = if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (stderr: {})", stderr.join("; "))
+                };
+                return Err(crate::Error::Rpc {
+                    code: -32603,
+                    message: format!(
+                        "Fork session for '{}' exited immediately with {}{}",
+                        name, status, stderr_summary
+                    ),
+                });
             }
-        })
-        .await
-        .map_err(|_| crate::Error::Rpc {
-            code: -32603,
-            message: format!("Fork session init timed out for '{}'", name),
-        })?
-        .ok_or_else(|| crate::Error::Rpc {
-            code: -32603,
-            message: format!("Fork session exited before emitting init for '{}'", name),
-        })?;
+            sid
+        } else {
+            // Codex path: wait for the init event to discover the thread ID.
+            // Codex's thread/start response generates a synthetic system/init event.
+            use tokio::time;
+            time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    match session.next_event().await {
+                        Some(crate::headless::StreamEvent::System {
+                            ref subtype,
+                            ref session_id,
+                            ..
+                        }) if subtype == "init" => {
+                            return session_id.clone();
+                        }
+                        Some(_) => continue,
+                        None => return None,
+                    }
+                }
+            })
+            .await
+            .map_err(|_| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Fork session init timed out for '{}'", name),
+            })?
+            .ok_or_else(|| crate::Error::Rpc {
+                code: -32603,
+                message: format!("Fork session exited before emitting init for '{}'", name),
+            })?
+        };
 
-        // Register in the sessions map so the event loop picks it up
+        // Register in the sessions map so the event loop picks it up.
         let mut sessions = self.sessions.write().await;
         let cs = CoworkerSession::new(
             slot_id.clone(),
