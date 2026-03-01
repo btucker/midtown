@@ -145,7 +145,8 @@ jobs:
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
   # ─── Build platform-specific binaries and upload as release assets ─────
-  # Uses native runners for each platform — no cross-compilation needed.
+  # Uses native runners where possible; cross-compiles x86_64-apple-darwin
+  # on arm64 macOS (macos-13 Intel runners were retired by GitHub).
   binaries:
     name: Binary (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -157,7 +158,7 @@ jobs:
           - runner: macos-latest
             target: aarch64-apple-darwin
             asset: midtown-darwin-arm64
-          - runner: macos-13
+          - runner: macos-latest
             target: x86_64-apple-darwin
             asset: midtown-darwin-amd64
           - runner: ubuntu-latest
@@ -171,6 +172,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -189,12 +192,12 @@ jobs:
           echo "version=${RELEASE_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build release binary
-        run: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package binary
         run: |
           mkdir -p staging
-          cp target/release/midtown staging/
+          cp target/${{ matrix.target }}/release/midtown staging/
           cd staging
           tar czf ../${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz midtown
 
