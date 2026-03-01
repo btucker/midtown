@@ -123,6 +123,38 @@ async fn test_merge_not_blocked_when_no_reviewer_assigned() {
     }
 }
 
+/// When the webhook marks a review as complete (`mark_reviewed_pr`) but the
+/// poll tick hasn't yet cleared the assignment (`remove_assignment`), merge
+/// should NOT be blocked. This covers the race window between the two paths.
+#[tokio::test]
+async fn test_merge_not_blocked_when_reviewed_but_assignment_not_yet_cleared() {
+    let (state, _tmp, _guard) = make_merge_test_state();
+    let pr_number: u64 = 88;
+
+    // Simulate the race: reviewer is assigned AND review is cached as complete,
+    // but `remove_assignment` hasn't run yet (poll tick pending).
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            "park",
+            crate::github_state::AssignmentSource::Webhook,
+        );
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    let response = handle_pr_merge(crate::rpc::RequestId::Number(4), pr_number, &state).await;
+
+    // May fail on other gates (CI, etc.), but should NOT mention "review in progress"
+    if let Some(err) = &response.error {
+        assert!(
+            !err.message.contains("review in progress"),
+            "should not block on reviewer gate when review is already complete, got: {}",
+            err.message
+        );
+    }
+}
+
 /// After a reviewer assignment is removed (review completed), merge should
 /// not be blocked by the reviewer-active gate.
 #[tokio::test]
