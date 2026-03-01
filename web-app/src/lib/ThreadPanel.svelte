@@ -1,7 +1,7 @@
 <script>
   import { threadData, agentToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
-  import { tick, onMount, onDestroy } from 'svelte'
+  import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -86,6 +86,9 @@
   }
 
   let replyText = $state('')
+  // Per-thread draft storage: saves replyText when switching between threads
+  let threadDrafts = new Map()
+  let prevThreadId = null
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
   let desktopTextareaEl = $state(null)
@@ -100,7 +103,12 @@
   // Stable thread identity: changes only when a different thread is opened or closed.
   // Using $derived ensures the clearing effect below re-runs only on actual thread switches,
   // not on every message-array update (which reassigns $threadData but keeps the same id).
-  let currentThreadId = $derived($threadData?.parentMessage?.id ?? null)
+  // Falls back to a task-based key for task threads without a parent message (openTaskThread
+  // with no message_id), so drafts and thinking state still work for card-only threads.
+  let currentThreadId = $derived(
+    $threadData?.parentMessage?.id
+      ?? ($threadData?.tasks?.[0]?.id != null ? `task-${$threadData.tasks[0].id}` : null)
+  )
 
   // Clear thinking when the thread is closed or switched to a different thread.
   $effect(() => {
@@ -110,6 +118,23 @@
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
     }
+  })
+
+  // Save/restore drafts when switching threads
+  $effect(() => {
+    const tid = currentThreadId
+    if (prevThreadId !== null && prevThreadId !== tid) {
+      const currentReply = untrack(() => replyText)
+      if (currentReply.trim()) {
+        threadDrafts.set(prevThreadId, currentReply)
+      } else {
+        threadDrafts.delete(prevThreadId)
+      }
+    }
+    if (prevThreadId !== tid) {
+      replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+    }
+    prevThreadId = tid
   })
 
   // Clear thinking when real InProgress tool items arrive for this thread's channel.
