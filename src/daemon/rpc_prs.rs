@@ -726,7 +726,11 @@ async fn fetch_pr_json_for_review(
 
 /// Handle `pr.merge` RPC method — daemon-gated PR merge with gate checks.
 ///
-/// Checks three gates before allowing merge:
+/// Pre-gate: Blocks merge while a reviewer coworker is actively assigned.
+/// This is a hard gate that prevents the PR #1624 incident where a merge
+/// happened while the reviewer was still working.
+///
+/// Then checks three gates before allowing merge:
 /// 1. Review completed (via `is_pr_reviewed()`)
 /// 2. CI passing (via `all_ci_checks_passed()`)
 /// 3. All review feedback addressed (via `addresses-review` tags)
@@ -739,6 +743,32 @@ pub(super) async fn handle_pr_merge(
     state: &DaemonState,
 ) -> Response {
     info!("Merge requested for PR #{}", pr_number);
+
+    // Pre-gate: Block merge while a reviewer is assigned.
+    //
+    // This is a hard gate that prevents merging while the daemon knows a
+    // reviewer coworker is still working on the PR. Unlike the soft
+    // prompt-based instructions that were bypassed in the PR #1624 incident,
+    // this check cannot be circumvented by the lead or coworker.
+    //
+    // Uses `get_reviewer()` (raw assignment presence) instead of
+    // `is_assigned()` (600s timeout). The timeout-based check would let
+    // merges slip through for long-running reviews. Assignments are only
+    // removed when the review actually completes or the PR is closed.
+    //
+    // Checked before any API calls for fast rejection.
+    {
+        let ps = state.persistent_state.lock().await;
+        if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
+            let reviewer = reviewer.to_string();
+            let message = format!(
+                "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
+                pr_number, reviewer
+            );
+            warn!("{}", message);
+            return Response::error(id, RpcError::new(-32603, message));
+        }
+    }
 
     let mut failed_gates: Vec<String> = Vec::new();
 
