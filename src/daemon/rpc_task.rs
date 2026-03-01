@@ -181,6 +181,24 @@ pub(crate) fn task_created_message_author(task_channel: &str, main_channel: &str
     }
 }
 
+/// Resolve the effective channel for task announcement and nudge routing.
+///
+/// When a task is created with `--channel <name>` pointing to an archived
+/// channel (e.g., "daemon"), messages cannot be posted there and no channel
+/// lead is active for it. Falls back to the ops channel so the ops channel
+/// lead tracks the task instead.
+///
+/// The original channel value is still stored in task metadata for
+/// organizational purposes — this only affects where the announcement
+/// message is posted and which channel lead gets nudged.
+pub(crate) fn resolve_effective_task_channel(task_channel: &str, is_archived: bool) -> &str {
+    if is_archived {
+        super::constants::OPS_CHANNEL
+    } else {
+        task_channel
+    }
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -315,13 +333,19 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Post to the task's channel so the right team sees it, attributed to the
+    // Resolve the effective channel for announcement and nudge routing.
+    // Archived channels (e.g., "daemon") cannot receive messages, so we redirect
+    // to the ops channel. The original channel is still stored in task metadata.
+    let is_archived = state.channel_router.is_channel_archived(task_channel);
+    let effective_channel = resolve_effective_task_channel(task_channel, is_archived);
+
+    // Post to the effective channel so the right team sees it, attributed to the
     // channel lead. Capture message ID for task-as-thread feature.
     // Only store the mapping if the write succeeds — a failed write means no channel
     // message exists, so storing the ID would create an orphan thread root.
-    let author = task_created_message_author(task_channel, state.default_channel_name());
+    let author = task_created_message_author(effective_channel, state.default_channel_name());
     let msg = Message::for_channel(
-        task_channel,
+        effective_channel,
         author,
         format!("created task: {}", subject),
         MessageType::Text,
@@ -348,9 +372,9 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Nudge channel lead about the new task
+    // Nudge the effective channel's lead about the new task
     let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
-        channel_name: task_channel.to_string(),
+        channel_name: effective_channel.to_string(),
         reason: crate::daemon::wake_reason::WakeReason::TaskCreated {
             task_id: task_id.clone(),
             subject: subject.to_string(),

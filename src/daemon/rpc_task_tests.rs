@@ -494,3 +494,55 @@ fn test_no_channel_change_preserves_task_thread_id() {
         "task_thread_id should be preserved when channel is unchanged"
     );
 }
+
+// ── resolve_effective_task_channel tests ──────────────────────────────────────
+
+/// An archived channel should resolve to the ops channel for routing.
+/// This is the core bug fix: tasks created with `--channel daemon` (archived)
+/// were spawning a "daemon" channel lead with wrong attribution.
+#[test]
+fn test_resolve_effective_task_channel_archived_falls_back_to_ops() {
+    let effective = resolve_effective_task_channel("daemon", true);
+    assert_eq!(effective, "ops", "archived channels should route to ops");
+}
+
+/// A non-archived topic channel should pass through unchanged.
+#[test]
+fn test_resolve_effective_task_channel_active_channel_unchanged() {
+    let effective = resolve_effective_task_channel("notes", false);
+    assert_eq!(effective, "notes", "active channels should pass through");
+}
+
+/// The main channel should pass through unchanged (it's never archived).
+#[test]
+fn test_resolve_effective_task_channel_main_channel_unchanged() {
+    let effective = resolve_effective_task_channel("midtown", false);
+    assert_eq!(
+        effective, "midtown",
+        "main channel should pass through unchanged"
+    );
+}
+
+/// Combined test: archived channel with announcement routing.
+/// When a task is created with `--channel daemon` (archived), the announcement
+/// should be authored by "ops" (the effective channel lead), not "daemon".
+#[test]
+fn test_archived_channel_announcement_uses_ops_author() {
+    let effective = resolve_effective_task_channel("daemon", true);
+    let author = task_created_message_author(effective, "midtown");
+    assert_eq!(
+        author, "ops",
+        "archived channel tasks should be announced by the ops channel lead"
+    );
+}
+
+/// Combined test: active channel with announcement routing stays correct.
+#[test]
+fn test_active_channel_announcement_uses_channel_author() {
+    let effective = resolve_effective_task_channel("notes", false);
+    let author = task_created_message_author(effective, "midtown");
+    assert_eq!(
+        author, "notes",
+        "active channel tasks should be announced by the channel lead"
+    );
+}
