@@ -38,9 +38,11 @@ ARCH="$(detect_arch)"
 
 echo "Detecting latest midtown release..."
 
-VERSION="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' \
-    | sed 's/.*"tag_name": *"//;s/".*//')"
+# Use the redirect from /releases/latest to extract the version tag.
+# This avoids the GitHub API and its 60 req/hour unauthenticated rate limit.
+VERSION="$(curl -fsSI "https://github.com/${REPO}/releases/latest" \
+    | grep -i '^location:' \
+    | sed 's|.*/tag/||;s/[[:space:]]*$//')"
 
 if [ -z "$VERSION" ]; then
     echo "Error: could not determine latest release version" >&2
