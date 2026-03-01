@@ -145,6 +145,7 @@
     // so we can skip diffs for failed Edit/Write calls.
     const resultStatus = {}
     for (const item of items) {
+      if (!item.content) continue
       for (const part of item.content) {
         if (part.ToolResult) {
           resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? 'error' : 'ok'
@@ -153,6 +154,7 @@
     }
     const diffs = []
     for (const item of items) {
+      if (!item.content) continue
       for (const part of item.content) {
         if (part.ToolCall && (part.ToolCall.name === 'Edit' || part.ToolCall.name === 'Write')) {
           const callId = part.ToolCall.call_id
@@ -186,12 +188,21 @@
 
   // Build a merged timeline of messages + edit diffs for DM threads.
   // Non-DM threads just use messages as-is.
+  // Each message entry gets a precomputed `msgIndex` — its position in the
+  // messages-only sublist — so the template can pass it to MessageRow in O(1)
+  // instead of using indexOf (which would be O(N) per call, O(N^2) total).
   let mergedTimeline = $derived.by(() => {
     if (!$threadData) return []
-    const msgs = $threadData.messages.map((m) => ({ type: 'message', data: m, timestamp: m.timestamp }))
+    const msgs = $threadData.messages.map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
     if (!isDmChannel || editDiffs.length === 0) return msgs
-    const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp }))
-    return [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
+    const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp, msgIndex: -1 }))
+    const sorted = [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
+    // Recompute message indices after sort — interleaved edits shift positions
+    let idx = 0
+    for (const entry of sorted) {
+      if (entry.type === 'message') entry.msgIndex = idx++
+    }
+    return sorted
   })
 
   // Pre-compute the messages-only list from the merged timeline, for MessageRow's
@@ -392,11 +403,10 @@
           />
         {:else}
           {@const msg = entry.data}
-          {@const msgIndex = timelineMessages.indexOf(msg)}
           <MessageRow
             {msg}
             msgs={timelineMessages}
-            index={msgIndex}
+            index={entry.msgIndex}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
@@ -588,11 +598,10 @@
           />
         {:else}
           {@const msg = entry.data}
-          {@const msgIndex = timelineMessages.indexOf(msg)}
           <MessageRow
             {msg}
             msgs={timelineMessages}
-            index={msgIndex}
+            index={entry.msgIndex}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
