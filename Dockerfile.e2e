@@ -111,6 +111,7 @@ COPY --from=builder --chown=testuser:testuser /app/scripts ./scripts
 COPY --from=builder --chown=testuser:testuser /app/layouts ./layouts
 COPY --from=builder --chown=testuser:testuser /app/midtown-types ./midtown-types
 COPY --from=builder --chown=testuser:testuser /app/midtown-zellij-plugin ./midtown-zellij-plugin
+COPY --from=builder --chown=testuser:testuser /app/install.sh ./install.sh
 
 USER testuser
 
