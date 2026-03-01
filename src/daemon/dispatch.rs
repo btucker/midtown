@@ -137,10 +137,11 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 // Task completion helpers
 // ============================================================================
 
-/// Build the standard triple of effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel.
+/// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification.
 fn task_completed_effects(
     task_id: &str,
     repo_name: &str,
+    task_subject: &str,
     channel_message: String,
     channel: Option<String>,
     coworker: Option<String>,
@@ -158,6 +159,15 @@ fn task_completed_effects(
             sender: "midtown".to_string(),
             message: channel_message,
             channel: None,
+        },
+        Effect::SendPushNotification {
+            title: format!("Task !{} completed", task_id),
+            body: if task_subject.is_empty() {
+                format!("Task !{} has been completed", task_id)
+            } else {
+                format!("Task !{}: {}", task_id, task_subject)
+            },
+            tag: format!("task_completed_{}", task_id),
         },
     ];
     // Emit workflow event when the task's channel is known.
@@ -2623,6 +2633,7 @@ pub(super) fn build_task_completion_effects(
     let mut effects = task_completed_effects(
         &task_id.to_string(),
         repo_name,
+        pr_title,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",
             task_id, pr_number
@@ -2678,6 +2689,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.repo_name,
+                    &task.subject,
                     format!(
                         "✅ Auto-completed task !{} (PR #{} merged)",
                         task.id, pr_number
@@ -2718,6 +2730,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.repo_name,
+                    &task.subject,
                     format!(
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
                         task.id, pr_list
