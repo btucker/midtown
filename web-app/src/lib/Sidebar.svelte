@@ -54,14 +54,14 @@
       <AuthSwitcher />
       {#if $pushSupported}
         <button
-          class="cursor-pointer border-none bg-transparent p-1 text-base transition-opacity duration-200 {$pushSubscribed ? 'opacity-100' : 'opacity-50'} {$pushPermission === 'denied' ? 'cursor-not-allowed opacity-25' : ''} hover:opacity-100"
+          class="push-toggle cursor-pointer border-none bg-transparent p-1 text-base transition-opacity duration-200 {$pushSubscribed ? 'subscribed opacity-100' : 'opacity-50'} {$pushPermission === 'denied' ? 'denied cursor-not-allowed opacity-25' : ''} hover:opacity-100"
           onclick={togglePush}
           disabled={$pushPermission === 'denied'}
           title={$pushPermission === 'denied'
-            ? 'Notifications blocked'
+            ? 'Notifications blocked in browser settings'
             : $pushSubscribed
-              ? 'Disable notifications'
-              : 'Enable notifications'}
+              ? 'Disable push notifications'
+              : 'Enable push notifications'}
         >
           {$pushSubscribed ? '🔔' : '🔕'}
         </button>

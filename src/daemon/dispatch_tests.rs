@@ -545,7 +545,7 @@ fn test_build_task_completion_effects_with_task_id() {
     let effects =
         build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
-    assert_eq!(effects.len(), 3, "Should return 3 effects");
+    assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
     match &effects[0] {
@@ -578,6 +578,19 @@ fn test_build_task_completion_effects_with_task_id() {
             assert!(message.contains("123"));
         }
         _ => panic!("Third effect should be PostToChannel"),
+    }
+
+    // Verify SendPushNotification effect
+    match &effects[3] {
+        Effect::SendPushNotification { title, body, tag } => {
+            assert!(title.contains("42"), "Title should contain task ID");
+            assert!(
+                body.contains("Add auth endpoint"),
+                "Body should contain task subject from PR title"
+            );
+            assert_eq!(tag, "task_completed_42", "Tag should include task ID");
+        }
+        _ => panic!("Fourth effect should be SendPushNotification"),
     }
 }
 
@@ -618,6 +631,67 @@ fn test_build_task_completion_effects_message_says_merged() {
 }
 
 #[test]
+fn test_task_completion_push_tags_are_distinct_per_task() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::collections::HashSet;
+
+    // Two tasks, both with merged PRs — should produce distinct push notification tags
+    let tasks = vec![
+        Task {
+            id: "42".to_string(),
+            subject: "Fix auth bug".to_string(),
+            status: TaskStatus::InProgress,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: Some(100),
+            created_at: None,
+        },
+        Task {
+            id: "43".to_string(),
+            subject: "Add logging".to_string(),
+            status: TaskStatus::InProgress,
+            owner: None,
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: Some(101),
+            created_at: None,
+        },
+    ];
+
+    let mut merged_pr_numbers = HashSet::new();
+    merged_pr_numbers.insert(100);
+    merged_pr_numbers.insert(101);
+
+    let snap = snapshot::WorldSnapshot {
+        all_tasks: tasks,
+        merged_pr_numbers,
+        repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
+        repo_owner: None,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let effects = build_subject_based_completion_effects(&snap);
+
+    // Collect all push notification tags
+    let tags: Vec<&String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::SendPushNotification { tag, .. } => Some(tag),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(tags.len(), 2, "Should have 2 push notifications");
+    assert_ne!(tags[0], tags[1], "Tags should be distinct per task");
+    assert!(tags.contains(&&"task_completed_42".to_string()));
+    assert!(tags.contains(&&"task_completed_43".to_string()));
+}
+
+#[test]
 fn test_subject_based_completion_all_prs_merged() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
@@ -652,7 +726,7 @@ fn test_subject_based_completion_all_prs_merged() {
 
     let effects = build_subject_based_completion_effects(&snap);
 
-    assert_eq!(effects.len(), 3, "Should return 3 effects");
+    assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
     match &effects[0] {
@@ -671,6 +745,19 @@ fn test_subject_based_completion_all_prs_merged() {
             assert!(message.contains("#903"));
         }
         _ => panic!("Third effect should be PostToChannel"),
+    }
+
+    // Verify push notification includes task subject and unique tag
+    match &effects[3] {
+        Effect::SendPushNotification { title, body, tag } => {
+            assert!(title.contains("1100"));
+            assert!(
+                body.contains("Merge reviewed PRs"),
+                "Body should contain task subject"
+            );
+            assert_eq!(tag, "task_completed_1100");
+        }
+        _ => panic!("Fourth effect should be SendPushNotification"),
     }
 }
 
@@ -5934,8 +6021,8 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
         Some("proj-auth".to_string()),
     );
 
-    // 3 base effects + 1 TaskCompleted + 1 PrMerged
-    assert_eq!(effects.len(), 5);
+    // 4 base effects (CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification) + 1 TaskCompleted + 1 PrMerged
+    assert_eq!(effects.len(), 6);
 
     let workflow_events: Vec<_> = effects
         .iter()
@@ -5982,8 +6069,8 @@ fn test_build_task_completion_effects_no_workflow_event_without_channel() {
     let effects =
         build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
-    // Only the 3 base effects — no workflow events without a channel
-    assert_eq!(effects.len(), 3);
+    // Only the 4 base effects — no workflow events without a channel
+    assert_eq!(effects.len(), 4);
     assert!(
         effects
             .iter()
