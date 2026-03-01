@@ -715,7 +715,7 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
         {
             let is_selected = i == app.channel_switcher.selected_index;
 
-            // Format: "#channel-name (N)" where N is unread count if > 0
+            // Format: "#channel-name (N)" or "@peer (N)" where N is unread count if > 0
             let unread_suffix = if channel.unread_count > 0 {
                 format!(" ({})", channel.unread_count)
             } else {
