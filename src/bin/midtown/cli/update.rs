@@ -87,13 +87,21 @@ pub fn check_for_update_notice() -> Option<String> {
         return None;
     }
 
-    // Run the check in a background thread with a short timeout
-    let handle = std::thread::spawn(fetch_latest_version);
+    // Run the check in a background thread with a short timeout.
+    // Use a channel with recv_timeout to enforce a 3-second wall-clock deadline,
+    // rather than join() which would block for the full HTTP timeout (10s).
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(fetch_latest_version());
+    });
 
-    // Wait at most 3 seconds for the check
-    let result = match handle.join() {
-        Ok(r) => r.ok()?,
-        Err(_) => return None,
+    let result = match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(version)) => version,
+        _ => {
+            // Record timestamp even on failure/timeout so we don't retry every invocation
+            let _ = write_last_check_timestamp();
+            return None;
+        }
     };
 
     let _ = write_last_check_timestamp();
@@ -277,7 +285,9 @@ fn replace_web_app(new_web_app: &Path, install_dir: &Path) -> Result<(), String>
 
     // Copy the new web-app directory tree
     copy_dir_recursive(new_web_app, &target).map_err(|e| {
-        // Try to restore on failure
+        // Remove partially-created target before restoring the old directory,
+        // otherwise the rename will fail because target already exists.
+        let _ = fs::remove_dir_all(&target);
         if old.is_dir() {
             let _ = fs::rename(&old, &target);
         }
