@@ -222,12 +222,16 @@ impl PrContext {
         self.task_channel.get(task_id).cloned()
     }
 
-    /// Defense-in-depth: cross-check `reviewing_phase_coworkers` from the
-    /// snapshot against `reviewer_pr_assignments` for this specific PR.
+    /// Defense-in-depth: check snapshot signals for an active reviewer.
     ///
-    /// Confirms that the reviewer detected by `get_reviewer()` is still in
-    /// Reviewing workflow phase. This is a secondary signal from the coworker
-    /// session, complementing the persistent-state assignment check.
+    /// Uses OR logic to catch two independent edge cases:
+    /// 1. Coworker in Reviewing phase with a matching assignment for this PR
+    /// 2. Assignment exists (in snapshot) but coworker hasn't entered Reviewing phase yet
+    ///
+    /// Either signal independently indicates the reviewer is still working.
+    /// A coworker in Reviewing phase with no assignment (cleared) or an
+    /// assignment to a *different* PR does not count — without PR-specific
+    /// evidence we cannot suppress PrApproved for an unrelated PR.
     fn augment_reviewer_from_snapshot(
         &mut self,
         pr_number: u64,
@@ -236,10 +240,20 @@ impl PrContext {
         if self.has_active_reviewer {
             return; // Already flagged via get_reviewer()
         }
-        self.has_active_reviewer = snap
+
+        // Signal A: any coworker assigned to this PR in the snapshot
+        let has_snapshot_assignment = snap
+            .reviewer_pr_assignments
+            .iter()
+            .any(|(_, &assigned_pr)| assigned_pr == pr_number);
+
+        // Signal B: any coworker in Reviewing phase assigned to this PR
+        let has_reviewing_phase = snap
             .reviewing_phase_coworkers
             .iter()
             .any(|name| snap.reviewer_pr_assignments.get(name).copied() == Some(pr_number));
+
+        self.has_active_reviewer = has_snapshot_assignment || has_reviewing_phase;
     }
 }
 
@@ -3855,15 +3869,21 @@ pub(super) async fn handle_webhook_review_state_change(
         let ps = state.persistent_state.lock().await;
         let mut ctx = PrContext::from_persistent_state(&ps, pr_number);
 
-        // Defense-in-depth: cross-check reviewing_phase_coworkers against
-        // reviewer assignments for this PR (same logic as snapshot path).
-        if !ctx.has_active_reviewer && !reviewing_names.is_empty() {
-            ctx.has_active_reviewer = reviewing_names.iter().any(|name| {
-                ps.github
-                    .pr_for_reviewer(name)
-                    .map(|assigned_pr| assigned_pr == pr_number)
-                    .unwrap_or(false)
-            });
+        // Defense-in-depth: OR logic matching augment_reviewer_from_snapshot.
+        // Either signal independently indicates the reviewer is still working:
+        //   A) assignment exists for this PR (coworker hasn't entered Reviewing phase yet)
+        //   B) coworker in Reviewing phase with a matching assignment for this PR
+        if !ctx.has_active_reviewer {
+            let has_assignment = ps
+                .github
+                .assigned_reviewers()
+                .any(|name| ps.github.pr_for_reviewer(name) == Some(pr_number));
+
+            let has_reviewing_phase = reviewing_names
+                .iter()
+                .any(|name| ps.github.pr_for_reviewer(name) == Some(pr_number));
+
+            ctx.has_active_reviewer = has_assignment || has_reviewing_phase;
         }
 
         (ctx, ps.channel_lead_names())
