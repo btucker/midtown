@@ -229,10 +229,11 @@ fn draw_pending_questions(
 
 /// Draw the chat messages area (top of chat panel)
 fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
+    let display_name = super::format_channel_display_name(&app.selected_channel);
     let title = if app.selection_mode {
-        format!(" #{} [SELECT] ", app.selected_channel)
+        format!(" {} [SELECT] ", display_name)
     } else {
-        format!(" #{} ", app.selected_channel)
+        format!(" {} ", display_name)
     };
     let palette = app.theme.palette();
     let is_focused = app.focused_pane == FocusedPane::Chat;
@@ -720,7 +721,8 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 String::new()
             };
-            let channel_text = format!(" #{}{}", channel.name, unread_suffix);
+            let display_name = super::format_channel_display_name(&channel.name);
+            let channel_text = format!(" {}{}", display_name, unread_suffix);
 
             let style = if is_selected {
                 Style::default()
