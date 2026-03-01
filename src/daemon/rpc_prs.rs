@@ -744,22 +744,23 @@ pub(super) async fn handle_pr_merge(
 ) -> Response {
     info!("Merge requested for PR #{}", pr_number);
 
-    // Pre-gate: Block merge while a reviewer is actively assigned.
+    // Pre-gate: Block merge while a reviewer is assigned.
     //
     // This is a hard gate that prevents merging while the daemon knows a
     // reviewer coworker is still working on the PR. Unlike the soft
     // prompt-based instructions that were bypassed in the PR #1624 incident,
     // this check cannot be circumvented by the lead or coworker.
     //
+    // Uses `get_reviewer()` (raw assignment presence) instead of
+    // `is_assigned()` (600s timeout). The timeout-based check would let
+    // merges slip through for long-running reviews. Assignments are only
+    // removed when the review actually completes or the PR is closed.
+    //
     // Checked before any API calls for fast rejection.
     {
         let ps = state.persistent_state.lock().await;
-        if ps.github.is_assigned(pr_number) {
-            let reviewer = ps
-                .github
-                .get_reviewer(pr_number)
-                .unwrap_or("unknown")
-                .to_string();
+        if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
+            let reviewer = reviewer.to_string();
             let message = format!(
                 "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
                 pr_number, reviewer
