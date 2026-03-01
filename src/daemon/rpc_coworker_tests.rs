@@ -724,13 +724,15 @@ async fn test_completed_without_pr_marks_task_done() {
 }
 
 #[tokio::test]
-async fn test_completed_with_pr_on_disk_defers_to_merge_path() {
-    // Review feedback (!1879): After a daemon restart, pr_author_sessions is
-    // empty but the task's `pr` field on disk still has the PR number.
-    // task_has_open_pr must check the disk field to avoid orphaning the PR.
+async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
+    // When task.pr is set on disk but the PR can't be verified as open via
+    // GitHub API (e.g., API unreachable, PR closed, or test environment),
+    // the task should be completed directly rather than stuck in the deferred
+    // merge path. This prevents stale task.pr values (from closed/superseded
+    // PRs) from blocking task completion.
     let (state, _tmp, _guard) = make_test_state();
 
-    // Create a task file on disk WITH a pr field set (simulating post-restart state)
+    // Create a task file on disk WITH a pr field set
     let home = dirs::home_dir().expect("home dir");
     let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
@@ -763,8 +765,9 @@ async fn test_completed_with_pr_on_disk_defers_to_merge_path() {
 
     // NOTE: pr_author_sessions is empty — simulates daemon restart.
     // The task has pr=99 on disk but no in-memory PR tracking.
+    // In test env, gh pr view won't find this PR, so is_pr_open returns false.
 
-    // Report completed — task.pr is set on disk
+    // Report completed — task.pr is set on disk but unverifiable
     let response = handle_coworker_report_state(
         RequestId::Number(1),
         "riverside",
@@ -778,13 +781,14 @@ async fn test_completed_with_pr_on_disk_defers_to_merge_path() {
 
     assert!(!response.is_error(), "completed report should succeed");
 
-    // Task should remain in_progress (deferred to merge path via disk pr field)
+    // Task should be completed directly — the disk pr field alone is not
+    // sufficient without GitHub API verification that the PR is actually open.
     let content = std::fs::read_to_string(&task_file).expect("read task file");
     let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
     assert_eq!(
         parsed["status"].as_str().unwrap(),
-        "in_progress",
-        "task with pr field on disk should remain in_progress (deferred to merge path)"
+        "completed",
+        "task with unverifiable disk PR should be completed directly"
     );
 
     // Cleanup
@@ -867,4 +871,37 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
 
     // Cleanup
     let _ = std::fs::remove_file(&task_file);
+}
+
+// ============================================================================
+// is_pr_open — GitHub API verification for disk PR field
+// ============================================================================
+
+#[test]
+fn test_is_pr_open_returns_false_for_nonexistent_pr() {
+    // In a temp git repo with no GitHub remote, is_pr_open should return false
+    // (gh pr view will fail). This is the conservative fallback behavior.
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+
+    let result = is_pr_open(99999, Some(temp_dir.path()));
+    assert!(
+        !result,
+        "is_pr_open should return false when gh pr view fails"
+    );
+}
+
+#[test]
+fn test_is_pr_open_returns_false_with_no_repo_path() {
+    // When no repo path is provided, gh runs without current_dir context.
+    // Should still not panic and return false.
+    let result = is_pr_open(99999, None);
+    assert!(
+        !result,
+        "is_pr_open should return false when no repo path is given"
+    );
 }
