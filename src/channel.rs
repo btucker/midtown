@@ -1606,6 +1606,17 @@ impl ChannelRouter {
         self.get_channel(&self.default_channel_name)
     }
 
+    /// Check if a channel is archived.
+    ///
+    /// Returns `true` when a `channels/<name>.archived/` directory exists,
+    /// meaning the channel can no longer receive messages.
+    pub fn is_channel_archived(&self, channel_name: &str) -> bool {
+        self.base_dir
+            .join("channels")
+            .join(format!("{}.archived", channel_name))
+            .exists()
+    }
+
     /// List all currently open (cached) channel names.
     ///
     /// Does not scan the filesystem - only returns channels that have been

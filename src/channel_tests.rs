@@ -1177,6 +1177,49 @@ fn test_channel_router_insight_message_routing() {
     // by the daemon's send_and_broadcast_async() method, which is tested in daemon/mod.rs.
 }
 
+// --- is_channel_archived tests ---
+
+#[test]
+fn test_is_channel_archived_returns_true_for_archived() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create an archived channel directory
+    let archived_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("daemon.archived")
+        .join("history");
+    fs::create_dir_all(&archived_dir).unwrap();
+
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+    assert!(
+        router.is_channel_archived("daemon"),
+        "should detect archived channel"
+    );
+}
+
+#[test]
+fn test_is_channel_archived_returns_false_for_active() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+    assert!(
+        !router.is_channel_archived("ops"),
+        "non-existent or active channels should not be archived"
+    );
+}
+
+#[test]
+fn test_is_channel_archived_returns_false_for_active_channel() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create an active (non-archived) channel
+    let _channel = Channel::new(temp_dir.path(), "notes").unwrap();
+
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+    assert!(
+        !router.is_channel_archived("notes"),
+        "active channels should not be reported as archived"
+    );
+}
+
 // --- Thread integration tests ---
 
 #[test]
