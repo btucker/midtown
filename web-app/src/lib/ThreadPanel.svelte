@@ -8,6 +8,7 @@
   import MessageRow from './MessageRow.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskCard from './TaskCard.svelte'
+  import DiffView from './DiffView.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
   const THREAD_SENDER_OVERRIDES = {
@@ -131,6 +132,60 @@
     }
   })
 
+  // Extract Edit/Write tool calls for DM channels to render as inline diffs.
+  // Tool items are keyed by channel name in the store; for DM threads we pull
+  // the items for that DM channel and filter for Edit/Write calls.
+  let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
+
+  let editDiffs = $derived.by(() => {
+    if (!isDmChannel || !$threadData) return []
+    const channelName = $threadData.channelName
+    const items = $agentToolItems[channelName] || []
+    const diffs = []
+    for (const item of items) {
+      for (const part of item.content) {
+        if (part.ToolCall && (part.ToolCall.name === 'Edit' || part.ToolCall.name === 'Write')) {
+          const input = part.ToolCall.input || {}
+          // Edit has file_path + old_string + new_string; Write has file_path + content
+          if (part.ToolCall.name === 'Edit' && (input.old_string || input.new_string)) {
+            diffs.push({
+              type: 'edit',
+              timestamp: item.timestamp,
+              itemId: item.item_id,
+              filePath: input.file_path || '',
+              oldString: input.old_string || '',
+              newString: input.new_string || '',
+            })
+          } else if (part.ToolCall.name === 'Write' && input.content) {
+            diffs.push({
+              type: 'edit',
+              timestamp: item.timestamp,
+              itemId: item.item_id,
+              filePath: input.file_path || '',
+              oldString: '',
+              newString: input.content || '',
+            })
+          }
+        }
+      }
+    }
+    return diffs
+  })
+
+  // Build a merged timeline of messages + edit diffs for DM threads.
+  // Non-DM threads just use messages as-is.
+  let mergedTimeline = $derived.by(() => {
+    if (!$threadData) return []
+    const msgs = $threadData.messages.map((m) => ({ type: 'message', data: m, timestamp: m.timestamp }))
+    if (!isDmChannel || editDiffs.length === 0) return msgs
+    const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp }))
+    return [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
+  })
+
+  // Pre-compute the messages-only list from the merged timeline, for MessageRow's
+  // senderChanged/timeChanged logic. Avoids recomputing in every iteration.
+  let timelineMessages = $derived(mergedTimeline.filter((e) => e.type === 'message').map((e) => e.data))
+
   // Track viewport changes to know which panel is active
   onMount(() => {
     const mql = window.matchMedia('(min-width: 1024px)')
@@ -172,9 +227,9 @@
     }
   }
 
-  // Auto-scroll when new messages arrive
+  // Auto-scroll when new messages or edit diffs arrive
   $effect(() => {
-    if ($threadData?.messages?.length > 0 && scrollArea) {
+    if ((mergedTimeline.length > 0) && scrollArea) {
       tick().then(() => {
         scrollArea.scrollTop = scrollArea.scrollHeight
       })
@@ -315,12 +370,21 @@
         </div>
       {/if}
 
-      <!-- Thread replies -->
-      {#each $threadData.messages as msg, i}
+      <!-- Thread replies (interleaved with edit diffs for DM channels) -->
+      {#each mergedTimeline as entry, i}
+        {#if entry.type === 'edit'}
+          <DiffView
+            filePath={entry.data.filePath}
+            oldString={entry.data.oldString}
+            newString={entry.data.newString}
+          />
+        {:else}
+          {@const msg = entry.data}
+          {@const msgIndex = timelineMessages.indexOf(msg)}
           <MessageRow
             {msg}
-            msgs={$threadData.messages}
-            index={i}
+            msgs={timelineMessages}
+            index={msgIndex}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
@@ -377,7 +441,8 @@
               {/each}
             {/if}
           </MessageRow>
-        {/each}
+        {/if}
+      {/each}
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
@@ -501,12 +566,21 @@
         </div>
       {/if}
 
-      <!-- Replies -->
-      {#each $threadData.messages as msg, i}
+      <!-- Replies (interleaved with edit diffs for DM channels) -->
+      {#each mergedTimeline as entry, i}
+        {#if entry.type === 'edit'}
+          <DiffView
+            filePath={entry.data.filePath}
+            oldString={entry.data.oldString}
+            newString={entry.data.newString}
+          />
+        {:else}
+          {@const msg = entry.data}
+          {@const msgIndex = timelineMessages.indexOf(msg)}
           <MessageRow
             {msg}
-            msgs={$threadData.messages}
-            index={i}
+            msgs={timelineMessages}
+            index={msgIndex}
             senderOverrides={THREAD_SENDER_OVERRIDES}
             dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
@@ -563,7 +637,8 @@
               {/each}
             {/if}
           </MessageRow>
-        {/each}
+        {/if}
+      {/each}
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
