@@ -2,7 +2,7 @@
   import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
-  import { tick, onMount } from 'svelte'
+  import { tick, onMount, untrack } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -22,6 +22,10 @@
   let channelLeadThinkingTimeout = null
   let channelItemsActive = $state(false)
   let channelItemsActiveTimeout = null
+
+  // Per-channel draft storage: saves inputText and pendingFile when switching channels
+  let channelDrafts = new Map()
+  let prevChannel = null
 
   // Autocomplete state
   let showAutocomplete = $state(false)
@@ -56,6 +60,26 @@
     if (!(ch in initialMessageCounts) && len > 0) {
       initialMessageCounts = { ...initialMessageCounts, [ch]: len }
     }
+  })
+
+  // Save/restore drafts when switching channels
+  $effect(() => {
+    const ch = $activeChannel
+    if (prevChannel !== null && prevChannel !== ch) {
+      const currentText = untrack(() => inputText)
+      const currentFile = untrack(() => pendingFile)
+      if (currentText.trim() || currentFile) {
+        channelDrafts.set(prevChannel, { text: currentText, file: currentFile })
+      } else {
+        channelDrafts.delete(prevChannel)
+      }
+    }
+    if (prevChannel !== ch) {
+      const draft = channelDrafts.get(ch)
+      inputText = draft?.text ?? ''
+      pendingFile = draft?.file ?? null
+    }
+    prevChannel = ch
   })
 
   function isNewMessage(channelName, index) {

@@ -1,7 +1,7 @@
 <script>
   import { threadData, agentToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
-  import { tick, onMount, onDestroy } from 'svelte'
+  import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
@@ -86,6 +86,9 @@
   }
 
   let replyText = $state('')
+  // Per-thread draft storage: saves replyText when switching between threads
+  let threadDrafts = new Map()
+  let prevThreadId = null
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
   let desktopTextareaEl = $state(null)
@@ -110,6 +113,23 @@
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
     }
+  })
+
+  // Save/restore drafts when switching threads
+  $effect(() => {
+    const tid = currentThreadId
+    if (prevThreadId !== null && prevThreadId !== tid) {
+      const currentReply = untrack(() => replyText)
+      if (currentReply.trim()) {
+        threadDrafts.set(prevThreadId, currentReply)
+      } else {
+        threadDrafts.delete(prevThreadId)
+      }
+    }
+    if (prevThreadId !== tid) {
+      replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+    }
+    prevThreadId = tid
   })
 
   // Clear thinking when real InProgress tool items arrive for this thread's channel.
