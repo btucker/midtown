@@ -233,6 +233,7 @@ jobs:
 
       - name: Package binary with web-app
         run: |
+          mkdir -p staging
           cp target/${{ matrix.target }}/release/midtown staging/
           cd staging
           tar czf ../${{ matrix.asset }}-v${{ steps.version.outputs.version }}.tar.gz midtown web-app/
