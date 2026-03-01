@@ -270,8 +270,9 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
 
 #[test]
 fn test_resume_session_does_not_use_session_id_flag() {
-    // Resume sessions use --resume <id>, not --session-id.
-    // Even if session_id is set, it should be ignored for resume sessions.
+    // Non-fork resume sessions use --resume <id>, not --session-id.
+    // Even if session_id is set, it should be ignored for non-fork resume sessions.
+    // (Fork-resume sessions DO get --session-id — see test_fork_resume_session_gets_session_id.)
     let config = HeadlessConfig {
         model: "haiku".to_string(),
         system_prompt: "test".to_string(),
@@ -418,44 +419,5 @@ fn test_fork_session_with_preassigned_session_id() {
         args.get(sid_pos.unwrap() + 1).map(|s| s.as_str()),
         Some("fork-uuid-1234"),
         "--session-id should be followed by the pre-assigned UUID"
-    );
-}
-
-#[test]
-fn test_non_fork_resume_session_does_not_get_session_id() {
-    // Non-fork resume sessions (--resume without --fork-session) should NOT
-    // get --session-id. The daemon already knows the session_id from the
-    // persisted state.
-    let config = HeadlessConfig {
-        model: "haiku".to_string(),
-        system_prompt: "test".to_string(),
-        settings_path: None,
-        setting_sources: None,
-        persist_session: true,
-        resume_session_id: Some("existing-session-456".to_string()),
-        session_id: Some("should-be-ignored".to_string()),
-        allow_tools: true,
-        json_schema: None,
-        cwd: None,
-        project_name: Some("midtown".to_string()),
-        max_budget_usd: None,
-        inactivity_timeout: None,
-        team_name: None,
-        agent_id: None,
-        agent_name: None,
-        auth_provider: crate::auth::AuthProvider::Claude,
-        env: std::collections::BTreeMap::new(),
-        fork_session: false,
-    };
-
-    let args = extract_spawn_args(&config);
-
-    assert!(
-        args.iter().any(|a| a == "--resume"),
-        "Resume session should include --resume"
-    );
-    assert!(
-        !args.iter().any(|a| a == "--session-id"),
-        "Non-fork resume session should NOT include --session-id"
     );
 }

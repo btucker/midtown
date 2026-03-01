@@ -114,7 +114,8 @@ fn build_claude_common_args(
 ///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources` (from common).
 ///
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
-///   to avoid "Tool names must be unique" errors.
+///   to avoid "Tool names must be unique" errors. Fork-resume sessions additionally
+///   get `--session-id <uuid>` so the daemon can register them without waiting for init.
 pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     // Exhaustive destructure so new HeadlessConfig fields force explicit
     // handling decisions in this platform mapper.

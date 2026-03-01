@@ -557,8 +557,10 @@ impl SessionManager {
         let fork_session_id = if let Some(sid) = preassigned_session_id {
             // Claude/Zai path: session_id was pre-assigned via --session-id flag.
             // Forked sessions (--resume --fork-session) don't emit system/init,
-            // so we rely on the pre-assigned ID and run a health check instead.
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // so we register immediately using the pre-assigned ID. A non-blocking
+            // try_wait() catches processes that crash during startup without
+            // penalizing healthy spawns with a fixed sleep. The event loop's
+            // dead-session detection handles later exits (same pattern as spawn_coworker).
             if let Ok(Some(status)) = session.try_wait() {
                 let stderr = session.drain_stderr().await;
                 let stderr_summary = if stderr.is_empty() {

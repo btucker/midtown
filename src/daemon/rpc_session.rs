@@ -1241,8 +1241,8 @@ pub(super) async fn create_fork_session(
     }
 
     // Backfill the data structures that the event loop normally populates from the
-    // init event. spawn_fork consumes the init event to extract the session_id, so
-    // the event loop never sees it. We must create the SessionRecord and populate
+    // init event. Fork sessions (--resume --fork-session) never emit system/init,
+    // so the event loop never sees one. We must create the SessionRecord and populate
     // the name↔session reverse maps ourselves.
     {
         let mut ps = state.persistent_state.lock().await;
