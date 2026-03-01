@@ -372,9 +372,10 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
 
 #[test]
 fn test_fork_session_with_preassigned_session_id() {
-    // Fork sessions (--resume + --fork-session) should NOT get --session-id,
-    // since the fork inherits context from the parent and gets its own ID from
-    // the CLI. The daemon passes session_id via the spawn() call instead.
+    // Fork sessions (--resume + --fork-session) SHOULD get --session-id so the
+    // daemon controls the fork's session ID immediately at spawn time. Forked
+    // sessions don't emit the system/init event (they use --resume under the
+    // hood), so the daemon cannot discover the session_id from the event stream.
     let config = HeadlessConfig {
         model: "haiku".to_string(),
         system_prompt: "test".to_string(),
@@ -382,7 +383,7 @@ fn test_fork_session_with_preassigned_session_id() {
         setting_sources: None,
         persist_session: true,
         resume_session_id: Some("parent-session-id".to_string()),
-        session_id: Some("should-be-ignored".to_string()),
+        session_id: Some("fork-uuid-1234".to_string()),
         allow_tools: true,
         json_schema: None,
         cwd: None,
@@ -399,7 +400,7 @@ fn test_fork_session_with_preassigned_session_id() {
 
     let args = extract_spawn_args(&config);
 
-    // Fork sessions use --resume + --fork-session, NOT --session-id
+    // Fork sessions use --resume + --fork-session + --session-id
     assert!(
         args.iter().any(|a| a == "--resume"),
         "Fork session should include --resume"
@@ -408,8 +409,53 @@ fn test_fork_session_with_preassigned_session_id() {
         args.iter().any(|a| a == "--fork-session"),
         "Fork session should include --fork-session"
     );
+    let sid_pos = args.iter().position(|a| a == "--session-id");
+    assert!(
+        sid_pos.is_some(),
+        "Fork session should include --session-id for daemon-controlled session ID"
+    );
+    assert_eq!(
+        args.get(sid_pos.unwrap() + 1).map(|s| s.as_str()),
+        Some("fork-uuid-1234"),
+        "--session-id should be followed by the pre-assigned UUID"
+    );
+}
+
+#[test]
+fn test_non_fork_resume_session_does_not_get_session_id() {
+    // Non-fork resume sessions (--resume without --fork-session) should NOT
+    // get --session-id. The daemon already knows the session_id from the
+    // persisted state.
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("existing-session-456".to_string()),
+        session_id: Some("should-be-ignored".to_string()),
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        team_name: None,
+        agent_id: None,
+        agent_name: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    assert!(
+        args.iter().any(|a| a == "--resume"),
+        "Resume session should include --resume"
+    );
     assert!(
         !args.iter().any(|a| a == "--session-id"),
-        "Fork session should NOT include --session-id (session_id is passed via spawn() call)"
+        "Non-fork resume session should NOT include --session-id"
     );
 }

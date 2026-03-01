@@ -157,6 +157,15 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         // Fork mode: add --fork-session to create an independent fork with inherited context
         if *fork_session {
             args.push("--fork-session".to_string());
+            // Pre-assign session_id for fork sessions so the daemon controls the fork's
+            // session ID immediately at spawn time. Forked sessions (which use --resume
+            // under the hood) don't emit the system/init event, so the daemon cannot
+            // discover the session_id from the event stream. Passing --session-id here
+            // mirrors the fresh-session approach and eliminates the 30s init timeout.
+            if let Some(sid) = session_id {
+                args.push("--session-id".to_string());
+                args.push(sid.clone());
+            }
         }
     } else {
         // Fresh mode: -p with system prompt
