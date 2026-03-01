@@ -141,10 +141,22 @@
     if (!isDmChannel || !$threadData) return []
     const channelName = $threadData.channelName
     const items = $agentToolItems[channelName] || []
+    // Build result status map: call_id → 'error' | 'ok'
+    // so we can skip diffs for failed Edit/Write calls.
+    const resultStatus = {}
+    for (const item of items) {
+      for (const part of item.content) {
+        if (part.ToolResult) {
+          resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? 'error' : 'ok'
+        }
+      }
+    }
     const diffs = []
     for (const item of items) {
       for (const part of item.content) {
         if (part.ToolCall && (part.ToolCall.name === 'Edit' || part.ToolCall.name === 'Write')) {
+          const callId = part.ToolCall.call_id
+          if (resultStatus[callId] === 'error') continue
           const input = part.ToolCall.input || {}
           // Edit has file_path + old_string + new_string; Write has file_path + content
           if (part.ToolCall.name === 'Edit' && (input.old_string || input.new_string)) {
