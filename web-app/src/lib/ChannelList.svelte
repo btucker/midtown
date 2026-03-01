@@ -36,7 +36,7 @@
   $: visibleDmChannels = dmSectionExpanded
     ? showAllDms
       ? dmChannels
-      : dmChannels.filter((ch) => ch.unread > 0)
+      : dmChannels.filter((ch) => ch.unread > 0 || ch.name === $activeChannel)
     : []
 
   function selectChannel(channelName) {
