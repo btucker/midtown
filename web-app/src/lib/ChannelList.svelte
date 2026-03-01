@@ -28,6 +28,17 @@
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
 
+  // DM section: collapsed by default, shows only unread when expanded
+  let dmSectionExpanded = false
+  let showAllDms = false
+
+  $: unreadDmCount = dmChannels.filter((ch) => ch.unread > 0).length
+  $: visibleDmChannels = dmSectionExpanded
+    ? showAllDms
+      ? dmChannels
+      : dmChannels.filter((ch) => ch.unread > 0 || ch.name === $activeChannel)
+    : []
+
   function selectChannel(channelName) {
     // Switch channel immediately for instant UI response (non-blocking).
     // Previously this was async and awaited fetchHistory, which blocked the UI
@@ -270,26 +281,53 @@
 
   {#if dmChannels.length > 0}
     <div class="flex items-center px-3 pt-3 pb-1">
-      <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Direct Messages</div>
+      <button
+        class="flex items-center gap-1.5 p-0 border-none bg-transparent cursor-pointer text-xs font-bold text-muted-foreground uppercase tracking-wide hover:text-sidebar-foreground transition-colors duration-150"
+        onclick={() => { dmSectionExpanded = !dmSectionExpanded; if (!dmSectionExpanded) showAllDms = false }}
+        aria-label={dmSectionExpanded ? 'Collapse direct messages' : 'Expand direct messages'}
+      >
+        <span class="text-[0.55rem] leading-none">{dmSectionExpanded ? '▼' : '▶'}</span>
+        Direct Messages
+        {#if !dmSectionExpanded && unreadDmCount > 0}
+          <span class="ml-1 px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground text-[0.6rem] font-bold leading-none">{unreadDmCount}</span>
+        {/if}
+      </button>
     </div>
-    {#each dmChannels as channel}
-      {@const isActive = $activeChannel === channel.name}
-      {@const hasUnread = channel.unread > 0}
-      <div class="mb-0.5">
-        <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-          <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
-          <div class="w-[28px] ml-1 shrink-0"></div>
-          <button
-            class="flex items-center flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
-            aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
-            onclick={() => selectChannel(channel.name)}
-          >
-            <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap {hasUnread ? 'font-bold' : ''}">
-              {formatDmName(channel.name)}
-            </div>
-          </button>
+    {#if dmSectionExpanded}
+      {#each visibleDmChannels as channel}
+        {@const isActive = $activeChannel === channel.name}
+        {@const hasUnread = channel.unread > 0}
+        <div class="mb-0.5">
+          <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+            <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
+            <div class="w-[28px] ml-1 shrink-0"></div>
+            <button
+              class="flex items-center flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+              aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
+              onclick={() => selectChannel(channel.name)}
+            >
+              <div class="flex-1 overflow-hidden text-ellipsis whitespace-nowrap {hasUnread ? 'font-bold' : ''}">
+                {formatDmName(channel.name)}
+              </div>
+            </button>
+          </div>
         </div>
-      </div>
-    {/each}
+      {/each}
+      {#if !showAllDms && dmChannels.length > visibleDmChannels.length}
+        <button
+          class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
+          onclick={() => showAllDms = true}
+        >
+          show all ({dmChannels.length})
+        </button>
+      {:else if showAllDms && dmChannels.length > unreadDmCount}
+        <button
+          class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
+          onclick={() => showAllDms = false}
+        >
+          show less
+        </button>
+      {/if}
+    {/if}
   {/if}
 </div>
