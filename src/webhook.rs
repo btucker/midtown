@@ -515,6 +515,18 @@ struct IssueCommentEvent {
     issue: Issue,
     comment: Comment,
     repository: Repository,
+    #[serde(default)]
+    changes: Option<IssueCommentChanges>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueCommentChanges {
+    body: Option<IssueCommentBodyChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IssueCommentBodyChange {
+    from: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -871,14 +883,28 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     let event: IssueCommentEvent = serde_json::from_slice(body)?;
 
     // Process 'created' events always. Process 'edited' events only when
-    // the comment contains a review signature — reviewers often post a
-    // placeholder then edit it with the full review.
+    // the comment transitions from non-review to review — reviewers often
+    // post a placeholder then edit it with the full review. Edits to an
+    // already-posted review (e.g. typo fixes) are ignored to avoid
+    // re-nudging the PR owner.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
         return Ok(None);
     }
-    if is_edited && !is_review_comment(&event.comment.body) {
-        return Ok(None);
+    if is_edited {
+        if !is_review_comment(&event.comment.body) {
+            return Ok(None);
+        }
+        // If the previous body already had a review signature, this is just
+        // an edit to an existing review (typo fix, etc.) — not a new review.
+        let prev_was_review = event
+            .changes
+            .as_ref()
+            .and_then(|c| c.body.as_ref())
+            .is_some_and(|b| is_review_comment(&b.from));
+        if prev_was_review {
+            return Ok(None);
+        }
     }
 
     // Only handle PR comments, not issue comments
@@ -1848,10 +1874,10 @@ mod tests {
     }
 
     #[test]
-    fn test_handle_issue_comment_edited_with_review_signature() {
-        // Bug: reviewers post a placeholder comment, then edit it with the full review.
-        // The 'edited' event should be processed when the comment contains a review signature.
-        let payload = r#"{
+    fn test_handle_issue_comment_edited_placeholder_to_review() {
+        // Reviewer posts a placeholder, then edits it with the full review.
+        // The 'edited' event should be processed (non-review → review transition).
+        let payload = serde_json::json!({
             "action": "edited",
             "issue": {
                 "number": 55,
@@ -1862,10 +1888,16 @@ mod tests {
                 "user": {"login": "btucker"},
                 "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found."
             },
+            "changes": {
+                "body": {
+                    "from": "## Review Status\n\nReview in progress by park..."
+                }
+            },
             "repository": {"full_name": "org/repo"}
-        }"#;
+        });
+        let payload = serde_json::to_vec(&payload).unwrap();
 
-        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        let event = handle_issue_comment(&payload).unwrap().unwrap();
         assert_eq!(event.reviewed_pr, Some(55));
         assert_eq!(event.review_comment_id, Some(77777));
         let activity = event.pr_activity.unwrap();
@@ -1874,10 +1906,40 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_issue_comment_edited_review_typo_fix_ignored() {
+        // An edit to an already-posted review (e.g. fixing a typo) should
+        // be ignored — the review was already detected on creation/first edit.
+        let payload = serde_json::json!({
+            "action": "edited",
+            "issue": {
+                "number": 55,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 77777,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found. Fixed typo."
+            },
+            "changes": {
+                "body": {
+                    "from": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no isues found."
+                }
+            },
+            "repository": {"full_name": "org/repo"}
+        });
+        let payload = serde_json::to_vec(&payload).unwrap();
+
+        let result = handle_issue_comment(&payload).unwrap();
+        assert!(
+            result.is_none(),
+            "edits to existing reviews should be ignored"
+        );
+    }
+
+    #[test]
     fn test_handle_issue_comment_edited_without_review_signature() {
         // An 'edited' event on a non-review comment should be ignored
-        // (we don't need to re-process every typo fix)
-        let payload = r#"{
+        let payload = serde_json::json!({
             "action": "edited",
             "issue": {
                 "number": 55,
@@ -1889,13 +1951,39 @@ mod tests {
                 "body": "<!-- midtown: park -->\n\nFixed a typo in my earlier comment."
             },
             "repository": {"full_name": "org/repo"}
-        }"#;
+        });
+        let payload = serde_json::to_vec(&payload).unwrap();
 
-        let result = handle_issue_comment(payload.as_bytes()).unwrap();
+        let result = handle_issue_comment(&payload).unwrap();
         assert!(
             result.is_none(),
             "edited non-review comments should be ignored"
         );
+    }
+
+    #[test]
+    fn test_handle_issue_comment_edited_no_changes_field() {
+        // An 'edited' event without a `changes` field (edge case) should
+        // still process a non-review → review transition since we can't
+        // know the previous body.
+        let payload = serde_json::json!({
+            "action": "edited",
+            "issue": {
+                "number": 55,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 99999,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLooks good!"
+            },
+            "repository": {"full_name": "org/repo"}
+        });
+        let payload = serde_json::to_vec(&payload).unwrap();
+
+        let event = handle_issue_comment(&payload).unwrap().unwrap();
+        assert_eq!(event.reviewed_pr, Some(55));
+        assert_eq!(event.review_comment_id, Some(99999));
     }
 
     #[test]
