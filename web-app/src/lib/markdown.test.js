@@ -146,6 +146,14 @@ describe('renderContent', () => {
     expect(result).toContain('<li>item2</li>')
   })
 
+  it('renders ordered lists', () => {
+    const result = renderContent('1. first\n2. second\n3. third')
+    expect(result).toContain('<ol>')
+    expect(result).toContain('<li>first</li>')
+    expect(result).toContain('<li>second</li>')
+    expect(result).toContain('<li>third</li>')
+  })
+
   // Headings
   it('renders headings', () => {
     expect(renderContent('# Title')).toContain('<h1>Title</h1>')
