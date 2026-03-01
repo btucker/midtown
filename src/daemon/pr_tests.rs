@@ -3370,3 +3370,36 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
         "Event should be PrApproved for PR #42"
     );
 }
+
+/// Gate !1902: has_cached_review bypass — PrApproved is NOT suppressed when the
+/// review is already cached, even if get_reviewer() still returns Some.
+///
+/// This handles the race between webhook review completion (which caches the
+/// review) and the poll tick that clears the reviewer assignment.
+#[tokio::test]
+async fn pr_approved_not_suppressed_when_review_cached() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42;
+
+    // Simulate: reviewer is assigned BUT review is already cached (complete)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            "lexington",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Build PrContext — should detect cached review and NOT flag active reviewer
+    let ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number)
+    };
+
+    assert!(
+        !ctx.has_active_reviewer,
+        "has_active_reviewer should be false when review is cached (race bypass)"
+    );
+}

@@ -384,6 +384,10 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs three gates b
 
 **Effect**: On success, `Effect::MergePr` calls `gh pr merge --squash --auto` with `current_dir` set to the repo path.
 
+**Pre-gate — Reviewer active**: Before the three gates, the RPC handler checks `get_reviewer(pr_number)`. If a reviewer coworker is still assigned, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working.
+
+**Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the same reviewer check in `pr_action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), `PrApproved` is suppressed so workflow scripts don't prematurely nudge the author to merge. The `Approved` nudge cooldown is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
+
 ## Worktree Lifecycle
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
