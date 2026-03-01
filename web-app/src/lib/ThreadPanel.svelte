@@ -1,3 +1,11 @@
+<script module>
+  // Module-level draft storage persists across mount/unmount cycles.
+  // ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
+  // state would be lost when the thread panel closes and reopens.
+  const threadDrafts = new Map()
+  let prevThreadId = null
+</script>
+
 <script>
   import { threadData, agentToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
@@ -86,9 +94,6 @@
   }
 
   let replyText = $state('')
-  // Per-thread draft storage: saves replyText when switching between threads
-  let threadDrafts = new Map()
-  let prevThreadId = null
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
   let desktopTextareaEl = $state(null)
@@ -135,6 +140,7 @@
       replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
     }
     prevThreadId = tid
+    tick().then(() => resizeTextarea())
   })
 
   // Clear thinking when real InProgress tool items arrive for this thread's channel.
@@ -151,6 +157,11 @@
   })
 
   onDestroy(() => {
+    // Save current draft before component unmounts (thread panel closes)
+    if (prevThreadId !== null && replyText.trim()) {
+      threadDrafts.set(prevThreadId, replyText)
+    }
+    prevThreadId = null  // Reset so the next mount triggers a restore
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
@@ -258,6 +269,7 @@
     const parentId = $threadData.parentMessage?.id ?? null
     sendMessage(replyText.trim(), $threadData.channelName, parentId)
     replyText = ''
+    if (currentThreadId) threadDrafts.delete(currentThreadId)
     clearMobileTextarea(textareaEl, () => { replyText = '' })
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true

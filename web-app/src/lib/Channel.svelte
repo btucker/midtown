@@ -80,6 +80,7 @@
       pendingFile = draft?.file ?? null
     }
     prevChannel = ch
+    tick().then(() => resizeTextarea())
   })
 
   function isNewMessage(channelName, index) {
@@ -536,6 +537,7 @@
         inputText = ''
         if (textareaElement) textareaElement.value = ''
         pendingFile = null
+        channelDrafts.delete($activeChannel)
       } else {
         alert(`Upload failed: ${result.error}`)
         return
@@ -551,6 +553,7 @@
         }, 30000)
       }
       inputText = ''
+      channelDrafts.delete($activeChannel)
       clearMobileTextarea(textareaElement, () => { inputText = '' })
     }
   }
