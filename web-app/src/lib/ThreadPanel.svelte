@@ -135,6 +135,7 @@
       replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
     }
     prevThreadId = tid
+    tick().then(() => resizeTextarea())
   })
 
   // Clear thinking when real InProgress tool items arrive for this thread's channel.
@@ -258,6 +259,7 @@
     const parentId = $threadData.parentMessage?.id ?? null
     sendMessage(replyText.trim(), $threadData.channelName, parentId)
     replyText = ''
+    if (parentId) threadDrafts.delete(parentId)
     clearMobileTextarea(textareaEl, () => { replyText = '' })
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true
