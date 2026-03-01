@@ -22,7 +22,15 @@ Coworkers are the agents created to pick up and execute those tasks. Coworkers o
 
 ### 1. Install
 
-From [crates.io](https://crates.io/crates/midtown):
+The quickest way to install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/btucker/midtown/main/install.sh | sh
+```
+
+This detects your OS and architecture, downloads the latest release binary, and installs it to `~/.cargo/bin`. Set `MIDTOWN_INSTALL_DIR` to change the install location. If `~/.cargo/bin` is not already in your PATH, the script will print instructions to add it.
+
+Or install from [crates.io](https://crates.io/crates/midtown):
 
 ```bash
 cargo install midtown
