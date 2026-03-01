@@ -5,6 +5,7 @@ import {
   getChannelPrs,
   computeExpandedAfterTriangleClick,
   computeExpandedAfterChannelNameClick,
+  computeVisibleDmChannels,
 } from './channelUtils.js'
 
 describe('getChannelTaskCount', () => {
@@ -284,5 +285,77 @@ describe('computeExpandedAfterChannelNameClick', () => {
     const result = computeExpandedAfterChannelNameClick('web', new Set(['auth']), 'midtown', mockKanban)
     expect(result.has('auth')).toBe(true)
     expect(result.has('web')).toBe(true)
+  })
+})
+
+describe('computeVisibleDmChannels', () => {
+  const dmChannels = [
+    { name: 'dm-alice', unread: 2, is_dm: true },
+    { name: 'dm-bob', unread: 0, is_dm: true },
+    { name: 'dm-carol', unread: 0, is_dm: true },
+  ]
+
+  it('returns empty array when section is collapsed', () => {
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: false,
+      showAll: false,
+      activeChannel: 'dm-alice',
+      visitedDms: new Set(),
+    })
+    expect(result).toEqual([])
+  })
+
+  it('returns all DMs when showAll is true', () => {
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: true,
+      showAll: true,
+      activeChannel: 'midtown',
+      visitedDms: new Set(),
+    })
+    expect(result).toEqual(dmChannels)
+  })
+
+  it('shows unread DMs when expanded', () => {
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: true,
+      showAll: false,
+      activeChannel: 'midtown',
+      visitedDms: new Set(),
+    })
+    expect(result.map((ch) => ch.name)).toEqual(['dm-alice'])
+  })
+
+  it('shows the active DM even if it has no unread messages', () => {
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: true,
+      showAll: false,
+      activeChannel: 'dm-bob',
+      visitedDms: new Set(),
+    })
+    expect(result.map((ch) => ch.name)).toContain('dm-bob')
+  })
+
+  it('keeps a visited DM visible after navigating away (Bug #2 regression)', () => {
+    // Scenario: user opened dm-bob (visited), then switched to a regular channel.
+    // dm-bob has unread=0 and is not activeChannel — but it was visited, so it
+    // should remain visible.
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: true,
+      showAll: false,
+      activeChannel: 'midtown',
+      visitedDms: new Set(['dm-bob']),
+    })
+    expect(result.map((ch) => ch.name)).toContain('dm-bob')
+  })
+
+  it('shows unread + active + visited DMs together', () => {
+    const result = computeVisibleDmChannels(dmChannels, {
+      expanded: true,
+      showAll: false,
+      activeChannel: 'dm-carol',
+      visitedDms: new Set(['dm-bob']),
+    })
+    // dm-alice: unread > 0, dm-bob: visited, dm-carol: active
+    expect(result.map((ch) => ch.name)).toEqual(['dm-alice', 'dm-bob', 'dm-carol'])
   })
 })

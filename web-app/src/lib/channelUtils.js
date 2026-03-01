@@ -143,6 +143,23 @@ export function computeExpandedAfterChannelNameClick(channelName, expandedChanne
 }
 
 /**
+ * Compute the visible DM channels for the sidebar.
+ * When collapsed, returns []. When expanded:
+ *   - showAll → all DMs
+ *   - otherwise → DMs with unread > 0, the active DM, or any previously visited DM
+ *
+ * "Visited" DMs are tracked so they don't vanish when unread drops to 0 and
+ * the user collapses/re-expands the section.
+ */
+export function computeVisibleDmChannels(dmChannels, { expanded, showAll, activeChannel, visitedDms }) {
+  if (!expanded) return []
+  if (showAll) return dmChannels
+  return dmChannels.filter(
+    (ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name)
+  )
+}
+
+/**
  * Get active PRs for a channel, using task_id → channel lookup.
  * Main channel shows all PRs, topic channels filter by task channel.
  */
