@@ -1203,7 +1203,15 @@ pub(super) async fn create_fork_session(
         setting_sources: None,
         auth_provider,
         env,
-        session_id: Some(uuid::Uuid::new_v4().to_string()),
+        // Pre-assign session_id for Claude/Zai fork sessions so the daemon
+        // controls the fork's ID immediately at spawn time. Forked sessions
+        // (--resume --fork-session) don't emit system/init, so the daemon
+        // cannot discover the ID from the event stream.
+        // Codex forks don't support --session-id, so leave it None for them.
+        session_id: match auth_provider {
+            crate::auth::AuthProvider::Codex => None,
+            _ => Some(uuid::Uuid::new_v4().to_string()),
+        },
         fork_session: true,
     };
 
