@@ -223,12 +223,13 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     (hyperlinks, tasks_area)
 }
 
-/// Render a channel header line: `#channel-name` with optional `(X)` unread count.
+/// Render a channel header line: `#channel-name` or `@peer` (for DMs) with optional `(X)` unread count.
 fn render_channel_header(app: &App, channel_name: &str, lines: &mut Vec<Line<'static>>) {
+    let display_name = super::format_channel_display_name(channel_name);
     let channel_header = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name) {
-        format!("#{} ({})", channel_name, unread_count)
+        format!("{} ({})", display_name, unread_count)
     } else {
-        format!("#{}", channel_name)
+        display_name
     };
 
     let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {

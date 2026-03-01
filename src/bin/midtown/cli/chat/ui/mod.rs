@@ -51,6 +51,18 @@ pub struct Hyperlink {
 /// Gutter width for timestamp: " HH:MM " = 7 chars
 const TIMESTAMP_GUTTER_WIDTH: usize = 7;
 
+/// Format a channel name for display.
+///
+/// DM channels (`dm-<name>`) are rendered as `@<name>` to match the web UI.
+/// Regular channels keep the `#<name>` prefix.
+pub(super) fn format_channel_display_name(channel_name: &str) -> String {
+    if let Some(peer) = channel_name.strip_prefix("dm-") {
+        format!("@{}", peer)
+    } else {
+        format!("#{}", channel_name)
+    }
+}
+
 /// Maximum sidebar width in terminal columns (including left and right borders)
 const MAX_SIDEBAR_WIDTH: u16 = 40;
 
@@ -340,5 +352,30 @@ mod tests {
 
         assert_eq!(format_relative_time(now - Duration::days(1)), "1 day ago");
         assert_eq!(format_relative_time(now - Duration::days(7)), "7 days ago");
+    }
+
+    #[test]
+    fn test_format_channel_display_name_regular() {
+        assert_eq!(format_channel_display_name("midtown"), "#midtown");
+        assert_eq!(format_channel_display_name("tui"), "#tui");
+        assert_eq!(format_channel_display_name("ops"), "#ops");
+    }
+
+    #[test]
+    fn test_format_channel_display_name_dm() {
+        assert_eq!(format_channel_display_name("dm-park"), "@park");
+        assert_eq!(format_channel_display_name("dm-vernon"), "@vernon");
+        assert_eq!(format_channel_display_name("dm-riverside"), "@riverside");
+    }
+
+    #[test]
+    fn test_format_channel_display_name_dm_edge_cases() {
+        // Channel that contains "dm-" but doesn't start with it
+        assert_eq!(
+            format_channel_display_name("my-dm-channel"),
+            "#my-dm-channel"
+        );
+        // Bare "dm-" prefix with empty peer name
+        assert_eq!(format_channel_display_name("dm-"), "@");
     }
 }
