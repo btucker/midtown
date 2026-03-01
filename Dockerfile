@@ -113,8 +113,8 @@ RUN git config --global user.email "midtown@docker.local" \
     && git config --global user.name "Midtown Docker" \
     && git config --global init.defaultBranch main
 
-# Copy the binary and web-app from builder LAST so code changes don't
-# invalidate the CLI install layers above.
+# Copy the binary from builder and web-app from web-builder LAST so code
+# changes don't invalidate the CLI install layers above.
 USER root
 COPY --from=builder /app/target/release/midtown /usr/local/bin/midtown
 COPY --from=web-builder /app/web-app/dist /usr/local/bin/web-app/dist

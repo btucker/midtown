@@ -23,5 +23,8 @@ Dockerfile*
 # Test fixtures (large JSON files)
 tests/fixtures/snapshot/*.json
 
+# Web app build artifacts
+web-app/node_modules/
+
 # Local config
 *.local.md
