@@ -870,7 +870,14 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
 fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: IssueCommentEvent = serde_json::from_slice(body)?;
 
-    if event.action != "created" {
+    // Process 'created' events always. Process 'edited' events only when
+    // the comment contains a review signature — reviewers often post a
+    // placeholder then edit it with the full review.
+    let is_edited = event.action == "edited";
+    if event.action != "created" && !is_edited {
+        return Ok(None);
+    }
+    if is_edited && !is_review_comment(&event.comment.body) {
         return Ok(None);
     }
 
@@ -1837,6 +1844,57 @@ mod tests {
         assert_eq!(
             event.review_comment_id, None,
             "non-review comments should not set review_comment_id"
+        );
+    }
+
+    #[test]
+    fn test_handle_issue_comment_edited_with_review_signature() {
+        // Bug: reviewers post a placeholder comment, then edit it with the full review.
+        // The 'edited' event should be processed when the comment contains a review signature.
+        let payload = r#"{
+            "action": "edited",
+            "issue": {
+                "number": 55,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 77777,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found."
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let event = handle_issue_comment(payload.as_bytes()).unwrap().unwrap();
+        assert_eq!(event.reviewed_pr, Some(55));
+        assert_eq!(event.review_comment_id, Some(77777));
+        let activity = event.pr_activity.unwrap();
+        assert_eq!(activity.pr_number, 55);
+        assert_eq!(activity.actor, "park");
+    }
+
+    #[test]
+    fn test_handle_issue_comment_edited_without_review_signature() {
+        // An 'edited' event on a non-review comment should be ignored
+        // (we don't need to re-process every typo fix)
+        let payload = r#"{
+            "action": "edited",
+            "issue": {
+                "number": 55,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 88888,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown: park -->\n\nFixed a typo in my earlier comment."
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+        let result = handle_issue_comment(payload.as_bytes()).unwrap();
+        assert!(
+            result.is_none(),
+            "edited non-review comments should be ignored"
         );
     }
 
