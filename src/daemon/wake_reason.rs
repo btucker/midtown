@@ -81,6 +81,7 @@ impl WakeReason {
                     "{header}\n\n{insight}\n\n\
                      ONLY reply in the thread if you can add genuine value — additional context, \
                      a correction, or a connection to prior work. Do NOT reply just to acknowledge.\n\n\
+                     If this insight contains important domain knowledge, save it to your notes for future reference.\n\n\
                      To reply in the thread:\n  \
                      midtown channel post \"...\" --thread {msg_id} --channel {channel_name}"
                 )
@@ -174,7 +175,8 @@ impl WakeReason {
                      1. Read recent messages in #{channel_name} for context\n\
                      2. ONLY reply in the thread if you can add genuine value — additional context, \
                      a correction, or a connection to prior work. Do NOT reply just to acknowledge.\n   \
-                     midtown channel post \"...\" --thread {msg_id} --channel {insight_channel}"
+                     midtown channel post \"...\" --thread {msg_id} --channel {insight_channel}\n\
+                     3. If this insight contains important domain knowledge, save it to your notes for future reference."
                 )
             }
             _ => {

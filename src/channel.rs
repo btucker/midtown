@@ -1484,6 +1484,53 @@ impl Channel {
     }
 }
 
+/// Load all notes for a channel as a single string for domain context injection.
+///
+/// Reads all `.md` files from the channel's notes directory, concatenating
+/// their contents with filename-derived headers. Returns an empty string if
+/// the directory doesn't exist or contains no notes.
+///
+/// This is a standalone function (not a `Channel` method) because callers
+/// in the daemon often have a `base_dir` without a `Channel` instance.
+pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
+    let notes_dir = base_dir.join("channels").join(channel_name).join("notes");
+
+    if !notes_dir.is_dir() {
+        return String::new();
+    }
+
+    let mut entries: Vec<_> = match fs::read_dir(&notes_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .collect(),
+        Err(_) => return String::new(),
+    };
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut sections = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let filename = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => {
+                sections.push(format!("## {}\n\n{}", filename, content.trim()));
+            }
+            _ => {}
+        }
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("# Channel Notes\n\n{}", sections.join("\n\n"))
+    }
+}
+
 /// Router for managing multiple channels with lazy initialization.
 ///
 /// ChannelRouter maintains a cache of Channel instances, opening them on-demand
