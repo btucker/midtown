@@ -953,13 +953,19 @@
     margin: 5px 0 3px;
   }
 
-  /* Lists */
+  /* Lists — restore list-style-type stripped by Tailwind Preflight */
   :global(.message-text ul),
+  :global(.action-text ul) {
+    margin: 3px 0;
+    padding-left: 1.6em;
+    list-style-type: disc;
+  }
+
   :global(.message-text ol),
-  :global(.action-text ul),
   :global(.action-text ol) {
     margin: 3px 0;
     padding-left: 1.6em;
+    list-style-type: decimal;
   }
 
   /* Blockquotes */
