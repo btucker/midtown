@@ -83,6 +83,21 @@ impl PrIssueTracker {
         }
     }
 
+    /// Check if we should nudge for this issue using a custom cooldown duration.
+    /// Used for orphaned PRs which need a longer suppression window since there's
+    /// no active coworker to address the issue.
+    pub fn should_nudge_with_cooldown(
+        &self,
+        pr_number: u64,
+        issue_type: PrIssueType,
+        cooldown_secs: u64,
+    ) -> bool {
+        match self.nudged.get(&(pr_number, issue_type)) {
+            Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(cooldown_secs),
+            None => true,
+        }
+    }
+
     /// Record that we nudged for this issue
     pub fn record_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
         self.nudged.insert((pr_number, issue_type), Instant::now());
