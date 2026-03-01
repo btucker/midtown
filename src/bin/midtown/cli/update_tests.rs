@@ -67,8 +67,8 @@ fn test_last_check_file_path() {
 
 #[test]
 fn test_replace_web_app_atomic_swap() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let install_dir = tmp.path();
+    let install_tmp = tempfile::TempDir::new().unwrap();
+    let install_dir = install_tmp.path();
 
     // Create existing web-app directory with content
     let target = install_dir.join("web-app");
@@ -76,8 +76,9 @@ fn test_replace_web_app_atomic_swap() {
     fs::write(target.join("index.html"), "old content").unwrap();
     fs::write(target.join("subdir/app.js"), "old js").unwrap();
 
-    // Create new web-app source in a sibling temp dir (same filesystem for rename)
-    let src_tmp = tempfile::TempDir::new_in(install_dir).unwrap();
+    // Create new web-app source in a *separate* temp dir (simulates cross-device source,
+    // e.g. /tmp on tmpfs vs ~/.cargo/bin on disk)
+    let src_tmp = tempfile::TempDir::new().unwrap();
     let new_web_app = src_tmp.path().join("web-app");
     fs::create_dir_all(new_web_app.join("subdir")).unwrap();
     fs::write(new_web_app.join("index.html"), "new content").unwrap();
@@ -94,17 +95,18 @@ fn test_replace_web_app_atomic_swap() {
         fs::read_to_string(target.join("subdir/app.js")).unwrap(),
         "new js"
     );
-    // Verify .old was cleaned up
+    // Verify staging and .old were cleaned up
     assert!(!install_dir.join("web-app.old").exists());
+    assert!(!install_dir.join("web-app.new").exists());
 }
 
 #[test]
 fn test_replace_web_app_no_existing() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let install_dir = tmp.path();
+    let install_tmp = tempfile::TempDir::new().unwrap();
+    let install_dir = install_tmp.path();
 
-    // No existing web-app directory
-    let src_tmp = tempfile::TempDir::new_in(install_dir).unwrap();
+    // No existing web-app directory — source in separate temp dir
+    let src_tmp = tempfile::TempDir::new().unwrap();
     let new_web_app = src_tmp.path().join("web-app");
     fs::create_dir_all(&new_web_app).unwrap();
     fs::write(new_web_app.join("index.html"), "fresh install").unwrap();
@@ -116,6 +118,8 @@ fn test_replace_web_app_no_existing() {
         fs::read_to_string(target.join("index.html")).unwrap(),
         "fresh install"
     );
+    // Verify staging was cleaned up
+    assert!(!install_dir.join("web-app.new").exists());
 }
 
 #[test]

@@ -279,19 +279,33 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<(), String> {
 fn replace_web_app(new_web_app: &Path, install_dir: &Path) -> Result<(), String> {
     let target = install_dir.join("web-app");
     let old = install_dir.join("web-app.old");
+    let staging = install_dir.join("web-app.new");
 
-    // Atomic swap: mv current → .old, mv new → current, rm .old
-    // Uses rename (not copy) to match install.sh — rename is atomic on the same filesystem.
+    // Stage the new web-app on the target filesystem so rename() never crosses
+    // device boundaries (EXDEV). The staging copy doesn't need to be atomic —
+    // if it fails, the existing web-app is untouched.
+    let _ = fs::remove_dir_all(&staging); // clean up any leftover staging dir
+    copy_dir_recursive(new_web_app, &staging).map_err(|e| {
+        let _ = fs::remove_dir_all(&staging);
+        format!("Failed to stage new web-app: {e}")
+    })?;
+
+    // Atomic swap: mv current → .old, mv staged → current, rm .old
+    // All renames are on the same filesystem, so this matches the install.sh pattern.
     if target.is_dir() {
         let _ = fs::remove_dir_all(&old); // clean up any leftover .old
-        fs::rename(&target, &old).map_err(|e| format!("Failed to move old web-app: {e}"))?;
+        fs::rename(&target, &old).map_err(|e| {
+            let _ = fs::remove_dir_all(&staging);
+            format!("Failed to move old web-app: {e}")
+        })?;
     }
 
-    fs::rename(new_web_app, &target).map_err(|e| {
+    fs::rename(&staging, &target).map_err(|e| {
         // Restore old on failure
         if old.is_dir() {
             let _ = fs::rename(&old, &target);
         }
+        let _ = fs::remove_dir_all(&staging);
         format!("Failed to install new web-app: {e}")
     })?;
 
@@ -299,6 +313,25 @@ fn replace_web_app(new_web_app: &Path, install_dir: &Path) -> Result<(), String>
     let _ = fs::remove_dir_all(&old);
 
     eprintln!("Updated web UI");
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst)
+        .map_err(|e| format!("Failed to create directory {}: {e}", dst.display()))?;
+
+    for entry in fs::read_dir(src).map_err(|e| format!("Failed to read {}: {e}", src.display()))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {e}"))?;
+        let path = entry.path();
+        let dest_path = dst.join(entry.file_name());
+
+        if path.is_dir() {
+            copy_dir_recursive(&path, &dest_path)?;
+        } else {
+            fs::copy(&path, &dest_path)
+                .map_err(|e| format!("Failed to copy {}: {e}", path.display()))?;
+        }
+    }
     Ok(())
 }
 
