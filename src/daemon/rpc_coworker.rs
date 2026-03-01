@@ -695,10 +695,11 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 ///    This mapping is established when a coworker opens a PR and the daemon
 ///    extracts the task ID from the PR title's `[Midtown !XXX]` marker.
 ///
-/// 2. **`task.pr` field on disk**: The task file may have an explicit PR number
-///    set via `--pr` or auto-detected. This survives daemon restarts (unlike
-///    `pr_author_sessions` which is rebuilt over time). If set, we treat it as
-///    an open PR to err on the side of deferring to the merge path.
+/// 2. **`task.pr` field on disk + GitHub API verification**: The task file may
+///    have an explicit PR number set via `--pr` or auto-detected. This survives
+///    daemon restarts (unlike `pr_author_sessions` which is rebuilt over time).
+///    However, `task.pr` is never cleared when a PR is closed, so we verify the
+///    PR is actually open via `gh pr view` before trusting it.
 ///
 /// Used to decide completion strategy when a coworker reports
 /// `WorkflowPhase::Completed`:
@@ -718,17 +719,72 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
     }
 
     // Source 2: task.pr field on disk (survives daemon restarts)
+    // Must verify via GitHub API since task.pr is never cleared on PR close.
     if let Some(task) = crate::tasks::read_task_for_repo(task_id, &state.repo_name)
         && let Some(pr_num) = task.pr
     {
-        debug!(
-            "Task !{} has pr={} on disk — treating as having an open PR",
-            task_id, pr_num
-        );
-        return true;
+        let repo_path = state.all_repo_paths.first().cloned();
+        let is_open = tokio::task::spawn_blocking(move || is_pr_open(pr_num, repo_path.as_deref()))
+            .await
+            .unwrap_or(false);
+
+        if is_open {
+            debug!(
+                "Task !{} has pr={} on disk — verified open via GitHub",
+                task_id, pr_num
+            );
+            return true;
+        } else {
+            debug!(
+                "Task !{} has pr={} on disk but PR is not open — ignoring",
+                task_id, pr_num
+            );
+        }
     }
 
     false
+}
+
+/// Check if a specific PR is open by querying GitHub.
+///
+/// Returns `true` only if the PR state is "OPEN". Returns `false` for
+/// closed, merged, or if the API call fails (conservative: treat failures
+/// as "not open" so the task can be completed directly rather than
+/// getting stuck in the deferred merge path for a stale PR).
+fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
+    let mut cmd = std::process::Command::new("gh");
+    if let Some(path) = repo_path {
+        cmd.current_dir(path);
+    }
+    cmd.args([
+        "pr",
+        "view",
+        &pr_number.to_string(),
+        "--json",
+        "state",
+        "--jq",
+        ".state",
+    ]);
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            let state = String::from_utf8_lossy(&output.stdout);
+            state.trim() == "OPEN"
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            debug!(
+                "Failed to check PR #{} state via gh CLI: {}",
+                pr_number,
+                stderr.trim()
+            );
+            false
+        }
+        Err(e) => {
+            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
+            false
+        }
+    }
 }
 
 // ============================================================================

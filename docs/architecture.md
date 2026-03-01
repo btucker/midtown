@@ -392,7 +392,7 @@ When a coworker is called in, midtown creates a detached git worktree at the cur
 
 Tasks complete through two paths depending on whether they produce a PR:
 
-1. **PR tasks** (most common): The coworker opens a PR and reports `midtown state idle`. The daemon auto-completes the task when the PR merges, via webhook or polling fallback. The task stays `in_progress` until merge — `task_has_open_pr()` in `rpc_coworker.rs` checks both `pr_author_sessions` (in-memory) and the `task.pr` field on disk (survives daemon restarts) to detect this.
+1. **PR tasks** (most common): The coworker opens a PR and reports `midtown state idle`. The daemon auto-completes the task when the PR merges, via webhook or polling fallback. The task stays `in_progress` until merge — `task_has_open_pr()` in `rpc_coworker.rs` checks both `pr_author_sessions` (in-memory) and the `task.pr` field on disk (survives daemon restarts). When using the disk fallback, the PR state is verified via `gh pr view` since `task.pr` is never cleared when a PR is closed — without this check, a closed/superseded PR would incorrectly block task completion.
 
 2. **No-PR tasks** (ops, release management, investigations): The coworker reports `midtown state completed`. Since no PR exists, the daemon completes the task directly on disk (same as `task.done` RPC), clears `blocked_by` dependencies, and marks the worktree as completed. This avoids the respawn loop that occurs when a task stays `in_progress` with no PR — dispatch would repeatedly recover and respawn the coworker.
 
