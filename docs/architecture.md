@@ -743,3 +743,12 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 - `coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
 
 Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME` (90 seconds — increased from 60s because session startup takes 40-60s, and a 60s guard could expire before initialization completes), and are not the lead session (named after the repo) are eligible for idle shutdown.
+
+## Self-Update (`midtown update`)
+
+`src/bin/midtown/cli/update.rs` implements self-update via GitHub releases. Two entry points:
+
+- **`handle_update(check_only)`** — Interactive update triggered by `midtown update`. Downloads the platform-specific tarball to a `tempfile::TempDir` (RAII cleanup on all error paths), extracts it, then replaces the binary and web-app directory. The web-app swap uses atomic `fs::rename()` (matching `install.sh`) rather than recursive copy, so a crash mid-update never leaves a partial `web-app/` directory.
+- **`check_for_update_notice()`** — Non-blocking check called during `midtown start`. Spawns a background thread and uses `mpsc::recv_timeout(3s)` to enforce a wall-clock deadline independent of the 10s HTTP timeout. Writes the last-check timestamp on both success and failure/timeout to preserve the 1-hour rate limit even when GitHub is unreachable.
+
+**Version comparison** (`is_newer`): Strips pre-release suffixes (e.g., `0.7.0-beta.1` → `0.7.0`) before comparing, so pre-release tags are never considered newer than their stable counterpart.

@@ -40,16 +40,17 @@ pub fn handle_update(check_only: bool) -> Result<Response, String> {
     let asset_name = format!("midtown-{os}-{arch}-v{latest_bare}.tar.gz");
     let url = format!("https://github.com/{GITHUB_REPO}/releases/download/{latest}/{asset_name}");
 
-    // Download to a temp directory
-    let tmp_dir = tempdir().map_err(|e| format!("Failed to create temp directory: {e}"))?;
-    let tarball_path = tmp_dir.join(&asset_name);
+    // Download to a temp directory (TempDir auto-cleans on drop, even on early ?-returns)
+    let tmp_dir =
+        tempfile::TempDir::new().map_err(|e| format!("Failed to create temp directory: {e}"))?;
+    let tarball_path = tmp_dir.path().join(&asset_name);
 
     eprintln!("Downloading {asset_name}...");
     download_file(&url, &tarball_path)?;
 
     // Extract the tarball
     eprintln!("Extracting...");
-    extract_tarball(&tarball_path, &tmp_dir)?;
+    extract_tarball(&tarball_path, tmp_dir.path())?;
 
     // Determine install directory (same as the directory containing the current binary)
     let current_exe =
@@ -59,20 +60,17 @@ pub fn handle_update(check_only: bool) -> Result<Response, String> {
         .ok_or("Cannot determine install directory")?;
 
     // Replace binary (atomic swap via rename)
-    let new_binary = tmp_dir.join("midtown");
+    let new_binary = tmp_dir.path().join("midtown");
     if !new_binary.exists() {
         return Err("Downloaded archive does not contain 'midtown' binary".to_string());
     }
     replace_binary(&new_binary, &current_exe)?;
 
-    // Replace web-app/ directory if present in the tarball
-    let new_web_app = tmp_dir.join("web-app");
+    // Replace web-app/ directory if present in the tarball (atomic rename, matching install.sh)
+    let new_web_app = tmp_dir.path().join("web-app");
     if new_web_app.is_dir() {
         replace_web_app(&new_web_app, install_dir)?;
     }
-
-    // Clean up temp dir (best effort, it's in a tmpdir anyway)
-    let _ = fs::remove_dir_all(&tmp_dir);
 
     Ok(Response::Message {
         message: format!("Updated midtown v{CURRENT_VERSION} → v{latest_bare}"),
@@ -155,9 +153,13 @@ fn fetch_latest_version() -> Result<String, String> {
 }
 
 /// Compare two semver-ish version strings. Returns true if `latest` > `current`.
+/// Strips pre-release suffixes (e.g., "0.7.0-beta.1" → "0.7.0") so that
+/// pre-release versions are never considered newer than their stable counterpart.
 fn is_newer(latest: &str, current: &str) -> bool {
     let parse = |v: &str| -> (u32, u32, u32) {
-        let parts: Vec<u32> = v.split('.').filter_map(|p| p.parse().ok()).collect();
+        // Strip pre-release suffix (everything after first '-') before parsing
+        let stable = v.split('-').next().unwrap_or(v);
+        let parts: Vec<u32> = stable.split('.').filter_map(|p| p.parse().ok()).collect();
         (
             parts.first().copied().unwrap_or(0),
             parts.get(1).copied().unwrap_or(0),
@@ -264,7 +266,8 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<(), String> {
     {
         use std::os::unix::fs::PermissionsExt;
         let perms = fs::Permissions::from_mode(0o755);
-        let _ = fs::set_permissions(current_exe, perms);
+        fs::set_permissions(current_exe, perms)
+            .map_err(|e| format!("Failed to set executable permissions: {e}"))?;
     }
 
     // Clean up backup
@@ -276,21 +279,33 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<(), String> {
 fn replace_web_app(new_web_app: &Path, install_dir: &Path) -> Result<(), String> {
     let target = install_dir.join("web-app");
     let old = install_dir.join("web-app.old");
+    let staging = install_dir.join("web-app.new");
 
-    // Atomic swap: rename current → .old, move new → current, delete .old
+    // Stage the new web-app on the target filesystem so rename() never crosses
+    // device boundaries (EXDEV). The staging copy doesn't need to be atomic —
+    // if it fails, the existing web-app is untouched.
+    let _ = fs::remove_dir_all(&staging); // clean up any leftover staging dir
+    copy_dir_recursive(new_web_app, &staging).map_err(|e| {
+        let _ = fs::remove_dir_all(&staging);
+        format!("Failed to stage new web-app: {e}")
+    })?;
+
+    // Atomic swap: mv current → .old, mv staged → current, rm .old
+    // All renames are on the same filesystem, so this matches the install.sh pattern.
     if target.is_dir() {
         let _ = fs::remove_dir_all(&old); // clean up any leftover .old
-        fs::rename(&target, &old).map_err(|e| format!("Failed to move old web-app: {e}"))?;
+        fs::rename(&target, &old).map_err(|e| {
+            let _ = fs::remove_dir_all(&staging);
+            format!("Failed to move old web-app: {e}")
+        })?;
     }
 
-    // Copy the new web-app directory tree
-    copy_dir_recursive(new_web_app, &target).map_err(|e| {
-        // Remove partially-created target before restoring the old directory,
-        // otherwise the rename will fail because target already exists.
-        let _ = fs::remove_dir_all(&target);
+    fs::rename(&staging, &target).map_err(|e| {
+        // Restore old on failure
         if old.is_dir() {
             let _ = fs::rename(&old, &target);
         }
+        let _ = fs::remove_dir_all(&staging);
         format!("Failed to install new web-app: {e}")
     })?;
 
@@ -350,14 +365,6 @@ fn write_last_check_timestamp() -> Result<(), String> {
     // Write current timestamp as content (not strictly needed, file mtime is what matters)
     let _ = writeln!(f, "{}", chrono::Utc::now().to_rfc3339());
     Ok(())
-}
-
-// ── Temp directory helper ─────────────────────────────────────────────────
-
-fn tempdir() -> Result<PathBuf, std::io::Error> {
-    let dir = std::env::temp_dir().join(format!("midtown-update-{}", std::process::id()));
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
 }
 
 #[path = "update_tests.rs"]
