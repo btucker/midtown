@@ -691,7 +691,7 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 /// Returns true if the task has an associated open PR, checking two sources:
 ///
 /// 1. **`pr_author_sessions` (in-memory persistent state)**: Presence implies
-///    the PR is still open — closed PRs are cleaned up by `cleanup_closed_pr_state`.
+///    the PR is still open — closed PRs are cleaned up by `cleanup_closed_prs`.
 ///    This mapping is established when a coworker opens a PR and the daemon
 ///    extracts the task ID from the PR title's `[Midtown !XXX]` marker.
 ///
