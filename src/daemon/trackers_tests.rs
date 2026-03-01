@@ -1,4 +1,3 @@
-use super::super::constants::ORPHANED_PR_NUDGE_COOLDOWN_SECS;
 use super::*;
 
 // =========================================================================
@@ -72,10 +71,10 @@ fn tracker_allows_different_prs() {
 fn tracker_cleanup_removes_expired() {
     let mut tracker = PrIssueTracker::new();
 
-    // Insert an entry with an expired timestamp
+    // Insert an entry past the longest cooldown (orphaned PR = 30 min)
     tracker.nudged.insert(
         (42, PrIssueType::CiFailed),
-        Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 1),
+        Instant::now() - Duration::from_secs(ORPHANED_PR_NUDGE_COOLDOWN_SECS + 1),
     );
 
     tracker.cleanup();
@@ -83,6 +82,24 @@ fn tracker_cleanup_removes_expired() {
     assert!(
         tracker.nudged.is_empty(),
         "expired entries should be removed by cleanup"
+    );
+}
+
+#[test]
+fn tracker_cleanup_retains_entries_within_orphaned_cooldown() {
+    let mut tracker = PrIssueTracker::new();
+
+    // Insert an entry past standard cooldown but within orphaned cooldown
+    tracker.nudged.insert(
+        (42, PrIssueType::MergeConflict),
+        Instant::now() - Duration::from_secs(PR_NUDGE_COOLDOWN_SECS + 60),
+    );
+
+    tracker.cleanup();
+
+    assert!(
+        !tracker.nudged.is_empty(),
+        "entries within orphaned cooldown should be retained by cleanup"
     );
 }
 
