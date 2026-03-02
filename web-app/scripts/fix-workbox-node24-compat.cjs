@@ -202,4 +202,5 @@ try {
 } catch (err) {
   // Keep installs non-blocking in environments where node_modules may be partially
   // installed; this mirrors the defensive behavior expected by midtown startup.
+  console.error('postinstall patch failed:', err.message)
 }

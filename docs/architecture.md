@@ -537,6 +537,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - **Tablet (769–1024px)**: Permanent sidebar replaces tab navigation, two-column grid layout
   - **Desktop (≥1025px)**: Three-column Slack-inspired layout with sidebar, main channel, and toggleable detail panel for tasks, PRs, and coworker info
 - Clickable `@coworker` mentions in messages open coworker detail panel on desktop
+- Theme-aware branding — the sidebar header logo (`App.svelte`) reactively swaps between `midtown-dark-logo.svg` and `midtown-light-logo.svg` on theme toggle. The favicon is seeded in `index.html` before first paint using the stored theme preference (`localStorage`), then kept in sync by `App.svelte`'s `$effect` block. A static `favicon.ico` fallback is kept for browsers that unconditionally request `/favicon.ico`.
 
 ### Celebration effects
 
