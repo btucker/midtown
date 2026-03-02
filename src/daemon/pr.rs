@@ -869,6 +869,12 @@ pub(super) async fn poll_prs_for_issues(
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
+        // Skip draft PRs — they don't need orphaned PR alerts or issue nudges
+        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        if is_draft {
+            continue;
+        }
+
         // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
         let owner_opt = resolve_pr_owner(pr_number, head_ref, snap);
 
