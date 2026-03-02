@@ -16,6 +16,37 @@ mod session_render;
 mod task;
 pub mod update;
 
+/// Convert a ratatui color to a crossterm color.
+///
+/// Used by both the progress-line renderer (daemon.rs) and the chat TUI
+/// (chat/mod.rs) when writing raw ANSI sequences outside the ratatui
+/// render loop.
+pub(crate) fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> crossterm::style::Color {
+    use crossterm::style::Color as Ct;
+    use ratatui::style::Color as Ra;
+    match color {
+        Ra::Reset => Ct::Reset,
+        Ra::Black => Ct::Black,
+        Ra::Red => Ct::DarkRed,
+        Ra::Green => Ct::DarkGreen,
+        Ra::Yellow => Ct::DarkYellow,
+        Ra::Blue => Ct::DarkBlue,
+        Ra::Magenta => Ct::DarkMagenta,
+        Ra::Cyan => Ct::DarkCyan,
+        Ra::Gray => Ct::Grey,
+        Ra::DarkGray => Ct::DarkGrey,
+        Ra::LightRed => Ct::Red,
+        Ra::LightGreen => Ct::Green,
+        Ra::LightYellow => Ct::Yellow,
+        Ra::LightBlue => Ct::Blue,
+        Ra::LightMagenta => Ct::Magenta,
+        Ra::LightCyan => Ct::Cyan,
+        Ra::White => Ct::White,
+        Ra::Rgb(r, g, b) => Ct::Rgb { r, g, b },
+        Ra::Indexed(i) => Ct::AnsiValue(i),
+    }
+}
+
 pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
 pub use config::ConfigCommand;

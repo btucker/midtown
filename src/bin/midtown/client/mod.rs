@@ -698,13 +698,6 @@ impl DaemonClient {
         )
     }
 
-    // Kanban commands
-
-    #[allow(dead_code)] // Kept for backward compatibility with kanban.data RPC
-    pub fn kanban_data(&self) -> Result<Value, String> {
-        self.send_raw("kanban.data", None)
-    }
-
     /// Fetch live coworker state via `coworkers.status` RPC.
     ///
     /// Returns coworker phase, health, task assignments, lead activity, and
@@ -837,7 +830,6 @@ impl DaemonClient {
     ///
     /// Causes the headed wrapper to write \x16 to the Claude PTY,
     /// triggering Claude's built-in clipboard image paste handler.
-    #[allow(dead_code)] // Called by App::send_image_to_lead() in Task 3+
     pub fn headed_enqueue_ctrl_v(&self, session: &str) -> Result<Response, String> {
         self.send(
             "headed.enqueue",

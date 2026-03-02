@@ -627,7 +627,6 @@ pub(crate) struct DaemonState {
     /// The main event loop subscribes to this channel. When an RPC handler
     /// (e.g., `daemon.exec-restart`) needs to trigger shutdown, it sends on
     /// this channel to break the main loop.
-    #[allow(dead_code)] // Used in rpc.rs via state.shutdown_tx.send()
     shutdown_tx: broadcast::Sender<()>,
     /// Session-scoped intercom queues for headed adapters (wrapper transport).
     ///
@@ -1825,22 +1824,6 @@ impl DaemonState {
             .collect();
         busy.extend(self.get_busy_coworker_names());
         busy.into_iter().collect()
-    }
-
-    /// Check if a coworker is already assigned to a specific task.
-    ///
-    /// Used to prevent duplicate task assignment in Case 2 grouped task logic.
-    /// Returns true if the coworker's current assignment matches the given task_id.
-    ///
-    /// NOTE: This method is retained for potential debugging use but should NOT be
-    /// called from decision functions (evaluate_tick path). Decision logic should use
-    /// `snap.coworker_task_assignments` instead to maintain the pure decision pattern.
-    #[allow(dead_code)]
-    pub(crate) fn is_coworker_assigned_to_task(&self, coworker: &str, task_id: &str) -> bool {
-        let assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments
-            .get(&coworker.to_lowercase())
-            .is_some_and(|a| a.task_id == task_id)
     }
 
     /// Get the task ID currently assigned to a coworker.

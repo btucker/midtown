@@ -451,20 +451,6 @@ pub fn read_daemon_log_tail(num_lines: usize) -> Vec<String> {
 }
 
 impl WorldSnapshot {
-    /// Get all session IDs for a given coworker name.
-    ///
-    /// Returns the session IDs of active coworkers with the specified name.
-    /// Useful for backward-compat lookups during the transition from name-keyed
-    /// to session-keyed state.
-    #[allow(dead_code)]
-    pub fn sessions_for_name(&self, name: &str) -> Vec<String> {
-        self.active_coworkers
-            .iter()
-            .filter(|cw| cw.name.eq_ignore_ascii_case(name))
-            .filter_map(|cw| cw.session_id.clone())
-            .collect()
-    }
-
     /// Build a session-ID-keyed health map from name-keyed health data.
     ///
     /// During migration, health is still collected per-name. This method

@@ -199,7 +199,6 @@ pub enum Effect {
     AssignAndSpawn {
         task_id: String,
         owner: String,
-        #[allow(dead_code)]
         repo_name: String,
         config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,

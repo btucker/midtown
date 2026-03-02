@@ -84,7 +84,6 @@ futures = "0.3"
 
 # WebSocket client for HTTPS proxy (bridges webserver ↔ daemon WS)
 tokio-tungstenite = "0.26"
-unicode-width = "0.2.0"
 
 # Web Push notifications (VAPID + RFC8030)
 web-push-native = { version = "0.4", features = ["vapid", "serialization"] }

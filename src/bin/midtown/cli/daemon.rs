@@ -137,12 +137,10 @@ fn emit_startup_progress(percent: u16, message: &str) {
             let fg = cell.fg;
             let bg = cell.bg;
             if prev_fg != Some(fg) || prev_bg != Some(bg) {
-                if let Some(ct_fg) = ratatui_to_crossterm_color(fg) {
-                    line.push_str(&format!("{}", SetForegroundColor(ct_fg)));
-                }
-                if let Some(ct_bg) = ratatui_to_crossterm_color(bg) {
-                    line.push_str(&format!("{}", SetBackgroundColor(ct_bg)));
-                }
+                let ct_fg = super::ratatui_to_crossterm_color(fg);
+                line.push_str(&format!("{}", SetForegroundColor(ct_fg)));
+                let ct_bg = super::ratatui_to_crossterm_color(bg);
+                line.push_str(&format!("{}", SetBackgroundColor(ct_bg)));
                 // Bold text on the filled portion for better readability
                 if fg == Color::DarkGray {
                     line.push_str(&format!("{}", SetAttribute(Attribute::Bold)));
@@ -166,34 +164,6 @@ fn emit_startup_progress(percent: u16, message: &str) {
             PROGRESS_LINE_ACTIVE.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         let _ = stderr.flush();
-    }
-}
-
-fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> Option<crossterm::style::Color> {
-    use crossterm::style::Color as CtColor;
-    use ratatui::style::Color as RaColor;
-    #[allow(unreachable_patterns)]
-    match color {
-        RaColor::Reset => Some(CtColor::Reset),
-        RaColor::Black => Some(CtColor::Black),
-        RaColor::Red => Some(CtColor::DarkRed),
-        RaColor::Green => Some(CtColor::DarkGreen),
-        RaColor::Yellow => Some(CtColor::DarkYellow),
-        RaColor::Blue => Some(CtColor::DarkBlue),
-        RaColor::Magenta => Some(CtColor::DarkMagenta),
-        RaColor::Cyan => Some(CtColor::DarkCyan),
-        RaColor::Gray => Some(CtColor::Grey),
-        RaColor::DarkGray => Some(CtColor::DarkGrey),
-        RaColor::LightRed => Some(CtColor::Red),
-        RaColor::LightGreen => Some(CtColor::Green),
-        RaColor::LightYellow => Some(CtColor::Yellow),
-        RaColor::LightBlue => Some(CtColor::Blue),
-        RaColor::LightMagenta => Some(CtColor::Magenta),
-        RaColor::LightCyan => Some(CtColor::Cyan),
-        RaColor::White => Some(CtColor::White),
-        RaColor::Rgb(r, g, b) => Some(CtColor::Rgb { r, g, b }),
-        RaColor::Indexed(i) => Some(CtColor::AnsiValue(i)),
-        _ => None,
     }
 }
 
@@ -2190,13 +2160,6 @@ fn is_daemon_running(pid_file: &Path) -> bool {
             true
         }
     }
-}
-
-/// Get session status for status command enhancement.
-#[allow(dead_code)]
-pub fn get_session_status() -> (bool, bool) {
-    let exists = session_name().map(|s| session_exists(&s)).unwrap_or(false);
-    (daemon_is_running(), exists)
 }
 
 /// Handle `midtown lead register-session` command.
