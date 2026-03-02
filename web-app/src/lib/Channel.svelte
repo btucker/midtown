@@ -719,6 +719,25 @@
     textareaElement.style.height = textareaElement.scrollHeight + 'px'
   }
 
+  // Re-measure textarea height when its width changes (e.g., thread panel opens/closes,
+  // window resize, sidebar toggle). Track previous width to avoid infinite loops —
+  // without this guard, height changes from resizeTextarea() would re-trigger the observer.
+  $effect(() => {
+    if (!textareaElement) return
+    let prevWidth = textareaElement.getBoundingClientRect().width
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const newWidth = entry.contentRect.width
+      if (newWidth !== prevWidth) {
+        prevWidth = newWidth
+        resizeTextarea()
+      }
+    })
+    ro.observe(textareaElement)
+    return () => ro.disconnect()
+  })
+
   function handleInput() {
     resizeTextarea()
     detectAutocompleteTrigger()
@@ -941,7 +960,7 @@
           bind:value={inputText}
           placeholder={isDm ? `Message @${dmPeerName}...` : `Message to #${$activeChannel}...`}
           rows="1"
-          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[9em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}
