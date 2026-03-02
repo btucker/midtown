@@ -553,7 +553,8 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
 
-    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
+    let result =
+        create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
 
     assert!(result.is_ok(), "should succeed when fork already exists");
     let (returned_sid, already_existed) = result.unwrap();
@@ -582,7 +583,8 @@ async fn test_create_fork_session_returns_err_when_pending() {
         .unwrap()
         .insert(thread_id.to_string(), "pending".to_string());
 
-    let result = create_fork_session(thread_id, "any-calling-session", None, "test", &state).await;
+    let result =
+        create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
 
     assert!(
         result.is_err(),
@@ -635,8 +637,15 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
         .insert(calling_session_id.to_string(), "web".to_string());
 
     // spawn_fork will fail since there's no real claude process
-    let result =
-        create_fork_session(thread_id, calling_session_id, Some("web"), "test", &state).await;
+    let result = create_fork_session(
+        thread_id,
+        calling_session_id,
+        Some("web"),
+        None,
+        "test",
+        &state,
+    )
+    .await;
 
     assert!(result.is_err(), "should fail when spawn_fork fails");
 
@@ -662,7 +671,8 @@ async fn test_handle_session_fork_already_exists_response() {
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
 
-    let resp = handle_session_fork(RequestId::Number(1), thread_id, "any-caller", &state).await;
+    let resp =
+        handle_session_fork(RequestId::Number(1), thread_id, "any-caller", None, &state).await;
     let json = serde_json::to_value(&resp).unwrap();
 
     assert!(
@@ -691,7 +701,8 @@ async fn test_handle_session_fork_returns_pending_during_spawn_window() {
         .unwrap()
         .insert(thread_id.to_string(), "pending".to_string());
 
-    let resp = handle_session_fork(RequestId::Number(2), thread_id, "any-caller", &state).await;
+    let resp =
+        handle_session_fork(RequestId::Number(2), thread_id, "any-caller", None, &state).await;
     let json = serde_json::to_value(&resp).unwrap();
 
     assert!(
@@ -708,4 +719,78 @@ async fn test_handle_session_fork_returns_pending_during_spawn_window() {
         thread_id,
         "result should echo thread_parent_id"
     );
+}
+
+// ============================================================================
+// slugify_fork_hint tests
+// ============================================================================
+
+#[test]
+fn test_slugify_extracts_meaningful_words() {
+    assert_eq!(
+        slugify_fork_hint("How does the auth module work?", "abcd1234efgh"),
+        "auth-module-work"
+    );
+}
+
+#[test]
+fn test_slugify_strips_mentions() {
+    assert_eq!(
+        slugify_fork_hint("@channel-lead how does auth work?", "abcd1234efgh"),
+        "auth-work"
+    );
+}
+
+#[test]
+fn test_slugify_skips_stop_words() {
+    assert_eq!(
+        slugify_fork_hint("Can you add the TLS config option", "abcd1234efgh"),
+        "add-tls-config"
+    );
+}
+
+#[test]
+fn test_slugify_limits_to_three_words() {
+    assert_eq!(
+        slugify_fork_hint(
+            "implement dark mode toggle component system",
+            "abcd1234efgh"
+        ),
+        "implement-dark-mode"
+    );
+}
+
+#[test]
+fn test_slugify_lowercases() {
+    assert_eq!(
+        slugify_fork_hint("Push Notifications Setup", "abcd1234efgh"),
+        "push-notifications-setup"
+    );
+}
+
+#[test]
+fn test_slugify_falls_back_to_thread_id() {
+    // Only stop words and mentions — no meaningful content
+    assert_eq!(
+        slugify_fork_hint("@user is it the", "abcdefghijkl"),
+        "abcdefgh"
+    );
+}
+
+#[test]
+fn test_slugify_strips_punctuation() {
+    assert_eq!(
+        slugify_fork_hint("fix: auth endpoint!", "abcd1234efgh"),
+        "fix-auth-endpoint"
+    );
+}
+
+#[test]
+fn test_slugify_empty_message() {
+    assert_eq!(slugify_fork_hint("", "abcdefgh1234"), "abcdefgh");
+}
+
+#[test]
+fn test_slugify_short_thread_id_fallback() {
+    assert_eq!(slugify_fork_hint("", "abc"), "abc");
 }

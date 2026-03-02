@@ -610,14 +610,16 @@ impl DaemonClient {
         &self,
         thread_parent_id: &str,
         calling_session_id: &str,
+        name: Option<&str>,
     ) -> Result<Response, String> {
-        self.send(
-            "session.fork",
-            Some(serde_json::json!({
-                "thread_parent_id": thread_parent_id,
-                "calling_session_id": calling_session_id,
-            })),
-        )
+        let mut params = serde_json::json!({
+            "thread_parent_id": thread_parent_id,
+            "calling_session_id": calling_session_id,
+        });
+        if let Some(name) = name {
+            params["name"] = serde_json::json!(name);
+        }
+        self.send("session.fork", Some(params))
     }
 
     /// View a session's current output, returning the full daemon response.
