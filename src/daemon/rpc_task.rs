@@ -706,16 +706,18 @@ pub(super) async fn handle_task_claim(
     // Record in-memory assignment for busy tracking (only after disk write succeeds)
     state.record_task_assignment(from, task_id);
 
-    // Post task divider to the coworker's DM channel
-    let separator = if task_subject.is_empty() {
-        format!("─── Task !{} ───", task_id)
+    // Post task divider to the coworker's DM channel.
+    // Reuse build_dm_separator_effect (already tested in effects_tests.rs) to
+    // produce the PostSystemMessage effect, then execute it.
+    let subject_opt = if task_subject.is_empty() {
+        None
     } else {
-        format!("─── Task !{}: {} ───", task_id, task_subject)
+        Some(task_subject.as_str())
     };
-    let mut msg = Message::system(separator);
-    msg.channel = Some(format!("dm-{}", from));
-    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post task divider for task !{}: {}", task_id, e);
+    if let Some(separator_effect) =
+        super::effects::build_dm_separator_effect(from, task_id, subject_opt, false)
+    {
+        super::effects::execute_effects(vec![separator_effect], state).await;
     }
 
     info!("Task claim: {} claimed task !{} directly", from, task_id);
