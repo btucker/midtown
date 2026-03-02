@@ -1008,7 +1008,8 @@ fn main() {
 
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
-        // Screenshot is handled before daemon connection (Playwright + HTTP upload)
+        // Screenshot is handled before daemon connection (listed here rather than
+        // in the catch-all below because Coworker { Some(cmd) } would match first)
         Commands::Coworker {
             command: Some(cli::CoworkerCommand::Screenshot { .. }),
             ..
@@ -1037,7 +1038,9 @@ fn main() {
             *max_budget_usd,
             *allow_tools,
         ),
-        // These are handled before daemon connection, so unreachable
+        // These are handled before daemon connection, so unreachable.
+        // (Screenshot is also a bypass command but must be matched above
+        // the general Coworker { Some(cmd) } arm — see comment there.)
         Commands::Daemon { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }

@@ -175,9 +175,21 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
+    upload_and_cleanup(&tmp_path, &filename)
+}
+
+/// Upload a screenshot file and clean up the temp file afterward.
+///
+/// Creates a `TempFileGuard` over `tmp_path` so the file is removed on all exit
+/// paths (success, early error return, or panic). Resolves the webhook port from
+/// env/config, uploads via multipart POST, and returns `[Attached: /path]` markdown.
+pub(crate) fn upload_and_cleanup(
+    tmp_path: &std::path::Path,
+    filename: &str,
+) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
-        path: tmp_path.clone(),
+        path: tmp_path.to_path_buf(),
     };
 
     // Resolve the daemon's webhook port:
@@ -196,12 +208,12 @@ pub fn handle_screenshot(
     let upload_url = format!("http://127.0.0.1:{}/api/upload", webhook_port);
 
     let file_bytes =
-        std::fs::read(&tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+        std::fs::read(tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
 
     let form = reqwest::blocking::multipart::Form::new().part(
         "file",
         reqwest::blocking::multipart::Part::bytes(file_bytes)
-            .file_name(filename.clone())
+            .file_name(filename.to_string())
             .mime_str("image/png")
             .map_err(|e| format!("Failed to set MIME type: {}", e))?,
     );
@@ -403,4 +415,4 @@ fn select_task() -> Result<midtown::tasks::Task, String> {
 
 #[path = "coworker_tests.rs"]
 #[cfg(test)]
-mod coworker_tests;
+mod tests;
