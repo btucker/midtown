@@ -49,13 +49,6 @@ pub struct WebserverConfig {
     pub tls_key: Option<PathBuf>,
 }
 
-impl WebserverConfig {
-    /// Returns true if TLS is configured (both cert and key are set).
-    pub fn tls_enabled(&self) -> bool {
-        self.tls_cert.is_some() && self.tls_key.is_some()
-    }
-}
-
 impl Default for WebserverConfig {
     fn default() -> Self {
         Self {
@@ -536,6 +529,11 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
     // misconfiguration (and breaks features that require secure origin).
     match (&config.tls_cert, &config.tls_key) {
         (Some(cert_path), Some(key_path)) => {
+            // Install the ring crypto provider for rustls. This avoids the
+            // aws-lc-rs → aws-lc-sys → cmake system build dependency.
+            rustls::crypto::ring::default_provider()
+                .install_default()
+                .map_err(|_| "failed to install ring crypto provider")?;
             info!(
                 "Webserver listening on https://localhost:{} (TLS)",
                 config.port
