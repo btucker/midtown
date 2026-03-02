@@ -10,13 +10,15 @@
     "postinstall": "node scripts/fix-workbox-node24-compat.cjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "test:e2e:sw": "npm run build && TEST_SW=1 playwright test sw-update"
+    "test:e2e:sw": "npm run build && TEST_SW=1 playwright test sw-update",
+    "generate-pwa-assets": "pwa-assets-generator"
   },
   "devDependencies": {
     "@internationalized/date": "^3.11.0",
     "@lucide/svelte": "^0.561.0",
     "@playwright/test": "^1.58.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@vite-pwa/assets-generator": "^1.0.2",
     "bits-ui": "^2.15.5",
     "svelte": "^5.0.0",
     "vite": "^6.0.0",
