@@ -316,6 +316,24 @@
     textareaEl.style.height = textareaEl.scrollHeight + 'px'
   }
 
+  // Re-measure textarea height when its width changes (e.g., thread panel resized,
+  // window resize). Track previous width to avoid infinite loops.
+  $effect(() => {
+    if (!textareaEl) return
+    let prevWidth = textareaEl.getBoundingClientRect().width
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const newWidth = entry.contentRect.width
+      if (newWidth !== prevWidth) {
+        prevWidth = newWidth
+        resizeTextarea()
+      }
+    })
+    ro.observe(textareaEl)
+    return () => ro.disconnect()
+  })
+
   $effect(() => {
     replyText;
     tick().then(() => resizeTextarea())
@@ -345,7 +363,7 @@
     </div>
 
     <!-- Header -->
-    <div class="flex items-center justify-between px-[18px] py-4 bg-card border-b-2 border-border shrink-0">
+    <div class="flex items-center justify-between px-4 py-2 bg-card border-b-2 border-border shrink-0">
       <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0"
@@ -518,7 +536,7 @@
         bind:value={replyText}
         placeholder="Reply in thread..."
         rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
         onkeydown={handleTextareaKeyDown}
         oninput={resizeTextarea}
       ></textarea>
@@ -709,7 +727,7 @@
         bind:value={replyText}
         placeholder="Reply in thread..."
         rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[6em] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
         onkeydown={handleTextareaKeyDown}
         oninput={resizeTextarea}
       ></textarea>
