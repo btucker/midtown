@@ -531,20 +531,36 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
     // to the same port on the other protocol and intercepting browser connections.
     let addr = SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], config.port));
 
-    if let (Some(cert_path), Some(key_path)) = (&config.tls_cert, &config.tls_key) {
-        info!(
-            "Webserver listening on https://localhost:{} (TLS)",
-            config.port
-        );
-        let tls_config =
-            axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await?;
-        axum_server::bind_rustls(addr, tls_config)
-            .serve(app.into_make_service())
-            .await?;
-    } else {
-        info!("Webserver listening on http://localhost:{}", config.port);
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        axum::serve(listener, app).await?;
+    // Reject incomplete TLS configuration — providing only one of cert/key
+    // would silently fall back to plaintext, which is almost certainly a
+    // misconfiguration (and breaks features that require secure origin).
+    match (&config.tls_cert, &config.tls_key) {
+        (Some(cert_path), Some(key_path)) => {
+            info!(
+                "Webserver listening on https://localhost:{} (TLS)",
+                config.port
+            );
+            let tls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path).await?;
+            axum_server::bind_rustls(addr, tls_config)
+                .serve(app.into_make_service())
+                .await?;
+        }
+        (Some(_), None) => {
+            return Err(
+                "tls_cert is set but tls_key is missing — both are required for HTTPS".into(),
+            );
+        }
+        (None, Some(_)) => {
+            return Err(
+                "tls_key is set but tls_cert is missing — both are required for HTTPS".into(),
+            );
+        }
+        (None, None) => {
+            info!("Webserver listening on http://localhost:{}", config.port);
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            axum::serve(listener, app).await?;
+        }
     }
 
     Ok(())
