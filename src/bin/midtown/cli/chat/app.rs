@@ -586,6 +586,16 @@ pub struct SearchState {
     pub loading: bool,
     /// Error message from the last search attempt
     pub error: Option<String>,
+    /// The query that produced the current results (used to detect stale results)
+    pub last_query: String,
+}
+
+impl SearchState {
+    /// Returns true when the input has changed since the last search was executed,
+    /// meaning the current results are stale and Enter should re-execute.
+    pub fn results_are_stale(&self) -> bool {
+        !self.results.is_empty() && self.input.trim() != self.last_query
+    }
 }
 
 /// Interval between PR/kanban data refreshes (30 seconds).
@@ -2839,6 +2849,7 @@ impl App {
         let project_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
 
         self.search.loading = true;
+        self.search.last_query = query.clone();
         match midtown::search::search_messages_sync(&project_dir, &query, 50) {
             Ok(response) => {
                 self.search.results = response.results;
@@ -2862,7 +2873,13 @@ impl App {
         }
 
         let result = &self.search.results[self.search.selected_index];
-        let channel_name = result.channel.clone();
+        // Strip `.archived` suffix — rg path parser returns directory names like
+        // `foo.archived` for archived channels, but the canonical channel name is `foo`.
+        let channel_name = result
+            .channel
+            .strip_suffix(".archived")
+            .unwrap_or(&result.channel)
+            .to_string();
 
         // Switch to the result's channel
         let channel_repo =

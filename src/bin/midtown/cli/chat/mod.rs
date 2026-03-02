@@ -774,8 +774,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         app.channel_switcher_select();
                         EventResult::Continue
                     } else if app.search.show {
-                        // Enter in search: if results exist, select; otherwise execute
-                        if app.search.results.is_empty() {
+                        // Enter in search: re-execute if query changed since last search
+                        // or no results yet; otherwise select the highlighted result
+                        if app.search.results.is_empty() || app.search.results_are_stale() {
                             app.execute_search();
                         } else {
                             app.search_select();
