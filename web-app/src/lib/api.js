@@ -42,6 +42,11 @@ let reconnectTimeout = null
 let statusPollInterval = null
 let usagePollInterval = null
 
+// ── Browser history navigation ──────────────────────────────────────────────
+// Tracks whether we're currently handling a popstate event to prevent
+// circular history pushes (popstate → store change → pushState).
+let _handlingPopstate = false
+
 // Base URL for the current project's daemon API.
 // Always connects via the project's webhook port.
 let projectApiBase = ''
@@ -895,6 +900,7 @@ export function openThread(parentMessage, channelName) {
   )
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
+  pushNavState({ channel: channelName, thread: parentMessage.id })
   fetchThread(channelName, parentMessage.id).then((fetched) => {
     // Guard against stale fetch: the user may have opened a different thread
     // (or closed the panel) while this fetch was in flight. Only apply results
@@ -926,6 +932,7 @@ export function openTaskThread(task, channelName) {
   if (!task.thread_id && !task.message_id) {
     // No creation message — show task card only, replies sent as top-level messages
     threadData.set({ parentMessage: null, channelName, messages: [], tasks: [task] })
+    pushNavState({ channel: channelName })
     return
   }
 
@@ -956,6 +963,7 @@ export function openTaskThread(task, channelName) {
   const parentMessage = channelMsgs.find((m) => m.id === parentMessageId)
     ?? { id: parentMessageId, from: 'lead', content: task.subject }
   threadData.set({ parentMessage, channelName, messages: [], tasks })
+  pushNavState({ channel: channelName, thread: parentMessageId })
   fetchThread(channelName, parentMessageId).then((fetched) => {
     threadData.update((td) => {
       if (!td || td.parentMessage?.id !== parentMessageId) return td
@@ -973,9 +981,86 @@ export function openTaskThread(task, channelName) {
   })
 }
 
-// Close the thread panel
-export function closeThread() {
+// ── Browser history helpers ──────────────────────────────────────────────────
+
+// Build a URL path for the given navigation state.
+function buildNavUrl(state) {
+  const project = get(activeProject)
+  if (!project) return '/'
+  let url = '/' + encodeURIComponent(project)
+  if (state.channel && state.channel !== project) {
+    url += '?channel=' + encodeURIComponent(state.channel)
+  }
+  if (state.thread) {
+    url += (url.includes('?') ? '&' : '?') + 'thread=' + encodeURIComponent(state.thread)
+  }
+  return url
+}
+
+// Push a new history entry for a user-initiated navigation event.
+// No-op when handling a popstate event (prevents circular pushes).
+export function pushNavState(state) {
+  if (_handlingPopstate) return
+  history.pushState(state, '', buildNavUrl(state))
+}
+
+// Replace the current history entry (initial state or URL sync).
+export function replaceNavState(state) {
+  history.replaceState(state, '', buildNavUrl(state))
+}
+
+// Set up the popstate listener for browser back/forward navigation.
+// Returns a cleanup function to remove the listener.
+export function setupHistoryNavigation() {
+  function handlePopstate(e) {
+    const state = e.state
+    if (!state) return
+
+    _handlingPopstate = true
+    try {
+      // Channel navigation
+      if (state.channel && state.channel !== get(activeChannel)) {
+        activeChannel.set(state.channel)
+        channels.update((list) =>
+          list.map((ch) => (ch.name === state.channel ? { ...ch, unread: 0 } : ch))
+        )
+        const currentMessages = get(messagesByChannel)[state.channel]
+        if (!currentMessages || currentMessages.length === 0) {
+          fetchHistory(state.channel)
+        }
+      }
+
+      // Thread navigation
+      if (state.thread) {
+        const channel = state.channel || get(activeChannel)
+        const channelMsgs = get(messagesByChannel)[channel] || []
+        const parentMsg = channelMsgs.find((m) => m.id === state.thread)
+        if (parentMsg) {
+          openThread(parentMsg, channel)
+        } else {
+          // Message not in loaded messages — use a stub; openThread will fetch the data
+          openThread({ id: state.thread, from: '', content: '' }, channel)
+        }
+      } else {
+        threadData.set(null)
+      }
+    } finally {
+      _handlingPopstate = false
+    }
+  }
+
+  window.addEventListener('popstate', handlePopstate)
+  return () => window.removeEventListener('popstate', handlePopstate)
+}
+
+// Close the thread panel.
+// Pass { pushState: false } when the caller will push its own history entry
+// (e.g. selectChannel, selectDm) to avoid duplicate entries.
+export function closeThread({ pushState = true } = {}) {
   threadData.set(null)
+  if (pushState) {
+    pushNavState({ channel: get(activeChannel) })
+  }
 }
 
 // Select (or create-then-select) a DM channel for the given coworker name.
@@ -984,7 +1069,7 @@ export function closeThread() {
 export async function selectDm(coworkerName) {
   const channelName = `dm-${coworkerName}`
 
-  closeThread()
+  closeThread({ pushState: false })
 
   const currentChannels = get(channels)
   const exists = currentChannels.some((ch) => ch.name === channelName)
@@ -1016,6 +1101,7 @@ export async function selectDm(coworkerName) {
   }
 
   activeChannel.set(channelName)
+  pushNavState({ channel: channelName })
 
   channels.update((channelList) =>
     channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))

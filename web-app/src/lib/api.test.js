@@ -340,9 +340,13 @@ describe('fetchChannels — is_dm field', () => {
 
 describe('selectDm', () => {
   let originalFetch
+  let originalHistory
 
   beforeEach(() => {
     originalFetch = globalThis.fetch
+    // Mock browser history API (not available in Node test environment)
+    originalHistory = globalThis.history
+    globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() }
     channels.set([
       { name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false },
       { name: 'dm-alice', unread: 3, has_pr: false, ci_status: null, is_dm: true },
@@ -353,6 +357,7 @@ describe('selectDm', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    globalThis.history = originalHistory
   })
 
   it('switches to existing DM channel without creating it', async () => {
