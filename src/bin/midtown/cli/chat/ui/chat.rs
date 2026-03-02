@@ -649,8 +649,8 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
         .filtered_channels
         .len()
         .min(max_visible_items);
-    // 1 line for input + 1 separator + N channel lines + 2 borders
-    let popup_height = (3 + item_count as u16).min(area.height.saturating_sub(4));
+    // 2 borders + 1 input + 1 separator + N channel lines = 4 + N (minimum 5)
+    let popup_height = (4 + item_count.max(1) as u16).min(area.height.saturating_sub(4));
 
     // Center the popup
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
@@ -764,8 +764,8 @@ pub fn draw_search_overlay(f: &mut Frame, app: &App, area: Rect) {
     let popup_width = 60u16.min(area.width.saturating_sub(4));
     let max_visible_items = 10;
     let item_count = app.search.results.len().min(max_visible_items);
-    // 1 line for input + 1 separator + N result lines + 2 borders (minimum 5 lines)
-    let popup_height = (3 + item_count.max(1) as u16).min(area.height.saturating_sub(4));
+    // 2 borders + 1 input + 1 separator + N result lines = 4 + N (minimum 5)
+    let popup_height = (4 + item_count.max(1) as u16).min(area.height.saturating_sub(4));
 
     // Center the popup
     let popup_x = (area.width.saturating_sub(popup_width)) / 2;
