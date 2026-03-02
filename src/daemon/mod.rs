@@ -694,8 +694,8 @@ pub(crate) struct DaemonState {
     /// reply arrives for a channel with a topic session mapping, the reply is routed
     /// to the forked session instead of the root channel lead.
     ///
-    /// Ephemeral — cleared on daemon restart. Forks don't survive daemon restarts;
-    /// the on-demand channel lead infrastructure handles respawn when needed.
+    /// Rebuilt on daemon startup from persisted `SessionRecord.bound_thread_id` for
+    /// channel-lead sessions, using the same pattern as `fork_bound_threads`.
     pub(crate) topic_sessions: std::sync::Mutex<HashMap<String, String>>,
 
     /// In-memory cache of bound thread IDs for forked sessions.
@@ -1022,6 +1022,12 @@ impl DaemonState {
                 .lock()
                 .unwrap()
                 .retain(|_, sid| sid != &session_id);
+            // Clean up topic_sessions entries pointing to this session
+            // (prevents stale thread routing to dead fork sessions).
+            self.topic_sessions
+                .lock()
+                .unwrap()
+                .retain(|_, sid| sid != &session_id);
             // Mark the SessionRecord as stopped in persistent state.
             // This is the centralized path — all shutdown/cleanup flows converge here,
             // so the SessionRecord is always kept in sync with the actual process state.
@@ -1302,6 +1308,7 @@ impl DaemonState {
         let mut task_to_session: HashMap<String, String> = HashMap::new();
         let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
         let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
+        let mut topic_sessions: HashMap<String, String> = HashMap::new();
         {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
@@ -1320,10 +1327,13 @@ impl DaemonState {
                         // Rebuild inherited channel map only for forked channel leads.
                         // Regular task coworkers also carry `bound_thread_id` but should not
                         // stream their output as lead-like activity.
-                        if record.coworker_type == "channel-lead"
-                            && let Some(ref channel) = record.channel
-                        {
-                            fork_bound_channels.insert(name.clone(), channel.clone());
+                        if record.coworker_type == "channel-lead" {
+                            if let Some(ref channel) = record.channel {
+                                fork_bound_channels.insert(name.clone(), channel.clone());
+                            }
+                            // Rebuild topic_sessions so thread replies route to existing
+                            // forks after a daemon restart (prevents duplicate forks).
+                            topic_sessions.insert(tid.clone(), session_id.clone());
                         }
                     }
                 }
@@ -1387,7 +1397,7 @@ impl DaemonState {
             task_to_session: std::sync::Mutex::new(task_to_session),
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
-            topic_sessions: std::sync::Mutex::new(HashMap::new()),
+            topic_sessions: std::sync::Mutex::new(topic_sessions),
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
