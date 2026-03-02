@@ -42,7 +42,8 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     };
 
     // Read all persistent state in a single lock: reviewer assignments, worktree PR map,
-    // rate limit, channel lead names, and task-message-id map. Avoids multiple lock acquires.
+    // rate limit, channel lead names, task-message-id map, and task-thread-id map.
+    // Avoids multiple lock acquires.
     let (
         reviewer_pr_map,
         worktree_pr_map,
@@ -238,7 +239,21 @@ fn get_all_tasks(
     task_message_ids: &std::collections::HashMap<String, String>,
     task_thread_ids: &std::collections::HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
-    crate::tasks::read_tasks()
+    map_tasks_to_json(
+        crate::tasks::read_tasks(),
+        task_message_ids,
+        task_thread_ids,
+    )
+}
+
+/// Map a list of tasks to JSON values, enriching each with message_id and thread_id
+/// from the daemon's persistent state maps.
+fn map_tasks_to_json(
+    tasks: Vec<crate::tasks::Task>,
+    task_message_ids: &std::collections::HashMap<String, String>,
+    task_thread_ids: &std::collections::HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    tasks
         .into_iter()
         .map(|task| {
             let status = match task.status {

@@ -852,10 +852,14 @@ export async function fetchThread(channelName, parentMessageId) {
 
 // Open a thread panel for the given parent message
 export function openThread(parentMessage, channelName) {
-  // Find any tasks associated with this thread's parent message
+  // Find any tasks associated with this thread's parent message.
+  // Check both thread_id and message_id: for tasks created with --thread-id,
+  // thread_id (the conversation root) differs from message_id (the announcement).
   const { inProgress, backlog } = get(kanbanData)
   const allTasks = [...inProgress, ...backlog]
-  const tasks = allTasks.filter((t) => t.message_id === parentMessage.id)
+  const tasks = allTasks.filter(
+    (t) => t.thread_id === parentMessage.id || t.message_id === parentMessage.id,
+  )
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
   fetchThread(channelName, parentMessage.id).then((fetched) => {
