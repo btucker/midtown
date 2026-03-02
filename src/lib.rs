@@ -156,6 +156,9 @@ pub mod universal_events;
 // Workflow event types for customizable channel workflow scripts
 pub mod workflow;
 
+// Full-text search across channel message history
+pub mod search;
+
 // Test utilities
 // Note: Always available for use in both library and binary tests.
 // The retry_with_backoff function is small and has no dependencies,

@@ -378,6 +378,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/pool-toggle", post(api_auth_pool_toggle))
         .route("/api/usage", get(api_usage))
         .route("/api/questions", get(api_pending_questions))
+        .route("/api/search", get(api_search))
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
@@ -652,6 +653,37 @@ async fn api_channel_history(
                 .collect()
         }
     };
+
+    Ok(axum::Json(response))
+}
+
+/// Query parameters for full-text search
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    /// Search query string
+    q: String,
+    /// Maximum number of results (default: 50)
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    50
+}
+
+/// Full-text search across all channel message history
+async fn api_search(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<SearchQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let project_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+
+    let response = crate::search::search_messages(&project_dir, &params.q, params.limit)
+        .await
+        .map_err(|e| {
+            error!("Search failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(axum::Json(response))
 }
