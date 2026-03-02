@@ -1509,7 +1509,14 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
             .collect(),
-        Err(_) => return String::new(),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to read notes directory for channel '{}': {}",
+                channel_name,
+                e
+            );
+            return String::new();
+        }
     };
 
     entries.sort_by_key(|e| e.file_name());
@@ -1525,7 +1532,15 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
             Ok(content) if !content.trim().is_empty() => {
                 sections.push(format!("## {}\n\n{}", filename, content.trim()));
             }
-            _ => {}
+            Ok(_) => {} // Empty or whitespace-only — intentionally skipped
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read note file '{}' for channel '{}': {}",
+                    path.display(),
+                    channel_name,
+                    e
+                );
+            }
         }
     }
 

@@ -79,6 +79,10 @@ fn insight_posted_nudge_message() {
         msg.contains("--channel daemon-core"),
         "should include --channel flag in reply command"
     );
+    assert!(
+        msg.contains("save it to your notes"),
+        "should include save-to-notes reminder for domain knowledge"
+    );
 }
 
 #[test]
@@ -118,6 +122,10 @@ fn insight_posted_initial_prompt() {
     assert!(prompt.contains("!99"));
     assert!(prompt.contains("ONLY reply"));
     assert!(prompt.contains("--thread msg-xyz"));
+    assert!(
+        prompt.contains("save it to your notes"),
+        "initial prompt should include save-to-notes reminder for domain knowledge"
+    );
 }
 
 #[test]
