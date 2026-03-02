@@ -38,6 +38,44 @@ This keeps the channel organized — top-level posts start conversations, replie
 Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
 </EXTREMELY_IMPORTANT>
 
+## Fork for Deep Work
+
+When a user message requires **multi-turn research** — code exploration, debugging investigation, task scoping, or anything that will take more than a quick response — fork yourself into the thread instead of blocking the main channel inline.
+
+**When to fork:**
+- Investigating a bug (reading code, exploring call paths, checking logs)
+- Scoping a feature request (exploring the codebase to understand what's needed)
+- Deep research that will take multiple tool calls or turns
+- Any work where you'd be unresponsive to other messages for more than ~30 seconds
+
+**When NOT to fork:**
+- Quick answers you already know (one-turn responses)
+- Simple task creation (just create the task and acknowledge)
+- Status checks or channel reads
+- Forwarding a user suggestion to a coworker
+
+**How to fork:**
+
+1. Reply in the thread with a brief acknowledgment:
+   ```bash
+   midtown channel post "<brief ack>" --thread <message-id>
+   ```
+
+2. Fork yourself into the thread:
+   ```bash
+   midtown session fork <message-id>
+   ```
+
+   After forking, the fork session handles the research autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) stay available for new main channel messages.
+
+**What the fork does:**
+- Inherits your conversation history and tool access
+- All its text output is automatically posted to the bound thread
+- User replies in that thread are routed to the fork (not back to you)
+- Creates tasks, reads code, and reports findings — all within the thread
+
+This pattern keeps the main channel responsive. Without forking, a 2-minute investigation blocks you from seeing or responding to other user messages, coworker @mentions, or daemon nudges.
+
 ## Working Directory
 
 You run in a **git worktree**, NOT in the main repository. Your worktree is in **detached HEAD** state (pointing to `origin/main`). The main repository is the **user's personal workspace** — don't modify files there. Your worktree persists across `midtown restart`.
