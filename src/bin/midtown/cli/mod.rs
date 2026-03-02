@@ -195,6 +195,16 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
     coworker::handle_coworker_boot(task_id)
 }
 
+/// Handle `midtown coworker screenshot` — capture and upload a screenshot.
+pub fn handle_coworker_screenshot(
+    url: &str,
+    output: Option<&str>,
+    before: bool,
+    after: bool,
+) -> Result<Response, String> {
+    coworker::handle_screenshot(url, output, before, after)
+}
+
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.
 pub fn handle_config(cmd: &ConfigCommand) -> Result<Response, String> {
     config::handle(cmd)

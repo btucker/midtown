@@ -236,37 +236,27 @@ git push --force origin HEAD:$PR_BRANCH
 
 ### Screenshots for Visual Changes
 
-> **You CAN capture screenshots and videos in a headless session.** Playwright runs a headless Chromium browser that renders pages in memory — it does not need a display server, GUI, or X11. "Headless session" (no terminal UI) and "headless browser" (no visible window) are different things. Playwright works perfectly in both. **Do not skip visual captures.** If Playwright fails, debug the error and fix it. See also [Visual Documentation](#visual-documentation) below.
+> **You CAN capture screenshots and videos in a headless session.** The `midtown coworker screenshot` command uses Playwright's headless Chromium — it renders pages offscreen in memory. No display server, no GUI, no X11 required. "Headless session" (no terminal UI) and "headless browser" (no visible window) are different things. Playwright works perfectly in both. **Do not skip visual captures.** If Playwright fails, debug the error and fix it. See also [Visual Documentation](#visual-documentation) below.
 
-When your PR includes visual changes to the web UI, include before/after screenshots. Take them with Playwright, then upload via the API:
+When your PR includes visual changes to the web UI, include before/after screenshots:
 
 ```bash
-# 1. Take a screenshot with Playwright
-node -e "
-const { chromium } = require('playwright');
-(async () => {
-  const b = await chromium.launch();
-  const p = await b.newPage();
-  await p.goto('http://localhost:47022');
-  await p.screenshot({ path: '/tmp/before.png' });
-  await b.close();
-})();
-"
+# Before/after workflow — one command each:
+BEFORE=$(midtown coworker screenshot http://localhost:5173 --before)
+# ... make your changes ...
+AFTER=$(midtown coworker screenshot http://localhost:5173 --after)
 
-# 2. Upload and capture the returned path
-RESULT=$(curl -s -F "file=@/tmp/before.png" "http://localhost:${MIDTOWN_WEBHOOK_PORT}/api/upload")
-BEFORE_PATH=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['path'])")
-
-# 3. Post to channel using [Attached: /path] — the web UI renders it as an inline image
-midtown channel post "Before: [Attached: $BEFORE_PATH]"
+# Post to channel
+midtown channel post "Before: $BEFORE" --task 42
+midtown channel post "After: $AFTER" --task 42
 ```
 
-**Rules:**
-- Upload endpoint: `POST http://localhost:${MIDTOWN_WEBHOOK_PORT}/api/upload` (multipart `file` field)
-- Response: `{"path": "/absolute/path/to/file.png", "filename": "timestamp-name.png"}`
-- Always use the `path` value from the response — never invent or hardcode URLs
-- Reference in messages as `[Attached: /absolute/path]` so the web UI renders it inline
-- Post screenshots to the channel for lead review before opening the PR
+```bash
+# Or take a single screenshot with a custom name:
+midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
+```
+
+The command runs Playwright, uploads the image, and prints the `[Attached: /path]` markdown ready for channel posts or PR bodies. Post screenshots to the channel for lead review before opening the PR.
 
 Example PR creation:
 ```bash
@@ -547,62 +537,33 @@ midtown channel post "@amsterdam you're working on the auth module - does it exp
 
 > **You CAN capture screenshots and videos in a headless session.** Playwright launches a headless Chromium that renders offscreen — no display or GUI needed. See [Screenshots for Visual Changes](#screenshots-for-visual-changes) above for PR-specific screenshots.
 
-For web-based tasks, capture screenshots and videos of your work and share them inline in the channel. This gives the team and user a clear view of what you've built.
+For web-based tasks, capture screenshots of your work and share them in the channel. This gives the team and user a clear view of what you've built.
 
-### Setup (once per worktree)
+### Capturing screenshots
 
-```bash
-cd web-app && npm install && npx playwright install chromium
-```
-
-### Capturing a screenshot
+Use `midtown coworker screenshot` — it handles Playwright, uploading, and formatting in one step:
 
 ```bash
-# 1. Start the dev server if it isn't running yet
+# Start the dev server if it isn't running yet
 cd web-app && npm run dev &
 
-# 2. Take a screenshot of the running app
-REPO=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}' | xargs basename)
-npx playwright screenshot --browser chromium http://localhost:5173 /tmp/screenshot.png
+# Take a screenshot and post it
+SCREENSHOT=$(midtown coworker screenshot http://localhost:5173)
+midtown channel post "/me here's the result: $SCREENSHOT" --task 42
 
-# 3. Save to the shared per-project assets directory
-ASSETS=~/.midtown/projects/$REPO/assets
-mkdir -p "$ASSETS"
-FILENAME="screenshot-$(date +%s).png"
-cp /tmp/screenshot.png "$ASSETS/$FILENAME"
+# Before/after comparison
+BEFORE=$(midtown coworker screenshot http://localhost:5173 --before)
+# ... make changes ...
+AFTER=$(midtown coworker screenshot http://localhost:5173 --after)
+midtown channel post "Before: $BEFORE\nAfter: $AFTER" --task 42
 
-# 4. Post inline to the channel — the web UI renders markdown images
-midtown channel post "/me here's the result: ![screenshot](http://localhost:47022/api/projects/$REPO/assets/$FILENAME)"
-```
-
-The assets directory (`~/.midtown/projects/<repo>/assets/`) is served by the webserver at `/api/projects/<repo>/assets/<path>`, so any file you copy there is immediately accessible via URL.
-
-### Capturing a video (optional)
-
-Use `playwright test` with `--video on` for recorded interactions:
-
-```bash
-# Write a quick test that navigates to the page
-cat > /tmp/screenshot-test.spec.ts << 'EOF'
-import { test } from '@playwright/test';
-test('capture', async ({ page }) => {
-  await page.goto('http://localhost:5173');
-  await page.waitForTimeout(2000);
-});
-EOF
-
-cd web-app && npx playwright test /tmp/screenshot-test.spec.ts \
-  --project=chromium --video=on --output=/tmp/pw-results
-
-# Copy the video to the assets dir
-REPO=$(git worktree list --porcelain | awk '/^worktree/{print $2; exit}' | xargs basename)
-ASSETS=~/.midtown/projects/$REPO/assets
-mkdir -p "$ASSETS"
-cp /tmp/pw-results/*/video.webm "$ASSETS/recording-$(date +%s).webm"
+# Custom filename for multiple views
+midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
 ```
 
 ### Tips
 
 - Screenshots go stale — take a new one after each significant change
-- Use descriptive filenames (e.g. `sidebar-collapsed.png`) rather than timestamps when posting multiple views
+- Use `--output` with descriptive filenames when capturing multiple views
 - The dev server is usually at `http://localhost:5173` (Vite default); check `web-app/package.json` scripts if it differs
+- The command uses `npx playwright@latest` — no setup step needed, works for any project
