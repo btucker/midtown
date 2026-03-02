@@ -747,3 +747,105 @@ fn ci_buffer_oldest_entry_only_set_on_actual_add() {
         "oldest_entry should not be set when duplicate is skipped"
     );
 }
+
+// -------------------------------------------------------------------------
+// StuckConditionType::AutoMerge — deduplication for auto-merge attempts
+// -------------------------------------------------------------------------
+
+#[test]
+fn auto_merge_condition_allows_first_attempt() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "first auto-merge attempt should be allowed"
+    );
+}
+
+#[test]
+fn auto_merge_condition_blocks_immediate_repeat() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "immediate repeat auto-merge should be blocked by cooldown"
+    );
+}
+
+#[test]
+fn auto_merge_condition_independent_of_merge_ready() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+
+    // MergeReady should still be allowed — the conditions are independent
+    tracker.track("42", StuckConditionType::MergeReady);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::MergeReady),
+        "MergeReady nudge should be independent of AutoMerge cooldown"
+    );
+}
+
+#[test]
+fn auto_merge_condition_cleared_when_pr_no_longer_mergeable() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+
+    // Clear (PR is no longer auto-mergeable)
+    tracker.clear("42", StuckConditionType::AutoMerge);
+
+    // Re-track — should allow again since the condition was cleared
+    tracker.track("42", StuckConditionType::AutoMerge);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "auto-merge should be allowed after condition was cleared and re-tracked"
+    );
+}
+
+#[test]
+fn cleanup_retains_nudged_entries_past_first_detected_cutoff() {
+    // Verifies that cleanup() retains entries where last_nudged is recent
+    // even if first_detected has aged beyond the cutoff. This prevents
+    // AutoMerge (and other one-shot conditions) from re-firing after cleanup.
+    let mut tracker = StuckConditionTracker::new();
+
+    // Manually insert an entry with an old first_detected but recent last_nudged.
+    // The cutoff is STUCK_NUDGE_COOLDOWN_SECS * 2 = 60 min.
+    // Simulate: first_detected 90 min ago, last_nudged 5 min ago.
+    let old_first = Instant::now() - Duration::from_secs(90 * 60);
+    let recent_nudge = Instant::now() - Duration::from_secs(5 * 60);
+    tracker.conditions.insert(
+        ("42".to_string(), StuckConditionType::AutoMerge),
+        (old_first, Some(recent_nudge), 1),
+    );
+
+    tracker.cleanup();
+
+    // Entry should be retained because last_nudged is recent
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "nudged AutoMerge entry should survive cleanup and remain on cooldown"
+    );
+}
+
+#[test]
+fn cleanup_evicts_entries_where_both_timestamps_are_old() {
+    let mut tracker = StuckConditionTracker::new();
+
+    // Both first_detected and last_nudged are older than the cutoff
+    let old = Instant::now() - Duration::from_secs(90 * 60);
+    tracker.conditions.insert(
+        ("42".to_string(), StuckConditionType::MergeReady),
+        (old, Some(old), 2),
+    );
+
+    tracker.cleanup();
+
+    // Entry should be evicted — both timestamps are beyond cutoff
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::MergeReady),
+        "fully stale entry should be evicted by cleanup (should_nudge returns false for untracked)"
+    );
+}

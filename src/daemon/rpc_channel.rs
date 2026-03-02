@@ -216,6 +216,7 @@ pub(super) async fn handle_channel_post(
     info!("Channel post from {}: {}", from, message);
 
     // Track last activity time for coworker (used for silent coworker detection)
+    // and emit workflow events for channel messages.
     if is_coworker_sender(from, &state.repo_name) {
         let mut records = state.coworker_records.write().await;
         records
@@ -223,10 +224,37 @@ pub(super) async fn handle_channel_post(
             .or_insert_with(crate::rules::CoworkerRecord::new_spawn)
             .last_activity = Some(Instant::now());
         drop(records); // Release write lock before acquiring read lock
+
+        // Emit CoworkerMessage workflow event
+        let task_id = state
+            .coworker_task_assignments
+            .lock()
+            .unwrap()
+            .get(&from.to_lowercase())
+            .map(|a| a.task_id.clone());
+        let workflow_effect = crate::daemon::effects::Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerMessage {
+                channel: channel_name.to_string(),
+                task_id,
+                coworker: from.to_string(),
+                message: content.clone(),
+            },
+        );
+        crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
     }
 
     // Nudge lead when user messages arrive (from web UI or TUI input)
     if state.is_user_sender(from) {
+        // Emit ChannelMessage workflow event for human (non-coworker) messages
+        let workflow_effect = crate::daemon::effects::Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::ChannelMessage {
+                channel: channel_name.to_string(),
+                sender: from.to_string(),
+                message: content.clone(),
+            },
+        );
+        crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
+
         let default_channel = state.channel_router.default_channel_name();
         let is_dm_channel = channel_name.starts_with("dm-");
         let is_topic_channel = channel_name != default_channel;

@@ -131,6 +131,8 @@ pub enum StuckConditionType {
     SilentCoworker,
     /// More PRs need review than the daemon can assign reviewers to
     ReviewBacklog,
+    /// Auto-merge has been attempted for a merge-ready PR
+    AutoMerge,
 }
 
 impl std::fmt::Display for StuckConditionType {
@@ -141,6 +143,7 @@ impl std::fmt::Display for StuckConditionType {
             StuckConditionType::MergeReady => write!(f, "merge-ready but not merged"),
             StuckConditionType::SilentCoworker => write!(f, "silent coworker"),
             StuckConditionType::ReviewBacklog => write!(f, "review backlog"),
+            StuckConditionType::AutoMerge => write!(f, "auto-merge attempted"),
         }
     }
 }
@@ -207,11 +210,23 @@ impl StuckConditionTracker {
         self.conditions.remove(&(id.to_string(), condition));
     }
 
-    /// Clean up old entries where last_nudged is older than 2x cooldown.
+    /// Clean up old entries where both first_detected and last_nudged are older than 2x cooldown.
+    ///
+    /// Retains an entry if either timestamp is within the cutoff. This prevents
+    /// nudged entries (e.g., AutoMerge) from being evicted and re-firing when the
+    /// condition is still active but `first_detected` has aged out.
     pub fn cleanup(&mut self) {
         let cutoff = Duration::from_secs(STUCK_NUDGE_COOLDOWN_SECS * 2);
         self.conditions
-            .retain(|_, (first_detected, _, _)| first_detected.elapsed() < cutoff);
+            .retain(|_, (first_detected, last_nudged, _)| {
+                if first_detected.elapsed() < cutoff {
+                    return true;
+                }
+                if let Some(nudged) = last_nudged {
+                    return nudged.elapsed() < cutoff;
+                }
+                false
+            });
     }
 }
 

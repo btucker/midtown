@@ -25,7 +25,12 @@ pub enum WakeReason {
     /// A task was assigned to this coworker (fresh spawn).
     TaskAssigned { task_id: String, subject: String },
     /// A task was claimed by an already-running coworker.
-    TaskClaimed { task_id: String, subject: String },
+    TaskClaimed {
+        task_id: String,
+        subject: String,
+        /// Plan context and execution skill instructions (may be empty).
+        plan_section: String,
+    },
     /// Session recovery after crash/restart.
     SessionRecovery { task_id: String, subject: String },
     /// Review assigned.
@@ -120,11 +125,15 @@ impl WakeReason {
                      {footer}"
                 )
             }
-            Self::TaskClaimed { task_id, subject } => {
+            Self::TaskClaimed {
+                task_id,
+                subject,
+                plan_section,
+            } => {
                 let footer = crate::agents::task_footer(task_id);
                 format!(
                     "You've been assigned task !{task_id}: {subject}. \
-                     Run `midtown task claim {task_id}` to claim it, then get started!\n\n\
+                     Run `midtown task claim {task_id}` to claim it, then get started!{plan_section}\n\n\
                      {footer}"
                 )
             }
@@ -138,7 +147,10 @@ impl WakeReason {
                 )
             }
             Self::ReviewAssigned { pr_number } => {
-                format!("You've been assigned to review PR #{pr_number}. Get started!")
+                // Use the full reviewer resume template (agents/reviewer-resume.md)
+                // which includes instructions for checking existing placeholder comments,
+                // COMMENT_ID tracking, midtown frontmatter, and code-review skill invocation.
+                crate::agents::reviewer_resume_prompt(*pr_number, crate::auth::AuthProvider::Claude)
             }
             Self::Mention {
                 from,

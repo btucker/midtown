@@ -420,7 +420,7 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Nudge the effective channel's lead about the new task
+    // Nudge the effective channel's lead about the new task and emit workflow event
     let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
         channel_name: effective_channel.to_string(),
         reason: crate::daemon::wake_reason::WakeReason::TaskCreated {
@@ -428,7 +428,14 @@ pub(super) async fn handle_task_create(
             subject: subject.to_string(),
         },
     };
-    crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+    let workflow_effect = crate::daemon::effects::Effect::EmitWorkflowEvent(
+        crate::workflow::WorkflowEvent::TaskCreated {
+            channel: effective_channel.to_string(),
+            task_id: task_id.clone(),
+            subject: subject.to_string(),
+        },
+    );
+    crate::daemon::effects::execute_effects(vec![nudge_effect, workflow_effect], state).await;
 
     info!("Created task !{}: {}", task_id, subject);
     Response::success(

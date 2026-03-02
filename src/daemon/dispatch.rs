@@ -1298,8 +1298,6 @@ fn decide_discovered_coworker_nudges(
 
         // Check for an in_progress task owned by this coworker
         if let Some((task_id, task_subject, _channel)) = owner_tasks.get(&name_lower) {
-            let prompt = crate::agents::coworker_recovery_prompt(task_id, task_subject, "");
-
             info!(
                 "Nudging discovered coworker {} to resume task !{}",
                 name, task_id
@@ -1309,7 +1307,13 @@ fn decide_discovered_coworker_nudges(
                 .get(&name_lower)
                 .cloned()
                 .unwrap_or_default();
-            effects.push(Effect::nudge_session(session_id, prompt));
+            effects.push(Effect::NudgeSession {
+                session_id,
+                reason: super::wake_reason::WakeReason::SessionRecovery {
+                    task_id: task_id.clone(),
+                    subject: task_subject.clone(),
+                },
+            });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
@@ -1319,11 +1323,6 @@ fn decide_discovered_coworker_nudges(
                 channel: Some(OPS_CHANNEL.to_string()),
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
-            let prompt = crate::agents::reviewer_resume_prompt(
-                *pr_number,
-                crate::auth::AuthProvider::Claude,
-            );
-
             info!(
                 "Nudging discovered coworker {} to resume review of PR #{}",
                 name, pr_number
@@ -1333,7 +1332,12 @@ fn decide_discovered_coworker_nudges(
                 .get(&name_lower)
                 .cloned()
                 .unwrap_or_default();
-            effects.push(Effect::nudge_session(session_id, prompt));
+            effects.push(Effect::NudgeSession {
+                session_id,
+                reason: super::wake_reason::WakeReason::ReviewAssigned {
+                    pr_number: *pr_number,
+                },
+            });
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
                 message: format!(
@@ -2007,10 +2011,9 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             } => {
                 let nudge_msg = crate::agents::coworker_nudge_prompt(tid, subj);
                 // Deliver via mailbox (non-urgent task assignment to idle coworker).
-                // Deliver via mailbox for non-urgent task assignment.
                 effects.push(Effect::DeliverMailboxMessage {
                     name: o.clone(),
-                    message: nudge_msg.clone(),
+                    message: nudge_msg,
                     summary: Some(format!("Task !{} assignment", tid)),
                 });
                 let session_id = snap
@@ -2018,10 +2021,13 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     .get(&o.to_lowercase())
                     .cloned()
                     .unwrap_or_default();
-                effects.push(Effect::nudge_session_with_callbacks(
+                effects.push(Effect::NudgeSessionWithCallbacks {
                     session_id,
-                    nudge_msg,
-                    vec![
+                    reason: super::wake_reason::WakeReason::TaskAssigned {
+                        task_id: tid.clone(),
+                        subject: subj.clone(),
+                    },
+                    on_success: vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
                             key: task_key.clone(),
@@ -2031,7 +2037,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                             task_id: tid.clone(),
                         },
                     ],
-                ));
+                });
             }
             crate::rules::PendingTaskAction::SpawnOwner {
                 owner: ref o,
@@ -2463,13 +2469,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
         coworkers_dispatched_this_tick.insert(coworker_name.to_lowercase());
 
-        // Build the prompt message — already-running coworkers need explicit claim instruction
+        // Build plan section before branching — both paths may need it.
         let plan_section = build_plan_prompt_section(&task.id, snap);
-        let prompt = if already_running {
-            crate::agents::coworker_claim_prompt(&task.id, &task.subject, &plan_section)
-        } else {
-            crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section)
-        };
 
         if already_running {
             // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
@@ -2505,20 +2506,26 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     },
                 ));
             }
-            effects.push(Effect::nudge_session_with_callbacks(
+            effects.push(Effect::NudgeSessionWithCallbacks {
                 session_id,
-                prompt,
-                assign_callbacks,
-            ));
+                reason: super::wake_reason::WakeReason::TaskClaimed {
+                    task_id: task.id.clone(),
+                    subject: task.subject.clone(),
+                    plan_section: plan_section.clone(),
+                },
+                on_success: assign_callbacks,
+            });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
+            let prompt =
+                crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
 
             let mut config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
                 state.repo_name.clone(),
                 crate::launch::SessionMode::Fresh,
-                Some(prompt.clone()),
+                Some(prompt),
             );
             config.working_dir = Some(wt.path);
             config.channel = task.channel.clone();
