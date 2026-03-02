@@ -424,6 +424,31 @@ fn test_task_created_message_sub_channel_routing() {
     );
 }
 
+// ── task_announcement_message tests ──────────────────────────────────────────
+
+/// When thread_id is Some, the announcement should be a thread reply.
+#[test]
+fn test_task_announcement_message_with_thread_id_is_threaded() {
+    let msg = task_announcement_message("ops", "ops", "Fix the bug", Some("parent-thread-id"));
+    assert_eq!(
+        msg.thread_parent_id,
+        Some("parent-thread-id".to_string()),
+        "announcement should be a thread reply when thread_id is provided"
+    );
+    assert_eq!(msg.channel_name(), "ops");
+}
+
+/// When thread_id is None, the announcement should be top-level.
+#[test]
+fn test_task_announcement_message_without_thread_id_is_top_level() {
+    let msg = task_announcement_message("ops", "ops", "Fix the bug", None);
+    assert!(
+        msg.thread_parent_id.is_none(),
+        "announcement should be top-level when no thread_id"
+    );
+    assert_eq!(msg.channel_name(), "ops");
+}
+
 // ── apply_task_channel_mapping clears task_thread_id tests ───────────────────
 
 /// When channel is changed via apply_task_channel_mapping, any existing

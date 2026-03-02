@@ -181,6 +181,22 @@ pub(crate) fn task_created_message_author(task_channel: &str, main_channel: &str
     }
 }
 
+/// Build the "created task:" announcement message, threading it under `thread_id`
+/// when present.
+pub(crate) fn task_announcement_message(
+    channel: &str,
+    author: &str,
+    subject: &str,
+    thread_id: Option<&str>,
+) -> Message {
+    let content = format!("created task: {}", subject);
+    if let Some(tid) = thread_id {
+        Message::thread_reply(channel, author, content, tid, MessageType::Text)
+    } else {
+        Message::for_channel(channel, author, content, MessageType::Text)
+    }
+}
+
 /// Resolve the effective channel for task routing, announcement, and nudge.
 ///
 /// When a task is created with `--channel <name>` pointing to an archived
@@ -381,12 +397,7 @@ pub(super) async fn handle_task_create(
     // Only store the mapping if the write succeeds — a failed write means no channel
     // message exists, so storing the ID would create an orphan thread root.
     let author = task_created_message_author(effective_channel, state.default_channel_name());
-    let msg = Message::for_channel(
-        effective_channel,
-        author,
-        format!("created task: {}", subject),
-        MessageType::Text,
-    );
+    let msg = task_announcement_message(effective_channel, &author, subject, thread_id);
     let message_id = msg.id.clone();
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
