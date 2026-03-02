@@ -66,17 +66,6 @@ impl PrIssueTracker {
         Self::default()
     }
 
-    /// Check if a PR has been recently tracked for any issue
-    pub fn is_recently_tracked(&self, pr_number: u64) -> bool {
-        self.nudged.keys().any(|(num, _)| {
-            *num == pr_number
-                && self
-                    .nudged
-                    .get(&(*num, PrIssueType::NeedsReview))
-                    .is_some_and(|t| t.elapsed() < Duration::from_secs(PR_NUDGE_COOLDOWN_SECS))
-        })
-    }
-
     /// Check if we should nudge for this issue (not nudged recently)
     pub fn should_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
         match self.nudged.get(&(pr_number, issue_type)) {
@@ -444,12 +433,6 @@ impl CiNotificationBuffer {
 
         self.oldest_entry = None;
         results
-    }
-
-    /// Check if the buffer is empty.
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
     }
 }
 

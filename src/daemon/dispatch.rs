@@ -371,17 +371,6 @@ fn should_recover_task(
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-// Backward-compat test infrastructure: exercises the original orphan recovery
-// path (case 3 only) independently of the full session-aware dispatch.
-#[cfg(test)]
-#[allow(dead_code)]
-pub fn check_and_recover_orphans(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<effects::Effect> {
-    check_and_recover_orphans_with_task_lookup(snap, state, crate::tasks::read_task)
-}
-
 // Backward-compat test infrastructure: testable version with injectable task lookup.
 #[cfg(test)]
 fn check_and_recover_orphans_with_task_lookup<F>(

@@ -467,11 +467,11 @@ fn test_assignment_source_persists() {
 
     let loaded = GitHubState::load(&path).unwrap();
     assert_eq!(
-        loaded.get_assignment_source(42),
+        loaded.pr_reviewers.get(&42).map(|a| a.source),
         Some(AssignmentSource::Webhook)
     );
     assert_eq!(
-        loaded.get_assignment_source(43),
+        loaded.pr_reviewers.get(&43).map(|a| a.source),
         Some(AssignmentSource::PollingFallback)
     );
 }
@@ -502,18 +502,6 @@ fn test_webhook_recently_handled_expired() {
     assert!(!state.webhook_recently_handled(42, 120));
     // 600s window should match
     assert!(state.webhook_recently_handled(42, 600));
-}
-
-#[test]
-fn test_count_by_source() {
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "lexington", AssignmentSource::Webhook);
-    state.assign_reviewer(43, "park", AssignmentSource::PollingFallback);
-    state.assign_reviewer(44, "york", AssignmentSource::Webhook);
-
-    let counts = state.count_by_source();
-    assert_eq!(counts.get("webhook"), Some(&2));
-    assert_eq!(counts.get("polling"), Some(&1));
 }
 
 #[test]

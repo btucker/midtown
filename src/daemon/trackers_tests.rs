@@ -586,7 +586,10 @@ fn ci_buffer_clears_after_flush() {
     buffer.oldest_entry = Some(Instant::now() - Duration::from_secs(20));
     let _ = buffer.flush();
 
-    assert!(buffer.is_empty(), "buffer should be empty after flush");
+    assert!(
+        buffer.pending.is_empty(),
+        "buffer should be empty after flush"
+    );
     assert!(
         !buffer.should_flush(),
         "should_flush should be false after flush"

@@ -203,7 +203,6 @@ fn coworker_activity(cw: &CoworkerInfo) -> String {
 }
 
 impl Response {
-    #[allow(dead_code)]
     pub fn message(msg: impl Into<String>) -> Self {
         Response::Message {
             message: msg.into(),

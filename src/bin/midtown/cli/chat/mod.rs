@@ -21,7 +21,7 @@ use crossterm::{
         MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
-    style::{Color as CrosstermColor, Print, ResetColor, SetForegroundColor},
+    style::{Print, ResetColor, SetForegroundColor},
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures::StreamExt;
@@ -29,7 +29,6 @@ use ratatui::{Terminal, prelude::CrosstermBackend};
 use tokio::time::{MissedTickBehavior, interval};
 
 use app::App;
-use ratatui::style::Color as RatatuiColor;
 use ui::Hyperlink;
 
 /// Keyboard enhancement flags for the kitty keyboard protocol.
@@ -328,7 +327,7 @@ fn render_hyperlinks<W: io::Write>(
             // Handle CI status dot coloring for first character
             if let Some(color) = link.first_char_color {
                 if first_char == '●' || first_char == '○' {
-                    let crossterm_color = ratatui_to_crossterm_color(color);
+                    let crossterm_color = crate::cli::ratatui_to_crossterm_color(color);
                     execute!(
                         backend,
                         SetForegroundColor(crossterm_color),
@@ -355,31 +354,6 @@ fn render_hyperlinks<W: io::Write>(
     backend.flush()?;
 
     Ok(())
-}
-
-/// Convert ratatui Color to crossterm Color
-fn ratatui_to_crossterm_color(color: RatatuiColor) -> CrosstermColor {
-    match color {
-        RatatuiColor::Reset => CrosstermColor::Reset,
-        RatatuiColor::Black => CrosstermColor::Black,
-        RatatuiColor::Red => CrosstermColor::DarkRed,
-        RatatuiColor::Green => CrosstermColor::DarkGreen,
-        RatatuiColor::Yellow => CrosstermColor::DarkYellow,
-        RatatuiColor::Blue => CrosstermColor::DarkBlue,
-        RatatuiColor::Magenta => CrosstermColor::DarkMagenta,
-        RatatuiColor::Cyan => CrosstermColor::DarkCyan,
-        RatatuiColor::Gray => CrosstermColor::Grey,
-        RatatuiColor::DarkGray => CrosstermColor::DarkGrey,
-        RatatuiColor::LightRed => CrosstermColor::Red,
-        RatatuiColor::LightGreen => CrosstermColor::Green,
-        RatatuiColor::LightYellow => CrosstermColor::Yellow,
-        RatatuiColor::LightBlue => CrosstermColor::Blue,
-        RatatuiColor::LightMagenta => CrosstermColor::Magenta,
-        RatatuiColor::LightCyan => CrosstermColor::Cyan,
-        RatatuiColor::White => CrosstermColor::White,
-        RatatuiColor::Rgb(r, g, b) => CrosstermColor::Rgb { r, g, b },
-        RatatuiColor::Indexed(i) => CrosstermColor::AnsiValue(i),
-    }
 }
 
 /// Result of handling an event

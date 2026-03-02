@@ -228,11 +228,11 @@ fn reviewer_assignment_persists() {
     assert_eq!(loaded.get_reviewer(60), Some("broadway"));
     assert_eq!(loaded.get_reviewer(61), Some("columbus"));
     assert_eq!(
-        loaded.get_assignment_source(60),
+        loaded.pr_reviewers.get(&60).map(|a| a.source),
         Some(AssignmentSource::Webhook)
     );
     assert_eq!(
-        loaded.get_assignment_source(61),
+        loaded.pr_reviewers.get(&61).map(|a| a.source),
         Some(AssignmentSource::PollingFallback)
     );
 }
@@ -333,20 +333,6 @@ fn old_webhook_event_allows_polling() {
         state.webhook_recently_handled(92, 600),
         "Event should match longer window"
     );
-}
-
-/// Test assignment source tracking for telemetry.
-#[test]
-fn assignment_source_tracked() {
-    let mut state = GitHubState::default();
-
-    state.assign_reviewer(100, "amsterdam", AssignmentSource::Webhook);
-    state.assign_reviewer(101, "lexington", AssignmentSource::PollingFallback);
-    state.assign_reviewer(102, "park", AssignmentSource::Webhook);
-
-    let counts = state.count_by_source();
-    assert_eq!(counts.get("webhook"), Some(&2));
-    assert_eq!(counts.get("polling"), Some(&1));
 }
 
 // =============================================================================
@@ -672,10 +658,15 @@ fn batch_pr_reviewer_handling() {
     // Active count should be 2
     assert_eq!(state.active_count(), 2);
 
-    // Source tracking
-    let counts = state.count_by_source();
-    assert_eq!(counts.get("webhook"), Some(&1));
-    assert_eq!(counts.get("polling"), Some(&1));
+    // Source tracking (via direct field access)
+    assert_eq!(
+        state.pr_reviewers.get(&221).map(|a| a.source),
+        Some(AssignmentSource::Webhook)
+    );
+    assert_eq!(
+        state.pr_reviewers.get(&222).map(|a| a.source),
+        Some(AssignmentSource::PollingFallback)
+    );
 }
 
 // =============================================================================

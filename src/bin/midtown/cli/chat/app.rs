@@ -198,24 +198,29 @@ pub enum TaskStatus {
 
 /// A PR item for the kanban board (open PRs in Review column)
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Transitioning to split-panel layout, PRs will be shown differently
 pub struct KanbanPr {
     pub number: u64,
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub title: String,
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub author: String,
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub created_at: DateTime<Utc>,
     pub ci_status: CiStatus,
     /// Reviewer name (extracted from review comment frontmatter)
     pub reviewer: Option<String>,
     /// When the reviewer was assigned or the review comment was posted
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub reviewed_at: Option<DateTime<Utc>>,
     /// Whether the review has been posted (true) vs reviewer is still working (false)
     pub review_posted: bool,
     /// Repository name (for multi-repo projects)
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub repo: Option<String>,
     /// Task ID extracted from PR title (from `[Midtown !XX]` format)
     pub task_id: Option<u64>,
     /// Task name/subject looked up from task list
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub task_name: Option<String>,
     /// Whether the PR has merge conflicts
     pub has_conflicts: bool,
@@ -223,12 +228,14 @@ pub struct KanbanPr {
 
 /// A merged PR item for the Done column
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Transitioning to split-panel layout
 pub struct MergedPr {
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub number: u64,
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub title: String,
     pub merged_at: DateTime<Utc>,
     /// Repository name (for multi-repo projects)
+    #[allow(dead_code)] // Populated from API, not yet rendered
     pub repo: Option<String>,
 }
 
@@ -1935,7 +1942,6 @@ impl App {
     /// (which must already be saved) and attaches the image to the conversation.
     ///
     /// Returns `true` if the nudge was enqueued, `false` on error.
-    #[allow(dead_code)] // Called in Task 3+ when Ctrl+V paste handler invokes image delivery
     pub fn send_image_to_lead(&mut self) -> bool {
         use crate::client::DaemonClient;
 
@@ -1951,7 +1957,6 @@ impl App {
     ///
     /// If viewing a topic channel that has an active channel lead, send to that session.
     /// Otherwise send to the main "lead" session.
-    #[allow(dead_code)] // Called by send_image_to_lead() in Task 3+
     fn image_target_session(&self) -> String {
         let channel = &self.selected_channel;
         if channel != "main"

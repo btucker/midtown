@@ -54,13 +54,11 @@ fn hashset_contains_icase(set: &HashSet<String>, name: &str) -> bool {
 /// and [`record`](CooldownTracker::record) after a successful fire.
 ///
 /// Currently used in DaemonState's `cooldowns` field.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct CooldownTracker {
     entries: HashMap<(String, String), Instant>,
 }
 
-#[allow(dead_code)]
 impl CooldownTracker {
     pub fn new() -> Self {
         Self::default()
@@ -99,12 +97,14 @@ impl CooldownTracker {
         self.entries.retain(|_k, v| v.elapsed() < max_age);
     }
 
-    /// Number of tracked entries (useful for tests / diagnostics).
+    /// Number of tracked entries (test diagnostics).
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether the tracker has no entries.
+    /// Whether the tracker has no entries (test diagnostics).
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

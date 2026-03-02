@@ -23,22 +23,6 @@ const USAGE_LIMIT_PATTERNS: &[&str] = &["- /upgrade", "/upgrade to", "/upgrade o
 /// on retry. Unlike usage limits which have a known reset time, API errors should
 /// trigger periodic nudges to encourage retry.
 ///
-/// Patterns detected:
-/// - `API Error: 500` - HTTP 500 status code
-/// - `"type":"api_error"` - JSON response type field
-/// - `"type":"error"` with `api_error` - Structured error response
-/// - `Internal server error` - Common error message
-#[allow(dead_code)]
-const API_ERROR_PATTERNS: &[&str] = &[
-    "API Error: 500",
-    "API Error: 502",
-    "API Error: 503",
-    "API Error: 529",
-    r#""type":"api_error""#,
-    r#""type":"overloaded_error""#,
-    "Internal server error",
-];
-
 /// Check if pane content has an active (not recovered) match for any pattern.
 ///
 /// Finds the last occurrence of any pattern (case-insensitive) and counts
@@ -131,20 +115,6 @@ fn is_ui_chrome(line: &str) -> bool {
 /// this to verify usage limit detection against captured snapshot pane contents.
 pub fn has_usage_limit_pattern(pane_content: &str) -> bool {
     is_at_pattern(pane_content, USAGE_LIMIT_PATTERNS)
-}
-
-/// Check if pane content indicates an API error (transient failure).
-///
-/// Returns true if an API error pattern is present AND the coworker hasn't
-/// recovered (no significant activity after the error message).
-///
-/// API errors differ from usage limits:
-/// - Usage limits have a known reset time; API errors are transient
-/// - Usage limit nudges happen once at reset; API error nudges are periodic
-/// - Both should skip stuck detection and idle shutdown
-#[allow(dead_code)]
-pub(crate) fn has_api_error_pattern(pane_content: &str) -> bool {
-    is_at_pattern(pane_content, API_ERROR_PATTERNS)
 }
 
 // ---------------------------------------------------------------------------
@@ -392,130 +362,5 @@ Now implementing the fix.
         assert!(!is_ui_chrome("OK I'll continue working."));
         assert!(!is_ui_chrome("Let me read the file."));
         assert!(!is_ui_chrome("Now implementing the fix."));
-    }
-
-    // -----------------------------------------------------------------------
-    // API error detection tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn api_error_detects_500_error() {
-        let api_error_pane = r#"
-I'll read the file now.
-⏺ Read(file_path: "/src/main.rs")
-
-API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_123"}
-"#;
-
-        assert!(
-            has_api_error_pattern(api_error_pane),
-            "should detect API Error: 500 pattern"
-        );
-    }
-
-    #[test]
-    fn api_error_detects_overloaded_error() {
-        let overloaded_pane = r#"
-Working on the task.
-
-API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_456"}
-"#;
-
-        assert!(
-            has_api_error_pattern(overloaded_pane),
-            "should detect overloaded_error pattern"
-        );
-    }
-
-    #[test]
-    fn api_error_detects_internal_server_error_message() {
-        let internal_error_pane = "Something went wrong. Internal server error. Please try again.";
-
-        assert!(
-            has_api_error_pattern(internal_error_pane),
-            "should detect 'Internal server error' message"
-        );
-    }
-
-    #[test]
-    fn api_error_detection_is_case_insensitive() {
-        assert!(
-            has_api_error_pattern("API ERROR: 500"),
-            "should detect uppercase 'API ERROR'"
-        );
-        assert!(
-            has_api_error_pattern("api error: 500"),
-            "should detect lowercase 'api error'"
-        );
-        assert!(
-            has_api_error_pattern("INTERNAL SERVER ERROR"),
-            "should detect uppercase 'INTERNAL SERVER ERROR'"
-        );
-        assert!(
-            has_api_error_pattern("internal server error"),
-            "should detect lowercase 'internal server error'"
-        );
-    }
-
-    #[test]
-    fn api_error_code_content_should_not_trigger_detection() {
-        let code_content = r#"
-// Handle API errors gracefully
-// API Error: 500 is a server error
-fn handle_api_error(status: u16) {
-    match status {
-        500 => log!("Internal server error"),
-        _ => log!("Unknown error"),
-    }
-}
-
-// Now implement the actual handler
-fn process_request() {
-    let result = make_api_call();
-    handle_response(result);
-    validate_output();
-    send_notification();
-    cleanup_resources();
-}
-"#;
-
-        assert!(
-            !has_api_error_pattern(code_content),
-            "code with API error strings followed by activity should NOT trigger detection"
-        );
-    }
-
-    #[test]
-    fn api_error_recovers_after_real_activity() {
-        let recovered_pane = r#"
-API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}
-
-Retrying the request...
-⏺ Read(file_path: "/src/main.rs")
-Got the file contents.
-Now editing.
-⏺ Edit(file_path: "/src/main.rs")
-Done with the edit.
-"#;
-
-        assert!(
-            !has_api_error_pattern(recovered_pane),
-            "real activity after API error should indicate recovery"
-        );
-    }
-
-    #[test]
-    fn api_error_still_stuck_with_only_ui_chrome() {
-        let stuck_with_chrome = r#"
-API Error: 502 {"type":"error","error":{"type":"api_error","message":"Bad gateway"}}
-
-───────────────────────────
-❯
-"#;
-
-        assert!(
-            has_api_error_pattern(stuck_with_chrome),
-            "UI chrome after API error should not count as recovery"
-        );
     }
 }

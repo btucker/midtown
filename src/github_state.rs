@@ -453,20 +453,6 @@ impl GitHubState {
         }
     }
 
-    /// Get the assignment source for a PR's reviewer, if assigned.
-    pub fn get_assignment_source(&self, pr_number: u64) -> Option<AssignmentSource> {
-        self.pr_reviewers.get(&pr_number).map(|a| a.source)
-    }
-
-    /// Count assignments by source (for telemetry).
-    pub fn count_by_source(&self) -> HashMap<String, usize> {
-        let mut counts: HashMap<String, usize> = HashMap::new();
-        for assignment in self.pr_reviewers.values() {
-            *counts.entry(assignment.source.to_string()).or_insert(0) += 1;
-        }
-        counts
-    }
-
     /// Clean up stale per-PR webhook event timestamps (older than 1 hour).
     pub fn cleanup_stale_webhook_events(&mut self) {
         let cutoff = Utc::now() - chrono::Duration::seconds(3600);
@@ -527,21 +513,6 @@ impl GitHubState {
             .values()
             .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
             .map(|a| a.reviewer.clone())
-            .collect()
-    }
-
-    /// Get the set of session IDs with active (non-expired) review assignments.
-    ///
-    /// Returns only assignments that have a `reviewer_session_id` set.
-    /// Useful for session-based deduplication in the multi-session world.
-    #[allow(dead_code)]
-    pub fn active_reviewer_session_ids(&self) -> std::collections::HashSet<String> {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        self.pr_reviewers
-            .values()
-            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
-            .filter_map(|a| a.reviewer_session_id.clone())
             .collect()
     }
 
