@@ -139,6 +139,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         session_id,
         env: _env,
         fork_session,
+        disallowed_tools,
     } = config;
 
     let is_resume = resume_session_id.is_some();
@@ -211,6 +212,12 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     if !*allow_tools {
         args.push("--tools".to_string());
         args.push(String::new());
+    }
+
+    // Tool restrictions — hard enforcement via CLI flag, not bypassable by LLM
+    if !disallowed_tools.is_empty() {
+        args.push("--disallowedTools".to_string());
+        args.push(disallowed_tools.join(","));
     }
 
     // Settings file — skip on resume to avoid duplicate tool registrations.

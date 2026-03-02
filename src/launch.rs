@@ -260,6 +260,18 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
     channel_name.to_string()
 }
 
+/// Tools that channel leads (and their forks) are not allowed to use.
+///
+/// Channel leads are coordinators and domain experts — they scope work and create
+/// tasks, but never implement code. This list is passed as `--disallowedTools` to
+/// the Claude CLI, providing hard enforcement that the LLM cannot bypass.
+pub fn channel_lead_disallowed_tools() -> Vec<String> {
+    ["Edit", "Write", "Bash", "NotebookEdit"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///
@@ -565,6 +577,15 @@ impl LaunchConfig {
             &config_dir,
         );
 
+        // Channel leads get hard tool restrictions — they are coordinators,
+        // not implementers. This is enforced at the CLI level via --disallowedTools
+        // so the LLM cannot bypass it.
+        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. }) {
+            channel_lead_disallowed_tools()
+        } else {
+            vec![]
+        };
+
         HeadlessConfig {
             model: self.model.clone(),
             system_prompt,
@@ -585,6 +606,7 @@ impl LaunchConfig {
             auth_provider: self.auth_provider,
             env,
             fork_session: false,
+            disallowed_tools,
         }
     }
 
@@ -1280,6 +1302,73 @@ mod tests {
         assert!(
             headless.system_prompt.contains("tui"),
             "System prompt should reference the channel name"
+        );
+    }
+
+    #[test]
+    fn test_channel_lead_disallowed_tools_contains_code_modification_tools() {
+        let tools = channel_lead_disallowed_tools();
+        assert!(tools.contains(&"Edit".to_string()));
+        assert!(tools.contains(&"Write".to_string()));
+        assert!(tools.contains(&"Bash".to_string()));
+        assert!(tools.contains(&"NotebookEdit".to_string()));
+    }
+
+    #[test]
+    fn test_channel_lead_headless_config_has_disallowed_tools() {
+        let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "");
+        let headless = config.to_headless_config("midtown");
+        assert!(
+            !headless.disallowed_tools.is_empty(),
+            "Channel lead should have disallowed tools"
+        );
+        assert!(
+            headless.disallowed_tools.contains(&"Edit".to_string()),
+            "Channel lead should disallow Edit"
+        );
+        assert!(
+            headless.disallowed_tools.contains(&"Write".to_string()),
+            "Channel lead should disallow Write"
+        );
+        assert!(
+            headless.disallowed_tools.contains(&"Bash".to_string()),
+            "Channel lead should disallow Bash"
+        );
+        assert!(
+            headless
+                .disallowed_tools
+                .contains(&"NotebookEdit".to_string()),
+            "Channel lead should disallow NotebookEdit"
+        );
+    }
+
+    #[test]
+    fn test_coworker_headless_config_has_no_disallowed_tools() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let headless = config.to_headless_config("midtown");
+        assert!(
+            headless.disallowed_tools.is_empty(),
+            "Coworker should not have disallowed tools"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_headless_config_has_no_disallowed_tools() {
+        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
+        let headless = config.to_headless_config("midtown");
+        assert!(
+            headless.disallowed_tools.is_empty(),
+            "Reviewer should not have disallowed tools"
+        );
+    }
+
+    #[test]
+    fn test_lead_headless_config_has_no_disallowed_tools() {
+        let config = LaunchConfig::lead("myrepo", None);
+        let headless = config.to_headless_config("midtown");
+        assert!(
+            headless.disallowed_tools.is_empty(),
+            "Lead should not have disallowed tools"
         );
     }
 }

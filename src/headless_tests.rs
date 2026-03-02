@@ -22,6 +22,7 @@ fn test_config() -> HeadlessConfig {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     }
 }
 

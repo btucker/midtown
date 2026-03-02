@@ -1273,6 +1273,9 @@ pub(super) async fn create_fork_session(
             _ => Some(uuid::Uuid::new_v4().to_string()),
         },
         fork_session: true,
+        // Channel lead forks inherit the parent's read-only restriction.
+        // Hard-enforce via --disallowedTools so the fork cannot write code.
+        disallowed_tools: crate::launch::channel_lead_disallowed_tools(),
     };
 
     // Spawn the forked session.

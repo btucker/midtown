@@ -33,6 +33,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -86,6 +87,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -129,6 +131,7 @@ fn test_resume_session_should_omit_settings_flag() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -173,6 +176,7 @@ fn test_fresh_session_without_settings_path() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -215,6 +219,7 @@ fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -257,6 +262,7 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -293,6 +299,7 @@ fn test_resume_session_does_not_use_session_id_flag() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -345,6 +352,7 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -397,6 +405,7 @@ fn test_fork_session_with_preassigned_session_id() {
         auth_provider: crate::auth::AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: true,
+        disallowed_tools: vec![],
     };
 
     let args = extract_spawn_args(&config);
