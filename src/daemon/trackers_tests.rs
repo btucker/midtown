@@ -747,3 +747,59 @@ fn ci_buffer_oldest_entry_only_set_on_actual_add() {
         "oldest_entry should not be set when duplicate is skipped"
     );
 }
+
+// -------------------------------------------------------------------------
+// StuckConditionType::AutoMerge — deduplication for auto-merge attempts
+// -------------------------------------------------------------------------
+
+#[test]
+fn auto_merge_condition_allows_first_attempt() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "first auto-merge attempt should be allowed"
+    );
+}
+
+#[test]
+fn auto_merge_condition_blocks_immediate_repeat() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "immediate repeat auto-merge should be blocked by cooldown"
+    );
+}
+
+#[test]
+fn auto_merge_condition_independent_of_merge_ready() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+
+    // MergeReady should still be allowed — the conditions are independent
+    tracker.track("42", StuckConditionType::MergeReady);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::MergeReady),
+        "MergeReady nudge should be independent of AutoMerge cooldown"
+    );
+}
+
+#[test]
+fn auto_merge_condition_cleared_when_pr_no_longer_mergeable() {
+    let mut tracker = StuckConditionTracker::new();
+    tracker.track("42", StuckConditionType::AutoMerge);
+    tracker.record_nudge("42", StuckConditionType::AutoMerge);
+
+    // Clear (PR is no longer auto-mergeable)
+    tracker.clear("42", StuckConditionType::AutoMerge);
+
+    // Re-track — should allow again since the condition was cleared
+    tracker.track("42", StuckConditionType::AutoMerge);
+    assert!(
+        tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "auto-merge should be allowed after condition was cleared and re-tracked"
+    );
+}

@@ -1635,6 +1635,18 @@ async fn collect_stuck_condition_effects(
 
         // --- Scenario 3: Approved + CI green but not merging ---
         if is_auto_mergeable(pr) {
+            // Enable GitHub auto-merge on first detection (idempotent if already enabled).
+            // Uses a separate AutoMerge condition so the delayed MergeReady nudge
+            // still fires if the PR doesn't actually merge.
+            tracker.track(&pr_id, StuckConditionType::AutoMerge);
+            if tracker.should_nudge(&pr_id, StuckConditionType::AutoMerge) {
+                effects.push(Effect::AutoMergePr {
+                    pr_number,
+                    title: title.to_string(),
+                });
+                tracker.record_nudge(&pr_id, StuckConditionType::AutoMerge);
+            }
+
             let first_detected = tracker.track(&pr_id, StuckConditionType::MergeReady);
             let stuck_duration = now.duration_since(first_detected);
 
@@ -1664,6 +1676,7 @@ async fn collect_stuck_condition_effects(
             }
         } else {
             tracker.clear(&pr_id, StuckConditionType::MergeReady);
+            tracker.clear(&pr_id, StuckConditionType::AutoMerge);
         }
     }
 

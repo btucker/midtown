@@ -525,6 +525,13 @@ pub enum Effect {
     /// completion, CI status, and addressed feedback before executing.
     MergePr { pr_number: u64, title: String },
 
+    /// Enable GitHub auto-merge on a PR that is approved with all CI checks passing.
+    ///
+    /// Triggered automatically by PR polling when `is_auto_mergeable()` returns true.
+    /// Unlike `MergePr` (which is RPC-gated), this fires proactively from the
+    /// stuck-PR detection path in `pr.rs`.
+    AutoMergePr { pr_number: u64, title: String },
+
     /// Invoke the channel's workflow script with a domain event.
     ///
     /// When a workflow script exists for the event's channel (resolved via
@@ -2957,6 +2964,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
 
             Effect::MergePr { pr_number, title } => {
+                auto_merge_pr(state, pr_number, &title).await;
+            }
+
+            Effect::AutoMergePr { pr_number, title } => {
                 auto_merge_pr(state, pr_number, &title).await;
             }
 

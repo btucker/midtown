@@ -131,6 +131,8 @@ pub enum StuckConditionType {
     SilentCoworker,
     /// More PRs need review than the daemon can assign reviewers to
     ReviewBacklog,
+    /// Auto-merge has been attempted for a merge-ready PR
+    AutoMerge,
 }
 
 impl std::fmt::Display for StuckConditionType {
@@ -141,6 +143,7 @@ impl std::fmt::Display for StuckConditionType {
             StuckConditionType::MergeReady => write!(f, "merge-ready but not merged"),
             StuckConditionType::SilentCoworker => write!(f, "silent coworker"),
             StuckConditionType::ReviewBacklog => write!(f, "review backlog"),
+            StuckConditionType::AutoMerge => write!(f, "auto-merge attempted"),
         }
     }
 }
