@@ -77,23 +77,26 @@
     }
   })
 
-  // Reset render window to 0 when switching channels.
-  // Only tracks $activeChannel — does NOT track channelMessages.length,
-  // so new messages arriving won't snap the user's scroll position.
-  $effect(() => {
-    $activeChannel  // track
-    renderStartIndex = 0
-  })
-
-  // Once initial history loads for a channel, position the window at the tail.
-  // Uses initialMessageCounts (set once per channel) so this only fires when
-  // messages first appear, not on every subsequent message.
+  // Position the render window at the tail on channel switch or first history load.
+  // Tracks $activeChannel and channelMessages.length, but uses prevRenderChannel
+  // to distinguish channel switches from new-message arrivals. This avoids both:
+  //  - stale counts (issue: window grows unbounded on revisit)
+  //  - DOM flash (issue: renderStartIndex starts at 0 then jumps)
+  let prevRenderChannel = null
   $effect(() => {
     const ch = $activeChannel
-    const count = initialMessageCounts[ch]
-    if (count !== undefined && count > INITIAL_WINDOW_SIZE) {
-      renderStartIndex = count - INITIAL_WINDOW_SIZE
+    const len = channelMessages.length
+    if (ch !== prevRenderChannel) {
+      // Channel switch — position at tail using current message count
+      prevRenderChannel = ch
+      renderStartIndex = Math.max(0, len - INITIAL_WINDOW_SIZE)
+    } else if (len > 0 && renderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
+      // Same channel, history just loaded (was empty, now has messages).
+      // Only fires once: after this, renderStartIndex > 0 so guard fails.
+      renderStartIndex = len - INITIAL_WINDOW_SIZE
     }
+    // New messages on current channel: no-op. visibleMessages is an
+    // open-ended slice so new messages at the end render automatically.
   })
 
   // Save/restore drafts when switching channels
@@ -749,9 +752,11 @@
           <p class="text-[0.9rem] mt-[10px]">{isDm ? `Send a message to start a conversation` : `Messages posted to this channel will appear here`}</p>
         </div>
       {:else}
-        <!-- Top sentinel: triggers loading older messages when scrolled into view -->
-        <div bind:this={topSentinel} class="h-[1px] w-full" aria-hidden="true"></div>
         {#if hasMoreAbove}
+          <!-- Top sentinel: triggers loading older messages when scrolled into view.
+               Only mounted when there are messages above the window, so the
+               IntersectionObserver doesn't fire no-op callbacks on short channels. -->
+          <div bind:this={topSentinel} class="h-[1px] w-full" aria-hidden="true"></div>
           <div class="text-center text-muted-foreground/50 text-[0.8rem] py-2 select-none">Loading earlier messages…</div>
         {/if}
 
