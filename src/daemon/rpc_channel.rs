@@ -295,6 +295,7 @@ pub(super) async fn handle_channel_post(
                         &wake_msg_id,
                         &lead_sid,
                         Some(channel_name),
+                        Some(&content),
                         "channel.post",
                         state,
                     )

@@ -1064,6 +1064,48 @@ pub(super) async fn handle_session_clear(
     }
 }
 
+/// Derive a short, human-readable slug from message content for fork session names.
+///
+/// Extracts the first 1-3 meaningful words from a message, lowercased and joined with
+/// hyphens. Strips @mentions, punctuation, and common filler words. Falls back to the
+/// first 8 characters of `thread_parent_id` if no meaningful words are found.
+fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
+    // Words to skip when building the slug
+    static STOP_WORDS: &[&str] = &[
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "can", "shall",
+        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "it", "its",
+        "this", "that", "these", "those", "i", "we", "you", "he", "she", "they", "me", "us", "him",
+        "her", "them", "my", "our", "your", "his", "their", "and", "but", "or", "not", "no", "so",
+        "if", "then", "than", "just", "also", "about", "up", "out", "how", "what", "when", "where",
+        "why", "which", "who", "all", "each", "some", "any", "here", "there",
+    ];
+
+    let words: Vec<&str> = message
+        .split_whitespace()
+        // Skip @mentions
+        .filter(|w| !w.starts_with('@'))
+        // Strip non-alphanumeric characters and lowercase
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        // Filter empty and stop words
+        .filter(|w| !w.is_empty() && !STOP_WORDS.contains(&w.to_lowercase().as_str()))
+        .take(3)
+        .collect();
+
+    if words.is_empty() {
+        thread_parent_id
+            .get(..8)
+            .unwrap_or(thread_parent_id)
+            .to_string()
+    } else {
+        words
+            .iter()
+            .map(|w| w.to_lowercase())
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+}
+
 /// Create a fork session bound to a thread, or return an existing one.
 ///
 /// This is the shared implementation used by both `handle_session_fork` (explicit fork
@@ -1078,6 +1120,10 @@ pub(super) async fn handle_session_clear(
 /// session record's channel field. The auto-fork path uses this since `handle_channel_post`
 /// already knows the channel from the incoming message.
 ///
+/// `fork_name_hint` provides a human-readable description for the fork session name.
+/// When provided, the fork is named `{caller_name}-{hint}` (e.g. `web-push-notifications`).
+/// When `None`, falls back to `fork-{first-8-chars-of-thread-id}`.
+///
 /// Returns `Ok((session_id, already_existed))` where `already_existed` is true when a
 /// fork was found in `topic_sessions` before this call. Returns `Err` if the slot holds
 /// "pending" (concurrent fork in progress) or spawn fails.
@@ -1085,6 +1131,7 @@ pub(super) async fn create_fork_session(
     thread_parent_id: &str,
     calling_session_id: &str,
     channel_hint: Option<&str>,
+    fork_name_hint: Option<&str>,
     caller: &str,
     state: &DaemonState,
 ) -> Result<(String, bool), String> {
@@ -1162,11 +1209,24 @@ pub(super) async fn create_fork_session(
     let repo_name = &state.repo_name;
     let team = crate::mailbox::team_name_for_repo(repo_name);
 
-    // Name the fork after its thread (truncated) for human readability.
-    let fork_name = format!(
-        "fork-{}",
-        thread_parent_id.get(..8).unwrap_or(thread_parent_id)
-    );
+    // Build a human-readable fork name from the caller name and the hint.
+    // e.g. "web-push-notifications-a1b2" or "ops-tls-config-c3d4".
+    // Always includes a short thread ID suffix to guarantee uniqueness per thread
+    // (two forks from the same caller with similar messages must not collide in
+    // name_to_session / fork_bound_threads).
+    let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
+    let fork_name = if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
+        let slug = slugify_fork_hint(hint, thread_parent_id);
+        match &caller_name {
+            Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
+            None => format!("fork-{}-{}", slug, tid_suffix),
+        }
+    } else {
+        format!(
+            "fork-{}",
+            thread_parent_id.get(..8).unwrap_or(thread_parent_id),
+        )
+    };
 
     let mut env = crate::launch::build_agent_env_vars(
         &fork_name,
@@ -1353,16 +1413,19 @@ pub(super) async fn create_fork_session(
 /// - `calling_session_id`: The session ID of the calling session. Required.
 ///   The caller must pass its own session ID (from the `MIDTOWN_SESSION_ID`
 ///   env var or the system init event).
+/// - `name_hint`: Optional descriptive name for the fork (e.g. "investigate auth bug").
 pub(super) async fn handle_session_fork(
     id: RequestId,
     thread_parent_id: &str,
     calling_session_id: &str,
+    name_hint: Option<&str>,
     state: &DaemonState,
 ) -> crate::rpc::Response {
     match create_fork_session(
         thread_parent_id,
         calling_session_id,
         None,
+        name_hint,
         "session.fork",
         state,
     )

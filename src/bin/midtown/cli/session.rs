@@ -50,6 +50,9 @@ pub enum SessionCommand {
         /// The session ID of the calling session. Falls back to $MIDTOWN_SESSION_ID.
         #[arg(long = "session-id")]
         session_id: Option<String>,
+        /// Optional descriptive name for the fork (e.g. "investigate auth bug").
+        #[arg(long)]
+        name: Option<String>,
     },
 }
 
@@ -263,6 +266,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::Fork {
             thread_parent_id,
             session_id,
+            name,
         } => {
             let sid = session_id
                 .clone()
@@ -270,7 +274,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
                 .ok_or_else(|| {
                     "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
                 })?;
-            client.session_fork(thread_parent_id, &sid)
+            client.session_fork(thread_parent_id, &sid, name.as_deref())
         }
     }
 }

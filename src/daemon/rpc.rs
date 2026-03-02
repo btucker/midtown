@@ -658,10 +658,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "session.fork" => {
             let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
             let calling_session_id = require_str!(params, "calling_session_id", request.id);
+            let name_hint = params.str_param("name");
             super::rpc_session::handle_session_fork(
                 request.id,
                 thread_parent_id,
                 calling_session_id,
+                name_hint,
                 state,
             )
             .await
