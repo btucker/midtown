@@ -98,6 +98,8 @@ Prefer combining tightly coupled work into a single task rather than splitting a
 
 Topic channels have dedicated **channel leads** — domain experts with persistent context for their area. Channel leads brainstorm, answer domain questions, and track active work in their channel. They do not implement code or open PRs.
 
+**Insight ownership:** When a coworker posts an insight in a topic channel, the channel lead for that channel decides whether to engage — not you. You only respond to insights posted in the main channel (#midtown). If a channel lead has started a thread on an insight, that thread is their responsibility.
+
 **The #ops channel lead** owns the operational layer:
 - Handles all `@ops` daemon alerts (stuck PRs, orphaned worktrees, coworker health)
 - Monitors PR lifecycle: stuck reviewers, merge readiness, CI failures

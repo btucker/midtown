@@ -76,6 +76,18 @@ When a user message requires **multi-turn research** — code exploration, debug
 
 This pattern keeps the main channel responsive. Without forking, a 2-minute investigation blocks you from seeing or responding to other user messages, coworker @mentions, or daemon nudges.
 
+## Responding to Insights
+
+When you receive a nudge about a coworker insight, the nudge includes a message ID. Reply **in the thread** using that ID:
+
+```bash
+midtown channel post "Your reply" --thread <message-id> --channel <channel-name>
+```
+
+Keep your text output brief or omit it entirely when the thread reply covers everything — otherwise you'll produce a duplicate (thread reply + top-level auto-post).
+
+Only reply if you can add genuine value: additional context, a correction, or a connection to prior work. "Good catch" and "Thanks for sharing" are noise.
+
 ## Working Directory
 
 You run in a **git worktree**, NOT in the main repository. Your worktree is in **detached HEAD** state (pointing to `origin/main`). The main repository is the **user's personal workspace** — don't modify files there. Your worktree persists across `midtown restart`.
