@@ -1016,3 +1016,80 @@ fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
     // Should not error — gracefully falls back
     assert_eq!(result.unwrap(), "/tmp/some-cwd");
 }
+
+// ── SessionCommand::Fork CLI parsing ────────────────────────────────
+
+/// Minimal wrapper to parse `session <subcommand>` via clap.
+#[derive(clap::Parser)]
+struct TestSessionCli {
+    #[command(subcommand)]
+    command: SessionCommand,
+}
+
+#[test]
+fn fork_parses_thread_id_flag() {
+    use clap::Parser;
+    let cli = TestSessionCli::try_parse_from(["test", "fork", "--thread-id", "msg-123"]).unwrap();
+    match cli.command {
+        SessionCommand::Fork {
+            thread_id,
+            session_id,
+            name,
+        } => {
+            assert_eq!(thread_id, "msg-123");
+            assert!(session_id.is_none());
+            assert!(name.is_none());
+        }
+        other => panic!("Expected Fork, got {:?}", other),
+    }
+}
+
+#[test]
+fn fork_rejects_positional_thread_id() {
+    use clap::Parser;
+    // Old positional usage should fail — "msg-123" without --thread-id is not accepted.
+    let result = TestSessionCli::try_parse_from(["test", "fork", "msg-123"]);
+    assert!(
+        result.is_err(),
+        "Positional thread ID should be rejected after rename to --thread-id flag"
+    );
+}
+
+#[test]
+fn fork_parses_all_flags() {
+    use clap::Parser;
+    let cli = TestSessionCli::try_parse_from([
+        "test",
+        "fork",
+        "--thread-id",
+        "thread-abc",
+        "--session-id",
+        "sess-456",
+        "--name",
+        "investigate auth bug",
+    ])
+    .unwrap();
+    match cli.command {
+        SessionCommand::Fork {
+            thread_id,
+            session_id,
+            name,
+        } => {
+            assert_eq!(thread_id, "thread-abc");
+            assert_eq!(session_id.as_deref(), Some("sess-456"));
+            assert_eq!(name.as_deref(), Some("investigate auth bug"));
+        }
+        other => panic!("Expected Fork, got {:?}", other),
+    }
+}
+
+#[test]
+fn fork_requires_thread_id_flag() {
+    use clap::Parser;
+    // fork with no arguments should fail — --thread-id is required.
+    let result = TestSessionCli::try_parse_from(["test", "fork"]);
+    assert!(
+        result.is_err(),
+        "Fork without --thread-id should fail (required arg)"
+    );
+}

@@ -101,7 +101,7 @@ The daemon now **automatically forks** your session when a new top-level user me
 - Quick one-word acks or status updates that are already covered by daemon notifications
 - CI/PR event notifications that need no response (just read and update your context)
 
-**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `session fork`.
+**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `midtown session fork --thread-id <message-id>`.
 
 ## Posting to the Channel
 
