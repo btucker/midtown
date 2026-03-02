@@ -1146,7 +1146,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         session_id,
         env: _env,
         fork_session,
-        disallowed_tools: _disallowed_tools,
+        disallowed_tools,
     } = config;
 
     let mut unsupported = Vec::new();
@@ -1161,6 +1161,9 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
     }
     if session_id.is_some() {
         unsupported.push("session_id");
+    }
+    if !disallowed_tools.is_empty() {
+        unsupported.push("disallowed_tools");
     }
     if !unsupported.is_empty() {
         return Err(format!(

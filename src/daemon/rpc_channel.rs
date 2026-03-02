@@ -322,6 +322,9 @@ pub(super) async fn handle_channel_post(
                             );
                             // Fresh forks get a framing nudge that establishes their
                             // thread-scoped role before the user message arrives.
+                            // Note: if this nudge fails (e.g., session not yet ready),
+                            // the fork still has hard tool restrictions via --disallowedTools
+                            // and inherits the parent's system prompt context.
                             if !is_existing {
                                 let framing = fork_initial_framing(channel_name);
                                 let framing_effect = crate::daemon::effects::Effect::NudgeSession {

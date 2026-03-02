@@ -116,6 +116,9 @@ fn build_claude_common_args(
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
 ///   to avoid "Tool names must be unique" errors. Fork-resume sessions additionally
 ///   get `--session-id <uuid>` so the daemon can register them without waiting for init.
+///
+/// Both modes may include `--disallowedTools` (comma-separated) for hard tool
+/// restrictions that the LLM cannot bypass (e.g., channel lead code-edit blocks).
 pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     // Exhaustive destructure so new HeadlessConfig fields force explicit
     // handling decisions in this platform mapper.

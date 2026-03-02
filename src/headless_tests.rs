@@ -138,6 +138,7 @@ fn test_codex_launch_plan_rejects_unsupported_fields() {
         settings_path: Some("/tmp/settings.json".to_string()),
         setting_sources: Some("project,local".to_string()),
         session_id: Some("session-123".to_string()),
+        disallowed_tools: vec!["Edit".to_string()],
         ..test_config()
     };
 
@@ -147,6 +148,9 @@ fn test_codex_launch_plan_rejects_unsupported_fields() {
             && error.contains("settings_path")
             && error.contains("setting_sources")
             && error.contains("session_id")
+            && error.contains("disallowed_tools"),
+        "Error should mention all unsupported fields, got: {}",
+        error
     );
 }
 
