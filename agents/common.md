@@ -65,7 +65,7 @@ midtown channel post "found the root cause in auth.rs" --task 42
 
 In the TUI, use `/thread` to pick a message and open the thread panel.
 
-**Thread notifications:** When a new reply is added to a thread, all thread participants (original message author and authors of existing replies) are automatically notified via nudge. You do not need to @mention them manually.
+**Thread notifications:** Thread replies are routed to the forked lead session that owns the thread. The fork decides when to loop in other participants via @mentions — there is no automatic broadcast to all thread participants.
 
 ## Useful Commands
 
@@ -109,7 +109,7 @@ or add the HTML comment anywhere in your comment:
 
 ## Insights
 
-Insights are auto-posted to the task's channel and nudge the channel lead. Channel leads reply in a thread ONLY if they can add genuine value (the daemon already nudges thread participants on new replies). No "thanks for sharing" replies.
+Insights are auto-posted to the task's channel and nudge the channel lead. Channel leads reply in a thread ONLY if they can add genuine value. No "thanks for sharing" replies.
 
 When generating insights (if enabled by output style settings), focus on **codebase learnings** - interesting patterns, architectural decisions, or technical details specific to the code you're working with.
 
