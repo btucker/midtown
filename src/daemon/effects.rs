@@ -1975,7 +1975,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                     }
-                    let domain_context = crate::channel::load_channel_notes(&base_dir, &name);
+                    let notes_base = base_dir.clone();
+                    let notes_channel = name.clone();
+                    let domain_context = tokio::task::spawn_blocking(move || {
+                        crate::channel::load_channel_notes(&notes_base, &notes_channel)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("load_channel_notes task failed for '{}': {}", name, e);
+                        String::new()
+                    });
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         &state.repo_name,
@@ -2674,8 +2683,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     };
 
                     let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
-                    let domain_context =
-                        crate::channel::load_channel_notes(&base_dir, &channel_name);
+                    let notes_base = base_dir;
+                    let notes_channel = channel_name.clone();
+                    let domain_context = tokio::task::spawn_blocking(move || {
+                        crate::channel::load_channel_notes(&notes_base, &notes_channel)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            "load_channel_notes task failed for '{}': {}",
+                            channel_name, e
+                        );
+                        String::new()
+                    });
 
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
