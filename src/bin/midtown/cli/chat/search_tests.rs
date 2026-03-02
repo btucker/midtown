@@ -239,6 +239,7 @@ fn test_dismiss_search_clears_all_state() {
     app.search.selected_index = 5;
     app.search.loading = true;
     app.search.error = Some("error".to_string());
+    app.search.last_query = "query".to_string();
 
     app.dismiss_search();
 
@@ -248,6 +249,35 @@ fn test_dismiss_search_clears_all_state() {
     assert!(!app.search.loading);
     assert!(app.search.error.is_none());
     assert!(app.search.results.is_empty());
+    assert!(
+        app.search.last_query.is_empty(),
+        "dismiss_search should clear last_query"
+    );
+}
+
+#[test]
+fn test_search_select_clears_last_query() {
+    let mut app = test_app();
+    app.search.show = true;
+    app.search.last_query = "previous search".to_string();
+    app.search.input = "previous search".to_string();
+    app.search.results = vec![midtown::search::SearchResult {
+        id: "1".to_string(),
+        from: "alice".to_string(),
+        content: "hello".to_string(),
+        timestamp: "2025-01-01T00:00:00Z".to_string(),
+        channel: "general".to_string(),
+        message_type: "text".to_string(),
+        snippet: "hello".to_string(),
+    }];
+    app.search.selected_index = 0;
+
+    app.search_select();
+
+    assert!(
+        app.search.last_query.is_empty(),
+        "search_select should clear last_query to avoid stale state on re-open"
+    );
 }
 
 // ── execute_search tests ─────────────────────────────────────────────

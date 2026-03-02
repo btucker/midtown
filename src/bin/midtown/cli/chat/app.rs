@@ -2797,6 +2797,7 @@ impl App {
         self.search.selected_index = 0;
         self.search.loading = false;
         self.search.error = None;
+        self.search.last_query.clear();
     }
 
     /// Append a character to the search input
@@ -2900,15 +2901,8 @@ impl App {
         self.selected_channel = channel_name.clone();
         self.board_selection = Some(BoardSelection::Channel(channel_name));
 
-        // Close the search overlay
-        self.search.show = false;
-        self.search.input.clear();
-        self.search.results.clear();
-        self.search.selected_index = 0;
-        self.search.loading = false;
-        self.search.error = None;
-
-        // Load messages from the selected channel
+        // Close the search overlay and load the selected channel
+        self.dismiss_search();
         self.load_channel_messages();
     }
 
