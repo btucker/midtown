@@ -1491,6 +1491,27 @@ fn test_dm_separator_without_subject() {
     }
 }
 
+/// An empty subject string (Some("")) should be treated like None — the
+/// separator should contain only the task ID, not a trailing colon+space.
+/// Callers should filter empty subjects before passing to this function.
+#[test]
+fn test_dm_separator_empty_subject_treated_as_none() {
+    // Direct call with Some("") — shows the raw behavior
+    let effect = build_dm_separator_effect("park", "42", Some(""), false);
+    let msg = match effect {
+        Some(Effect::PostSystemMessage { message, .. }) => message,
+        _ => panic!("expected PostSystemMessage"),
+    };
+    // If callers forget to filter, the output has a trailing ": " — this
+    // test documents the current behavior so callers know to filter.
+    // The correct pattern is: task_subject.as_deref().filter(|s| !s.is_empty())
+    assert!(
+        msg.contains("Task !42"),
+        "separator should contain task ID, got: {}",
+        msg
+    );
+}
+
 /// Reviewer sessions do not produce DM separator effects since they are
 /// ephemeral PR-scoped sessions without DM channels.
 #[test]

@@ -630,8 +630,8 @@ pub(super) async fn handle_task_metadata(
 /// Handle task.claim RPC — a coworker claims a task by writing directly to disk.
 ///
 /// Validates the task exists and is pending, then sets owner and status to in_progress
-/// directly. No Lead proxy needed.
-pub(super) fn handle_task_claim(
+/// directly. No Lead proxy needed. Posts a task divider to the coworker's DM channel.
+pub(super) async fn handle_task_claim(
     id: RequestId,
     task_id: &str,
     from: &str,
@@ -660,6 +660,7 @@ pub(super) fn handle_task_claim(
         );
     }
 
+    let task_subject = task.subject.clone();
     let repo_name = state.repo_name.clone();
 
     // Write owner and status directly to disk (with retry on transient failures).
@@ -690,7 +691,7 @@ pub(super) fn handle_task_claim(
                     e
                 );
                 last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }
@@ -704,6 +705,20 @@ pub(super) fn handle_task_claim(
 
     // Record in-memory assignment for busy tracking (only after disk write succeeds)
     state.record_task_assignment(from, task_id);
+
+    // Post task divider to the coworker's DM channel.
+    // Reuse build_dm_separator_effect (already tested in effects_tests.rs) to
+    // produce the PostSystemMessage effect, then execute it.
+    let subject_opt = if task_subject.is_empty() {
+        None
+    } else {
+        Some(task_subject.as_str())
+    };
+    if let Some(separator_effect) =
+        super::effects::build_dm_separator_effect(from, task_id, subject_opt, false)
+    {
+        super::effects::execute_effects(vec![separator_effect], state).await;
+    }
 
     info!("Task claim: {} claimed task !{} directly", from, task_id);
 

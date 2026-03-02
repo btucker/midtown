@@ -10,10 +10,11 @@
   import { threadData, agentToolItems, threadToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
-  import { getSenderColor, isDimSender, parseInsightSegments } from './messageUtils.js'
+  import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskCard from './TaskCard.svelte'
   import DiffView from './DiffView.svelte'
@@ -463,6 +464,10 @@
           />
         {:else}
           {@const msg = entry.data}
+          {@const dayLabel = dateChanged(timelineMessages, entry.msgIndex)}
+          {#if dayLabel}
+            <DayDivider label={dayLabel} />
+          {/if}
           <MessageRow
             {msg}
             msgs={timelineMessages}
@@ -654,6 +659,10 @@
           />
         {:else}
           {@const msg = entry.data}
+          {@const dayLabel = dateChanged(timelineMessages, entry.msgIndex)}
+          {#if dayLabel}
+            <DayDivider label={dayLabel} />
+          {/if}
           <MessageRow
             {msg}
             msgs={timelineMessages}

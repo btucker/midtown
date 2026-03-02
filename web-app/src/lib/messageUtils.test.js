@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { getSenderColor, AVENUE_COLORS } from './messageUtils.js'
+import { describe, it, expect, vi } from 'vitest'
+import { getSenderColor, AVENUE_COLORS, dateChanged } from './messageUtils.js'
 
 describe('getSenderColor', () => {
   it('returns gold for sender matching channel name (channel lead rule)', () => {
@@ -36,5 +36,87 @@ describe('getSenderColor', () => {
     // Even if an override exists for 'web', sender=channel → gold wins
     const overrides = { web: '#ff0000' }
     expect(getSenderColor('web', overrides, 'web')).toBe(AVENUE_COLORS.lead)
+  })
+})
+
+describe('dateChanged', () => {
+  function msg(timestamp) {
+    return { timestamp, from: 'test', content: 'hello' }
+  }
+
+  it('returns null for the first message (index 0)', () => {
+    const msgs = [msg('2026-03-02T10:00:00Z')]
+    expect(dateChanged(msgs, 0)).toBe(null)
+  })
+
+  it('returns null when messages are on the same day and within 8 hours', () => {
+    const msgs = [
+      msg('2026-03-02T10:00:00Z'),
+      msg('2026-03-02T14:00:00Z'),
+    ]
+    expect(dateChanged(msgs, 1)).toBe(null)
+  })
+
+  it('returns a date label when the calendar date changes', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-02T20:00:00Z'))
+    const msgs = [
+      msg('2026-03-01T12:00:00Z'),
+      msg('2026-03-02T12:00:00Z'),
+    ]
+    expect(dateChanged(msgs, 1)).toBe('Today')
+    vi.useRealTimers()
+  })
+
+  it('returns "Yesterday" for the previous day', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-03T12:00:00Z'))
+    const msgs = [
+      msg('2026-03-01T23:00:00Z'),
+      msg('2026-03-02T10:00:00Z'),
+    ]
+    expect(dateChanged(msgs, 1)).toBe('Yesterday')
+    vi.useRealTimers()
+  })
+
+  it('returns full date for older messages', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-10T12:00:00Z'))
+    const msgs = [
+      msg('2026-02-27T23:00:00Z'),
+      msg('2026-02-28T10:00:00Z'),
+    ]
+    const result = dateChanged(msgs, 1)
+    expect(result).toContain('February')
+    expect(result).toContain('28')
+    expect(result).toContain('2026')
+    vi.useRealTimers()
+  })
+
+  it('returns a date label for 8+ hour gap on the same day', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-02T22:00:00Z'))
+    const msgs = [
+      msg('2026-03-02T02:00:00Z'),
+      msg('2026-03-02T10:00:01Z'),  // 8 hours + 1 second gap
+    ]
+    expect(dateChanged(msgs, 1)).toBe('Today')
+    vi.useRealTimers()
+  })
+
+  it('returns null for gap just under 8 hours on the same day', () => {
+    const msgs = [
+      msg('2026-03-02T14:00:00Z'),
+      msg('2026-03-02T21:59:59Z'),  // 7h 59m 59s gap
+    ]
+    expect(dateChanged(msgs, 1)).toBe(null)
+  })
+
+  it('returns null for invalid timestamps', () => {
+    const msgs = [
+      msg('invalid'),
+      msg('2026-03-02T10:00:00Z'),
+    ]
+    expect(dateChanged(msgs, 1)).toBe(null)
   })
 })

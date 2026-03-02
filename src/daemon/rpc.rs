@@ -559,7 +559,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 .filter(|from| !from.eq_ignore_ascii_case("unknown"))
                 .map(str::to_string)
                 .unwrap_or_else(|| state.repo_name.clone());
-            super::rpc_task::handle_task_claim(request.id, task_id, &from, state)
+            super::rpc_task::handle_task_claim(request.id, task_id, &from, state).await
         }
 
         // ---- Reminders ----

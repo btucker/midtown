@@ -1,7 +1,7 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
-  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
+  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
   import { tick, onMount, untrack } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
@@ -9,6 +9,7 @@
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
   // Windowed rendering: only render a slice of messages near the viewport.
@@ -781,6 +782,10 @@
 
         {#each visibleMessages as msg, i}
           {@const globalIndex = renderStartIndex + i}
+          {@const dayLabel = dateChanged(channelMessages, globalIndex)}
+          {#if dayLabel}
+            <DayDivider label={dayLabel} />
+          {/if}
           <div
             data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
