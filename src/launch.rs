@@ -354,9 +354,10 @@ impl LaunchConfig {
 
         if let Some(channel_name) = channel {
             // Channel lead — delegate to channel_lead factory
-            let base_dir = crate::paths::projects_dir_for_repo(&repo);
-            let domain_context = crate::channel::load_channel_notes(&base_dir, channel_name);
-            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, domain_context)
+            // Note: domain_context is empty here; callers that need notes
+            // should load them via load_channel_notes() and pass directly
+            // to channel_lead() to keep this function I/O-free.
+            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "")
         } else {
             // Project Lead
             let auth_provider = crate::config::get_execution_provider_for_role(

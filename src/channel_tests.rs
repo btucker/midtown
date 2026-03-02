@@ -2181,3 +2181,21 @@ fn test_load_channel_notes_sorts_alphabetically() {
     assert!(a_pos < m_pos, "a-first should come before m-middle");
     assert!(m_pos < z_pos, "m-middle should come before z-last");
 }
+
+#[test]
+fn test_load_channel_notes_truncates_at_size_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("big").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    // Create a note file larger than the 100KB limit
+    let large_content = "x".repeat(120 * 1024);
+    std::fs::write(notes_dir.join("huge.md"), &large_content).unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "big");
+    assert!(
+        result.len() <= super::MAX_NOTES_BYTES + 100, // header overhead
+        "result should be capped near MAX_NOTES_BYTES, got {} bytes",
+        result.len()
+    );
+}

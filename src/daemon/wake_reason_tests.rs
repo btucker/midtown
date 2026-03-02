@@ -105,6 +105,10 @@ fn insight_posted_nudge_message_without_task_id() {
         msg.contains("ONLY reply"),
         "should include ONLY reply instruction"
     );
+    assert!(
+        msg.contains("save it to your notes"),
+        "should include save-to-notes reminder for domain knowledge"
+    );
 }
 
 #[test]
