@@ -37,6 +37,11 @@ const TOOL_ITEMS_CLEAR_DELAY_MS = 4000
 // activity arrives before the delay expires (agent is still working).
 const agentClearTimeouts = new Map()
 
+// Tracks which fork session owns each thread's tool items (thread_parent_id → agent_name).
+// Used by the thread-clear guard to ensure only the owning fork's messages trigger a clear,
+// preventing coworkers or the lead from prematurely clearing a fork's tool display.
+const threadOwners = new Map()
+
 let ws = null
 let reconnectTimeout = null
 let statusPollInterval = null
@@ -136,6 +141,7 @@ export function switchProject(projectName, webhookPort) {
   usageData.set([])
   agentClearTimeouts.forEach((t) => clearTimeout(t))
   agentClearTimeouts.clear()
+  threadOwners.clear()
   agentToolItems.set({})
   threadToolItems.set({})
   threadData.set(null)
@@ -476,15 +482,18 @@ export function handleUpdate(update) {
           return td
         })
 
-        // Schedule a delayed clear of thread tool activity when the fork posts a reply.
-        // Mirrors the channel-scoped clear logic below for top-level messages.
-        if (msg.from && msg.from !== 'user') {
+        // Schedule a delayed clear of thread tool activity when the owning fork posts a reply.
+        // Only the fork that produced the thread's tool items should trigger this clear —
+        // a coworker or lead posting to the same thread must not prematurely clear the display.
+        const threadOwner = threadOwners.get(msg.thread_parent_id)
+        if (msg.from && threadOwner && msg.from === threadOwner) {
           const threadClearKey = `thread:${msg.thread_parent_id}`
           if (agentClearTimeouts.has(threadClearKey)) {
             clearTimeout(agentClearTimeouts.get(threadClearKey))
           }
           const timeout = setTimeout(() => {
             agentClearTimeouts.delete(threadClearKey)
+            threadOwners.delete(msg.thread_parent_id)
             threadToolItems.update((byThread) => {
               const updated = { ...byThread }
               delete updated[msg.thread_parent_id]
@@ -616,6 +625,10 @@ export function handleUpdate(update) {
       // instead of the main channel activity strip.
       const threadId = update.data.thread_parent_id
       if (threadId) {
+        // Track which fork session owns this thread's tool items
+        if (update.data.agent_name) {
+          threadOwners.set(threadId, update.data.agent_name)
+        }
         if (agentClearTimeouts.has(`thread:${threadId}`)) {
           clearTimeout(agentClearTimeouts.get(`thread:${threadId}`))
           agentClearTimeouts.delete(`thread:${threadId}`)

@@ -143,15 +143,18 @@
     tick().then(() => resizeTextarea())
   })
 
-  // Clear thinking when real InProgress tool items arrive — check both thread-scoped
-  // items (for forked leads) and channel-scoped items (for channel leads / DM channels).
+  // Clear thinking when real InProgress tool items arrive.
+  // When parentId is set, only check thread-scoped items (fork tool calls); otherwise
+  // fall back to channel-scoped items (for task-only threads / DM channels).
+  // Using an OR of both sources caused channel-lead InProgress items to falsely clear
+  // thread thinking state — a form of crosstalk between unrelated activity streams.
   $effect(() => {
     const parentId = $threadData?.parentMessage?.id
     const channelName = $threadData?.channelName ?? 'midtown'
-    const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
-    const channelItems = $agentToolItems[channelName] || []
-    const hasInProgress = threadItems.some((item) => item.status === 'InProgress')
-      || channelItems.some((item) => item.status === 'InProgress')
+    const items = parentId
+      ? ($threadToolItems[parentId] || [])
+      : ($agentToolItems[channelName] || [])
+    const hasInProgress = items.some((item) => item.status === 'InProgress')
     if (hasInProgress) {
       thinking = false
       if (thinkingTimeout) {
