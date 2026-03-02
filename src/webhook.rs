@@ -57,6 +57,11 @@ pub struct WebhookEvent {
     /// PR number that received a completed review (formal or comment-based).
     /// Set when webhook payload confirms a real review completion.
     pub reviewed_pr: Option<u64>,
+    /// The coworker name extracted from the review (frontmatter / signature).
+    /// Used to verify the review was posted by the assigned reviewer before
+    /// marking the PR as reviewed. Prevents bot comments from triggering
+    /// premature "reviewed and CI green" alerts.
+    pub review_author: Option<String>,
     /// The database ID of the review comment (issue comment) that triggered `reviewed_pr`.
     /// Used to populate `pr_review_comment_ids` for Gate 3 merge gating.
     /// Only set for issue comments that are code reviews (not formal GitHub reviews).
@@ -95,6 +100,7 @@ impl WebhookEvent {
             pr_merged_info: None,
             ci_failed_on_default_branch: None,
             reviewed_pr: None,
+            review_author: None,
             review_comment_id: None,
             review_state_change: None,
             pr_ci_failure: None,
@@ -500,6 +506,8 @@ struct Review {
     id: u64,
     state: String,
     user: User,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -859,6 +867,13 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         _ => None,
     };
 
+    // Extract review author from body frontmatter/signatures for identity matching
+    let review_author = event
+        .review
+        .body
+        .as_deref()
+        .and_then(crate::daemon::helpers::extract_review_author_from_body);
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         pr_activity: Some(PrActivity {
@@ -874,6 +889,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         }),
         // Any submitted formal review counts as a completed review event.
         reviewed_pr: Some(event.pull_request.number),
+        review_author,
         review_state_change,
         ..WebhookEvent::github(content)
     }))
@@ -937,6 +953,12 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     } else {
         None
     };
+    // Extract review author from body for identity matching against assigned reviewer
+    let review_author = if is_review {
+        crate::daemon::helpers::extract_review_author_from_body(&event.comment.body)
+    } else {
+        None
+    };
     // Track the review comment's database ID for Gate 3 merge gating
     let review_comment_id = if is_review {
         Some(event.comment.id)
@@ -956,6 +978,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
             repo_full_name: Some(event.repository.full_name),
         }),
         reviewed_pr,
+        review_author,
         review_comment_id,
         ..WebhookEvent::github(content)
     }))

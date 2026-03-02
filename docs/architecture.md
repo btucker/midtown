@@ -378,7 +378,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Pre-gate — Reviewer active**: Checks `get_reviewer(pr_number)` for raw assignment presence in `pr_reviewers`. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Uses non-expiring assignment presence (not the 600s timeout from `is_assigned()`), so long-running reviews are never bypassed. The assignment is only removed when the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
 
-1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set (populated by webhooks or polling fallback).
+1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set. A PR is only marked as reviewed when the **assigned reviewer** posts the review — bot comments, unrelated coworkers, and other noise are filtered out via `review_author_matches()` (body-based identity extraction from `<!-- midtown: name -->` frontmatter or review signatures). Formal reviews with strong states (APPROVED / CHANGES_REQUESTED) are accepted even with empty bodies since these are deliberate human actions. The `WebhookEvent.review_author` field carries the extracted identity for the webhook path; the polling path passes `assigned_reviewer` from `pr_reviewers` to `pr_has_completed_review_uncached()`. When no reviewer is assigned, any valid review is accepted (backward-compatible).
 
 2. **Gate 2 — CI passing**: Checks `statusCheckRollup` from `gh pr view` and also verifies `reviewDecision != "CHANGES_REQUESTED"`. The PR must be in `OPEN` state (merged/closed PRs are rejected before gate checks).
 

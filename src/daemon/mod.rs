@@ -1201,10 +1201,14 @@ impl DaemonState {
         }
 
         // Slow path: check via API calls (no lock held)
-        let has_review = {
+        let (cached, assigned_reviewer) = {
             let ps = self.persistent_state.lock().await;
-            ps.github.has_cached_review(pr_number)
-        } || pr::pr_has_completed_review_uncached(pr_number);
+            let cached = ps.github.has_cached_review(pr_number);
+            let reviewer = ps.github.get_reviewer(pr_number).map(|r| r.to_string());
+            (cached, reviewer)
+        };
+        let has_review =
+            cached || pr::pr_has_completed_review_uncached(pr_number, assigned_reviewer.as_deref());
 
         if has_review {
             // Bug #2 fix: do all blocking I/O (subprocess calls) BEFORE
@@ -3348,6 +3352,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                 }
 
+                // Capture whether this is a strong formal review (APPROVED/CHANGES_REQUESTED)
+                // before review_state_change is moved. Used below for review identity matching.
+                let is_strong_formal_review = webhook_event.review_state_change.as_ref().is_some_and(|r| {
+                    matches!(r.state, crate::webhook::ReviewState::Approved | crate::webhook::ReviewState::ChangesRequested)
+                });
+
                 // Nudge PR owner immediately on review state change (approved / changes_requested)
                 if let Some(review_change) = webhook_event.review_state_change {
                     let state = Arc::clone(&state);
@@ -3364,27 +3374,61 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     });
                 }
 
-                // Cache review status immediately from webhook data (avoids API calls)
+                // Cache review status immediately from webhook data (avoids API calls).
+                //
+                // Only mark as reviewed if the review author matches the assigned
+                // reviewer. This prevents bot comments or unrelated formal reviews
+                // from prematurely marking a PR as "reviewed and CI green" while
+                // the assigned reviewer is still working. (Bug fix for !1924)
                 if let Some(pr_number) = webhook_event.reviewed_pr {
-                    debug!(
-                        "Webhook: caching review status for PR #{} (review comment detected)",
-                        pr_number
-                    );
-                    let mut ps = state.persistent_state.lock().await;
-                    ps.github.mark_reviewed_pr(pr_number);
-                    // Persist review comment ID for Gate 3 merge gating
-                    if let Some(comment_id) = webhook_event.review_comment_id {
+                    let assigned_reviewer = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.github.get_reviewer(pr_number).map(|r| r.to_string())
+                    };
+
+                    let author_matches = match (&webhook_event.review_author, &assigned_reviewer) {
+                        (Some(author), Some(reviewer)) => {
+                            author.eq_ignore_ascii_case(reviewer)
+                        }
+                        (None, Some(_)) => {
+                            // Review detected but author unknown — accept if it's
+                            // a strong formal review (APPROVED/CHANGES_REQUESTED),
+                            // reject weak states (COMMENTED/DISMISSED) that bots produce.
+                            // The assigned reviewer may submit APPROVED with empty body.
+                            is_strong_formal_review
+                        }
+                        (_, None) => {
+                            // No assigned reviewer — accept any review (backward compat)
+                            true
+                        }
+                    };
+
+                    if author_matches {
                         debug!(
-                            "Webhook: recording review comment ID {} for PR #{}",
-                            comment_id, pr_number
+                            "Webhook: caching review status for PR #{} (review by {:?}, assigned: {:?})",
+                            pr_number, webhook_event.review_author, assigned_reviewer
                         );
-                        ps.github.add_review_comment_id(pr_number, comment_id);
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.github.mark_reviewed_pr(pr_number);
+                        // Persist review comment ID for Gate 3 merge gating
+                        if let Some(comment_id) = webhook_event.review_comment_id {
+                            debug!(
+                                "Webhook: recording review comment ID {} for PR #{}",
+                                comment_id, pr_number
+                            );
+                            ps.github.add_review_comment_id(pr_number, comment_id);
+                        }
+                        drop(ps);
+                        // Clear placeholder cache: review is done
+                        let mut placeholder_cache =
+                            state.reviewer_placeholder_cache.lock().unwrap();
+                        placeholder_cache.remove(&pr_number);
+                    } else {
+                        debug!(
+                            "Webhook: ignoring review for PR #{} — author {:?} does not match assigned reviewer {:?}",
+                            pr_number, webhook_event.review_author, assigned_reviewer
+                        );
                     }
-                    drop(ps);
-                    // Clear placeholder cache: review is done
-                    let mut placeholder_cache =
-                        state.reviewer_placeholder_cache.lock().unwrap();
-                    placeholder_cache.remove(&pr_number);
                 }
 
                 // Record CI check duration for statistics tracking

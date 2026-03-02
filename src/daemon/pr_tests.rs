@@ -3470,3 +3470,185 @@ fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
         "Should NOT flag active reviewer when coworker is reviewing a different PR"
     );
 }
+
+// ── json_has_completed_review tests (reviewer identity gate) ────────────
+
+/// The core bug from !1924: a bot comment with NO midtown frontmatter was being
+/// accepted as a completed review because `pr_has_completed_review_uncached`
+/// never checked who posted the review.
+#[test]
+fn json_review_rejects_bot_comment_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "Coverage report: 67.03% — no midtown frontmatter here",
+                "author": {"login": "codecov-bot"}
+            }
+        ]
+    });
+
+    // Without assigned reviewer: should NOT match (no review signature)
+    assert!(!json_has_completed_review(&json, None));
+
+    // With assigned reviewer: should NOT match
+    assert!(!json_has_completed_review(&json, Some("pleasant")));
+}
+
+/// A review by the assigned reviewer should be accepted.
+#[test]
+fn json_review_accepts_assigned_reviewer_comment() {
+    let json = json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "<!-- midtown: pleasant -->\n## Code Review by pleasant\n\nLGTM, no issues found.",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(json_has_completed_review(&json, Some("pleasant")));
+}
+
+/// A review by a DIFFERENT coworker should be rejected when an assigned reviewer exists.
+#[test]
+fn json_review_rejects_wrong_coworker_comment() {
+    let json = json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "<!-- midtown: broadway -->\n## Code Review by broadway\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(
+        !json_has_completed_review(&json, Some("pleasant")),
+        "Review by broadway should not satisfy the gate when pleasant is assigned"
+    );
+}
+
+/// When no reviewer is assigned, any valid review should be accepted (backward compat).
+#[test]
+fn json_review_accepts_any_review_when_no_reviewer_assigned() {
+    let json = json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "<!-- midtown: broadway -->\n## Code Review by broadway\n\nLooks good.",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(json_has_completed_review(&json, None));
+}
+
+/// Formal GitHub reviews (APPROVED state) by the assigned reviewer should be accepted.
+#[test]
+fn json_review_accepts_formal_review_by_assigned_reviewer() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "APPROVED",
+                "body": "<!-- midtown: pleasant -->\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(json_has_completed_review(&json, Some("pleasant")));
+}
+
+/// Formal reviews without midtown frontmatter should NOT be accepted
+/// when an assigned reviewer exists — they could be from bots.
+#[test]
+fn json_review_rejects_formal_review_without_attribution() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "COMMENTED",
+                "body": "",
+                "author": {"login": "dependabot[bot]"}
+            }
+        ],
+        "comments": []
+    });
+
+    // With assigned reviewer: reject (no author attribution in empty body)
+    assert!(
+        !json_has_completed_review(&json, Some("pleasant")),
+        "Formal review from bot without frontmatter should be rejected when reviewer assigned"
+    );
+
+    // Without assigned reviewer: accept (backward compat)
+    assert!(
+        json_has_completed_review(&json, None),
+        "Formal review should be accepted when no reviewer is assigned"
+    );
+}
+
+/// Formal APPROVED/CHANGES_REQUESTED reviews with empty body should be accepted
+/// even when an assigned reviewer exists. These are strong deliberate actions
+/// unlikely from bots, and the assigned reviewer may submit them without text.
+#[test]
+fn json_review_accepts_bodyless_approved_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "APPROVED",
+                "body": "",
+                "author": {"login": "btucker"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        json_has_completed_review(&json, Some("pleasant")),
+        "APPROVED with empty body should be accepted — strong state, not a bot"
+    );
+}
+
+/// CHANGES_REQUESTED with empty body should also be accepted (strong state).
+#[test]
+fn json_review_accepts_bodyless_changes_requested_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "",
+                "author": {"login": "btucker"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        json_has_completed_review(&json, Some("pleasant")),
+        "CHANGES_REQUESTED with empty body should be accepted — strong state"
+    );
+}
+
+/// COMMENTED with empty body should still be rejected (weak state, common from bots).
+#[test]
+fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "COMMENTED",
+                "body": "",
+                "author": {"login": "some-bot[bot]"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        !json_has_completed_review(&json, Some("pleasant")),
+        "COMMENTED with empty body should be rejected — weak state, likely a bot"
+    );
+}
