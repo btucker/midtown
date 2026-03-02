@@ -2081,3 +2081,121 @@ fn test_pagination_across_archives() {
     assert!(page5.is_empty());
     assert_eq!(pos5, 0);
 }
+
+// ── load_channel_notes tests ─────────────────────────────────────────
+
+#[test]
+fn test_load_channel_notes_rejects_path_traversal() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create a notes dir that would be reachable via traversal
+    let secret_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("secret")
+        .join("notes");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    std::fs::write(secret_dir.join("leak.md"), "sensitive data").unwrap();
+
+    assert_eq!(load_channel_notes(temp_dir.path(), "../secret"), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), "foo/bar"), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), ".."), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), ""), "");
+}
+
+#[test]
+fn test_load_channel_notes_returns_empty_for_missing_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let result = load_channel_notes(temp_dir.path(), "nonexistent");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_load_channel_notes_returns_empty_for_empty_notes_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("web").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "web");
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_load_channel_notes_reads_md_files() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("auth").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("architecture.md"), "Token-based auth flow").unwrap();
+    std::fs::write(notes_dir.join("conventions.md"), "All endpoints use JWT").unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "auth");
+    assert!(result.starts_with("# Channel Notes"));
+    assert!(result.contains("## architecture"));
+    assert!(result.contains("Token-based auth flow"));
+    assert!(result.contains("## conventions"));
+    assert!(result.contains("All endpoints use JWT"));
+}
+
+#[test]
+fn test_load_channel_notes_ignores_non_md_files() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("web").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("notes.md"), "Important info").unwrap();
+    std::fs::write(notes_dir.join("scratch.txt"), "Should be ignored").unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "web");
+    assert!(result.contains("Important info"));
+    assert!(!result.contains("Should be ignored"));
+}
+
+#[test]
+fn test_load_channel_notes_skips_empty_files() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("ops").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("empty.md"), "   \n  \n").unwrap();
+    std::fs::write(notes_dir.join("real.md"), "Actual content").unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "ops");
+    assert!(result.contains("Actual content"));
+    assert!(!result.contains("## empty"));
+}
+
+#[test]
+fn test_load_channel_notes_sorts_alphabetically() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("web").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    std::fs::write(notes_dir.join("z-last.md"), "Last").unwrap();
+    std::fs::write(notes_dir.join("a-first.md"), "First").unwrap();
+    std::fs::write(notes_dir.join("m-middle.md"), "Middle").unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "web");
+    let a_pos = result.find("## a-first").unwrap();
+    let m_pos = result.find("## m-middle").unwrap();
+    let z_pos = result.find("## z-last").unwrap();
+    assert!(a_pos < m_pos, "a-first should come before m-middle");
+    assert!(m_pos < z_pos, "m-middle should come before z-last");
+}
+
+#[test]
+fn test_load_channel_notes_truncates_at_size_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let notes_dir = temp_dir.path().join("channels").join("big").join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+
+    // Create a note file larger than the 100KB limit
+    let large_content = "x".repeat(120 * 1024);
+    std::fs::write(notes_dir.join("huge.md"), &large_content).unwrap();
+
+    let result = load_channel_notes(temp_dir.path(), "big");
+    assert!(
+        result.len() <= super::MAX_NOTES_BYTES + 100, // header overhead
+        "result should be capped near MAX_NOTES_BYTES, got {} bytes",
+        result.len()
+    );
+}

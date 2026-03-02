@@ -241,6 +241,8 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 
 **System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`.
 
+**Domain context from notes:** The `{domain_context}` variable is populated by `load_channel_notes()` in `src/channel.rs`, which reads all `.md` files from `channels/<name>/notes/`, concatenates them with filename-derived headers, and caps total size at 100 KB. This is called at all 4 channel lead spawn sites (3 in `effects.rs`, 1 in `cli/lead.rs`) so that channel leads always start with their accumulated domain knowledge. Insight nudges include a reminder to save important knowledge to notes, completing the feedback loop.
+
 **Coworker guidance:** Coworkers are instructed to `@{channel-name}` (e.g., `@daemon-core`) for domain questions and to reserve `@{project_name}` for coordination, task, and priority questions.
 
 ### Forked Sessions (Thread-Specific Channel Leads)

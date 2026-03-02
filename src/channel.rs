@@ -1484,6 +1484,100 @@ impl Channel {
     }
 }
 
+/// Maximum total size (in bytes) for concatenated channel notes.
+///
+/// Notes are injected into the system prompt, so we cap total size to avoid
+/// bloating context windows. 100 KB is ~25k tokens — generous for domain
+/// knowledge while staying well within context limits.
+const MAX_NOTES_BYTES: usize = 100 * 1024;
+
+/// Load all notes for a channel as a single string for domain context injection.
+///
+/// Reads all `.md` files from the channel's notes directory, concatenating
+/// their contents with filename-derived headers. Returns an empty string if
+/// the directory doesn't exist or contains no notes.
+///
+/// Files are read in alphabetical order and truncated once the total exceeds
+/// [`MAX_NOTES_BYTES`]. Individual I/O errors are logged and skipped.
+///
+/// This is a standalone function (not a `Channel` method) because callers
+/// in the daemon often have a `base_dir` without a `Channel` instance.
+pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
+    // Defense-in-depth: reject channel names that could escape the notes directory.
+    if !Channel::is_valid_channel_name(channel_name) {
+        return String::new();
+    }
+
+    let notes_dir = base_dir.join("channels").join(channel_name).join("notes");
+
+    if !notes_dir.is_dir() {
+        return String::new();
+    }
+
+    let mut entries: Vec<_> = match fs::read_dir(&notes_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to read notes directory for channel '{}': {}",
+                channel_name,
+                e
+            );
+            return String::new();
+        }
+    };
+
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut sections = Vec::new();
+    let mut total_bytes = 0usize;
+    for entry in entries {
+        let path = entry.path();
+        let filename = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match fs::read_to_string(&path) {
+            Ok(content) if !content.trim().is_empty() => {
+                let section = format!("## {}\n\n{}", filename, content.trim());
+                total_bytes += section.len();
+                if total_bytes > MAX_NOTES_BYTES {
+                    tracing::info!(
+                        "Channel '{}' notes truncated at {} bytes (limit: {})",
+                        channel_name,
+                        total_bytes,
+                        MAX_NOTES_BYTES
+                    );
+                    // Include partial last section up to limit
+                    let overshoot = total_bytes - MAX_NOTES_BYTES;
+                    if section.len() > overshoot {
+                        sections.push(section[..section.len() - overshoot].to_string());
+                    }
+                    break;
+                }
+                sections.push(section);
+            }
+            Ok(_) => {} // empty file, skip silently
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read note file '{}' for channel '{}': {}",
+                    path.display(),
+                    channel_name,
+                    e
+                );
+            }
+        }
+    }
+
+    if sections.is_empty() {
+        String::new()
+    } else {
+        format!("# Channel Notes\n\n{}", sections.join("\n\n"))
+    }
+}
+
 /// Router for managing multiple channels with lazy initialization.
 ///
 /// ChannelRouter maintains a cache of Channel instances, opening them on-demand

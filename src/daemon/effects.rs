@@ -1975,11 +1975,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                     }
+                    let domain_context = crate::channel::load_channel_notes(&base_dir, &name);
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         &state.repo_name,
                         crate::launch::SessionMode::Fresh,
-                        "", // domain_context: empty at creation, accumulates via session
+                        domain_context,
                     );
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
@@ -2672,13 +2673,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => false,
                     };
 
+                    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                    let domain_context =
+                        crate::channel::load_channel_notes(&base_dir, &channel_name);
+
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
                             let mut config = crate::launch::LaunchConfig::channel_lead(
                                 &channel_name,
                                 &state.repo_name,
                                 crate::launch::SessionMode::ResumeSession(id.to_string()),
-                                "",
+                                &domain_context,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
 
@@ -2751,7 +2756,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 &channel_name,
                                 &state.repo_name,
                                 crate::launch::SessionMode::Fresh,
-                                "",
+                                &domain_context,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
                             // Insert empty placeholder before spawning to guard against
