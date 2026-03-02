@@ -1,7 +1,7 @@
-//! Pane content pattern detection for usage limits, API errors, and UI chrome.
+//! Pane content pattern detection for usage limits and UI chrome.
 //!
-//! These functions analyze Claude Code pane output to detect transient states
-//! (usage limits, API errors) and filter UI chrome from significant content.
+//! These functions analyze Claude Code pane output to detect usage limits
+//! and filter UI chrome from significant content.
 
 /// Patterns that indicate a coworker has hit a usage/rate limit (case-insensitive).
 ///
