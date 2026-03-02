@@ -56,7 +56,7 @@
       <AuthSwitcher />
       {#if $pushSupported}
         <button
-          class="flex cursor-pointer items-center rounded border-none bg-transparent p-[5px] text-muted-foreground transition-all duration-200 hover:bg-accent hover:text-foreground {$pushPermission === 'denied' ? 'cursor-not-allowed opacity-25' : ''}"
+          class="push-toggle flex cursor-pointer items-center rounded border-none bg-transparent p-[5px] text-muted-foreground transition-all duration-200 hover:bg-accent hover:text-foreground {$pushSubscribed ? 'subscribed' : ''} {$pushPermission === 'denied' ? 'denied cursor-not-allowed opacity-25' : ''}"
           onclick={togglePush}
           disabled={$pushPermission === 'denied'}
           title={$pushPermission === 'denied'
