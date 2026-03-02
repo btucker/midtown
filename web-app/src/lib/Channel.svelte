@@ -11,6 +11,11 @@
   import MessageRow from './MessageRow.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
+  // Windowed rendering: only render a slice of messages near the viewport.
+  // Messages outside this window are not mounted in the DOM.
+  const INITIAL_WINDOW_SIZE = 100  // messages to render on first load
+  const LOAD_MORE_COUNT = 50       // messages to add when scrolling up
+
   let inputText = $state('')
   let scrollAreaViewport = $state(null)
   let autoScroll = $state(true)
@@ -22,6 +27,12 @@
   let channelLeadThinkingTimeout = null
   let channelItemsActive = $state(false)
   let channelItemsActiveTimeout = null
+  let topSentinel = $state(null)
+  let topObserver = null
+
+  // The index into channelMessages where rendering begins.
+  // Messages before this index are not in the DOM.
+  let renderStartIndex = $state(0)
 
   // Per-channel draft storage: saves inputText and pendingFile when switching channels
   let channelDrafts = new Map()
@@ -44,6 +55,10 @@
   // Filter messages by active channel
   let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
 
+  // Visible slice of messages for the DOM. Only these get rendered.
+  let visibleMessages = $derived(channelMessages.slice(renderStartIndex))
+  let hasMoreAbove = $derived(renderStartIndex > 0)
+
   // Track how many messages were present when each channel was first viewed.
   // Messages at or above this index are "new" and get the slide-up animation.
   // We use $state.raw so mutations don't trigger full reactive updates.
@@ -59,6 +74,25 @@
     const len = channelMessages.length
     if (!(ch in initialMessageCounts) && len > 0) {
       initialMessageCounts = { ...initialMessageCounts, [ch]: len }
+    }
+  })
+
+  // Reset render window to 0 when switching channels.
+  // Only tracks $activeChannel — does NOT track channelMessages.length,
+  // so new messages arriving won't snap the user's scroll position.
+  $effect(() => {
+    $activeChannel  // track
+    renderStartIndex = 0
+  })
+
+  // Once initial history loads for a channel, position the window at the tail.
+  // Uses initialMessageCounts (set once per channel) so this only fires when
+  // messages first appear, not on every subsequent message.
+  $effect(() => {
+    const ch = $activeChannel
+    const count = initialMessageCounts[ch]
+    if (count !== undefined && count > INITIAL_WINDOW_SIZE) {
+      renderStartIndex = count - INITIAL_WINDOW_SIZE
     }
   })
 
@@ -340,6 +374,30 @@
     const tasks = $daemonStatus?.tasks || []
     return tasks.find((t) => String(t.id) === String(taskId)) || null
   }
+
+  // Set up IntersectionObserver for the top sentinel (lazy load older messages)
+  $effect(() => {
+    const sentinel = topSentinel
+    const viewport = scrollAreaViewport
+    if (!sentinel || !viewport) return
+
+    topObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            loadMoreMessages()
+          }
+        }
+      },
+      { root: viewport, rootMargin: '200px 0px 0px 0px' }
+    )
+    topObserver.observe(sentinel)
+
+    return () => {
+      topObserver?.disconnect()
+      topObserver = null
+    }
+  })
 
   // Handle clicks on channel links, task links, PR links, and coworker links
   onMount(() => {
@@ -624,6 +682,22 @@
     }
   }
 
+  // Load more messages when scrolling to the top of the visible window.
+  // Preserves scroll position so the user doesn't jump.
+  function loadMoreMessages() {
+    if (renderStartIndex <= 0 || !scrollAreaViewport) return
+    const prevScrollHeight = scrollAreaViewport.scrollHeight
+    const prevScrollTop = scrollAreaViewport.scrollTop
+    renderStartIndex = Math.max(0, renderStartIndex - LOAD_MORE_COUNT)
+    // After Svelte renders the new messages, restore scroll position
+    tick().then(() => {
+      if (scrollAreaViewport) {
+        const newScrollHeight = scrollAreaViewport.scrollHeight
+        scrollAreaViewport.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight)
+      }
+    })
+  }
+
   function handleScroll() {
     if (!scrollAreaViewport) return
     const { scrollTop, scrollHeight, clientHeight } = scrollAreaViewport
@@ -675,10 +749,17 @@
           <p class="text-[0.9rem] mt-[10px]">{isDm ? `Send a message to start a conversation` : `Messages posted to this channel will appear here`}</p>
         </div>
       {:else}
-        {#each channelMessages as msg, i}
+        <!-- Top sentinel: triggers loading older messages when scrolled into view -->
+        <div bind:this={topSentinel} class="h-[1px] w-full" aria-hidden="true"></div>
+        {#if hasMoreAbove}
+          <div class="text-center text-muted-foreground/50 text-[0.8rem] py-2 select-none">Loading earlier messages…</div>
+        {/if}
+
+        {#each visibleMessages as msg, i}
+          {@const globalIndex = renderStartIndex + i}
           <div
             data-testid="message-row"
-            in:fly={{ y: 16, duration: isNewMessage($activeChannel, i) ? 180 : 0, opacity: 0 }}
+            in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
             class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
             class:opacity-60={msg.pending}
             class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
@@ -699,7 +780,7 @@
           <MessageRow
             {msg}
             msgs={channelMessages}
-            index={i}
+            index={globalIndex}
             senderClass="mt-1"
             currentTask={currentTasks[msg.from.toLowerCase()]}
             channelName={$activeChannel}
