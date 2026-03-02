@@ -2085,6 +2085,24 @@ fn test_pagination_across_archives() {
 // ── load_channel_notes tests ─────────────────────────────────────────
 
 #[test]
+fn test_load_channel_notes_rejects_path_traversal() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create a notes dir that would be reachable via traversal
+    let secret_dir = temp_dir
+        .path()
+        .join("channels")
+        .join("secret")
+        .join("notes");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    std::fs::write(secret_dir.join("leak.md"), "sensitive data").unwrap();
+
+    assert_eq!(load_channel_notes(temp_dir.path(), "../secret"), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), "foo/bar"), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), ".."), "");
+    assert_eq!(load_channel_notes(temp_dir.path(), ""), "");
+}
+
+#[test]
 fn test_load_channel_notes_returns_empty_for_missing_dir() {
     let temp_dir = TempDir::new().unwrap();
     let result = load_channel_notes(temp_dir.path(), "nonexistent");
@@ -2162,19 +2180,4 @@ fn test_load_channel_notes_sorts_alphabetically() {
     let z_pos = result.find("## z-last").unwrap();
     assert!(a_pos < m_pos, "a-first should come before m-middle");
     assert!(m_pos < z_pos, "m-middle should come before z-last");
-}
-
-#[test]
-fn test_load_channel_notes_rejects_path_traversal() {
-    let temp_dir = TempDir::new().unwrap();
-    // Create notes in a sibling directory that path traversal could reach
-    let sibling = temp_dir.path().join("secret").join("notes");
-    fs::create_dir_all(&sibling).unwrap();
-    fs::write(sibling.join("leak.md"), "sensitive data").unwrap();
-
-    // Path traversal attempts should return empty, not the sibling content
-    assert!(load_channel_notes(temp_dir.path(), "../secret").is_empty());
-    assert!(load_channel_notes(temp_dir.path(), "foo/bar").is_empty());
-    assert!(load_channel_notes(temp_dir.path(), "..").is_empty());
-    assert!(load_channel_notes(temp_dir.path(), "").is_empty());
 }
