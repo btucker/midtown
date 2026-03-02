@@ -62,9 +62,10 @@ pub struct WebhookEvent {
     /// marking the PR as reviewed. Prevents bot comments from triggering
     /// premature "reviewed and CI green" alerts.
     pub review_author: Option<String>,
-    /// The database ID of the review comment (issue comment) that triggered `reviewed_pr`.
+    /// The database ID of the comment that triggered `reviewed_pr`.
     /// Used to populate `pr_review_comment_ids` for Gate 3 merge gating.
-    /// Only set for issue comments that are code reviews (not formal GitHub reviews).
+    /// Set by `handle_issue_comment` and `handle_review_comment` when a code
+    /// review signature is detected (not set for formal GitHub reviews).
     pub review_comment_id: Option<u64>,
     /// A formal review state change (approved / changes_requested) — triggers immediate
     /// nudge of the PR owner instead of waiting for the next polling cycle.
@@ -524,16 +525,18 @@ struct IssueCommentEvent {
     comment: Comment,
     repository: Repository,
     #[serde(default)]
-    changes: Option<IssueCommentChanges>,
+    changes: Option<CommentChanges>,
+}
+
+/// Shared `changes` envelope for issue_comment and review_comment "edited" webhooks.
+/// GitHub sends `{"changes": {"body": {"from": "<old text>"}}}` for both event types.
+#[derive(Debug, Deserialize)]
+struct CommentChanges {
+    body: Option<CommentBodyChange>,
 }
 
 #[derive(Debug, Deserialize)]
-struct IssueCommentChanges {
-    body: Option<IssueCommentBodyChange>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueCommentBodyChange {
+struct CommentBodyChange {
     from: String,
 }
 
@@ -556,6 +559,8 @@ struct ReviewCommentEvent {
     pull_request: PullRequestRef,
     comment: Comment,
     repository: Repository,
+    #[serde(default)]
+    changes: Option<CommentChanges>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -987,8 +992,29 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
 fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: ReviewCommentEvent = serde_json::from_slice(body)?;
 
-    if event.action != "created" {
+    // Process 'created' events always. Process 'edited' events only when
+    // the comment transitions from non-review to review — reviewers often
+    // post a placeholder then edit it with the full review. Edits to an
+    // already-posted review (e.g. typo fixes) are ignored to avoid
+    // re-nudging the PR owner.
+    let is_edited = event.action == "edited";
+    if event.action != "created" && !is_edited {
         return Ok(None);
+    }
+    if is_edited {
+        if !is_review_comment(&event.comment.body) {
+            return Ok(None);
+        }
+        // If the previous body already had a review signature, this is just
+        // an edit to an existing review (typo fix, etc.) — not a new review.
+        let prev_was_review = event
+            .changes
+            .as_ref()
+            .and_then(|c| c.body.as_ref())
+            .is_some_and(|b| is_review_comment(&b.from));
+        if prev_was_review {
+            return Ok(None);
+        }
     }
 
     // Determine coworker from PR branch prefix or body frontmatter (for @mention)
@@ -1011,10 +1037,33 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     let clean_body = strip_frontmatter(&event.comment.body);
     let preview = truncate_comment(&clean_body, 50);
 
+    let verb = if is_edited {
+        "posted review (edited) on"
+    } else {
+        "left review comment on"
+    };
     let action_text = format!(
-        "{} left review comment on PR #{}: {}",
-        commenter, event.pull_request.number, preview
+        "{} {} PR #{}: {}",
+        commenter, verb, event.pull_request.number, preview
     );
+
+    // Check if this comment is a Claude code review (for review status caching)
+    let is_review = is_review_comment(&event.comment.body);
+    let reviewed_pr = if is_review {
+        Some(event.pull_request.number)
+    } else {
+        None
+    };
+    let review_author = if is_review {
+        crate::daemon::helpers::extract_review_author_from_body(&event.comment.body)
+    } else {
+        None
+    };
+    let review_comment_id = if is_review {
+        Some(event.comment.id)
+    } else {
+        None
+    };
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
@@ -1026,6 +1075,9 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
             comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
             repo_full_name: Some(event.repository.full_name),
         }),
+        reviewed_pr,
+        review_author,
+        review_comment_id,
         ..WebhookEvent::github(content)
     }))
 }
