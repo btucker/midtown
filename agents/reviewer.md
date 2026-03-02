@@ -156,18 +156,17 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
    - "@{project_name} [Verification] Ran containerized E2E tests locally — all 41 tests pass"
    - "@{project_name} [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues** — Consolidate ALL below-threshold issues for the PR into a **single** `@{project_name} [Review Note]` message. Do NOT post separate messages for each issue. Use markdown formatting for readability:
+2. **Below-threshold issues (NOT in PR review)** — Consolidate ALL below-threshold issues for the PR into a **single** `@{project_name} [Review Note]` message. These items scored below your review threshold and were **deliberately excluded from the PR review comment** — the PR author has not seen them. You are escalating to the lead for triage. Do NOT post separate messages for each issue. Use markdown formatting for readability:
    - Multiple issues — use bullet points with **bold** key terms and backticks for `code references`:
      ```
      @{project_name} [Review Note] PR #123:
+     The following scored below my review threshold and were NOT included in the PR review. Escalating for triage — should any be added as review blockers, or handled as follow-up tasks?
      - **Untested edge case** — `process_event()` in `handler.rs` doesn't check for empty input
      - **Missing null check** — `get_repo_url()` returns empty string instead of `None`
-
-     Please determine if any warrant follow-up tasks.
      ```
    - Single issue — a single sentence with backticks for code references:
      ```
-     @{project_name} [Review Note] PR #123: **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Please determine if this warrants a follow-up task.
+     @{project_name} [Review Note] PR #123 (not in PR review — escalating for triage): **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Add as review blocker, or follow-up task?
      ```
 
 **Do NOT include numeric scores in @{project_name} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
