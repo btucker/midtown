@@ -2330,6 +2330,150 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
 }
 
 #[test]
+fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
+    // Two unowned tasks that reference the same PR should not both trigger
+    // a fresh spawn for the same coworker. The second task should be nudged
+    // or skipped, not spawn a duplicate. This tests intra-Case-2 dedup when
+    // grouping resolves two tasks to the same not-yet-running coworker.
+    use crate::tasks::Task;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![],
+        // Two unowned tasks both referencing PR #200
+        pending_tasks_without_owners: vec![
+            Task {
+                id: "50".to_string(),
+                subject: "Fix PR #200 test failures".to_string(),
+                status: crate::tasks::TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            },
+            Task {
+                id: "51".to_string(),
+                subject: "Address PR #200 review feedback".to_string(),
+                status: crate::tasks::TaskStatus::Pending,
+                owner: None,
+                description: None,
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                created_at: None,
+            },
+        ],
+        // broadway owns the in-progress task for PR #200 so both tasks group to it
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        in_progress_tasks: vec![(
+            "49".to_string(),
+            "Implement feature [Midtown !49] PR #200".to_string(),
+            "broadway".to_string(),
+        )],
+        all_tasks: vec![Task {
+            id: "49".to_string(),
+            subject: "Implement feature [Midtown !49] PR #200".to_string(),
+            status: crate::tasks::TaskStatus::InProgress,
+            owner: Some("broadway".to_string()),
+            description: None,
+            blocked_by: vec![],
+            channel: None,
+            pr: None,
+            created_at: None,
+        }],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_branch_owners: HashMap::new(),
+        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
+        merged_pr_branches: HashMap::new(),
+        merged_pr_numbers: HashSet::new(),
+        running_coworkers: vec![],
+        active_coworkers: vec![],
+        coworker_snapshots: vec![],
+        session_name: "midtown-test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        coworkers_with_unblocked_deps: HashSet::new(),
+        attached_coworkers: HashMap::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        coworkers_with_active_tools: HashSet::new(),
+        channel_messages: vec![],
+        archived_channels: HashSet::new(),
+        daemon_logs: vec![],
+        lead_session_refresh_interval_secs: 5400,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: chrono::Utc::now(),
+        repo_name: "test-repo".to_string(),
+        default_channel: "test-repo".to_string(),
+        repo_owner: None,
+        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+        freshly_fetched_rate_limit: None,
+        sessions: HashMap::new(),
+        session_task_map: HashMap::new(),
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: std::collections::HashSet::new(),
+        recently_recovered_session_ids: std::collections::HashSet::new(),
+        stale_working_dir_sessions: std::collections::HashSet::new(),
+        session_profile_map: HashMap::new(),
+        limited_pool_profiles: HashSet::new(),
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Count AssignAndSpawn effects targeting broadway
+    let broadway_spawns = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::AssignAndSpawn { owner, .. } if owner.to_lowercase() == "broadway"))
+        .count();
+
+    assert_eq!(
+        broadway_spawns, 1,
+        "Should generate exactly ONE AssignAndSpawn for broadway when two unowned tasks \
+         both group to it via PR number. Intra-Case-2 dedup should prevent the second spawn. \
+         Got {} spawns.",
+        broadway_spawns
+    );
+}
+
+#[test]
 fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
     // Test the pure decision pattern: verify that spawn_for_pending_tasks
     // correctly skips a task when coworker_task_assignments (in WorldSnapshot)
