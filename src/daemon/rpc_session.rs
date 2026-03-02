@@ -1081,14 +1081,40 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
         "why", "which", "who", "all", "each", "some", "any", "here", "there",
     ];
 
-    let words: Vec<&str> = message
+    // Split on whitespace, skip @mentions, then replace ALL non-alphanumeric chars
+    // with hyphens (not just trim edges). This handles interior punctuation like
+    // "fix/auth" → "fix-auth" and "fix::auth" → "fix-auth".
+    let words: Vec<String> = message
         .split_whitespace()
         // Skip @mentions
         .filter(|w| !w.starts_with('@'))
-        // Strip non-alphanumeric characters and lowercase
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()))
+        // Replace all non-alphanumeric chars with hyphens, collapse consecutive,
+        // and strip leading/trailing hyphens.
+        .map(|w| {
+            let replaced: String = w
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                .collect();
+            // Collapse consecutive hyphens and trim
+            let mut result = String::new();
+            let mut prev_hyphen = true; // treat start as hyphen to skip leading
+            for c in replaced.chars() {
+                if c == '-' {
+                    if !prev_hyphen {
+                        prev_hyphen = true;
+                    }
+                } else {
+                    if prev_hyphen && !result.is_empty() {
+                        result.push('-');
+                    }
+                    result.push(c);
+                    prev_hyphen = false;
+                }
+            }
+            result.to_lowercase()
+        })
         // Filter empty and stop words
-        .filter(|w| !w.is_empty() && !STOP_WORDS.contains(&w.to_lowercase().as_str()))
+        .filter(|w| !w.is_empty() && !STOP_WORDS.contains(&w.as_str()))
         .take(3)
         .collect();
 
@@ -1098,11 +1124,7 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
             .unwrap_or(thread_parent_id)
             .to_string()
     } else {
-        words
-            .iter()
-            .map(|w| w.to_lowercase())
-            .collect::<Vec<_>>()
-            .join("-")
+        words.join("-")
     }
 }
 
@@ -1121,8 +1143,11 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 /// already knows the channel from the incoming message.
 ///
 /// `fork_name_hint` provides a human-readable description for the fork session name.
-/// When provided, the fork is named `{caller_name}-{hint}` (e.g. `web-push-notifications`).
-/// When `None`, falls back to `fork-{first-8-chars-of-thread-id}`.
+/// When provided, the hint is slugified (non-alphanumeric chars replaced with hyphens,
+/// stop words removed, limited to 3 words) and a short thread ID suffix is appended
+/// for uniqueness: `{caller_name}-{slug}-{tid_prefix}` (e.g. `web-push-notifications-a1b2`).
+/// When `caller_name` is unknown: `fork-{slug}-{tid_prefix}`.
+/// When `None` or empty, falls back to `fork-{first-8-chars-of-thread-id}`.
 ///
 /// Returns `Ok((session_id, already_existed))` where `already_existed` is true when a
 /// fork was found in `topic_sessions` before this call. Returns `Err` if the slot holds

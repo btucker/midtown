@@ -794,3 +794,23 @@ fn test_slugify_empty_message() {
 fn test_slugify_short_thread_id_fallback() {
     assert_eq!(slugify_fork_hint("", "abc"), "abc");
 }
+
+#[test]
+fn test_slugify_interior_punctuation_replaced() {
+    // Interior slashes, dots, and other punctuation must be replaced with hyphens,
+    // not just edge-trimmed. "fix/auth" is a single whitespace-delimited token
+    // where the slash is interior — trim_matches won't touch it.
+    assert_eq!(
+        slugify_fork_hint("fix/auth bug.report", "abcd1234efgh"),
+        "fix-auth-bug-report"
+    );
+}
+
+#[test]
+fn test_slugify_consecutive_punctuation_collapsed() {
+    // Multiple consecutive non-alphanumeric chars should collapse to a single hyphen.
+    assert_eq!(
+        slugify_fork_hint("fix::auth--endpoint", "abcd1234efgh"),
+        "fix-auth-endpoint"
+    );
+}
