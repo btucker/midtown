@@ -1516,7 +1516,17 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
 
     let mut entries: Vec<_> = match fs::read_dir(&notes_dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(|e| match e {
+                Ok(entry) => Some(entry),
+                Err(err) => {
+                    tracing::warn!(
+                        "Failed to read entry in notes directory for channel '{}': {}",
+                        channel_name,
+                        err
+                    );
+                    None
+                }
+            })
             .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
             .collect(),
         Err(e) => {
@@ -1559,7 +1569,7 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
                 }
                 sections.push(section);
             }
-            Ok(_) => {} // empty file, skip silently
+            Ok(_) => {} // Empty or whitespace-only — intentionally skipped
             Err(e) => {
                 tracing::warn!(
                     "Failed to read note file '{}' for channel '{}': {}",

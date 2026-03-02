@@ -81,7 +81,7 @@ fn insight_posted_nudge_message() {
     );
     assert!(
         msg.contains("save it to your notes"),
-        "should include save-to-notes reminder"
+        "should include save-to-notes reminder for domain knowledge"
     );
 }
 
@@ -128,7 +128,7 @@ fn insight_posted_initial_prompt() {
     assert!(prompt.contains("--thread msg-xyz"));
     assert!(
         prompt.contains("save it to your notes"),
-        "initial prompt should include save-to-notes reminder"
+        "initial prompt should include save-to-notes reminder for domain knowledge"
     );
 }
 
