@@ -2,7 +2,7 @@ use super::*;
 
 /// Test that usage limit expiry nudges only target Running coworkers.
 ///
-/// Regression test: the function previously iterated `snap.active_coworkers`
+/// Regression test: the function previously iterated `snap.coworkers.active_coworkers`
 /// (all statuses) to generate NudgeCoworker effects. Nudges should only
 /// target Running coworkers with active sessions.
 #[test]
@@ -37,16 +37,52 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
 
     // Build a snapshot where the nudge should fire
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![running.clone(), stopping.clone()],
-        running_coworkers: vec![running.clone()],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![running.clone(), stopping.clone()],
+            running_coworkers: vec![running.clone()],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState {
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            github_open_pr_task_ids: HashMap::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            orphaned_pr_lead_nudges_sent: HashSet::new(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: snapshot::SnapshotReviewerState {
+            active_reviewers: HashSet::new(),
+            reviewing_phase_coworkers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewer_in_progress_comment_ids: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+        },
+        health: snapshot::SnapshotHealthState {
+            headless_process_health: HashMap::new(),
+            usage_limit_nudge_scheduled: true,
+            // Set nudge time in the past so it fires
+            usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            auth_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworkers_with_active_tools: HashSet::new(),
+        },
         in_progress_tasks: vec![(
             "42".to_string(),
             "Fix bug".to_string(),
@@ -62,34 +98,8 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: true,
-        // Set nudge time in the past so it fires
-        usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
         daemon_logs: vec![],
@@ -105,8 +115,6 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -185,16 +193,51 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
     };
 
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
-        running_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
+            running_coworkers: vec![task_worker.clone(), project_lead.clone(), reviewer.clone()],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState {
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            github_open_pr_task_ids: HashMap::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            orphaned_pr_lead_nudges_sent: HashSet::new(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: snapshot::SnapshotReviewerState {
+            active_reviewers: HashSet::new(),
+            reviewing_phase_coworkers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewer_in_progress_comment_ids: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+        },
+        health: snapshot::SnapshotHealthState {
+            headless_process_health: HashMap::new(),
+            usage_limit_nudge_scheduled: true,
+            usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            auth_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworkers_with_active_tools: HashSet::new(),
+        },
         in_progress_tasks: vec![(
             "42".to_string(),
             "Implement feature".to_string(),
@@ -210,33 +253,8 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: true,
-        usage_limit_nudge_at: Some(tokio::time::Instant::now() - Duration::from_secs(10)),
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
         daemon_logs: vec![],
@@ -252,8 +270,6 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -368,16 +384,51 @@ fn test_check_for_usage_limits_with_reset_time() {
 
     // Create a minimal snapshot
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![coworker],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::from(["amsterdam".to_string()]),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: health,
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![coworker],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::from(["amsterdam".to_string()]),
+            active_session_ids: HashSet::new(),
+            session_name: "test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState {
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            github_open_pr_task_ids: HashMap::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            orphaned_pr_lead_nudges_sent: HashSet::new(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: snapshot::SnapshotReviewerState {
+            active_reviewers: HashSet::new(),
+            reviewing_phase_coworkers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewer_in_progress_comment_ids: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+        },
+        health: snapshot::SnapshotHealthState {
+            headless_process_health: health,
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
+            api_error_coworkers: HashSet::new(),
+            auth_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworkers_with_active_tools: HashSet::new(),
+        },
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -388,33 +439,8 @@ fn test_check_for_usage_limits_with_reset_time() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
@@ -431,8 +457,6 @@ fn test_check_for_usage_limits_with_reset_time() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -470,16 +494,51 @@ fn test_check_for_usage_limits_already_scheduled() {
 
     // Create a snapshot with usage_limit_nudge_scheduled = true
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState {
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            github_open_pr_task_ids: HashMap::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            orphaned_pr_lead_nudges_sent: HashSet::new(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: snapshot::SnapshotReviewerState {
+            active_reviewers: HashSet::new(),
+            reviewing_phase_coworkers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewer_in_progress_comment_ids: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+        },
+        health: snapshot::SnapshotHealthState {
+            headless_process_health: HashMap::new(),
+            usage_limit_nudge_scheduled: true, // Already scheduled
+            usage_limit_nudge_at: Some(tokio::time::Instant::now()),
+            usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
+            api_error_coworkers: HashSet::new(),
+            auth_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworkers_with_active_tools: HashSet::new(),
+        },
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -490,33 +549,8 @@ fn test_check_for_usage_limits_already_scheduled() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: true, // Already scheduled
-        usage_limit_nudge_at: Some(tokio::time::Instant::now()),
-        usage_limited_coworkers: HashSet::from(["amsterdam".to_string()]),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
@@ -533,8 +567,6 @@ fn test_check_for_usage_limits_already_scheduled() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -607,16 +639,51 @@ fn check_for_stale_worktrees_generates_only_cleanup_effect() {
 fn empty_snap() -> snapshot::WorldSnapshot {
     use std::collections::{HashMap, HashSet};
     snapshot::WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![],
+            running_coworkers: vec![],
+            coworker_snapshots: vec![],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState {
+            coworkers_with_open_prs: HashSet::new(),
+            coworkers_with_merged_prs: HashSet::new(),
+            merged_pr_numbers: HashSet::new(),
+            ci_passed_pr_coworkers: HashSet::new(),
+            review_feedback_pr_coworkers: HashSet::new(),
+            open_prs_data: vec![],
+            github_open_pr_task_ids: HashMap::new(),
+            tasks_with_open_prs: HashMap::new(),
+            pr_task_associations: HashMap::new(),
+            orphaned_pr_lead_nudges_sent: HashSet::new(),
+            github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: snapshot::SnapshotReviewerState {
+            active_reviewers: HashSet::new(),
+            reviewing_phase_coworkers: HashSet::new(),
+            reviewer_pr_assignments: HashMap::new(),
+            reviewer_in_progress_comment_ids: HashMap::new(),
+            reviewed_prs: HashSet::new(),
+            prs_needing_review: 0,
+            reviewer_restart_counts: HashMap::new(),
+            reviewer_escalations_posted: HashSet::new(),
+        },
+        health: snapshot::SnapshotHealthState {
+            headless_process_health: HashMap::new(),
+            usage_limit_nudge_scheduled: false,
+            usage_limit_nudge_at: None,
+            usage_limited_coworkers: HashSet::new(),
+            api_error_coworkers: HashSet::new(),
+            auth_error_coworkers: HashSet::new(),
+            tool_name_conflict_coworkers: HashSet::new(),
+            coworkers_with_active_tools: HashSet::new(),
+        },
         busy_coworkers: HashSet::new(),
         in_progress_tasks: vec![],
         pending_tasks_without_owners: vec![],
@@ -627,33 +694,8 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
@@ -670,8 +712,6 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -703,7 +743,7 @@ fn ensure_lead_alive_no_op_when_lead_registered() {
     use crate::coworker::{Coworker, CoworkerStatus};
     let mut snap = empty_snap();
     // After rename, lead session name = repo name (test-repo in test snapshots)
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: snap.repo_name.clone(),
         status: CoworkerStatus::Running,
@@ -724,7 +764,7 @@ fn ensure_lead_alive_cooldown_prevents_respawn_loop() {
     let mut snap = empty_snap();
     // Lead stopped 1 minute ago — within the 5-minute cooldown
     // Key is the repo name (not "lead") after rename
-    snap.coworker_stop_times.insert(
+    snap.coworkers.coworker_stop_times.insert(
         snap.repo_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(1),
     );
@@ -740,7 +780,7 @@ fn ensure_lead_alive_respawns_after_cooldown() {
     let mut snap = empty_snap();
     // Lead stopped 10 minutes ago — past the 5-minute cooldown.
     // Key is the repo name (lowercase) after the rename; using "lead" would not be found.
-    snap.coworker_stop_times.insert(
+    snap.coworkers.coworker_stop_times.insert(
         snap.repo_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(10),
     );
@@ -756,7 +796,8 @@ fn ensure_lead_alive_respawns_after_cooldown() {
 fn ensure_lead_alive_skips_when_attached() {
     let mut snap = empty_snap();
     // After rename, lead is keyed by repo name (lowercase)
-    snap.attached_coworkers
+    snap.coworkers
+        .attached_coworkers
         .insert(snap.repo_name.to_lowercase(), chrono::Utc::now());
     let effects = ensure_lead_alive(&snap);
     assert!(
@@ -797,7 +838,9 @@ fn detect_stale_attached_sessions_no_op_when_recent() {
     // Attached 5 minutes ago — well within the 10-minute timeout
     let mut snap = empty_snap();
     let recent = snap.now_utc - chrono::Duration::minutes(5);
-    snap.attached_coworkers.insert("lead".to_string(), recent);
+    snap.coworkers
+        .attached_coworkers
+        .insert("lead".to_string(), recent);
     let effects = detect_stale_attached_sessions(&snap);
     assert!(
         effects.is_empty(),
@@ -810,7 +853,9 @@ fn detect_stale_attached_sessions_auto_detaches_after_timeout() {
     // Attached 15 minutes ago — past the 10-minute timeout
     let mut snap = empty_snap();
     let stale = snap.now_utc - chrono::Duration::minutes(15);
-    snap.attached_coworkers.insert("lead".to_string(), stale);
+    snap.coworkers
+        .attached_coworkers
+        .insert("lead".to_string(), stale);
     let effects = detect_stale_attached_sessions(&snap);
     assert_eq!(
         effects.len(),
@@ -829,8 +874,11 @@ fn detect_stale_attached_sessions_handles_multiple() {
     let mut snap = empty_snap();
     let stale = snap.now_utc - chrono::Duration::minutes(15);
     let fresh = snap.now_utc - chrono::Duration::minutes(5);
-    snap.attached_coworkers.insert("lead".to_string(), stale);
-    snap.attached_coworkers
+    snap.coworkers
+        .attached_coworkers
+        .insert("lead".to_string(), stale);
+    snap.coworkers
+        .attached_coworkers
         .insert("amsterdam".to_string(), fresh);
     let effects = detect_stale_attached_sessions(&snap);
     assert_eq!(
@@ -863,8 +911,9 @@ fn test_maybe_refresh_lead_session_no_refresh_when_disabled() {
         provider: crate::auth::AuthProvider::Claude,
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
-    snap.active_coworkers.push(lead);
-    snap.coworker_start_times
+    snap.coworkers.active_coworkers.push(lead);
+    snap.coworkers
+        .coworker_start_times
         .insert("lead".to_string(), started);
 
     let effects = maybe_refresh_lead_session(&snap);
@@ -893,8 +942,9 @@ fn test_maybe_refresh_lead_session_no_refresh_when_young() {
         provider: crate::auth::AuthProvider::Claude,
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
-    snap.active_coworkers.push(lead);
-    snap.coworker_start_times
+    snap.coworkers.active_coworkers.push(lead);
+    snap.coworkers
+        .coworker_start_times
         .insert("lead".to_string(), started);
 
     let effects = maybe_refresh_lead_session(&snap);
@@ -923,8 +973,9 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
         provider: crate::auth::AuthProvider::Claude,
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
-    snap.active_coworkers.push(lead);
-    snap.coworker_start_times
+    snap.coworkers.active_coworkers.push(lead);
+    snap.coworkers
+        .coworker_start_times
         .insert(snap.repo_name.to_lowercase(), started);
 
     let effects = maybe_refresh_lead_session(&snap);
@@ -962,10 +1013,12 @@ fn test_maybe_refresh_lead_session_skips_attached() {
         provider: crate::auth::AuthProvider::Claude,
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
-    snap.active_coworkers.push(lead);
-    snap.coworker_start_times
+    snap.coworkers.active_coworkers.push(lead);
+    snap.coworkers
+        .coworker_start_times
         .insert("lead".to_string(), started);
-    snap.attached_coworkers
+    snap.coworkers
+        .attached_coworkers
         .insert("lead".to_string(), snap.now_utc);
 
     let effects = maybe_refresh_lead_session(&snap);
@@ -1008,7 +1061,7 @@ fn test_maybe_refresh_lead_session_no_start_time() {
         provider: crate::auth::AuthProvider::Claude,
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
-    snap.active_coworkers.push(lead);
+    snap.coworkers.active_coworkers.push(lead);
     // Intentionally don't insert into coworker_start_times
 
     let effects = maybe_refresh_lead_session(&snap);
@@ -1031,7 +1084,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
     snap.now_utc = now;
 
     // Active coworker with a stuck health entry
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "riverside".to_string(),
         status: CoworkerStatus::Running,
@@ -1045,7 +1098,7 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
     });
 
     // Stuck health: no events for 10 minutes
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "riverside".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1077,13 +1130,13 @@ fn stuck_coworker_restart_propagates_session_id_to_shutdown_effect() {
     // but we can verify the pure decision layer populates session_id correctly.
     let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1101,7 +1154,7 @@ fn dead_process_respawn_propagates_session_id() {
     snap.now_utc = now;
 
     // Dead health entry
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "york".to_string(),
         snapshot::ProcessHealth {
             is_alive: false,
@@ -1130,7 +1183,7 @@ fn dead_process_respawn_propagates_session_id() {
         .insert("york".to_string(), "session-dead-xyz".to_string());
 
     let respawns = crate::rules::decide_dead_process_respawns(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &snap.name_session_map,
     );
@@ -1150,7 +1203,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
     snap.now_utc = now;
 
     // Stuck reviewer health
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "amsterdam".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1168,7 +1221,8 @@ fn stuck_reviewer_restart_propagates_session_id() {
     );
 
     // Reviewer assignment
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("amsterdam".to_string(), 77);
 
     // Session mapping
@@ -1177,17 +1231,18 @@ fn stuck_reviewer_restart_propagates_session_id() {
 
     let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
-        &snap.headless_process_health,
-        &snap.reviewer_pr_assignments,
-        &snap.reviewer_restart_counts,
+        &snap.health.headless_process_health,
+        &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
         Duration::from_secs(120),
         2,
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
         &snap
+            .reviewer
             .reviewer_in_progress_comment_ids
             .keys()
             .copied()
@@ -1209,7 +1264,7 @@ fn session_id_is_none_when_no_session_mapping_exists() {
     snap.now_utc = now;
 
     // Stuck health with no session mapping
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "broadway".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1236,13 +1291,13 @@ fn session_id_is_none_when_no_session_mapping_exists() {
 
     let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
     );
 
     assert_eq!(restarts.len(), 1);
@@ -1275,6 +1330,7 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
 
     // Precondition: lead is not registered (dead)
     let lead_registered = snap
+        .coworkers
         .active_coworkers
         .iter()
         .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
@@ -1285,12 +1341,13 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
 
     // Precondition: lead is not attached interactively
     assert!(
-        !snap.attached_coworkers.contains_key(&lead_name),
+        !snap.coworkers.attached_coworkers.contains_key(&lead_name),
         "Lead should not be attached in snapshot"
     );
 
     // Precondition: lead has a recent stop time (within cooldown)
     let stop_time = snap
+        .coworkers
         .coworker_stop_times
         .get(&lead_name)
         .expect("Lead should have a stop time in snapshot (keyed by repo name)");
@@ -1310,7 +1367,7 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
     );
 
     // Simulate what clear_lead_respawn_cooldown() does: remove the stop time
-    snap.coworker_stop_times.remove(&lead_name);
+    snap.coworkers.coworker_stop_times.remove(&lead_name);
 
     // Now ensure_lead_alive should respawn immediately
     let effects_after_clear = ensure_lead_alive(&snap);
@@ -1341,7 +1398,7 @@ fn pending_api_call_exempts_coworker_from_stuck_detection() {
     let mut snap = empty_snap();
     snap.now_utc = now;
 
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "lexington".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1367,13 +1424,13 @@ fn pending_api_call_exempts_coworker_from_stuck_detection() {
     let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_coworker_restarts(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
     );
 
     assert_eq!(
@@ -1391,7 +1448,7 @@ fn stale_pending_api_call_no_heartbeat_is_restarted() {
     let mut snap = empty_snap();
     snap.now_utc = now;
 
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "lexington".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1418,13 +1475,13 @@ fn stale_pending_api_call_no_heartbeat_is_restarted() {
     let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_coworker_restarts(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(180),
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
     );
 
     assert_eq!(
@@ -1441,7 +1498,7 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
     let mut snap = empty_snap();
     snap.now_utc = now;
 
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "amsterdam".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1458,23 +1515,25 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
         },
     );
 
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("amsterdam".to_string(), 1329);
 
     let exemptions = snap.stuck_exemptions();
 
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
-        &snap.headless_process_health,
-        &snap.reviewer_pr_assignments,
-        &snap.reviewer_restart_counts,
+        &snap.health.headless_process_health,
+        &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
         Duration::from_secs(300),
         Duration::from_secs(120),
         2,
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
         &snap
+            .reviewer
             .reviewer_in_progress_comment_ids
             .keys()
             .copied()
@@ -1523,16 +1582,20 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
     name_session_map.insert("amsterdam".to_string(), "sess-abc-123".to_string());
 
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![coworker.clone()],
-        running_coworkers: vec![coworker.clone()],
-        coworker_snapshots: vec![cw_snap],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![coworker.clone()],
+            running_coworkers: vec![coworker.clone()],
+            coworker_snapshots: vec![cw_snap],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState::default(),
+        reviewer: snapshot::SnapshotReviewerState::default(),
+        health: snapshot::SnapshotHealthState::default(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
@@ -1544,33 +1607,8 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
         daemon_logs: vec![],
@@ -1586,8 +1624,6 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -1664,16 +1700,20 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
 
     // No session mapping for "broadway"
     let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![coworker.clone()],
-        running_coworkers: vec![coworker.clone()],
-        coworker_snapshots: vec![cw_snap],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: snapshot::SnapshotCoworkerState {
+            active_coworkers: vec![coworker.clone()],
+            running_coworkers: vec![coworker.clone()],
+            coworker_snapshots: vec![cw_snap],
+            active_names: HashSet::new(),
+            active_session_ids: HashSet::new(),
+            session_name: "midtown-test".to_string(),
+            coworker_start_times: HashMap::new(),
+            coworker_stop_times: HashMap::new(),
+            attached_coworkers: HashMap::new(),
+        },
+        pr: snapshot::SnapshotPrState::default(),
+        reviewer: snapshot::SnapshotReviewerState::default(),
+        health: snapshot::SnapshotHealthState::default(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         coworker_task_assignments: HashMap::new(),
@@ -1685,33 +1725,8 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
         pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         channel_messages: vec![],
         archived_channels: HashSet::new(),
         daemon_logs: vec![],
@@ -1727,8 +1742,6 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
@@ -1799,10 +1812,10 @@ fn test_idle_shutdown_uses_process_health_when_active_tools_missing() {
     let mut snap = snapshot::minimal_snapshot_for_test();
     snap.now_utc = now;
     snap.repo_name = "test-repo".to_string();
-    snap.active_coworkers = vec![coworker.clone()];
-    snap.running_coworkers = vec![coworker];
-    snap.coworker_snapshots = vec![cw_snap];
-    snap.headless_process_health.insert(
+    snap.coworkers.active_coworkers = vec![coworker.clone()];
+    snap.coworkers.running_coworkers = vec![coworker];
+    snap.coworkers.coworker_snapshots = vec![cw_snap];
+    snap.health.headless_process_health.insert(
         "york".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1819,7 +1832,7 @@ fn test_idle_shutdown_uses_process_health_when_active_tools_missing() {
         },
     );
     assert!(
-        snap.coworkers_with_active_tools.is_empty(),
+        snap.health.coworkers_with_active_tools.is_empty(),
         "Test setup requires empty active tool list to hit fallback"
     );
 
@@ -1847,7 +1860,7 @@ fn test_stuck_reviewer_restart_emits_shutdown_session_when_mapping_exists() {
     snap.now_utc = now;
 
     // Active coworker (reviewer) so the function doesn't bail early
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "amsterdam".to_string(),
         status: CoworkerStatus::Running,
@@ -1861,7 +1874,7 @@ fn test_stuck_reviewer_restart_emits_shutdown_session_when_mapping_exists() {
     });
 
     // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "amsterdam".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1879,7 +1892,8 @@ fn test_stuck_reviewer_restart_emits_shutdown_session_when_mapping_exists() {
     );
 
     // Reviewer PR assignment
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("amsterdam".to_string(), 42);
 
     // Session mapping exists
@@ -1929,7 +1943,7 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
     let mut snap = empty_snap();
     snap.now_utc = now;
 
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "broadway".to_string(),
         status: CoworkerStatus::Running,
@@ -1943,7 +1957,7 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
     });
 
     // Stuck health
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "broadway".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -1961,7 +1975,8 @@ fn test_stuck_reviewer_restart_falls_back_to_shutdown_coworker_without_mapping()
     );
 
     // Reviewer PR assignment
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("broadway".to_string(), 99);
 
     // No session mapping for "broadway"
@@ -2003,7 +2018,7 @@ fn stuck_reviewer_with_placeholder_emits_update_pr_comment() {
     snap.now_utc = now;
 
     // Active reviewer coworker so the function doesn't bail early
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "lexington".to_string(),
         status: CoworkerStatus::Running,
@@ -2017,7 +2032,7 @@ fn stuck_reviewer_with_placeholder_emits_update_pr_comment() {
     });
 
     // Stuck health: no events for well past REVIEWER_STUCK_DURATION (300s)
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "lexington".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -2035,14 +2050,17 @@ fn stuck_reviewer_with_placeholder_emits_update_pr_comment() {
     );
 
     // Reviewer assigned to PR 77
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("lexington".to_string(), 77);
 
     // PR 77 has a placeholder comment with id 555
-    snap.reviewer_in_progress_comment_ids.insert(77, 555);
+    snap.reviewer
+        .reviewer_in_progress_comment_ids
+        .insert(77, 555);
 
     // Below max restarts (so it will be restarted, not escalated)
-    snap.reviewer_restart_counts.insert(77, 0);
+    snap.reviewer.reviewer_restart_counts.insert(77, 0);
 
     let effects = check_and_restart_stuck_reviewers(&snap);
 
@@ -2068,7 +2086,7 @@ fn dead_reviewer_with_placeholder_emits_update_pr_comment() {
     snap.now_utc = now;
 
     // Dead reviewer health: process exited without posting review
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "broadway".to_string(),
         snapshot::ProcessHealth {
             is_alive: false,
@@ -2086,15 +2104,18 @@ fn dead_reviewer_with_placeholder_emits_update_pr_comment() {
     );
 
     // Reviewer assigned to PR 88, but review was NOT posted
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("broadway".to_string(), 88);
     // reviewed_prs does NOT contain 88 (review not posted)
 
     // PR 88 has a placeholder comment with id 888
-    snap.reviewer_in_progress_comment_ids.insert(88, 888);
+    snap.reviewer
+        .reviewer_in_progress_comment_ids
+        .insert(88, 888);
 
     // Below max restarts
-    snap.reviewer_restart_counts.insert(88, 0);
+    snap.reviewer.reviewer_restart_counts.insert(88, 0);
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
@@ -2125,15 +2146,20 @@ fn stuck_reviewer_no_events_detected_from_snapshot() {
 
     // Preconditions: both reviewers have been alive 31+ minutes with no stream events
     assert!(
-        snap.reviewer_pr_assignments.contains_key("pleasant"),
+        snap.reviewer
+            .reviewer_pr_assignments
+            .contains_key("pleasant"),
         "pleasant should be in reviewer_pr_assignments"
     );
     assert!(
-        snap.reviewer_pr_assignments.contains_key("riverside"),
+        snap.reviewer
+            .reviewer_pr_assignments
+            .contains_key("riverside"),
         "riverside should be in reviewer_pr_assignments"
     );
     assert_eq!(
-        snap.headless_process_health
+        snap.health
+            .headless_process_health
             .get("pleasant")
             .expect("pleasant should have health")
             .last_event_at,
@@ -2141,7 +2167,8 @@ fn stuck_reviewer_no_events_detected_from_snapshot() {
         "pleasant should have no stream events"
     );
     assert_eq!(
-        snap.headless_process_health
+        snap.health
+            .headless_process_health
             .get("riverside")
             .expect("riverside should have health")
             .last_event_at,
@@ -2193,12 +2220,10 @@ fn dead_reviewer_at_max_restarts_escalates_to_ops() {
         },
     );
 
-    let snap = snapshot::WorldSnapshot {
-        headless_process_health,
-        reviewer_pr_assignments,
-        reviewer_restart_counts,
-        ..empty_snap()
-    };
+    let mut snap = empty_snap();
+    snap.health.headless_process_health = headless_process_health;
+    snap.reviewer.reviewer_pr_assignments = reviewer_pr_assignments;
+    snap.reviewer.reviewer_restart_counts = reviewer_restart_counts;
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
@@ -2259,13 +2284,11 @@ fn dead_reviewer_escalation_not_repeated_after_recorded() {
         },
     );
 
-    let snap = snapshot::WorldSnapshot {
-        headless_process_health,
-        reviewer_pr_assignments,
-        reviewer_restart_counts,
-        reviewer_escalations_posted,
-        ..empty_snap()
-    };
+    let mut snap = empty_snap();
+    snap.health.headless_process_health = headless_process_health;
+    snap.reviewer.reviewer_pr_assignments = reviewer_pr_assignments;
+    snap.reviewer.reviewer_restart_counts = reviewer_restart_counts;
+    snap.reviewer.reviewer_escalations_posted = reviewer_escalations_posted;
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
@@ -2287,7 +2310,7 @@ fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() 
     let mut snap = empty_snap();
 
     // Reviewer "riverside" — dead, below max restarts → should be respawned.
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "riverside".to_string(),
         snapshot::ProcessHealth {
             is_alive: false,
@@ -2295,12 +2318,13 @@ fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() 
             ..Default::default()
         },
     );
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("riverside".to_string(), 100u64);
     // restart_count = 0, below MAX_REVIEWER_RESTARTS
 
     // Reviewer "broadway" — dead, at max restarts → should be escalated.
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "broadway".to_string(),
         snapshot::ProcessHealth {
             is_alive: false,
@@ -2308,9 +2332,11 @@ fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() 
             ..Default::default()
         },
     );
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("broadway".to_string(), 200u64);
-    snap.reviewer_restart_counts
+    snap.reviewer
+        .reviewer_restart_counts
         .insert(200u64, MAX_REVIEWER_RESTARTS);
     // escalation not yet posted for PR 200
 
@@ -2346,7 +2372,8 @@ fn unrecoverable_session_error_restarts_project_lead_immediately() {
     let mut snap = empty_snap();
     snap.repo_name = "midtown".to_string();
     snap.default_channel = "midtown".to_string();
-    snap.tool_name_conflict_coworkers
+    snap.health
+        .tool_name_conflict_coworkers
         .insert("midtown".to_string());
     snap.name_session_map
         .insert("midtown".to_string(), "sess-lead-1".to_string());
@@ -2386,7 +2413,8 @@ fn unrecoverable_session_error_restarts_project_lead_immediately() {
 fn unrecoverable_session_error_does_not_force_spawn_for_non_lead() {
     let mut snap = empty_snap();
     snap.repo_name = "midtown".to_string();
-    snap.tool_name_conflict_coworkers
+    snap.health
+        .tool_name_conflict_coworkers
         .insert("lexington".to_string());
     snap.name_session_map
         .insert("lexington".to_string(), "sess-lex-1".to_string());
@@ -2436,9 +2464,9 @@ fn test_idle_shutdown_emits_coworker_idle_workflow_event() {
 
     let mut snap = empty_snap();
     snap.now_utc = now;
-    snap.active_coworkers = vec![coworker.clone()];
-    snap.running_coworkers = vec![coworker.clone()];
-    snap.coworker_snapshots = vec![cw_snap];
+    snap.coworkers.active_coworkers = vec![coworker.clone()];
+    snap.coworkers.running_coworkers = vec![coworker.clone()];
+    snap.coworkers.coworker_snapshots = vec![cw_snap];
     snap.name_session_map
         .insert("amsterdam".to_string(), "sess-abc-123".to_string());
     snap.repo_name = "test-repo".to_string();
@@ -2487,7 +2515,7 @@ fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
     let mut snap = empty_snap();
     snap.now_utc = now;
 
-    snap.active_coworkers.push(Coworker {
+    snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "amsterdam".to_string(),
         status: CoworkerStatus::Running,
@@ -2500,7 +2528,7 @@ fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     });
 
-    snap.headless_process_health.insert(
+    snap.health.headless_process_health.insert(
         "amsterdam".to_string(),
         snapshot::ProcessHealth {
             is_alive: true,
@@ -2517,9 +2545,10 @@ fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
         },
     );
 
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("amsterdam".to_string(), 99);
-    snap.pr_task_associations.insert(99u64, "55".to_string());
+    snap.pr.pr_task_associations.insert(99u64, "55".to_string());
     snap.task_channel
         .insert("55".to_string(), "proj-reviews".to_string());
     snap.repo_name = "test-repo".to_string();
@@ -2594,15 +2623,12 @@ fn usage_limit_marks_pool_profile_limited() {
     let mut profile_map = HashMap::new();
     profile_map.insert("lexington".to_string(), "alice@example.com".to_string());
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![coworker],
-        headless_process_health: health,
-        active_names: HashSet::from(["lexington".to_string()]),
-        usage_limited_coworkers: HashSet::from(["lexington".to_string()]),
-        session_profile_map: profile_map,
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.coworkers.active_coworkers = vec![coworker];
+    snap.health.headless_process_health = health;
+    snap.coworkers.active_names = HashSet::from(["lexington".to_string()]);
+    snap.health.usage_limited_coworkers = HashSet::from(["lexington".to_string()]);
+    snap.session_profile_map = profile_map;
 
     let effects = check_for_usage_limits(&snap);
 
@@ -2657,15 +2683,12 @@ fn usage_limit_without_profile_map_skips_mark_limited() {
         profile: crate::auth::DEFAULT_PROFILE.to_string(),
     };
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![coworker],
-        headless_process_health: health,
-        active_names: HashSet::from(["lexington".to_string()]),
-        usage_limited_coworkers: HashSet::from(["lexington".to_string()]),
-        session_profile_map: HashMap::new(), // no pool mapping
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.coworkers.active_coworkers = vec![coworker];
+    snap.health.headless_process_health = health;
+    snap.coworkers.active_names = HashSet::from(["lexington".to_string()]);
+    snap.health.usage_limited_coworkers = HashSet::from(["lexington".to_string()]);
+    snap.session_profile_map = HashMap::new(); // no pool mapping
 
     let effects = check_for_usage_limits(&snap);
 
@@ -2694,31 +2717,28 @@ fn maybe_nudge_usage_limit_expiry_clears_pool_profile_limit() {
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(tokio::time::Instant::now);
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        // At least one running coworker so eligibility check passes
-        running_coworkers: vec![crate::coworker::Coworker {
-            slot_id: uuid::Uuid::new_v4().to_string(),
-            name: "lexington".to_string(),
-            status: crate::coworker::CoworkerStatus::Running,
-            working_dir: "/tmp/test".to_string(),
-            started_at: chrono::Utc::now(),
-            current_task: None,
-            session_id: None,
-            model: "sonnet".to_string(),
-            provider: crate::auth::AuthProvider::Claude,
-            profile: crate::auth::DEFAULT_PROFILE.to_string(),
-        }],
-        usage_limit_nudge_scheduled: true,
-        usage_limit_nudge_at: Some(past_instant),
-        // limited_pool_profiles is the source of truth for which profiles to clear.
-        // Both alice and bob are marked is_usage_limited in persistent state.
-        limited_pool_profiles: HashSet::from([
-            "alice@example.com".to_string(),
-            "bob@example.com".to_string(),
-        ]),
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    // At least one running coworker so eligibility check passes
+    snap.coworkers.running_coworkers = vec![crate::coworker::Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    }];
+    snap.health.usage_limit_nudge_scheduled = true;
+    snap.health.usage_limit_nudge_at = Some(past_instant);
+    // limited_pool_profiles is the source of truth for which profiles to clear.
+    // Both alice and bob are marked is_usage_limited in persistent state.
+    snap.limited_pool_profiles = HashSet::from([
+        "alice@example.com".to_string(),
+        "bob@example.com".to_string(),
+    ]);
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
 
@@ -2753,26 +2773,23 @@ fn maybe_nudge_usage_limit_expiry_no_clear_for_non_limited_profiles() {
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(tokio::time::Instant::now);
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        running_coworkers: vec![crate::coworker::Coworker {
-            slot_id: uuid::Uuid::new_v4().to_string(),
-            name: "lexington".to_string(),
-            status: crate::coworker::CoworkerStatus::Running,
-            working_dir: "/tmp/test".to_string(),
-            started_at: chrono::Utc::now(),
-            current_task: None,
-            session_id: None,
-            model: "sonnet".to_string(),
-            provider: crate::auth::AuthProvider::Claude,
-            profile: crate::auth::DEFAULT_PROFILE.to_string(),
-        }],
-        usage_limit_nudge_scheduled: true,
-        usage_limit_nudge_at: Some(past_instant),
-        // Only alice is in limited_pool_profiles — bob is NOT usage-limited.
-        limited_pool_profiles: HashSet::from(["alice@example.com".to_string()]),
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.coworkers.running_coworkers = vec![crate::coworker::Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    }];
+    snap.health.usage_limit_nudge_scheduled = true;
+    snap.health.usage_limit_nudge_at = Some(past_instant);
+    // Only alice is in limited_pool_profiles — bob is NOT usage-limited.
+    snap.limited_pool_profiles = HashSet::from(["alice@example.com".to_string()]);
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
 
@@ -2805,15 +2822,12 @@ fn maybe_nudge_usage_limit_expiry_clears_profiles_even_when_session_map_empty() 
         .checked_sub(std::time::Duration::from_secs(1))
         .unwrap_or_else(tokio::time::Instant::now);
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        usage_limit_nudge_scheduled: true,
-        usage_limit_nudge_at: Some(past_instant),
-        // session_profile_map is empty — coworker already stopped or daemon restarted
-        // limited_pool_profiles is populated from persistent state (survives restarts)
-        limited_pool_profiles: HashSet::from(["alice@example.com".to_string()]),
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.health.usage_limit_nudge_scheduled = true;
+    snap.health.usage_limit_nudge_at = Some(past_instant);
+    // session_profile_map is empty — coworker already stopped or daemon restarted
+    // limited_pool_profiles is populated from persistent state (survives restarts)
+    snap.limited_pool_profiles = HashSet::from(["alice@example.com".to_string()]);
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
 
@@ -2871,14 +2885,11 @@ fn check_for_usage_limits_marks_all_limited_coworker_profiles() {
     profile_map.insert("amsterdam".to_string(), "alice@example.com".to_string());
     profile_map.insert("lexington".to_string(), "bob@example.com".to_string());
 
-    let snap = snapshot::minimal_snapshot_for_test();
-    let snap = snapshot::WorldSnapshot {
-        active_coworkers: vec![make_coworker("amsterdam"), make_coworker("lexington")],
-        headless_process_health: health,
-        active_names: HashSet::from(["amsterdam".to_string(), "lexington".to_string()]),
-        session_profile_map: profile_map,
-        ..snap
-    };
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.coworkers.active_coworkers = vec![make_coworker("amsterdam"), make_coworker("lexington")];
+    snap.health.headless_process_health = health;
+    snap.coworkers.active_names = HashSet::from(["amsterdam".to_string(), "lexington".to_string()]);
+    snap.session_profile_map = profile_map;
 
     let effects = check_for_usage_limits(&snap);
 

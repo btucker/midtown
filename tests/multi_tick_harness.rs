@@ -191,6 +191,7 @@ impl MultiTickHarness {
                 .insert(name_str.clone(), session_id.to_string());
         }
         self.snapshot
+            .coworkers
             .active_session_ids
             .insert(session_id.to_string());
     }
@@ -214,7 +215,10 @@ impl MultiTickHarness {
                 self.snapshot.name_session_map.remove(&n);
             }
         }
-        self.snapshot.active_session_ids.remove(session_id);
+        self.snapshot
+            .coworkers
+            .active_session_ids
+            .remove(session_id);
     }
 
     /// Mark a stopped session as running again and restore name allocations.
@@ -236,6 +240,7 @@ impl MultiTickHarness {
                 .insert(name.to_string(), session_id.to_string());
         }
         self.snapshot
+            .coworkers
             .active_session_ids
             .insert(session_id.to_string());
     }
@@ -362,7 +367,10 @@ impl MultiTickHarness {
                             record.is_running = true;
                             record.current_name = Some(config.name.clone());
                         }
-                        self.snapshot.active_session_ids.insert(session_id.clone());
+                        self.snapshot
+                            .coworkers
+                            .active_session_ids
+                            .insert(session_id.clone());
                         self.snapshot
                             .session_name_map
                             .insert(session_id.clone(), config.name.clone());
@@ -383,14 +391,17 @@ impl MultiTickHarness {
                     ..
                 } => {
                     self.snapshot
+                        .reviewer
                         .active_reviewers
                         .insert(reviewer_name.to_lowercase());
                     self.snapshot
+                        .reviewer
                         .reviewer_pr_assignments
                         .insert(reviewer_name.to_lowercase(), *pr_number);
                 }
                 Effect::RemoveReviewerAssignment { pr_number } => {
                     self.snapshot
+                        .reviewer
                         .reviewer_pr_assignments
                         .retain(|_, pr| pr != pr_number);
                 }
@@ -401,25 +412,29 @@ impl MultiTickHarness {
                     self.reset_task(task_id);
                 }
                 Effect::SetUsageLimitNudge { .. } => {
-                    self.snapshot.usage_limit_nudge_scheduled = true;
+                    self.snapshot.health.usage_limit_nudge_scheduled = true;
                 }
                 Effect::CleanupMergedWorktree { pr_number, .. } => {
-                    self.snapshot.merged_pr_numbers.remove(pr_number);
+                    self.snapshot.pr.merged_pr_numbers.remove(pr_number);
                     self.snapshot.merged_pr_branches.remove(pr_number);
                 }
                 Effect::CreateTask { subject, pr, .. } => {
                     self.create_task(subject, *pr);
                 }
                 Effect::AutoDetachCoworker { name } => {
-                    self.snapshot.attached_coworkers.remove(name);
+                    self.snapshot.coworkers.attached_coworkers.remove(name);
                 }
                 Effect::RecordOrphanedPrLeadNudge { pr_number } => {
                     self.snapshot
+                        .pr
                         .orphaned_pr_lead_nudges_sent
                         .insert(*pr_number);
                 }
                 Effect::ClearOrphanedPrLeadNudge { pr_number } => {
-                    self.snapshot.orphaned_pr_lead_nudges_sent.remove(pr_number);
+                    self.snapshot
+                        .pr
+                        .orphaned_pr_lead_nudges_sent
+                        .remove(pr_number);
                 }
                 Effect::RecordCooldown { .. } => {
                     // Cooldowns are tracked in DaemonState, not WorldSnapshot.
@@ -468,7 +483,10 @@ impl MultiTickHarness {
                     self.snapshot
                         .name_session_map
                         .insert(name, session_id.clone());
-                    self.snapshot.active_session_ids.insert(session_id.clone());
+                    self.snapshot
+                        .coworkers
+                        .active_session_ids
+                        .insert(session_id.clone());
                 }
                 Effect::ShutdownSession { session_id, .. } => {
                     if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
@@ -479,7 +497,10 @@ impl MultiTickHarness {
                             self.snapshot.name_session_map.remove(&n);
                         }
                     }
-                    self.snapshot.active_session_ids.remove(session_id);
+                    self.snapshot
+                        .coworkers
+                        .active_session_ids
+                        .remove(session_id);
                 }
                 Effect::RecordSession { record } => {
                     self.snapshot
@@ -536,12 +557,16 @@ impl MultiTickHarness {
     /// Simulate spawning a coworker.
     fn spawn_coworker(&mut self, name: &str) {
         let name_lower = name.to_lowercase();
-        self.snapshot.active_names.insert(name_lower.clone());
+        self.snapshot
+            .coworkers
+            .active_names
+            .insert(name_lower.clone());
         let now = Utc::now();
         self.snapshot
+            .coworkers
             .coworker_start_times
             .insert(name_lower.clone(), now);
-        self.snapshot.headless_process_health.insert(
+        self.snapshot.health.headless_process_health.insert(
             name_lower.clone(),
             ProcessHealth {
                 is_alive: true,
@@ -563,30 +588,41 @@ impl MultiTickHarness {
             provider: AuthProvider::Claude,
             profile: "default".to_string(),
         };
-        self.snapshot.active_coworkers.push(coworker.clone());
-        self.snapshot.running_coworkers.push(coworker);
+        self.snapshot
+            .coworkers
+            .active_coworkers
+            .push(coworker.clone());
+        self.snapshot.coworkers.running_coworkers.push(coworker);
     }
 
     /// Simulate removing a coworker.
     fn remove_coworker(&mut self, name: &str) {
         let name_lower = name.to_lowercase();
-        self.snapshot.active_names.remove(&name_lower);
+        self.snapshot.coworkers.active_names.remove(&name_lower);
         self.snapshot.busy_coworkers.remove(&name_lower);
         self.snapshot
+            .coworkers
             .coworker_stop_times
             .insert(name_lower.clone(), Utc::now());
-        if let Some(health) = self.snapshot.headless_process_health.get_mut(&name_lower) {
+        if let Some(health) = self
+            .snapshot
+            .health
+            .headless_process_health
+            .get_mut(&name_lower)
+        {
             health.is_alive = false;
             health.exit_code = Some(0);
         }
         self.snapshot.coworker_task_assignments.remove(&name_lower);
-        self.snapshot.active_reviewers.remove(&name_lower);
+        self.snapshot.reviewer.active_reviewers.remove(&name_lower);
 
         // Remove from active_coworkers and running_coworkers
         self.snapshot
+            .coworkers
             .active_coworkers
             .retain(|c| c.name.to_lowercase() != name_lower);
         self.snapshot
+            .coworkers
             .running_coworkers
             .retain(|c| c.name.to_lowercase() != name_lower);
     }
@@ -657,7 +693,7 @@ impl MultiTickHarness {
         // Track the PR → task association so reconcile_orphaned_prs
         // won't create a duplicate task for the same PR on the next tick
         if let Some(pr_number) = pr {
-            self.snapshot.pr_task_associations.insert(
+            self.snapshot.pr.pr_task_associations.insert(
                 pr_number,
                 format!("harness-{}", self.snapshot.all_tasks.len()),
             );

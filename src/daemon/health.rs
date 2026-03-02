@@ -37,24 +37,26 @@ use super::{DaemonState, snapshot};
 /// `MINIMUM_COWORKER_LIFETIME` before they can be sent on a break. This prevents
 /// killing coworkers during session initialization (which takes 40-60s).
 pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
+    if snap.coworkers.active_coworkers.is_empty() {
         return vec![];
     }
 
     debug!(
         "Idle shutdown check: active={}, busy=[{}], open_prs=[{}], reviewers=[{}], unblocked_deps=[{}]",
-        snap.active_coworkers.len(),
+        snap.coworkers.active_coworkers.len(),
         snap.busy_coworkers
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
-        snap.coworkers_with_open_prs
+        snap.pr
+            .coworkers_with_open_prs
             .iter()
             .cloned()
             .collect::<Vec<_>>()
             .join(", "),
-        snap.active_reviewers
+        snap.reviewer
+            .active_reviewers
             .iter()
             .cloned()
             .collect::<Vec<_>>()
@@ -66,13 +68,14 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             .join(", "),
     );
 
-    let mut active_tool_guards = snap.coworkers_with_active_tools.clone();
+    let mut active_tool_guards = snap.health.coworkers_with_active_tools.clone();
     if active_tool_guards.is_empty() {
         // Older snapshot fixtures (and pre-field captures) won't have
         // coworkers_with_active_tools populated. Derive a fallback from
         // ProcessHealth flags so regression tests continue to reflect
         // the intended protections.
         let derived: HashSet<String> = snap
+            .health
             .headless_process_health
             .iter()
             .filter(|(_, health)| health.has_pending_tool || health.has_running_subagent)
@@ -91,23 +94,23 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             .map(|k| k.to_lowercase())
             .collect();
         let idle_ctx = crate::rules::IdleShutdownContext {
-            coworkers: &snap.coworker_snapshots,
+            coworkers: &snap.coworkers.coworker_snapshots,
             busy_coworkers: &snap.busy_coworkers,
-            coworkers_with_open_prs: &snap.coworkers_with_open_prs,
-            active_reviewers: &snap.active_reviewers,
+            coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
+            active_reviewers: &snap.reviewer.active_reviewers,
             coworkers_with_unblocked_deps: &snap.coworkers_with_unblocked_deps,
-            ci_passed_pr_coworkers: &snap.ci_passed_pr_coworkers,
-            usage_limited_coworkers: &snap.usage_limited_coworkers,
-            api_error_coworkers: &snap.api_error_coworkers,
-            auth_error_coworkers: &snap.auth_error_coworkers,
+            ci_passed_pr_coworkers: &snap.pr.ci_passed_pr_coworkers,
+            usage_limited_coworkers: &snap.health.usage_limited_coworkers,
+            api_error_coworkers: &snap.health.api_error_coworkers,
+            auth_error_coworkers: &snap.health.auth_error_coworkers,
             pending_task_owners: &snap.pending_task_owners,
-            review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+            review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
             coworkers_with_active_tools: &active_tool_guards,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
             repo_name: &snap.repo_name,
             channel_lead_names: &channel_lead_names,
-            reviewing_phase_coworkers: &snap.reviewing_phase_coworkers,
+            reviewing_phase_coworkers: &snap.reviewer.reviewing_phase_coworkers,
         };
         crate::rules::decide_idle_shutdowns(&idle_ctx)
     };
@@ -127,14 +130,17 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 .iter()
                 .any(|b| b.eq_ignore_ascii_case(name));
             let has_open_pr = snap
+                .pr
                 .coworkers_with_open_prs
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
             let is_reviewing = snap
+                .reviewer
                 .active_reviewers
                 .iter()
                 .any(|r| r.eq_ignore_ascii_case(name));
             let ci_passed = snap
+                .pr
                 .ci_passed_pr_coworkers
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case(name));
@@ -157,10 +163,10 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
         // For reviewers (identified by having a PR assignment), verify the review
         // was actually posted before shutting down. All other coworkers can be shut
         // down normally.
-        let reviewer_pr = snap.reviewer_pr_assignments.get(name).copied();
+        let reviewer_pr = snap.reviewer.reviewer_pr_assignments.get(name).copied();
         let (should_shutdown, shutdown_msg) = if let Some(pr) = reviewer_pr {
             // Check if review was actually posted (from snapshot, no API call)
-            if snap.reviewed_prs.contains(&pr) {
+            if snap.reviewer.reviewed_prs.contains(&pr) {
                 info!(
                     "Sending reviewer {} on a break (review verified for PR #{})",
                     name, pr
@@ -182,7 +188,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                 });
                 (false, String::new())
             }
-        } else if snap.coworkers_with_merged_prs.contains(name) {
+        } else if snap.pr.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
             (true, daemon_messages::break_work_merged(name))
         } else {
@@ -237,6 +243,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
         // Resolve working_dir from the snapshot so we target the actual
         // directory (task-based worktree), not the legacy coworker-named path.
         if let Some(cw) = snap
+            .coworkers
             .active_coworkers
             .iter()
             .find(|cw| cw.name.eq_ignore_ascii_case(name))
@@ -266,19 +273,19 @@ pub(super) async fn check_and_restart_stuck_coworkers(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
+    if snap.coworkers.active_coworkers.is_empty() {
         return vec![];
     }
 
     let exemptions = snap.stuck_exemptions();
     let restarts = crate::rules::decide_stuck_coworker_restarts(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &exemptions,
         snap.now_utc,
         COWORKER_STUCK_DURATION,
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
     );
 
     let mut effects = Vec::new();
@@ -409,27 +416,28 @@ pub(super) async fn check_and_restart_stuck_coworkers(
 /// `restart_count` — after `MAX_REVIEWER_RESTARTS`, posts an escalation
 /// warning and stops retrying.
 pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.active_coworkers.is_empty() {
+    if snap.coworkers.active_coworkers.is_empty() {
         return vec![];
     }
 
     let exemptions = snap.stuck_exemptions();
     let prs_with_in_progress_comment: std::collections::HashSet<u64> = snap
+        .reviewer
         .reviewer_in_progress_comment_ids
         .keys()
         .copied()
         .collect();
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
-        &snap.headless_process_health,
-        &snap.reviewer_pr_assignments,
-        &snap.reviewer_restart_counts,
+        &snap.health.headless_process_health,
+        &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
         REVIEWER_STUCK_DURATION,
         REVIEWER_PLACEHOLDER_STUCK_DURATION,
         MAX_REVIEWER_RESTARTS,
         &snap.name_session_map,
-        &snap.coworker_start_times,
+        &snap.coworkers.coworker_start_times,
         &prs_with_in_progress_comment,
     );
 
@@ -473,7 +481,11 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
 
         // Emit a workflow event so channel scripts can react to the stuck reviewer.
         // Look up the PR's task and channel so the event is routed correctly.
-        let reviewer_task_id = snap.pr_task_associations.get(&restart.pr_number).cloned();
+        let reviewer_task_id = snap
+            .pr
+            .pr_task_associations
+            .get(&restart.pr_number)
+            .cloned();
         let reviewer_channel = reviewer_task_id
             .as_deref()
             .and_then(|id| snap.task_channel.get(id))
@@ -508,11 +520,11 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
     //
     // The escalation is only posted once per PR (tracked via reviewer_escalations_posted
     // in WorldSnapshot) to prevent spamming the channel/lead on every tick.
-    for (name, health) in &snap.headless_process_health {
+    for (name, health) in &snap.health.headless_process_health {
         if !health.is_alive {
             continue;
         }
-        let pr_number = match snap.reviewer_pr_assignments.get(name) {
+        let pr_number = match snap.reviewer.reviewer_pr_assignments.get(name) {
             Some(pr) => *pr,
             None => continue,
         };
@@ -524,10 +536,15 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         };
         let stuck_threshold = chrono::Duration::from_std(effective_duration).unwrap_or_default();
         // Skip if we've already posted an escalation for this PR
-        if snap.reviewer_escalations_posted.contains(&pr_number) {
+        if snap
+            .reviewer
+            .reviewer_escalations_posted
+            .contains(&pr_number)
+        {
             continue;
         }
         let restart_count = snap
+            .reviewer
             .reviewer_restart_counts
             .get(&pr_number)
             .copied()
@@ -537,9 +554,12 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         }
         // Check if actually stuck (same criteria as the pure function).
         // Fall back to spawn time if no events were ever received.
-        let reference_time = health
-            .last_event_at
-            .or_else(|| snap.coworker_start_times.get(&name.to_lowercase()).copied());
+        let reference_time = health.last_event_at.or_else(|| {
+            snap.coworkers
+                .coworker_start_times
+                .get(&name.to_lowercase())
+                .copied()
+        });
         let reference_time = match reference_time {
             Some(t) => t,
             None => continue,
@@ -548,9 +568,18 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             continue;
         }
         // Skip if already excluded
-        if snap.usage_limited_coworkers.contains(&name.to_lowercase())
-            || snap.api_error_coworkers.contains(&name.to_lowercase())
-            || snap.attached_coworkers.contains_key(&name.to_lowercase())
+        if snap
+            .health
+            .usage_limited_coworkers
+            .contains(&name.to_lowercase())
+            || snap
+                .health
+                .api_error_coworkers
+                .contains(&name.to_lowercase())
+            || snap
+                .coworkers
+                .attached_coworkers
+                .contains_key(&name.to_lowercase())
             || health.has_running_subagent
             || health.has_pending_tool
         {
@@ -597,21 +626,21 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
 /// the restart budget, it escalates to the ops channel instead.
 pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let respawns = crate::rules::decide_dead_reviewer_respawns(
-        &snap.headless_process_health,
-        &snap.reviewer_pr_assignments,
-        &snap.reviewed_prs,
-        &snap.reviewer_restart_counts,
+        &snap.health.headless_process_health,
+        &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewed_prs,
+        &snap.reviewer.reviewer_restart_counts,
         MAX_REVIEWER_RESTARTS,
         &snap.name_session_map,
-        &snap.usage_limited_coworkers,
+        &snap.health.usage_limited_coworkers,
     );
 
     let escalations = crate::rules::decide_dead_reviewer_escalations(
-        &snap.headless_process_health,
-        &snap.reviewer_pr_assignments,
-        &snap.reviewed_prs,
-        &snap.reviewer_restart_counts,
-        &snap.reviewer_escalations_posted,
+        &snap.health.headless_process_health,
+        &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewed_prs,
+        &snap.reviewer.reviewer_restart_counts,
+        &snap.reviewer.reviewer_escalations_posted,
         MAX_REVIEWER_RESTARTS,
     );
 
@@ -689,17 +718,18 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
 /// schedule a nudge based on the parsed reset time (if available) or a default
 /// of 15 minutes.
 pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.usage_limit_nudge_scheduled {
+    if snap.health.usage_limit_nudge_scheduled {
         return vec![];
     }
 
-    if snap.active_coworkers.is_empty() {
+    if snap.coworkers.active_coworkers.is_empty() {
         return vec![];
     }
 
     // Collect all coworkers with a usage limit flag. Usage limits are account-wide
     // so multiple coworkers may hit the limit simultaneously.
     let limited: Vec<_> = snap
+        .health
         .headless_process_health
         .iter()
         .filter(|(_, health)| health.has_usage_limit)
@@ -783,7 +813,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Pure decision: should we nudge?
     let decision = crate::rules::decide_usage_limit_expiry(
-        snap.usage_limit_nudge_at,
+        snap.health.usage_limit_nudge_at,
         tokio::time::Instant::now(),
     );
 
@@ -792,6 +822,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
     }
 
     let eligible_session_ids: Vec<String> = snap
+        .coworkers
         .running_coworkers
         .iter()
         .filter_map(|cw| {
@@ -858,14 +889,14 @@ pub(super) fn check_and_handle_auth_errors(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    if snap.auth_error_coworkers.is_empty() {
+    if snap.health.auth_error_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
     let mut newly_detected = Vec::new();
 
-    for name in &snap.auth_error_coworkers {
+    for name in &snap.health.auth_error_coworkers {
         // Check cooldown - only act if we haven't already handled this coworker
         let should_handle = {
             let cooldowns = state.cooldowns.lock().unwrap();
@@ -936,14 +967,14 @@ pub(super) fn check_and_nudge_api_errors(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    if snap.api_error_coworkers.is_empty() {
+    if snap.health.api_error_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
     let mut first_detection = false;
 
-    for name in &snap.api_error_coworkers {
+    for name in &snap.health.api_error_coworkers {
         // Check cooldown - only nudge if the cooldown has expired
         let should_nudge = {
             let cooldowns = state.cooldowns.lock().unwrap();
@@ -993,9 +1024,10 @@ pub(super) fn check_and_nudge_api_errors(
 
     // Post a channel message when API errors are widespread (2+ coworkers affected)
     // Only post on first detection of a widespread outage to avoid spam.
-    let affected_count = snap.api_error_coworkers.len();
+    let affected_count = snap.health.api_error_coworkers.len();
     if first_detection && affected_count >= 2 {
         let names: Vec<&str> = snap
+            .health
             .api_error_coworkers
             .iter()
             .map(|s| s.as_str())
@@ -1026,13 +1058,13 @@ pub(super) fn check_and_nudge_api_errors(
 /// Generic API retries cannot fix these. We clear the saved session ID first, then
 /// shut down and restart fresh.
 pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.tool_name_conflict_coworkers.is_empty() {
+    if snap.health.tool_name_conflict_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
 
-    for name in &snap.tool_name_conflict_coworkers {
+    for name in &snap.health.tool_name_conflict_coworkers {
         warn!(
             "Coworker {} has unrecoverable session error — restarting with fresh session",
             name
@@ -1088,7 +1120,7 @@ pub(super) async fn check_and_respawn_dead_processes(
 ) -> Vec<Effect> {
     // Pure decision: which processes need respawning?
     let respawns = crate::rules::decide_dead_process_respawns(
-        &snap.headless_process_health,
+        &snap.health.headless_process_health,
         &snap.in_progress_tasks,
         &snap.name_session_map,
     );
@@ -1166,6 +1198,7 @@ pub(super) async fn check_and_respawn_dead_processes(
 pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Check if lead is already registered (any status)
     let lead_registered = snap
+        .coworkers
         .active_coworkers
         .iter()
         .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
@@ -1177,6 +1210,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Check if lead is currently attached interactively — if so, the daemon
     // shouldn't spawn a headless lead that would conflict.
     if snap
+        .coworkers
         .attached_coworkers
         .contains_key(&snap.repo_name.to_lowercase())
     {
@@ -1186,7 +1220,11 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Cooldown: if the lead was recently stopped (within 5 minutes), don't
     // respawn yet to prevent crash loops. The lead may have been stopped for
     // a good reason (e.g., auth error, attach/detach cycle).
-    if let Some(stop_time) = snap.coworker_stop_times.get(&snap.repo_name.to_lowercase()) {
+    if let Some(stop_time) = snap
+        .coworkers
+        .coworker_stop_times
+        .get(&snap.repo_name.to_lowercase())
+    {
         let since_stop = snap.now_utc.signed_duration_since(*stop_time);
         if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
             debug!(
@@ -1233,6 +1271,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
     // Don't refresh an interactively attached session
     if snap
+        .coworkers
         .attached_coworkers
         .contains_key(&snap.repo_name.to_lowercase())
     {
@@ -1241,6 +1280,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
     // Find the lead in active coworkers
     let lead = snap
+        .coworkers
         .active_coworkers
         .iter()
         .find(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
@@ -1252,6 +1292,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
     // Check how long the lead has been running
     let start_time = match snap
+        .coworkers
         .coworker_start_times
         .get(&snap.repo_name.to_lowercase())
     {
@@ -1299,7 +1340,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 /// snapshot so tests can control time.
 pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let timeout = chrono::Duration::from_std(ATTACH_TIMEOUT).unwrap_or_default();
-    snap.attached_coworkers
+    snap.coworkers.attached_coworkers
         .iter()
         .filter_map(|(name, attached_at)| {
             let age = snap.now_utc.signed_duration_since(*attached_at);
@@ -1324,7 +1365,7 @@ pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    let open_pr_coworkers: Vec<String> = snap.coworkers_with_open_prs.iter().cloned().collect();
+    let open_pr_coworkers: Vec<String> = snap.pr.coworkers_with_open_prs.iter().cloned().collect();
     let ps = state.persistent_state.lock().await;
     build_reminder_effects(
         &ps.reminders.reminders,
@@ -1469,7 +1510,11 @@ fn build_reviewer_respawn_effects(
     let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
 
     // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
-    if let Some(&comment_id) = snap.reviewer_in_progress_comment_ids.get(&pr_number) {
+    if let Some(&comment_id) = snap
+        .reviewer
+        .reviewer_in_progress_comment_ids
+        .get(&pr_number)
+    {
         let repo_full_name = format!(
             "{}/{}",
             snap.repo_owner.as_deref().unwrap_or("unknown"),

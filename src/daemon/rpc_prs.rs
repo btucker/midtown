@@ -604,7 +604,7 @@ pub(super) async fn handle_pr_review(
     let effects = super::pr::collect_reviewer_effects_with_source(
         Some(&snap.worktree_branch_owners),
         &snap.worktree_registry,
-        &snap.active_names,
+        &snap.coworkers.active_names,
         state,
         &[pr_json],
         crate::github_state::AssignmentSource::Manual,

@@ -45,87 +45,27 @@ fn test_world_snapshot_has_coworker_stop_times() {
     stop_times.insert("broadway".to_string(), Utc::now());
 
     let snapshot = WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: stop_times.clone(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        coworker_task_assignments: HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        task_model_map: HashMap::new(),
-        task_plan_map: HashMap::new(),
-        task_execution_skill_map: HashMap::new(),
-        channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
-        channel_messages: vec![],
-        archived_channels: HashSet::new(),
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_branch_owners: HashMap::new(),
-        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-        merged_pr_branches: HashMap::new(),
-        lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
-        default_channel: "test-repo".to_string(),
-        repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
-        sessions: HashMap::new(),
-        session_task_map: HashMap::new(),
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: std::collections::HashSet::new(),
-        recently_recovered_session_ids: std::collections::HashSet::new(),
-        stale_working_dir_sessions: std::collections::HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: HashSet::new(),
+        coworkers: SnapshotCoworkerState {
+            session_name: "midtown-test".to_string(),
+            coworker_stop_times: stop_times.clone(),
+            ..Default::default()
+        },
+        ..minimal_snapshot_for_test()
     };
 
-    assert_eq!(snapshot.coworker_stop_times.len(), 2);
-    assert!(snapshot.coworker_stop_times.contains_key("lexington"));
-    assert!(snapshot.coworker_stop_times.contains_key("broadway"));
+    assert_eq!(snapshot.coworkers.coworker_stop_times.len(), 2);
+    assert!(
+        snapshot
+            .coworkers
+            .coworker_stop_times
+            .contains_key("lexington")
+    );
+    assert!(
+        snapshot
+            .coworkers
+            .coworker_stop_times
+            .contains_key("broadway")
+    );
 
     let json = serde_json::to_string(&snapshot).expect("should serialize");
     assert!(json.contains("coworker_stop_times"));
@@ -162,84 +102,7 @@ fn test_read_daemon_log_tail() {
 /// during normal snapshot collection to avoid I/O overhead on the hot path.
 #[test]
 fn test_snapshot_debug_context_empty_by_default() {
-    let snapshot = WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        coworker_task_assignments: HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        task_model_map: HashMap::new(),
-        task_plan_map: HashMap::new(),
-        task_execution_skill_map: HashMap::new(),
-        channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
-        channel_messages: vec![],
-        archived_channels: HashSet::new(),
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_branch_owners: HashMap::new(),
-        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-        merged_pr_branches: HashMap::new(),
-        lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
-        default_channel: "test-repo".to_string(),
-        repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
-        sessions: HashMap::new(),
-        session_task_map: HashMap::new(),
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: std::collections::HashSet::new(),
-        recently_recovered_session_ids: std::collections::HashSet::new(),
-        stale_working_dir_sessions: std::collections::HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: HashSet::new(),
-    };
+    let snapshot = minimal_snapshot_for_test();
 
     assert!(snapshot.channel_messages.is_empty());
     assert!(snapshot.daemon_logs.is_empty());
@@ -390,87 +253,27 @@ fn test_active_session_ids_in_snapshot() {
     active_session_ids.insert("session-bbb".to_string());
 
     let snapshot = WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids,
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        coworker_task_assignments: HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        task_model_map: HashMap::new(),
-        task_plan_map: HashMap::new(),
-        task_execution_skill_map: HashMap::new(),
-        channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
-        channel_messages: vec![],
-        archived_channels: HashSet::new(),
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_branch_owners: HashMap::new(),
-        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-        merged_pr_branches: HashMap::new(),
-        lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
-        default_channel: "test-repo".to_string(),
-        repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
-        sessions: HashMap::new(),
-        session_task_map: HashMap::new(),
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: std::collections::HashSet::new(),
-        recently_recovered_session_ids: std::collections::HashSet::new(),
-        stale_working_dir_sessions: std::collections::HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: HashSet::new(),
+        coworkers: SnapshotCoworkerState {
+            active_session_ids,
+            session_name: "midtown-test".to_string(),
+            ..Default::default()
+        },
+        ..minimal_snapshot_for_test()
     };
 
-    assert_eq!(snapshot.active_session_ids.len(), 2);
-    assert!(snapshot.active_session_ids.contains("session-aaa"));
-    assert!(snapshot.active_session_ids.contains("session-bbb"));
+    assert_eq!(snapshot.coworkers.active_session_ids.len(), 2);
+    assert!(
+        snapshot
+            .coworkers
+            .active_session_ids
+            .contains("session-aaa")
+    );
+    assert!(
+        snapshot
+            .coworkers
+            .active_session_ids
+            .contains("session-bbb")
+    );
 
     let json = serde_json::to_string(&snapshot).expect("should serialize");
     assert!(json.contains("active_session_ids"));
@@ -484,85 +287,7 @@ fn test_active_session_ids_in_snapshot() {
 #[test]
 fn test_snapshot_includes_session_fields() {
     // Verify fields exist and default to empty in a constructed snapshot
-    let snapshot = WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        coworker_task_assignments: HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        task_model_map: HashMap::new(),
-        task_plan_map: HashMap::new(),
-        task_execution_skill_map: HashMap::new(),
-        channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
-        channel_messages: vec![],
-        archived_channels: HashSet::new(),
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_branch_owners: HashMap::new(),
-        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-        merged_pr_branches: HashMap::new(),
-        lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
-        default_channel: "test-repo".to_string(),
-        repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
-        // Session-centric fields (new model)
-        sessions: HashMap::new(),
-        session_task_map: HashMap::new(),
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: std::collections::HashSet::new(),
-        recently_recovered_session_ids: std::collections::HashSet::new(),
-        stale_working_dir_sessions: std::collections::HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: HashSet::new(),
-    };
+    let snapshot = minimal_snapshot_for_test();
 
     assert!(snapshot.sessions.is_empty());
     assert!(snapshot.session_task_map.is_empty());
@@ -600,7 +325,7 @@ fn test_captured_snapshot_has_empty_sessions_despite_running_coworkers() {
     let snapshot: WorldSnapshot = serde_json::from_str(fixture).unwrap();
     // The bug: coworkers are active but sessions map is empty
     assert!(
-        !snapshot.active_coworkers.is_empty(),
+        !snapshot.coworkers.active_coworkers.is_empty(),
         "Bug snapshot should have active coworkers"
     );
     assert!(
@@ -621,10 +346,12 @@ fn test_snapshot_session_health_map_populated() {
         .name_session_map
         .insert("vernon".to_string(), "sess-123".to_string());
     snapshot
+        .health
         .headless_process_health
         .insert("vernon".to_string(), ProcessHealth::default());
     // Also add a name without a session mapping — should be excluded.
     snapshot
+        .health
         .headless_process_health
         .insert("orphan".to_string(), ProcessHealth::default());
 
@@ -946,99 +673,10 @@ fn snapshot_with_sessions(
     session_task_map: HashMap<String, String>,
     sessions: HashMap<String, crate::daemon::state::SessionRecord>,
 ) -> WorldSnapshot {
-    use chrono::Utc;
-    let rate_limit = crate::github_rate_limit::GitHubRateLimit {
-        graphql: crate::github_rate_limit::QuotaState {
-            limit: 5000,
-            used: 0,
-            remaining: 5000,
-            reset: 0,
-        },
-        core: crate::github_rate_limit::QuotaState {
-            limit: 5000,
-            used: 0,
-            remaining: 5000,
-            reset: 0,
-        },
-        last_updated: Utc::now(),
-    };
     WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: HashSet::new(),
-        coworker_task_assignments: HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        pending_tasks_without_owners: vec![],
-        task_channel: HashMap::new(),
-        task_model_map: HashMap::new(),
-        task_plan_map: HashMap::new(),
-        task_execution_skill_map: HashMap::new(),
-        channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
-        github_rate_limit: rate_limit,
-        freshly_fetched_rate_limit: None,
-        coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
-        archived_channels: HashSet::new(),
-        channel_messages: vec![],
-        daemon_logs: vec![],
-        tasks_with_worktrees: HashSet::new(),
-        task_worktree_map: HashMap::new(),
-        worktree_registry: Default::default(),
-        worktree_branch_owners: HashMap::new(),
-        merged_pr_branches: HashMap::new(),
-        lead_session_refresh_interval_secs: 0,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
-        now_utc: Utc::now(),
-        repo_name: "test".to_string(),
-        default_channel: String::new(),
-        repo_owner: None,
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: HashSet::new(),
-        recently_recovered_session_ids: HashSet::new(),
         sessions,
         session_task_map,
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        stale_working_dir_sessions: HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: HashSet::new(),
+        ..minimal_snapshot_for_test()
     }
 }
 

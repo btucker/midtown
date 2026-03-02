@@ -99,13 +99,12 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
     // dispatch_via_sessions (not orphan recovery) handles tasks with session records.
     let session = make_session_record("sess-abc-123", Some("42"), Some("lexington"), false);
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "42".to_string(),
             "Add auth endpoint".to_string(),
             "lexington".to_string(),
         )],
-        active_names: HashSet::new(), // lexington is NOT active
         sessions: [("sess-abc-123".to_string(), session)]
             .into_iter()
             .collect(),
@@ -116,6 +115,7 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = HashSet::new(); // lexington is NOT active
 
     let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
@@ -150,13 +150,12 @@ fn test_orphan_recovery_skips_tasks_with_session_records() {
     // Orphan recovery should skip it — dispatch_via_sessions handles these.
     let session = make_session_record("sess-abc-123", Some("42"), Some("lexington"), false);
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "42".to_string(),
             "Add auth endpoint".to_string(),
             "lexington".to_string(),
         )],
-        active_names: HashSet::new(), // lexington is NOT active
         sessions: [("sess-abc-123".to_string(), session)]
             .into_iter()
             .collect(),
@@ -167,6 +166,7 @@ fn test_orphan_recovery_skips_tasks_with_session_records() {
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = HashSet::new(); // lexington is NOT active
 
     let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
@@ -204,19 +204,19 @@ fn test_orphan_recovery_skips_tasks_with_session_records() {
 #[test]
 fn test_orphan_recovery_falls_back_to_fresh_spawn_without_session() {
     // Given: an orphaned task with NO session record
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "42".to_string(),
             "Add auth endpoint".to_string(),
             "lexington".to_string(),
         )],
-        active_names: HashSet::new(), // lexington is NOT active (orphaned)
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = HashSet::new(); // lexington is NOT active (orphaned)
 
     let (state, _tmp, _guard) = make_test_state();
     let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
@@ -270,13 +270,12 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     // Task with a stopped session record AND owner not in active_names
     let session = make_session_record("sess-dual-123", Some("99"), Some("lexington"), false);
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "99".to_string(),
             "Fix auth".to_string(),
             "lexington".to_string(),
         )],
-        active_names: HashSet::new(), // lexington is absent — qualifies for orphan recovery
         sessions: [("sess-dual-123".to_string(), session)]
             .into_iter()
             .collect(),
@@ -287,6 +286,7 @@ fn test_no_dual_spawn_for_stopped_session_task() {
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = HashSet::new(); // lexington is absent — qualifies for orphan recovery
 
     let (state, _tmp, _guard) = make_test_state();
 
@@ -496,13 +496,12 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
         ..make_session_record("sess-cl-123", Some("99"), Some("canal-lead"), false)
     };
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "99".to_string(),
             "Maintain canal channel".to_string(),
             "canal-lead".to_string(),
         )],
-        active_names: HashSet::new(), // canal-lead is NOT active
         sessions: [("sess-cl-123".to_string(), session)].into_iter().collect(),
         session_task_map: [("99".to_string(), "sess-cl-123".to_string())]
             .into_iter()
@@ -515,6 +514,7 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
             .collect(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = HashSet::new(); // canal-lead is NOT active
 
     let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
@@ -542,17 +542,13 @@ fn test_session_dispatch_skips_active_reviewer() {
     // columbus is actively serving as a reviewer.
     let task_session = make_session_record("sess-task-1675", Some("1675"), Some("columbus"), false);
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "1675".to_string(),
             "Fix some bug".to_string(),
             "columbus".to_string(),
         )],
         // columbus is active (running as reviewer in a separate session)
-        active_names: ["columbus".to_string()].into_iter().collect(),
-        active_reviewers: ["columbus".to_string()].into_iter().collect(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: [("columbus".to_string(), 1384_u64)].into_iter().collect(),
         sessions: [("sess-task-1675".to_string(), task_session)]
             .into_iter()
             .collect(),
@@ -563,6 +559,10 @@ fn test_session_dispatch_skips_active_reviewer() {
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = ["columbus".to_string()].into_iter().collect();
+    snap.reviewer.active_reviewers = ["columbus".to_string()].into_iter().collect();
+    snap.reviewer.reviewer_pr_assignments =
+        [("columbus".to_string(), 1384_u64)].into_iter().collect();
 
     let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
@@ -614,17 +614,12 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
         false, // is_running=false: stale flag not yet updated by spawn_coworker
     );
 
-    let snap = snapshot::WorldSnapshot {
+    let mut snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "1690".to_string(),
             "Rebase PR #1404, address review feedback, and merge".to_string(),
             "riverside".to_string(),
         )],
-        active_names: ["riverside".to_string()].into_iter().collect(),
-        // Session is live in active_session_ids (successful recovery spawn happened)
-        active_session_ids: ["e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string()]
-            .into_iter()
-            .collect(),
         sessions: [("e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string(), session)]
             .into_iter()
             .collect(),
@@ -636,6 +631,11 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
         .collect(),
         ..snapshot::minimal_snapshot_for_test()
     };
+    snap.coworkers.active_names = ["riverside".to_string()].into_iter().collect();
+    // Session is live in active_session_ids (successful recovery spawn happened)
+    snap.coworkers.active_session_ids = ["e2bafbb6-5fe5-4cfb-a98f-94caad0ff834".to_string()]
+        .into_iter()
+        .collect();
 
     let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
 
@@ -743,8 +743,6 @@ fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
             "park".to_string(),
         )],
         // Session is stopped (not in active_session_ids or active_names)
-        active_session_ids: HashSet::new(),
-        active_names: HashSet::new(),
         sessions: [("7659329f-dead-4ead-b00b-cafecafecafe".to_string(), session)]
             .into_iter()
             .collect(),

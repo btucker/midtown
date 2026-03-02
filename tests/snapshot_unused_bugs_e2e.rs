@@ -110,6 +110,7 @@ fn test_idle_shutdown_skips_pending_tool_process_health() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     let health = snapshot
+        .health
         .headless_process_health
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("amsterdam"))
@@ -152,6 +153,7 @@ fn test_idle_shutdown_skips_running_subagent_process_health() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     let health = snapshot
+        .health
         .headless_process_health
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case("columbus"))

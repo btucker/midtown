@@ -116,7 +116,7 @@ fn test_no_duplicate_pr_cleanup() {
 
     // Inject a merged PR with a matching branch entry so
     // collect_merged_pr_cleanup_effects produces effects
-    harness.snapshot_mut().merged_pr_numbers.insert(9999);
+    harness.snapshot_mut().pr.merged_pr_numbers.insert(9999);
     harness
         .snapshot_mut()
         .merged_pr_branches
@@ -176,8 +176,8 @@ fn test_no_duplicate_orphaned_pr_tasks() {
             {"conclusion": "SUCCESS"}
         ]
     });
-    harness.snapshot_mut().open_prs_data.push(orphan_pr);
-    harness.snapshot_mut().reviewed_prs.insert(8888);
+    harness.snapshot_mut().pr.open_prs_data.push(orphan_pr);
+    harness.snapshot_mut().reviewer.reviewed_prs.insert(8888);
 
     // Tick 1: Reconcile should nudge the lead for the orphaned PR (not create a task)
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);
@@ -282,6 +282,7 @@ fn test_usage_limit_nudge_dedup() {
     // will actually produce SetUsageLimitNudge
     if let Some((_name, health)) = harness
         .snapshot_mut()
+        .health
         .headless_process_health
         .iter_mut()
         .find(|(_, h)| h.is_alive)
@@ -289,7 +290,7 @@ fn test_usage_limit_nudge_dedup() {
         health.has_usage_limit = true;
     }
     // Ensure the flag starts as false
-    harness.snapshot_mut().usage_limit_nudge_scheduled = false;
+    harness.snapshot_mut().health.usage_limit_nudge_scheduled = false;
 
     // Tick 1: Check for usage limits — should produce SetUsageLimitNudge
     let effects1 = harness.tick(&DaemonEvent::SessionMonitorTick);
@@ -307,7 +308,7 @@ fn test_usage_limit_nudge_dedup() {
 
     // Verify the harness applied the effect
     assert!(
-        harness.snapshot().usage_limit_nudge_scheduled,
+        harness.snapshot().health.usage_limit_nudge_scheduled,
         "After tick 1, usage_limit_nudge_scheduled should be true"
     );
 
@@ -351,15 +352,22 @@ fn test_auto_detach_stale_lead_then_respawn() {
     let stale_attach_time = harness.snapshot().now_utc - chrono::Duration::minutes(15);
     harness
         .snapshot_mut()
+        .coworkers
         .attached_coworkers
         .insert(lead_name.clone(), stale_attach_time);
-    harness.snapshot_mut().active_names.remove(&lead_name);
     harness
         .snapshot_mut()
+        .coworkers
+        .active_names
+        .remove(&lead_name);
+    harness
+        .snapshot_mut()
+        .coworkers
         .active_coworkers
         .retain(|c| !c.name.eq_ignore_ascii_case(&lead_name));
     harness
         .snapshot_mut()
+        .coworkers
         .running_coworkers
         .retain(|c| !c.name.eq_ignore_ascii_case(&lead_name));
 
@@ -391,6 +399,7 @@ fn test_auto_detach_stale_lead_then_respawn() {
     assert!(
         !harness
             .snapshot()
+            .coworkers
             .attached_coworkers
             .contains_key(&lead_name),
         "After tick 1, lead should be removed from attached_coworkers"

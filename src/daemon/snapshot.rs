@@ -16,6 +16,33 @@ use crate::tasks::Task;
 
 use super::DaemonState;
 
+/// Deserialize helper for `HashMap<u64, V>` that tolerates string-encoded keys.
+///
+/// `#[serde(flatten)]` converts JSON through an intermediate `Content` type where
+/// object keys are always strings. The standard `u64` key deserializer expects an
+/// integer, causing "invalid type: string, expected u64" errors. This helper
+/// accepts both string and integer key representations.
+mod u64_key_map {
+    use serde::{Deserialize, Deserializer};
+    use std::collections::HashMap;
+
+    pub fn deserialize<'de, D, V>(deserializer: D) -> Result<HashMap<u64, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        V: Deserialize<'de>,
+    {
+        let string_map: HashMap<String, V> = HashMap::deserialize(deserializer)?;
+        string_map
+            .into_iter()
+            .map(|(k, v)| {
+                k.parse::<u64>()
+                    .map(|k| (k, v))
+                    .map_err(serde::de::Error::custom)
+            })
+            .collect()
+    }
+}
+
 /// Health state of a headless coworker process.
 ///
 /// Populated by the daemon's session management layer (future SessionManager)
@@ -94,16 +121,15 @@ const SNAPSHOT_CHANNEL_MESSAGE_COUNT: usize = 50;
 /// Number of recent daemon log lines to include in WorldSnapshot captures.
 const SNAPSHOT_DAEMON_LOG_LINES: usize = 100;
 
-/// Immutable snapshot of the daemon's world, collected once per tick.
-///
-/// Each field is owned data — no references back to `DaemonState`. This means
-/// evaluation functions that take `&WorldSnapshot` cannot accidentally trigger
-/// side effects on the underlying state.
-///
-/// The struct is serializable (for debugging and test fixtures).
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct WorldSnapshot {
-    // ── Coworker state ──────────────────────────────────────────────────
+// ─── Nested state structs ──────────────────────────────────────────────
+//
+// WorldSnapshot groups its 65+ fields into domain-specific nested structs.
+// Each nested struct uses `#[serde(flatten)]` so JSON serialization stays
+// flat (backwards-compatible with existing test fixtures).
+
+/// Coworker identity, lifecycle, and presence state.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotCoworkerState {
     /// All coworkers (any status).
     pub active_coworkers: Vec<Coworker>,
     /// Only coworkers with `Running` status.
@@ -113,7 +139,6 @@ pub struct WorldSnapshot {
     /// Lowercase names of running coworkers (for fast lookup).
     pub active_names: HashSet<String>,
     /// Session IDs of active coworkers (for session-first lookups).
-    /// Populated alongside `active_names` during snapshot collection.
     #[serde(default)]
     pub active_session_ids: HashSet<String>,
     /// Tmux session name (e.g., "midtown-projectname").
@@ -121,24 +146,124 @@ pub struct WorldSnapshot {
     /// Coworker start times keyed by lowercase name.
     pub coworker_start_times: HashMap<String, DateTime<Utc>>,
     /// Coworker stop times keyed by lowercase name.
-    /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
-    /// features that need to know the last activity time of inactive coworkers.
     pub coworker_stop_times: HashMap<String, DateTime<Utc>>,
-
-    // ── Process health (headless coworker monitoring) ──────────────────
-    /// Health state of headless coworker processes, keyed by coworker name.
-    /// Replaces pane scraping: stuck detection uses `last_event_at`,
-    /// usage limits and API errors use structured flags set from stream events.
-    pub headless_process_health: HashMap<String, ProcessHealth>,
-
-    // ── Attached coworkers ───────────────────────────────────────────
     /// Coworkers currently in "attached" state, mapped to their attach timestamp.
-    ///
-    /// Entries are added (with current time) on attach, removed on detach.
-    /// Must be excluded from stuck detection and orphan recovery.
-    /// The timestamp enables auto-detach of stale entries when the interactive
-    /// session ends without a proper `midtown session detach`.
     pub attached_coworkers: HashMap<String, chrono::DateTime<chrono::Utc>>,
+}
+
+/// PR and GitHub state — open PRs, merge tracking, CI status, rate limits.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotPrState {
+    /// Coworkers who have at least one open PR.
+    pub coworkers_with_open_prs: HashSet<String>,
+    /// Coworkers whose PR was recently merged.
+    pub coworkers_with_merged_prs: HashSet<String>,
+    /// PR numbers of recently merged PRs.
+    pub merged_pr_numbers: HashSet<u64>,
+    /// Coworkers whose open PR has all CI checks passing.
+    pub ci_passed_pr_coworkers: HashSet<String>,
+    /// Coworkers whose open PR has CI passed AND has review feedback to address.
+    pub review_feedback_pr_coworkers: HashSet<String>,
+    /// Open PR data (from last GitHub poll).
+    #[serde(default)]
+    pub open_prs_data: Vec<serde_json::Value>,
+    /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
+    /// Maps task_id → pr_number.
+    #[serde(default)]
+    pub github_open_pr_task_ids: HashMap<String, u64>,
+    /// Task IDs that have associated open PRs (from PrAuthorSession).
+    /// Maps task_id → pr_number.
+    pub tasks_with_open_prs: HashMap<String, u64>,
+    /// PR numbers with associated task IDs (from PrAuthorSession).
+    /// Maps pr_number → task_id.
+    #[serde(deserialize_with = "u64_key_map::deserialize")]
+    pub pr_task_associations: HashMap<u64, String>,
+    /// PR numbers for which the lead has already been nudged about an orphaned PR.
+    #[serde(default)]
+    pub orphaned_pr_lead_nudges_sent: HashSet<u64>,
+    /// GitHub API rate limit state (GraphQL and REST quotas).
+    pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
+    /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
+}
+
+/// Reviewer tracking — assignments, escalations, review status.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotReviewerState {
+    /// Currently active reviewers.
+    pub active_reviewers: HashSet<String>,
+    /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
+    #[serde(default)]
+    pub reviewing_phase_coworkers: HashSet<String>,
+    /// Reviewer → assigned PR number mapping.
+    pub reviewer_pr_assignments: HashMap<String, u64>,
+    /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
+    #[serde(default, deserialize_with = "u64_key_map::deserialize")]
+    pub reviewer_in_progress_comment_ids: HashMap<u64, u64>,
+    /// PRs that have been verified as reviewed.
+    pub reviewed_prs: HashSet<u64>,
+    /// Count of open PRs that need review.
+    pub prs_needing_review: usize,
+    /// PR number → restart count for reviewer assignments.
+    #[serde(deserialize_with = "u64_key_map::deserialize")]
+    pub reviewer_restart_counts: HashMap<u64, u32>,
+    /// PR numbers for which a reviewer escalation warning has been posted.
+    pub reviewer_escalations_posted: HashSet<u64>,
+}
+
+/// Health monitoring — process health, usage limits, error states.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct SnapshotHealthState {
+    /// Health state of headless coworker processes, keyed by coworker name.
+    pub headless_process_health: HashMap<String, ProcessHealth>,
+    /// Whether a usage-limit nudge is already scheduled.
+    pub usage_limit_nudge_scheduled: bool,
+    /// The scheduled usage-limit nudge time (if any).
+    #[serde(skip)]
+    pub usage_limit_nudge_at: Option<tokio::time::Instant>,
+    /// Coworkers currently at a usage limit (derived from `headless_process_health`).
+    pub usage_limited_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing API errors (derived from `headless_process_health`).
+    pub api_error_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing authentication errors (OAuth token expired).
+    #[serde(default)]
+    pub auth_error_coworkers: HashSet<String>,
+    /// Coworkers currently experiencing tool name conflicts.
+    #[serde(default)]
+    pub tool_name_conflict_coworkers: HashSet<String>,
+    /// Coworkers with active in-flight work (pending tool/subagent or pending API turn).
+    #[serde(default)]
+    pub coworkers_with_active_tools: HashSet<String>,
+}
+
+/// Immutable snapshot of the daemon's world, collected once per tick.
+///
+/// Fields are organized into domain-specific nested structs:
+/// - [`SnapshotCoworkerState`]: coworker identity, lifecycle, presence
+/// - [`SnapshotPrState`]: PR/GitHub data, merge tracking, rate limits
+/// - [`SnapshotReviewerState`]: reviewer assignments, escalations, review status
+/// - [`SnapshotHealthState`]: process health, usage limits, error states
+///
+/// Nested structs use `#[serde(flatten)]` so the JSON representation stays flat
+/// (backwards-compatible with existing test fixtures).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct WorldSnapshot {
+    // ── Coworker state ──────────────────────────────────────────────────
+    #[serde(flatten)]
+    pub coworkers: SnapshotCoworkerState,
+
+    // ── PR / GitHub state ───────────────────────────────────────────────
+    #[serde(flatten)]
+    pub pr: SnapshotPrState,
+
+    // ── Reviewer state ──────────────────────────────────────────────────
+    #[serde(flatten)]
+    pub reviewer: SnapshotReviewerState,
+
+    // ── Health / monitoring state ────────────────────────────────────────
+    #[serde(flatten)]
+    pub health: SnapshotHealthState,
 
     // ── Task state ──────────────────────────────────────────────────────
     /// In-progress tasks: `(task_id, subject, owner)`.
@@ -183,116 +308,11 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub channel_lead_sessions: HashMap<String, String>,
 
-    // ── PR / GitHub state ───────────────────────────────────────────────
-    /// Coworkers who have at least one open PR.
-    pub coworkers_with_open_prs: HashSet<String>,
-    /// Coworkers whose PR was recently merged.
-    pub coworkers_with_merged_prs: HashSet<String>,
-    /// PR numbers of recently merged PRs. Used by task dispatch to skip
-    /// tasks that reference a merged PR (e.g., "Address review feedback on PR #709").
-    pub merged_pr_numbers: HashSet<u64>,
-    /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
-    pub ci_passed_pr_coworkers: HashSet<String>,
-    /// Coworkers whose open PR has CI passed AND has review feedback to address.
-    /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
-    pub review_feedback_pr_coworkers: HashSet<String>,
-    /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
-    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
-    #[serde(default)]
-    pub open_prs_data: Vec<serde_json::Value>,
-    /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
-    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
-    /// by catching cases where pr_author_sessions is stale after a daemon restart but the
-    /// PR title contains `[Midtown !{task_id}]`. Used by:
-    /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
-    /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
-    ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
-    #[serde(default)]
-    pub github_open_pr_task_ids: HashMap<String, u64>,
-    /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
-    /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
-    /// (in-memory assignment tracking). Both paths are checked to prevent the
-    /// spawn→idle→break loop (see PR #650).
-    pub pending_task_owners: HashSet<String>,
-    /// Task IDs that have associated open PRs (from PrAuthorSession).
-    /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
-    /// tasks whose PR is open but whose owner is no longer active.
-    pub tasks_with_open_prs: HashMap<String, u64>,
-    /// PR numbers with associated task IDs (from PrAuthorSession).
-    /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
-    /// when PRs are closed without merging.
-    pub pr_task_associations: HashMap<u64, String>,
-
-    // ── Reviewer state ──────────────────────────────────────────────────
-    /// Currently active reviewers (from both in-memory tracker and persistent state).
-    pub active_reviewers: HashSet<String>,
-    /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
-    /// Defense-in-depth guard for idle shutdown: protects reviewers when their
-    /// assignment timestamp has expired but their session is still working.
-    #[serde(default)]
-    pub reviewing_phase_coworkers: HashSet<String>,
-    /// Reviewer → assigned PR number mapping (from github-state.json).
-    pub reviewer_pr_assignments: HashMap<String, u64>,
-    /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
-    /// Maps PR number → GitHub comment database ID.
-    /// Pre-collected during snapshot (cached to minimize API calls).
-    #[serde(default)]
-    pub reviewer_in_progress_comment_ids: HashMap<u64, u64>,
-    /// PRs that have been verified as reviewed (Claude review comment exists).
-    /// Pre-collected during snapshot so decision logic doesn't need API calls.
-    pub reviewed_prs: HashSet<u64>,
-    /// Count of open PRs that need review (not draft, no Claude review, no formal review).
-    /// Used by task dispatch to prioritize reviews over new task pickup.
-    pub prs_needing_review: usize,
-    /// PR number → restart count for reviewer assignments.
-    /// Used by stuck reviewer detection to implement backoff.
-    pub reviewer_restart_counts: HashMap<u64, u32>,
-    /// PR numbers for which a reviewer escalation warning has already been posted.
-    /// Prevents the escalation warning from firing every tick after max restarts.
-    pub reviewer_escalations_posted: HashSet<u64>,
-    /// PR numbers for which the lead has already been nudged about an orphaned PR.
-    /// Prevents `reconcile_orphaned_prs` from nudging on every polling tick.
-    #[serde(default)]
-    pub orphaned_pr_lead_nudges_sent: HashSet<u64>,
-    /// GitHub API rate limit state (GraphQL and REST quotas).
-    /// Used by adaptive throttling to reduce polling frequency when quotas run low.
-    pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
-    /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
-    /// This carries the new rate limit state from the API fetch to the decision phase.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
-
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
     pub coworkers_with_unblocked_deps: HashSet<String>,
-
-    // ── Usage limit state ────────────────────────────────────────────────
-    /// Whether a usage-limit nudge is already scheduled.
-    pub usage_limit_nudge_scheduled: bool,
-    /// The scheduled usage-limit nudge time (if any).
-    #[serde(skip)]
-    pub usage_limit_nudge_at: Option<tokio::time::Instant>,
-    /// Coworkers currently at a usage limit (detected from pane content).
-    /// These coworkers should be excluded from stuck detection, idle warnings,
-    /// and task assignment until the limit expires.
-    pub usage_limited_coworkers: HashSet<String>,
-    /// Coworkers currently experiencing API errors (detected from pane content).
-    /// Like usage limits, these should be excluded from stuck detection, but
-    /// unlike usage limits, they should receive periodic nudges to retry.
-    pub api_error_coworkers: HashSet<String>,
-    /// Coworkers currently experiencing authentication errors (OAuth token expired).
-    /// Unlike API errors and usage limits, auth errors require user intervention
-    /// to re-authenticate and will not resolve with retries or time.
-    #[serde(default)]
-    pub auth_error_coworkers: HashSet<String>,
-    /// Coworkers currently experiencing tool name conflicts (duplicate MCP tool names).
-    /// These coworkers need a restart to resolve the conflict.
-    #[serde(default)]
-    pub tool_name_conflict_coworkers: HashSet<String>,
-    /// Coworkers with active in-flight work (pending tool/subagent or pending API turn).
-    /// These sessions are protected from idle shutdown — killing mid-turn can drop responses.
-    #[serde(default)]
-    pub coworkers_with_active_tools: HashSet<String>,
+    /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
+    pub pending_task_owners: HashSet<String>,
 
     // ── Channel state ──────────────────────────────────────────────────
     /// Channels that have already been archived (`.archived.jsonl` exists).
@@ -327,6 +347,7 @@ pub struct WorldSnapshot {
     pub worktree_branch_owners: HashMap<String, String>,
     /// PR number → branch name mapping from the worktree registry for merged PRs.
     /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.
+    #[serde(deserialize_with = "u64_key_map::deserialize")]
     pub merged_pr_branches: HashMap<u64, String>,
 
     // ── Lead session refresh ─────────────────────────────────────────────
@@ -457,7 +478,7 @@ impl WorldSnapshot {
     /// translates to session-ID keys using `name_session_map`.
     pub fn session_health_map(&self) -> HashMap<String, &ProcessHealth> {
         let mut map = HashMap::new();
-        for (name, health) in &self.headless_process_health {
+        for (name, health) in &self.health.headless_process_health {
             if let Some(session_id) = self.name_session_map.get(name) {
                 map.insert(session_id.clone(), health);
             }
@@ -492,10 +513,10 @@ impl WorldSnapshot {
     /// call site (`decide_stuck_coworker_restarts`, `decide_stuck_reviewer_restarts`).
     pub(crate) fn stuck_exemptions(&self) -> crate::rules::StuckExemptions<'_> {
         crate::rules::StuckExemptions {
-            usage_limited: &self.usage_limited_coworkers,
-            api_error: &self.api_error_coworkers,
-            auth_error: &self.auth_error_coworkers,
-            attached: &self.attached_coworkers,
+            usage_limited: &self.health.usage_limited_coworkers,
+            api_error: &self.health.api_error_coworkers,
+            auth_error: &self.health.auth_error_coworkers,
+            attached: &self.coworkers.attached_coworkers,
         }
     }
 
@@ -1045,56 +1066,64 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     let snapshot = WorldSnapshot {
-        active_coworkers,
-        running_coworkers,
-        coworker_snapshots,
-        active_names,
-        active_session_ids,
-        session_name,
-        coworker_start_times,
-        coworker_stop_times,
-        headless_process_health,
-        attached_coworkers,
+        coworkers: SnapshotCoworkerState {
+            active_coworkers,
+            running_coworkers,
+            coworker_snapshots,
+            active_names,
+            active_session_ids,
+            session_name,
+            coworker_start_times,
+            coworker_stop_times,
+            attached_coworkers,
+        },
+        pr: SnapshotPrState {
+            coworkers_with_open_prs,
+            coworkers_with_merged_prs,
+            merged_pr_numbers,
+            ci_passed_pr_coworkers,
+            review_feedback_pr_coworkers,
+            open_prs_data,
+            github_open_pr_task_ids,
+            tasks_with_open_prs,
+            pr_task_associations,
+            orphaned_pr_lead_nudges_sent,
+            github_rate_limit,
+            freshly_fetched_rate_limit: None,
+        },
+        reviewer: SnapshotReviewerState {
+            active_reviewers,
+            reviewing_phase_coworkers,
+            reviewer_pr_assignments,
+            reviewer_in_progress_comment_ids,
+            reviewed_prs,
+            prs_needing_review,
+            reviewer_restart_counts,
+            reviewer_escalations_posted,
+        },
+        health: SnapshotHealthState {
+            headless_process_health,
+            usage_limit_nudge_scheduled,
+            usage_limit_nudge_at,
+            usage_limited_coworkers,
+            api_error_coworkers,
+            auth_error_coworkers,
+            tool_name_conflict_coworkers,
+            coworkers_with_active_tools,
+        },
         in_progress_tasks,
         busy_coworkers,
         coworker_task_assignments,
         all_tasks,
         pending_tasks_with_owners,
         pending_tasks_without_owners,
+        pending_task_owners,
         task_channel,
         task_model_map,
         task_plan_map,
         task_execution_skill_map,
         channel_lead_sessions,
-        coworkers_with_open_prs,
-        coworkers_with_merged_prs,
-        merged_pr_numbers,
-        ci_passed_pr_coworkers,
-        review_feedback_pr_coworkers,
-        open_prs_data,
-        github_open_pr_task_ids,
-        pending_task_owners,
-        tasks_with_open_prs,
-        pr_task_associations,
-        active_reviewers,
-        reviewing_phase_coworkers,
-        reviewer_pr_assignments,
-        reviewer_in_progress_comment_ids,
-        reviewed_prs,
-        prs_needing_review,
-        reviewer_restart_counts,
-        reviewer_escalations_posted,
-        orphaned_pr_lead_nudges_sent,
-        github_rate_limit,
-        freshly_fetched_rate_limit: None,
         coworkers_with_unblocked_deps,
-        usage_limit_nudge_scheduled,
-        usage_limit_nudge_at,
-        usage_limited_coworkers,
-        api_error_coworkers,
-        auth_error_coworkers,
-        tool_name_conflict_coworkers,
-        coworkers_with_active_tools,
         archived_channels,
         channel_messages,
         daemon_logs,
@@ -1138,54 +1167,26 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 #[cfg(test)]
 pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
     WorldSnapshot {
-        active_coworkers: vec![],
-        running_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_names: HashSet::new(),
-        active_session_ids: HashSet::new(),
-        session_name: "test".to_string(),
-        coworker_start_times: HashMap::new(),
-        coworker_stop_times: HashMap::new(),
-        headless_process_health: HashMap::new(),
-        attached_coworkers: HashMap::new(),
+        coworkers: SnapshotCoworkerState {
+            session_name: "test".to_string(),
+            ..Default::default()
+        },
+        pr: SnapshotPrState::default(),
+        reviewer: SnapshotReviewerState::default(),
+        health: SnapshotHealthState::default(),
         coworker_task_assignments: HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         all_tasks: vec![],
         pending_tasks_with_owners: vec![],
         pending_tasks_without_owners: vec![],
+        pending_task_owners: HashSet::new(),
         task_channel: HashMap::new(),
         task_model_map: HashMap::new(),
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
-        coworkers_with_open_prs: HashSet::new(),
-        coworkers_with_merged_prs: HashSet::new(),
-        merged_pr_numbers: HashSet::new(),
-        ci_passed_pr_coworkers: HashSet::new(),
-        review_feedback_pr_coworkers: HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: HashMap::new(),
-        pending_task_owners: HashSet::new(),
-        tasks_with_open_prs: HashMap::new(),
-        pr_task_associations: HashMap::new(),
-        active_reviewers: HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: HashMap::new(),
-        reviewer_in_progress_comment_ids: HashMap::new(),
-        reviewed_prs: HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: HashMap::new(),
-        reviewer_escalations_posted: HashSet::new(),
-        orphaned_pr_lead_nudges_sent: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: HashSet::new(),
-        api_error_coworkers: HashSet::new(),
-        auth_error_coworkers: HashSet::new(),
-        tool_name_conflict_coworkers: HashSet::new(),
-        coworkers_with_active_tools: HashSet::new(),
         archived_channels: HashSet::new(),
         channel_messages: vec![],
         daemon_logs: vec![],
@@ -1201,8 +1202,6 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),
