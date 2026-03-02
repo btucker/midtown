@@ -625,6 +625,23 @@ fn main() {
         eprintln!("Warning: --task is ignored when a subcommand is provided");
     }
 
+    // Coworker screenshot — runs locally (Playwright + HTTP upload, no daemon RPC needed)
+    if let Commands::Coworker {
+        command:
+            Some(CoworkerCommand::Screenshot {
+                url,
+                output,
+                before,
+                after,
+            }),
+        ..
+    } = &command
+    {
+        let result = cli::handle_coworker_screenshot(url, output.as_deref(), *before, *after);
+        handle_result(format, result);
+        return;
+    }
+
     // Chat command (no daemon required - standalone TUI)
     if let Commands::Chat = &command {
         if let Err(e) = cli::handle_chat() {

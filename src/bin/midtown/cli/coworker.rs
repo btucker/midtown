@@ -55,6 +55,20 @@ pub enum CoworkerCommand {
         #[arg(short, long)]
         message: Option<String>,
     },
+    /// Take a screenshot of a URL using Playwright
+    Screenshot {
+        /// URL to screenshot
+        url: String,
+        /// Output filename (default: screenshot.png)
+        #[arg(long, short)]
+        output: Option<String>,
+        /// Label as a "before" screenshot (auto-names file)
+        #[arg(long, conflicts_with = "after")]
+        before: bool,
+        /// Label as an "after" screenshot (auto-names file)
+        #[arg(long, conflicts_with = "before")]
+        after: bool,
+    },
 }
 
 pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -77,6 +91,10 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::View { name } => handle_view(name, client),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
+        CoworkerCommand::Screenshot { .. } => {
+            // Handled before daemon connection in main.rs
+            unreachable!("Screenshot is handled locally without daemon connection")
+        }
     }
 }
 
@@ -90,6 +108,103 @@ fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     };
     let rendered = super::session_render::render_ansi(&raw);
     Ok(Response::message(rendered.trim_end().to_string()))
+}
+
+/// Take a screenshot of a URL using Playwright, upload it, and return
+/// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
+///
+/// Does not require a daemon connection — runs Playwright locally and
+/// uploads via HTTP to the webhook port.
+pub fn handle_screenshot(
+    url: &str,
+    output: Option<&str>,
+    before: bool,
+    after: bool,
+) -> Result<Response, String> {
+    // Determine output filename
+    let filename = if let Some(name) = output {
+        name.to_string()
+    } else if before {
+        "before.png".to_string()
+    } else if after {
+        "after.png".to_string()
+    } else {
+        "screenshot.png".to_string()
+    };
+
+    // Write to a temp file first
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(&filename);
+
+    // Run Playwright to capture the screenshot
+    eprintln!("Capturing screenshot of {}...", url);
+    let playwright_output = std::process::Command::new("npx")
+        .args(["playwright@latest", "screenshot", "--browser", "chromium"])
+        .arg(url)
+        .arg(&tmp_path)
+        .output()
+        .map_err(|e| format!("Failed to run npx playwright: {}. Is Node.js installed?", e))?;
+
+    if !playwright_output.status.success() {
+        let stderr = String::from_utf8_lossy(&playwright_output.stderr);
+        let stdout = String::from_utf8_lossy(&playwright_output.stdout);
+        return Err(format!(
+            "Playwright screenshot failed:\n{}\n{}",
+            stderr.trim(),
+            stdout.trim()
+        ));
+    }
+
+    // Verify the file was created
+    if !tmp_path.exists() {
+        return Err("Playwright did not produce a screenshot file".to_string());
+    }
+
+    // Upload to the daemon's webhook API
+    let webhook_port =
+        std::env::var("MIDTOWN_WEBHOOK_PORT").unwrap_or_else(|_| "47023".to_string());
+    let upload_url = format!("http://127.0.0.1:{}/api/upload", webhook_port);
+
+    let file_bytes =
+        std::fs::read(&tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+
+    let form = reqwest::blocking::multipart::Form::new().part(
+        "file",
+        reqwest::blocking::multipart::Part::bytes(file_bytes)
+            .file_name(filename.clone())
+            .mime_str("image/png")
+            .map_err(|e| format!("Failed to set MIME type: {}", e))?,
+    );
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post(&upload_url)
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Failed to upload screenshot: {}. Is the daemon running?", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(format!("Upload failed (HTTP {}): {}", status, body));
+    }
+
+    let upload_result: serde_json::Value = response
+        .json()
+        .map_err(|e| format!("Failed to parse upload response: {}", e))?;
+
+    let path = upload_result
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or("Upload response missing 'path' field")?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&tmp_path);
+
+    // Return the [Attached: /path] markdown
+    let attached = format!("[Attached: {}]", path);
+    eprintln!("Screenshot uploaded: {}", path);
+    Ok(Response::message(attached))
 }
 
 /// Boot a headed (interactive terminal) coworker session for a task.
