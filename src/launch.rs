@@ -265,8 +265,13 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// Channel leads are coordinators and domain experts — they scope work and create
 /// tasks, but never implement code. This list is passed as `--disallowedTools` to
 /// the Claude CLI, providing hard enforcement that the LLM cannot bypass.
+///
+/// Note: `Bash` is intentionally NOT included because channel leads need it for
+/// coordination commands (`midtown task create`, `midtown channel post`, etc.).
+/// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
+/// modify code", which is sufficient since Edit/Write are hard-blocked here.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
-    ["Edit", "Write", "Bash", "NotebookEdit"]
+    ["Edit", "Write", "NotebookEdit"]
         .iter()
         .map(|s| s.to_string())
         .collect()
@@ -1310,8 +1315,10 @@ mod tests {
         let tools = channel_lead_disallowed_tools();
         assert!(tools.contains(&"Edit".to_string()));
         assert!(tools.contains(&"Write".to_string()));
-        assert!(tools.contains(&"Bash".to_string()));
         assert!(tools.contains(&"NotebookEdit".to_string()));
+        // Bash is intentionally NOT blocked — channel leads need it for
+        // coordination commands (midtown task create, midtown channel post, etc.)
+        assert!(!tools.contains(&"Bash".to_string()));
     }
 
     #[test]
@@ -1331,8 +1338,8 @@ mod tests {
             "Channel lead should disallow Write"
         );
         assert!(
-            headless.disallowed_tools.contains(&"Bash".to_string()),
-            "Channel lead should disallow Bash"
+            !headless.disallowed_tools.contains(&"Bash".to_string()),
+            "Channel lead should NOT disallow Bash (needed for midtown CLI commands)"
         );
         assert!(
             headless

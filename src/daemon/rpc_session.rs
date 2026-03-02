@@ -1159,8 +1159,8 @@ pub(super) async fn create_fork_session(
         s2n.get(calling_session_id).cloned()
     };
 
-    // Look up the channel lead session info to get working_dir and channel.
-    let (working_dir, channel, auth_provider) = {
+    // Look up the calling session info to get working_dir, channel, and role.
+    let (working_dir, channel, auth_provider, is_channel_lead) = {
         let ps = state.persistent_state.lock().await;
         // Try direct session_id lookup first, then fall back to name-based lookup.
         let record = ps.sessions.get(calling_session_id).or_else(|| {
@@ -1180,6 +1180,7 @@ pub(super) async fn create_fork_session(
                     wd,
                     r.channel.clone(),
                     r.provider.unwrap_or(crate::auth::AuthProvider::Claude),
+                    r.coworker_type == "channel-lead",
                 )
             }
             None => {
@@ -1188,7 +1189,7 @@ pub(super) async fn create_fork_session(
                     caller, calling_session_id
                 );
                 // Fall back to repo root and no channel
-                (None, None, crate::auth::AuthProvider::Claude)
+                (None, None, crate::auth::AuthProvider::Claude, false)
             }
         }
     };
@@ -1273,9 +1274,14 @@ pub(super) async fn create_fork_session(
             _ => Some(uuid::Uuid::new_v4().to_string()),
         },
         fork_session: true,
-        // Channel lead forks inherit the parent's read-only restriction.
-        // Hard-enforce via --disallowedTools so the fork cannot write code.
-        disallowed_tools: crate::launch::channel_lead_disallowed_tools(),
+        // Only apply tool restrictions when forking a channel lead session.
+        // Non-channel-lead forks (e.g. explicit `midtown session fork` from a
+        // coworker) should inherit the parent's full tool access.
+        disallowed_tools: if is_channel_lead {
+            crate::launch::channel_lead_disallowed_tools()
+        } else {
+            vec![]
+        },
     };
 
     // Spawn the forked session.
