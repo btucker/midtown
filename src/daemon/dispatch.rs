@@ -1884,9 +1884,9 @@ pub(super) fn spawn_for_pending_tasks(
     spawn_for_pending_tasks_excluding(snap, state, &std::collections::HashSet::new())
 }
 
-/// Handles two cases:
-/// 1. Pending tasks with owners - spawn/nudge the assigned coworker if not running
-/// 2. Pending tasks without owners - spawn a new coworker, assign the task, and nudge
+/// Dispatches pending tasks in two phases:
+/// 1. Owned pending tasks — spawn/nudge the assigned coworker if not running
+/// 2. Unowned pending tasks — resolve a coworker name, assign ownership, and spawn
 ///
 /// `excluded_task_ids`: Task IDs already claimed by orphan recovery in this tick.
 /// Pending dispatch skips these to avoid dual-spawn when a task appears in both
@@ -1896,7 +1896,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
     state: &DaemonState,
     excluded_task_ids: &std::collections::HashSet<String>,
 ) -> Vec<effects::Effect> {
-    // Skip task assignment if daemon is draining (graceful shutdown in progress)
     if state.draining.load(std::sync::atomic::Ordering::SeqCst) {
         debug!("Daemon is draining, skipping task assignment");
         return Vec::new();
@@ -1907,24 +1906,40 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         snap.running_coworkers.len()
     );
 
-    let mut effects = Vec::new();
+    let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap, state);
 
-    // Track coworkers spawned/assigned across both Case 1 (owned tasks) and
-    // Case 2 (unowned tasks) to prevent the same coworker from being targeted
-    // by both cases in a single tick. Case 1 inserts on spawn, Case 2 checks
-    // this set in addition to its own names_assigned_this_tick.
+    effects.extend(dispatch_unowned_pending_tasks(
+        snap,
+        state,
+        excluded_task_ids,
+        &coworkers_dispatched_this_tick,
+    ));
+
+    effects
+}
+
+// ============================================================================
+// Owned pending tasks (Case 1)
+// ============================================================================
+
+/// Handle pending tasks that already have an owner assigned but whose coworker
+/// is not running. Spawns or nudges the assigned coworker as appropriate.
+///
+/// With the daemon-managed task.claim flow, this case is rare (claims set
+/// both owner and in_progress directly). It mainly handles backward compatibility
+/// with pre-existing tasks or tasks where the Lead manually set an owner.
+///
+/// Returns effects and the set of coworker names dispatched (for cross-case
+/// deduplication with `dispatch_unowned_pending_tasks`).
+fn dispatch_owned_pending_tasks(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> (Vec<effects::Effect>, HashSet<String>) {
+    let mut effects = Vec::new();
     let mut coworkers_dispatched_this_tick: HashSet<String> = HashSet::new();
 
-    // Case 1: Pending tasks with owners assigned but coworker not running.
-    // With the daemon-managed task.claim flow, this case is rare (claims set
-    // both owner and in_progress directly). It mainly handles backward compatibility
-    // with pre-existing tasks or tasks where the Lead manually set an owner.
-    let pending_with_owners = &snap.pending_tasks_with_owners;
-    for (task_id, task_subject, owner) in pending_with_owners.iter() {
+    for (task_id, task_subject, owner) in snap.pending_tasks_with_owners.iter() {
         // Skip tasks whose explicit PR field references a merged PR.
-        // This indicates the task's work is IN that PR (not just about it).
-        // Pattern matching task descriptions would cause false positives when
-        // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
         if let Some(pr_num) = get_merged_task_pr(task_id, &snap.all_tasks, &snap.merged_pr_numbers)
         {
             info!(
@@ -1943,8 +1958,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         }
 
         // Skip tasks that already have an in-flight spawn from a previous tick.
-        // This prevents cross-tick duplicate spawns when the spawn takes longer
-        // than one tick interval to complete (same mechanism as Case 2).
         if state.is_task_spawn_in_flight(task_id) {
             debug!(
                 "Task !{} already has in-flight spawn, skipping duplicate",
@@ -1955,8 +1968,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
 
         // Skip if this owner is already assigned to THIS SPECIFIC TASK.
         // Prevents nudge loops where the same pending-with-owner task gets
-        // re-nudged every time the 300s cooldown expires. Once a task is assigned,
-        // it stays assigned until the coworker completes it or shuts down.
+        // re-nudged every time the 300s cooldown expires.
         if snap
             .coworker_task_assignments
             .get(&owner.to_lowercase())
@@ -1969,28 +1981,18 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             continue;
         }
 
-        // Check nudge cooldown for this task
         let task_key = format!("pending-{}", task_id);
         let on_nudge_cooldown = {
             let cooldowns = state.cooldowns.lock().unwrap();
             !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
         };
 
-        // Check if the owner is an active reviewer (reviewers should not be nudged
-        // about main task list updates — they have their own review assignments)
         let is_owner_reviewer = snap.active_reviewers.contains(&owner.to_lowercase());
-
-        // Check if the owner already has an in_progress task (one-task-per-coworker invariant).
-        // Uses the pre-computed busy_coworkers HashSet (O(1)) rather than scanning
-        // in_progress_tasks (O(n)), following the snapshot pre-computation pattern.
         let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
-
-        // Channel leads are not managed by the coworker dispatch loop — skip their tasks.
         let is_channel_lead = snap
             .channel_lead_sessions
             .contains_key(&owner.to_lowercase());
 
-        // Decide action using pure decision function
         let action = crate::rules::decide_pending_task_action(
             task_id,
             task_subject,
@@ -2045,7 +2047,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 task_subject: ref subj,
             } => {
                 // Skip if we already spawned this coworker in this tick.
-                // Prevents duplicate spawns when multiple pending tasks have the same owner.
                 if coworkers_dispatched_this_tick.contains(&o.to_lowercase()) {
                     debug!(
                         "Already spawned {} this tick — skipping duplicate spawn for task !{}",
@@ -2070,14 +2071,10 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     Some(prompt),
                 );
                 config.working_dir = Some(wt.path);
-
-                // Apply task model if available (sets both provider and model)
                 config.apply_task_model(&snap.task_model_map, tid);
 
-                // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
                 effects.extend(wt.pre_spawn_effects);
 
-                // Post-spawn success effects
                 // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
                 // can track this spawn across ticks and prevent duplicate spawns if
                 // the spawn takes longer than one tick interval to complete.
@@ -2108,7 +2105,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                     on_failure: vec![],
                 });
 
-                // Mark this coworker as spawned to prevent duplicate spawns in this tick
                 coworkers_dispatched_this_tick.insert(o.to_lowercase());
             }
             crate::rules::PendingTaskAction::Skip { ref reason } => {
@@ -2117,14 +2113,76 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         }
     }
 
-    // Case 2: Pending tasks without owners - assign ownership atomically, then spawn
-    let pending_unowned = &snap.pending_tasks_without_owners;
+    (effects, coworkers_dispatched_this_tick)
+}
+
+// ============================================================================
+// Unowned pending tasks (Case 2)
+// ============================================================================
+
+/// Resolve a coworker name for an unowned task by checking grouping strategies.
+///
+/// Priority: in-memory PR map > in-memory blockedBy map > disk PR owner >
+///           disk blockedBy relationship > None (allocate fresh name).
+fn resolve_grouped_name(
+    task: &crate::tasks::Task,
+    all_tasks: &[crate::tasks::Task],
+    pr_coworker_map: &HashMap<String, String>,
+    task_coworker_map: &HashMap<String, String>,
+) -> Option<String> {
+    // Strategy A: Extract PR number from subject or description
+    if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
+        if let Some(name) = pr_coworker_map.get(&pr_num) {
+            info!(
+                "Task !{} references PR #{} - assigning to in-memory owner {}",
+                task.id, pr_num, name
+            );
+            return Some(name.clone());
+        }
+        if let Some(existing_owner) = crate::tasks::find_pr_owner_in_tasks(&pr_num, all_tasks) {
+            info!(
+                "Task !{} references PR #{} - assigning to existing owner {}",
+                task.id, pr_num, existing_owner
+            );
+            return Some(existing_owner);
+        }
+    }
+
+    // Strategy B: Check blockedBy relationships
+    for blocked_by_id in &task.blocked_by {
+        if let Some(name) = task_coworker_map.get(blocked_by_id) {
+            info!(
+                "Task !{} blocked by #{} - assigning to same owner {}",
+                task.id, blocked_by_id, name
+            );
+            return Some(name.clone());
+        }
+    }
+    if let Some(owner) = crate::tasks::find_owner_via_blocked_by(task, all_tasks) {
+        info!(
+            "Task !{} blocked by owned task - assigning to {}",
+            task.id, owner
+        );
+        return Some(owner);
+    }
+
+    None
+}
+
+/// Handle pending tasks that have no owner. Resolves a coworker name (via PR/blockedBy
+/// grouping or fresh allocation), assigns ownership atomically, and spawns.
+///
+/// `owned_dispatched`: Coworker names already dispatched by `dispatch_owned_pending_tasks`,
+/// used to prevent the same coworker from being targeted by both phases in a single tick.
+fn dispatch_unowned_pending_tasks(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+    excluded_task_ids: &std::collections::HashSet<String>,
+    owned_dispatched: &HashSet<String>,
+) -> Vec<effects::Effect> {
+    let mut effects = Vec::new();
 
     // Log PR review priority state for diagnostics, but never block task dispatch.
-    // Previously this did `return effects` which created a deadlock: idle coworkers
-    // sat with no work while the daemon waited for a reviewer to be spawned.
-    // Reviewer spawning is handled independently in pr.rs — it doesn't need task
-    // dispatch to be deferred.
     let active_review_count = snap.active_reviewers.len();
     let prs_with_reviewers = snap
         .reviewer_pr_assignments
@@ -2139,33 +2197,18 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         );
     }
 
-    // All tasks from snapshot for relationship lookups (blockedBy, PR owner search)
-    let all_tasks = &snap.all_tasks;
-    // Track PR# → coworker and task_id → coworker assignments made during this loop iteration.
-    // This prevents assigning different coworkers to sub-tasks of the same PR review
-    // when multiple sub-tasks are processed in the same tick.
-    let mut pr_coworker_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut task_coworker_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    // Track coworker names assigned within this tick to prevent duplicate assignments.
-    // This handles the case where next_available_name() returns the same name for
-    // two unrelated tasks because the first spawn hasn't executed yet.
+    // Track PR# -> coworker and task_id -> coworker assignments made during this loop.
+    // Prevents assigning different coworkers to sub-tasks of the same PR review.
+    let mut pr_coworker_map: HashMap<String, String> = HashMap::new();
+    let mut task_coworker_map: HashMap<String, String> = HashMap::new();
+    // Track coworker names assigned within this phase to prevent duplicate assignments.
     let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
-    // Track the number of NEW spawns queued in this tick (for dev limit enforcement).
-    // Spawns to already-running coworkers (grouped tasks) don't count — only fresh spawns
-    // that will create new coworker processes.
+    // Track NEW spawns queued (for dev limit enforcement). Nudges to already-running
+    // coworkers (grouped tasks) don't count — only fresh spawns.
     let mut spawns_queued_this_tick: usize = 0;
     // Dev cap = max_coworkers (REVIEW_HEADROOM does NOT reduce dev slots).
-    // Reviewers may exceed max_coworkers by up to REVIEW_HEADROOM via is_at_coworker_limit().
-    // With max=8 and REVIEW_HEADROOM=2: dev_cap=8, reviewer_cap=10.
     let dev_cap = state.max_coworkers;
-    // Use running coworkers from snapshot, not all coworkers from internal map.
-    // The internal map includes stopped coworkers until they're cleaned up, which
-    // incorrectly blocks task dispatch when all coworkers are stopped.
-    // Exclude the lead and channel leads: headless lead and channel lead sessions
-    // register in CoworkerManager but are not dev/reviewer slots. Including them
-    // would incorrectly consume dev slots and cause under-spawning.
+    // Use running coworkers from snapshot (excludes lead and channel leads).
     let channel_lead_names = snap.channel_lead_names();
     let current_coworker_count = snap
         .running_coworkers
@@ -2173,9 +2216,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         .filter(|cw| is_non_lead_coworker(&cw.name, &snap.repo_name, &channel_lead_names))
         .count();
 
-    for task in pending_unowned.iter() {
+    for task in snap.pending_tasks_without_owners.iter() {
         // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
-        // This prevents spawning beyond the dev cap when multiple tasks are processed in one tick.
         let effective_count = current_coworker_count + spawns_queued_this_tick;
         if effective_count >= dev_cap {
             debug!(
@@ -2186,9 +2228,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         }
 
         // Skip tasks already claimed by orphan recovery in this tick.
-        // Orphan recovery and pending dispatch both run on the same snapshot, so a task
-        // can appear as both in_progress (orphaned) and pending simultaneously. Skipping
-        // here prevents dual spawns where two different coworkers target the same task.
         if excluded_task_ids.contains(&task.id) {
             debug!(
                 "Task !{} already claimed by orphan recovery this tick, skipping pending dispatch",
@@ -2198,8 +2237,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         }
 
         // Skip tasks that already have an in-flight AssignAndSpawn effect.
-        // This prevents the race condition where a new tick sees a task as pending
-        // before the previous tick's AssignAndSpawn effect has completed its disk write.
         if state.is_task_spawn_in_flight(&task.id) {
             debug!(
                 "Task !{} already has in-flight spawn, skipping duplicate",
@@ -2209,11 +2246,9 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         }
 
         // Skip tasks whose explicit PR field references a merged PR.
-        // This indicates the task's work is IN that PR (not just about it).
-        // Pattern matching task descriptions would cause false positives when
-        // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
-        if let Some(pr_num) = get_merged_task_pr(&task.id, &snap.all_tasks, &snap.merged_pr_numbers)
-        {
+        // We have the full Task struct here, so check task.pr directly (O(1))
+        // instead of scanning all_tasks by ID like dispatch_owned_pending_tasks does.
+        if let Some(pr_num) = task.pr.filter(|pr| snap.merged_pr_numbers.contains(pr)) {
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
                 task.id, pr_num
@@ -2231,12 +2266,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
 
         // Session-aware dispatch: if this pending task has a stopped session
         // from a previous attempt, resume it instead of spawning fresh.
-        // This preserves context and worktree state from the previous run.
         if let Some(record) = snap.find_session_for_task(&task.id) {
             if !record.is_running {
-                // Check per-session cooldown to prevent crash loops.
-                // Same guard as orphan recovery (line ~817): if a recovery was
-                // recently attempted for this session, skip to avoid spinning.
                 if snap
                     .recently_recovered_session_ids
                     .contains(&record.session_id)
@@ -2308,59 +2339,11 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             }
         }
 
-        // Step 1: Determine the coworker name by checking multiple grouping strategies.
-        // Priority: in-memory PR map → in-memory blockedBy map → disk PR owner →
-        //           blockedBy relationship → new coworker name
-        let grouped_name: Option<String> = 'resolve: {
-            // Strategy A: Extract PR number from subject or description
-            if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
-                // Check in-memory map first (handles same-tick assignments)
-                if let Some(name) = pr_coworker_map.get(&pr_num) {
-                    info!(
-                        "Task !{} references PR #{} - assigning to in-memory owner {}",
-                        task.id, pr_num, name
-                    );
-                    break 'resolve Some(name.clone());
-                }
-                // Check disk for previously assigned PR tasks
-                if let Some(existing_owner) =
-                    crate::tasks::find_pr_owner_in_tasks(&pr_num, all_tasks)
-                {
-                    info!(
-                        "Task !{} references PR #{} - assigning to existing owner {}",
-                        task.id, pr_num, existing_owner
-                    );
-                    break 'resolve Some(existing_owner);
-                }
-            }
+        // Step 1: Determine the coworker name by checking grouping strategies.
+        let grouped_name =
+            resolve_grouped_name(task, &snap.all_tasks, &pr_coworker_map, &task_coworker_map);
 
-            // Strategy B: Check blockedBy relationships
-            // If this task is blocked by a task that was assigned in this loop, use that owner
-            for blocked_by_id in &task.blocked_by {
-                if let Some(name) = task_coworker_map.get(blocked_by_id) {
-                    info!(
-                        "Task !{} blocked by #{} - assigning to same owner {}",
-                        task.id, blocked_by_id, name
-                    );
-                    break 'resolve Some(name.clone());
-                }
-            }
-            // Check disk for blockedBy owners
-            if let Some(owner) = crate::tasks::find_owner_via_blocked_by(task, all_tasks) {
-                info!(
-                    "Task !{} blocked by owned task - assigning to {}",
-                    task.id, owner
-                );
-                break 'resolve Some(owner);
-            }
-
-            None
-        };
-
-        // Step 1b: Use grouped name if found, otherwise allocate a fresh coworker.
-        // We always spawn fresh rather than reusing idle coworkers — idle coworkers
-        // get shut down by the idle check loop, keeping the lifecycle simple:
-        // spawn → work → PR → idle → shutdown.
+        // Use grouped name if found, otherwise allocate a fresh coworker.
         let was_grouped = grouped_name.is_some();
         let coworker_name = if let Some(name) = grouped_name {
             name
@@ -2377,39 +2360,23 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             name
         };
 
-        // Check if this coworker is already running (grouped to an active coworker)
         let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
-
-        // Check if this coworker is an active reviewer (reviewers should not
-        // receive dev task assignments — they have their own review work)
         let is_coworker_reviewer = snap
             .active_reviewers
             .contains(&coworker_name.to_lowercase());
-
-        // Check if this coworker is already busy with an assigned task.
-        // Split into three sources: persistent busyness (from snapshot),
-        // same-tick assignments (from this Case 2 loop), and cross-case
-        // dispatches (from Case 1's pending-with-owners spawns).
         let is_busy_from_snapshot = snap.busy_coworkers.contains(&coworker_name.to_lowercase());
-        let assigned_this_tick_case2 =
-            names_assigned_this_tick.contains(&coworker_name.to_lowercase());
-        let dispatched_by_case1 =
-            coworkers_dispatched_this_tick.contains(&coworker_name.to_lowercase());
+        let assigned_this_tick = names_assigned_this_tick.contains(&coworker_name.to_lowercase());
 
-        // Always skip if Case 1 already dispatched this coworker — it will pick up
-        // grouped tasks after spawning. This check applies regardless of grouping.
-        if dispatched_by_case1 {
+        // Skip if owned-task dispatch already dispatched this coworker.
+        if owned_dispatched.contains(&coworker_name.to_lowercase()) {
             debug!(
-                "Task !{}: skipping {} (already dispatched by Case 1 pending-with-owners)",
+                "Task !{}: skipping {} (already dispatched by owned pending tasks)",
                 task.id, coworker_name
             );
             continue;
         }
 
         // Skip if this coworker is already assigned to THIS SPECIFIC TASK.
-        // Prevents nudge/spawn loops where grouped tasks get re-assigned every tick
-        // because the busy check is bypassed for grouped tasks. The coworker may be
-        // busy with this exact task from a previous tick's assignment.
         if snap
             .coworker_task_assignments
             .get(&coworker_name.to_lowercase())
@@ -2425,11 +2392,10 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // Skip running coworkers that are busy or reviewing.
         // Grouped tasks (same PR, blockedBy) are allowed to go to coworkers
         // that are busy from *previous ticks* (cross-tick grouping).
-        // However, always skip if already assigned *this tick* — one nudge
-        // per coworker per tick is sufficient, even for grouped tasks.
+        // However, always skip if already assigned *this tick*.
         if already_running
             && (is_coworker_reviewer
-                || assigned_this_tick_case2
+                || assigned_this_tick
                 || (is_busy_from_snapshot && !was_grouped))
         {
             debug!(
@@ -2437,18 +2403,20 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 task.id,
                 coworker_name,
                 is_busy_from_snapshot,
-                assigned_this_tick_case2,
+                assigned_this_tick,
                 is_coworker_reviewer,
                 was_grouped
             );
             continue;
         }
 
-        // For fresh-spawn names (not grouped), prevent assigning multiple tasks
-        // to the same not-yet-spawned coworker within the same tick.
-        if !already_running && (assigned_this_tick_case2 || is_busy_from_snapshot) && !was_grouped {
+        // For not-yet-running coworkers, prevent assigning multiple tasks to the
+        // same coworker within the same tick. One spawn per coworker per tick is
+        // sufficient — grouped tasks are allowed to bypass the busy check for
+        // *already-running* coworkers (nudge path above) but not for fresh spawns.
+        if !already_running && (assigned_this_tick || is_busy_from_snapshot) {
             debug!(
-                "Task !{}: skipping {} (already assigned this tick)",
+                "Task !{}: skipping {} (not running, already assigned this tick or busy)",
                 task.id, coworker_name
             );
             continue;
@@ -2460,22 +2428,17 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         );
 
         // Record this assignment in in-memory maps for same-tick grouping.
-        // These are ephemeral — they only coordinate decisions within this tick.
-        // The actual disk write happens in the effect executor.
         task_coworker_map.insert(task.id.clone(), coworker_name.clone());
         if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
-        coworkers_dispatched_this_tick.insert(coworker_name.to_lowercase());
 
         // Build plan section before branching — both paths may need it.
         let plan_section = build_plan_prompt_section(&task.id, snap);
 
         if already_running {
-            // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
-            // The coworker runs `midtown task claim`, which writes ownership directly
-            // via the daemon's RPC handler.
+            // Coworker is already running (grouped task) — nudge to claim.
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
@@ -2516,7 +2479,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 on_success: assign_callbacks,
             });
         } else {
-            // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
+            // Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
             let prompt =
                 crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
@@ -2529,8 +2492,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
             );
             config.working_dir = Some(wt.path);
             config.channel = task.channel.clone();
-
-            // Apply task model if available (sets both provider and model)
             config.apply_task_model(&snap.task_model_map, &task.id);
 
             let channel_msg = daemon_messages::called_in_assigned_task(
@@ -2539,10 +2500,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 &task.subject,
             );
 
-            // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
             effects.extend(wt.pre_spawn_effects);
 
-            // Post-spawn success effects
             let mut on_success = vec![
                 Effect::BindCoworkerToWorktree {
                     worktree_id: wt.worktree_id,
@@ -2577,7 +2536,6 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 on_success,
                 on_failure: vec![],
             });
-            // Increment spawn counter to enforce dev limit within this tick
             spawns_queued_this_tick += 1;
         }
     }
