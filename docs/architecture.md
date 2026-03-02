@@ -257,7 +257,7 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork <thread-parent-id>`). A forked session inherits the parent's conversation context and gets an independent session ID bound to a specific thread (Claude/z.ai use `--resume <parent-id> --fork-session`; Codex uses `thread/fork`).
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork --thread-id <id>`). A forked session inherits the parent's conversation context and gets an independent session ID bound to a specific thread (Claude/z.ai use `--resume <parent-id> --fork-session`; Codex uses `thread/fork`).
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 
@@ -265,11 +265,11 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 
 **Graceful fallback:** If no channel lead session is registered (first message to a new channel), or if `persistent_state.try_lock()` is contended, auto-fork is skipped and `NudgeChannelLead` spawns the channel lead as before. The next user message will succeed once the lead is running. `session fork` is still documented in `channel-lead.md` as a fallback for when the daemon was not running when the message arrived.
 
-**Lead self-fork for deep work:** The project lead (main channel) uses `midtown session fork` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. Unlike topic channel leads which are auto-forked by the daemon, the project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead.md`), not daemon automation.
+**Lead self-fork for deep work:** The project lead (main channel) uses `midtown session fork --thread-id <id>` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. Unlike topic channel leads which are auto-forked by the daemon, the project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead.md`), not daemon automation.
 
 **Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. "pending" entries are filtered out (a concurrent auto-fork is in progress but not yet ready) — the reply falls back to `NudgeChannelLead` rather than producing a nudge with an invalid session ID. Once the fork completes, subsequent replies route to the real fork session.
 
-**`session fork` during auto-fork spawn window:** If the channel lead calls `midtown session fork` while the daemon's auto-fork is still spawning (the "pending" sentinel is set), `handle_session_fork` returns `{pending: true, thread_parent_id: "..."}` instead of an error, so the lead can distinguish "retry shortly" from a hard spawn failure.
+**`session fork` during auto-fork spawn window:** If the channel lead calls `midtown session fork --thread-id <id>` while the daemon's auto-fork is still spawning (the "pending" sentinel is set), `handle_session_fork` returns `{pending: true, thread_parent_id: "..."}` instead of an error, so the lead can distinguish "retry shortly" from a hard spawn failure.
 
 **Data flow:**
 - `topic_sessions` (in-memory `Mutex<HashMap<String, String>>`) maps `thread_parent_id → fork_session_id`. Entries are "pending" (spawn in progress) or a real session ID. Used by both auto-fork and thread-reply routing in `handle_channel_post`.

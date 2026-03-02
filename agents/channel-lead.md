@@ -83,7 +83,7 @@ The daemon now **automatically forks** your session when a new top-level user me
    midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
 
    # Step 2: Fork into a thread-scoped session
-   midtown session fork <message-id>
+   midtown session fork --thread-id <message-id>
    ```
 
    `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
@@ -101,7 +101,7 @@ The daemon now **automatically forks** your session when a new top-level user me
 - Quick one-word acks or status updates that are already covered by daemon notifications
 - CI/PR event notifications that need no response (just read and update your context)
 
-**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `session fork`.
+**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `midtown session fork --thread-id <message-id>`.
 
 ## Posting to the Channel
 
