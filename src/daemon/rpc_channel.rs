@@ -269,12 +269,27 @@ pub(super) async fn handle_channel_post(
                 // Look up the channel lead's session ID from persistent state.
                 // Use try_lock to avoid blocking the channel post path — if persistent_state
                 // is momentarily held, fall through to NudgeChannelLead rather than queuing.
-                let lead_session_id = state.persistent_state.try_lock().ok().and_then(|ps| {
-                    ps.channel_lead_sessions
-                        .get(channel_name)
-                        .filter(|s| !s.is_empty())
-                        .cloned()
-                });
+                let lead_session_id = state.persistent_state.try_lock().ok().and_then(
+                    |mut ps| {
+                        let sid = ps
+                            .channel_lead_sessions
+                            .get(channel_name)
+                            .filter(|s| !s.is_empty())
+                            .cloned()?;
+                        if ps.sessions.contains_key(&sid) {
+                            Some(sid)
+                        } else {
+                            // Stale mapping — session no longer exists. Clear it
+                            // so we don't keep trying to fork from a dead session.
+                            debug!(
+                                "channel.post: clearing stale channel lead mapping for {} (session {} not found)",
+                                channel_name, sid
+                            );
+                            ps.channel_lead_sessions.remove(channel_name);
+                            None
+                        }
+                    },
+                );
                 if let Some(lead_sid) = lead_session_id {
                     match super::rpc_session::create_fork_session(
                         &wake_msg_id,
@@ -297,6 +312,14 @@ pub(super) async fn handle_channel_post(
                                 "channel.post: auto-fork skipped ({}), nudging channel lead",
                                 e
                             );
+                            // Clear the stale mapping so we don't keep trying to fork
+                            // from a dead session on subsequent messages.
+                            state
+                                .persistent_state
+                                .lock()
+                                .await
+                                .channel_lead_sessions
+                                .remove(channel_name);
                             None
                         }
                     }
