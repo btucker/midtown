@@ -312,14 +312,6 @@ pub(super) async fn handle_channel_post(
                                 "channel.post: auto-fork skipped ({}), nudging channel lead",
                                 e
                             );
-                            // Clear the stale mapping so we don't keep trying to fork
-                            // from a dead session on subsequent messages.
-                            state
-                                .persistent_state
-                                .lock()
-                                .await
-                                .channel_lead_sessions
-                                .remove(channel_name);
                             None
                         }
                     }
