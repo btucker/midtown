@@ -630,7 +630,9 @@ fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.in_progress_tasks = in_progress_tasks;
-    snap.pr_task_associations.insert(100u64, "100".to_string());
+    snap.pr
+        .pr_task_associations
+        .insert(100u64, "100".to_string());
 
     // PR 100 is in the open list
     let open_pr_numbers = vec![100u64];
@@ -679,11 +681,15 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
     snap.all_tasks = vec![task];
 
     // PR associations: both PRs are associated with the same task
-    snap.pr_task_associations.insert(968u64, "1158".to_string()); // merged PR
-    snap.pr_task_associations.insert(999u64, "1158".to_string()); // duplicate PR (closed)
+    snap.pr
+        .pr_task_associations
+        .insert(968u64, "1158".to_string()); // merged PR
+    snap.pr
+        .pr_task_associations
+        .insert(999u64, "1158".to_string()); // duplicate PR (closed)
 
     // PR #968 is merged, PR #999 is NOT merged
-    snap.merged_pr_numbers.insert(968u64);
+    snap.pr.merged_pr_numbers.insert(968u64);
 
     // PR 100 is NOT in open list, but it IS in merged list
     let open_pr_numbers = vec![];
@@ -1123,8 +1129,8 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     });
 
     let mut snap = minimal_snapshot_for_test();
-    snap.open_prs_data = vec![pr_data];
-    snap.reviewed_prs.insert(42);
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(42);
 
     // First tick: Lead has not been nudged yet
     let effects1 = reconcile_orphaned_prs(&snap);
@@ -1149,7 +1155,7 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     );
 
     // Simulate the nudge has been recorded (orphaned_pr_lead_nudges_sent contains PR #42)
-    snap.orphaned_pr_lead_nudges_sent.insert(42);
+    snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
 
     // Second tick: Lead has already been nudged
     let effects2 = reconcile_orphaned_prs(&snap);
@@ -1188,14 +1194,16 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     });
 
     let mut snap = minimal_snapshot_for_test();
-    snap.open_prs_data = vec![pr_data];
-    snap.reviewed_prs.insert(42);
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(42);
 
     // Simulate: lead was already nudged about this PR
-    snap.orphaned_pr_lead_nudges_sent.insert(42);
+    snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
 
     // A task now exists for this PR (PR left orphaned state)
-    snap.pr_task_associations.insert(42, "task-abc".to_string());
+    snap.pr
+        .pr_task_associations
+        .insert(42, "task-abc".to_string());
 
     // Tick: PR has a task, nudge record should be cleared
     let effects_with_task = reconcile_orphaned_prs(&snap);
@@ -1214,8 +1222,8 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     );
 
     // Simulate effect applied: nudge record cleared, task gone (task completed without merge)
-    snap.orphaned_pr_lead_nudges_sent.remove(&42);
-    snap.pr_task_associations.remove(&42);
+    snap.pr.orphaned_pr_lead_nudges_sent.remove(&42);
+    snap.pr.pr_task_associations.remove(&42);
 
     // Tick: PR is orphaned again — lead should be re-nudged
     let effects_re_orphaned = reconcile_orphaned_prs(&snap);
@@ -1509,11 +1517,11 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     });
 
     let mut snap = minimal_snapshot_for_test();
-    snap.open_prs_data = vec![pr_data];
-    snap.reviewed_prs.insert(43);
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(43);
 
     // PR #43 has an active task association — it is NOT orphaned
-    snap.pr_task_associations.insert(43, "999".to_string());
+    snap.pr.pr_task_associations.insert(43, "999".to_string());
 
     // Call reconcile_orphaned_prs
     let effects = reconcile_orphaned_prs(&snap);
@@ -1779,7 +1787,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     // Verify the snapshot captures the bug scenario:
     // park is running and task 1483 has no worktree entry.
     assert!(
-        snap.active_names.contains("park"),
+        snap.coworkers.active_names.contains("park"),
         "Snapshot should show park as an active coworker"
     );
     let task_1483_worktree = snap
@@ -1815,7 +1823,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     let effects = collect_reviewer_effects_with_source(
         Some(&branch_owners),
         &snap.worktree_registry, // Real snapshot registry: no task 1483 entry
-        &snap.active_names,      // Real snapshot active_names: includes "park"
+        &snap.coworkers.active_names, // Real snapshot active_names: includes "park"
         &state,
         &[pr],
         crate::github_state::AssignmentSource::PollingFallback,
@@ -2044,7 +2052,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
     let mut snap = minimal_snapshot_for_test();
 
     // Set up session data: PR #42 → task "123" → session "sess-abc" → current_name "madison"
-    snap.pr_task_associations = [(42, "123".to_string())].into_iter().collect();
+    snap.pr.pr_task_associations = [(42, "123".to_string())].into_iter().collect();
     snap.session_task_map = [("123".to_string(), "sess-abc".to_string())]
         .into_iter()
         .collect();
@@ -2069,8 +2077,8 @@ async fn test_poll_prs_session_based_owner_resolution() {
     snap.worktree_branch_owners = [("lexington/fix-auth".to_string(), "madison".to_string())]
         .into_iter()
         .collect();
-    snap.active_names = ["madison".to_string()].into_iter().collect();
-    snap.active_coworkers = vec![crate::coworker::Coworker {
+    snap.coworkers.active_names = ["madison".to_string()].into_iter().collect();
+    snap.coworkers.active_coworkers = vec![crate::coworker::Coworker {
         slot_id: "test-slot".to_string(),
         name: "madison".to_string(),
         status: crate::coworker::CoworkerStatus::Running,
@@ -2082,7 +2090,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
         provider: crate::auth::AuthProvider::default(),
         profile: "default".to_string(),
     }];
-    snap.running_coworkers = snap.active_coworkers.clone();
+    snap.coworkers.running_coworkers = snap.coworkers.active_coworkers.clone();
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
     // Populate name→session mapping so nudge effects get the correct session_id
@@ -2906,7 +2914,9 @@ fn test_collect_pr_task_link_effects_links_unlinked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.github_open_pr_task_ids.insert("100".to_string(), 42);
+    snap.pr
+        .github_open_pr_task_ids
+        .insert("100".to_string(), 42);
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -2950,7 +2960,9 @@ fn test_collect_pr_task_link_effects_skips_already_linked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.github_open_pr_task_ids.insert("200".to_string(), 99);
+    snap.pr
+        .github_open_pr_task_ids
+        .insert("200".to_string(), 99);
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -3002,7 +3014,9 @@ fn test_collect_pr_task_link_effects_skips_completed_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.github_open_pr_task_ids.insert("400".to_string(), 88);
+    snap.pr
+        .github_open_pr_task_ids
+        .insert("400".to_string(), 88);
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -3034,7 +3048,9 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.github_open_pr_task_ids.insert("300".to_string(), 77); // actual open PR
+    snap.pr
+        .github_open_pr_task_ids
+        .insert("300".to_string(), 77); // actual open PR
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -3415,7 +3431,8 @@ fn augment_reviewer_ignores_reviewing_phase_without_assignment() {
     // Coworker "lexington" is in Reviewing phase,
     // but the reviewer_pr_assignments has been cleared.
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewing_phase_coworkers
+    snap.reviewer
+        .reviewing_phase_coworkers
         .insert("lexington".to_string());
     // reviewer_pr_assignments is empty — no PR-specific evidence
 
@@ -3437,7 +3454,8 @@ fn augment_reviewer_catches_assignment_without_reviewing_phase() {
     // Assignment exists for "lexington" → PR 42, but they aren't in
     // reviewing_phase_coworkers yet (e.g., just started, haven't set workflow phase).
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("lexington".to_string(), pr_number);
     // reviewing_phase_coworkers is empty
 
@@ -3458,9 +3476,11 @@ fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
 
     // "lexington" is reviewing PR 99, not PR 42
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewing_phase_coworkers
+    snap.reviewer
+        .reviewing_phase_coworkers
         .insert("lexington".to_string());
-    snap.reviewer_pr_assignments
+    snap.reviewer
+        .reviewer_pr_assignments
         .insert("lexington".to_string(), 99);
 
     ctx.augment_reviewer_from_snapshot(pr_number, &snap);

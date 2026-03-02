@@ -729,11 +729,11 @@ After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted t
 
 When a reviewer is restarted (stuck or dead) and had previously posted a "Review in progress" placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
 
-**WorldSnapshot fields:**
-- `reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by `decide_stuck_reviewer_restarts` to select the shorter stuck threshold for placeholder PRs, and by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
-- `reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR.
-- `reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
-- `recently_recovered_session_ids: HashSet<String>` — Session IDs for which a recovery was recently attempted and succeeded. Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed by session ID) so decision functions stay pure. Used by both `dispatch_via_sessions` (Path 1) and `spawn_for_pending_tasks` (Path 2) to skip re-recovery when a session dies quickly after being recovered, preventing log spam on every 5s tick.
+**WorldSnapshot fields** (reviewer fields are in the `reviewer: SnapshotReviewerState` sub-struct):
+- `reviewer.reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by `decide_stuck_reviewer_restarts` to select the shorter stuck threshold for placeholder PRs, and by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
+- `reviewer.reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR.
+- `reviewer.reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
+- `recently_recovered_session_ids: HashSet<String>` — (top-level) Session IDs for which a recovery was recently attempted and succeeded. Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed by session ID) so decision functions stay pure. Used by both `dispatch_via_sessions` (Path 1) and `spawn_for_pending_tasks` (Path 2) to skip re-recovery when a session dies quickly after being recovered, preventing log spam on every 5s tick.
 
 **DaemonState fields:**
 - `reviewer_placeholder_cache: Mutex<HashMap<u64, (Option<u64>, Instant)>>` — Cache for `pr_in_progress_placeholder_comment_id()` lookups. Maps PR number to `(comment_id_or_none, checked_at)`. Both positive and negative entries expire after `PLACEHOLDER_CACHE_TTL_SECS` (120s). Cleared when `mark_reviewed_pr()` is called to ensure freshness after a review is posted.
@@ -763,10 +763,10 @@ Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluate
 `check_and_shutdown_idle_coworkers()` (in `src/daemon/health.rs`) runs every `SessionMonitorTick` and hands a `rules::IdleShutdownContext` the information it needs to decide which sessions can safely be stopped. The context bundles a number of protection sets built in `collect_world_snapshot()`:
 
 - `busy_coworkers`, `pending_task_owners`, and `coworkers_with_unblocked_deps` keep coworkers alive while they have active work or downstream dependents.
-- `coworkers_with_open_prs` stay running until CI passes and review feedback (if any) is handled.
-- `active_reviewers` keep their review assignment while `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` (30 min) has not elapsed.
-- `usage_limited_coworkers`, `api_error_coworkers`, and `auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
-- `coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
+- `pr.coworkers_with_open_prs` stay running until CI passes and review feedback (if any) is handled.
+- `reviewer.active_reviewers` keep their review assignment while `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` (30 min) has not elapsed.
+- `health.usage_limited_coworkers`, `health.api_error_coworkers`, and `health.auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
+- `health.coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
 
 Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME` (90 seconds — increased from 60s because session startup takes 40-60s, and a 60s guard could expire before initialization completes), and are not the lead session (named after the repo) are eligible for idle shutdown.
 

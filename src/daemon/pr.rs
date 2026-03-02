@@ -243,15 +243,15 @@ impl PrContext {
 
         // Signal A: any coworker assigned to this PR in the snapshot
         let has_snapshot_assignment = snap
+            .reviewer
             .reviewer_pr_assignments
             .iter()
             .any(|(_, &assigned_pr)| assigned_pr == pr_number);
 
         // Signal B: any coworker in Reviewing phase assigned to this PR
-        let has_reviewing_phase = snap
-            .reviewing_phase_coworkers
-            .iter()
-            .any(|name| snap.reviewer_pr_assignments.get(name).copied() == Some(pr_number));
+        let has_reviewing_phase = snap.reviewer.reviewing_phase_coworkers.iter().any(|name| {
+            snap.reviewer.reviewer_pr_assignments.get(name).copied() == Some(pr_number)
+        });
 
         self.has_active_reviewer = has_snapshot_assignment || has_reviewing_phase;
     }
@@ -448,10 +448,10 @@ pub(super) fn detect_abandoned_pr_tasks(
     let mut effects = Vec::new();
 
     // Check each PR with an associated task ID
-    for (pr_number, task_id) in &snap.pr_task_associations {
+    for (pr_number, task_id) in &snap.pr.pr_task_associations {
         // PR is closed if it's not in the open set and wasn't merged
         let is_closed = !open_set.contains(pr_number);
-        let is_merged = snap.merged_pr_numbers.contains(pr_number);
+        let is_merged = snap.pr.merged_pr_numbers.contains(pr_number);
 
         if is_closed && !is_merged {
             // Check if the task is still in_progress (not already completed)
@@ -475,18 +475,19 @@ pub(super) fn detect_abandoned_pr_tasks(
 
                     // Check if any other PR associated with this task was merged
                     let has_merged_sibling =
-                        snap.pr_task_associations
+                        snap.pr
+                            .pr_task_associations
                             .iter()
                             .any(|(other_pr, other_task_id)| {
                                 other_task_id == task_id
                                     && other_pr != pr_number
-                                    && snap.merged_pr_numbers.contains(other_pr)
+                                    && snap.pr.merged_pr_numbers.contains(other_pr)
                             });
 
                     // Check if task.pr field points to a merged PR
                     let task_pr_merged = task
                         .and_then(|t| t.pr)
-                        .map(|pr| snap.merged_pr_numbers.contains(&pr))
+                        .map(|pr| snap.pr.merged_pr_numbers.contains(&pr))
                         .unwrap_or(false);
 
                     task_completed || has_merged_sibling || task_pr_merged
@@ -513,7 +514,7 @@ pub(super) fn detect_abandoned_pr_tasks(
 fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pr_number,
-        &snap.pr_task_associations,
+        &snap.pr.pr_task_associations,
         &snap.session_task_map,
         &snap.sessions,
     )
@@ -603,6 +604,7 @@ async fn cleanup_pr_tracking_state(
         // Backfill reviewer_session_id for assignments created before the session
         // started (optimistic assignment pattern: assign before spawn completes).
         let reviewer_session_map: HashMap<String, String> = snap
+            .coworkers
             .running_coworkers
             .iter()
             .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
@@ -929,6 +931,7 @@ pub(super) async fn poll_prs_for_issues(
 
     // Get list of active coworkers from snapshot (consistent with other tick handlers)
     let active_coworkers: Vec<String> = snap
+        .coworkers
         .active_coworkers
         .iter()
         .map(|c| c.name.clone())
@@ -951,22 +954,28 @@ pub(super) async fn poll_prs_for_issues(
         .map(|(_, owner)| owner.to_lowercase())
         .collect();
     let running_coworker_names: HashSet<String> = snap
+        .coworkers
         .running_coworkers
         .iter()
         .map(|c| c.name.clone())
         .filter(|name| {
             review_branch_owners.contains(&name.to_lowercase())
-                && !snap.usage_limited_coworkers.contains(&name.to_lowercase())
+                && !snap
+                    .health
+                    .usage_limited_coworkers
+                    .contains(&name.to_lowercase())
         })
         .collect();
     // Build session ID set for same reviewer-subset — enables session-based matching
     // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
     let running_reviewer_session_ids: HashSet<String> = snap
+        .coworkers
         .running_coworkers
         .iter()
         .filter(|c| {
             review_branch_owners.contains(&c.name.to_lowercase())
                 && !snap
+                    .health
                     .usage_limited_coworkers
                     .contains(&c.name.to_lowercase())
         })
@@ -2526,7 +2535,7 @@ async fn collect_reviewer_effects(
     collect_reviewer_effects_with_source(
         Some(&snap.worktree_branch_owners),
         &snap.worktree_registry,
-        &snap.active_names,
+        &snap.coworkers.active_names,
         state,
         prs,
         crate::github_state::AssignmentSource::PollingFallback,
@@ -3231,7 +3240,7 @@ pub(super) async fn process_pending_review_spawns(
         let effects = collect_reviewer_effects_with_source(
             Some(&branch_owners),
             &snap.worktree_registry,
-            &snap.active_names,
+            &snap.coworkers.active_names,
             state,
             &[pr],
             crate::github_state::AssignmentSource::Webhook,
@@ -4470,7 +4479,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Iterate over open PRs from the snapshot (pre-collected during collect_world_snapshot)
-    for pr in &snap.open_prs_data {
+    for pr in &snap.pr.open_prs_data {
         let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
             Some(n) => n,
             None => continue,
@@ -4494,20 +4503,20 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
         // Skip if there's already an in_progress task linked to this PR.
         // If we previously nudged the lead about this PR, clear the record so
         // re-nudging is possible if the task later completes without merging.
-        if snap.pr_task_associations.contains_key(&pr_number) {
-            if snap.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
+        if snap.pr.pr_task_associations.contains_key(&pr_number) {
+            if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
                 effects.push(Effect::ClearOrphanedPrLeadNudge { pr_number });
             }
             continue;
         }
 
         // Skip if the lead has already been nudged about this PR (prevents repeated nudges)
-        if snap.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
+        if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
             continue;
         }
 
         // Check if PR has been reviewed
-        if !snap.reviewed_prs.contains(&pr_number) {
+        if !snap.reviewer.reviewed_prs.contains(&pr_number) {
             continue;
         }
 
@@ -4563,7 +4572,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for (task_id_str, &pr_number) in &snap.github_open_pr_task_ids {
+    for (task_id_str, &pr_number) in &snap.pr.github_open_pr_task_ids {
         // Find the task by ID
         let task = snap.all_tasks.iter().find(|t| &t.id == task_id_str);
 
@@ -4597,7 +4606,7 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Use pre-computed PR → branch mapping from snapshot
-    for &pr_num in &snap.merged_pr_numbers {
+    for &pr_num in &snap.pr.merged_pr_numbers {
         if let Some(branch) = snap.merged_pr_branches.get(&pr_num) {
             debug!(
                 "PR #{} merged, scheduling worktree cleanup for branch {}",

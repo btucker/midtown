@@ -3,8 +3,6 @@
 //! These tests verify that the dev spawn cap equals max_coworkers and that
 //! REVIEW_HEADROOM allows reviewers to exceed max_coworkers (not reduce dev slots).
 
-use std::collections::{HashMap, HashSet};
-
 use crate::daemon::constants::REVIEW_HEADROOM;
 
 #[test]
@@ -129,84 +127,12 @@ fn make_dev_limit_snapshot(
 ) -> crate::daemon::snapshot::WorldSnapshot {
     let active_names: std::collections::HashSet<String> =
         running.iter().map(|cw| cw.name.to_lowercase()).collect();
-    crate::daemon::snapshot::WorldSnapshot {
-        running_coworkers: running,
-        is_at_dev_limit,
-        active_names,
-        pending_tasks_without_owners: pending_tasks,
-        active_coworkers: vec![],
-        coworker_snapshots: vec![],
-        active_session_ids: std::collections::HashSet::new(),
-        session_name: "midtown-test".to_string(),
-        coworker_start_times: std::collections::HashMap::new(),
-        coworker_stop_times: std::collections::HashMap::new(),
-        headless_process_health: std::collections::HashMap::new(),
-        attached_coworkers: std::collections::HashMap::new(),
-        in_progress_tasks: vec![],
-        busy_coworkers: std::collections::HashSet::new(),
-        coworker_task_assignments: std::collections::HashMap::new(),
-        all_tasks: vec![],
-        pending_tasks_with_owners: vec![],
-        task_channel: std::collections::HashMap::new(),
-        task_model_map: std::collections::HashMap::new(),
-        task_plan_map: std::collections::HashMap::new(),
-        task_execution_skill_map: std::collections::HashMap::new(),
-        channel_lead_sessions: std::collections::HashMap::new(),
-        coworkers_with_open_prs: std::collections::HashSet::new(),
-        coworkers_with_merged_prs: std::collections::HashSet::new(),
-        merged_pr_numbers: std::collections::HashSet::new(),
-        ci_passed_pr_coworkers: std::collections::HashSet::new(),
-        review_feedback_pr_coworkers: std::collections::HashSet::new(),
-        open_prs_data: vec![],
-        github_open_pr_task_ids: std::collections::HashMap::new(),
-        pending_task_owners: std::collections::HashSet::new(),
-        tasks_with_open_prs: std::collections::HashMap::new(),
-        pr_task_associations: std::collections::HashMap::new(),
-        active_reviewers: std::collections::HashSet::new(),
-        reviewing_phase_coworkers: HashSet::new(),
-        reviewer_pr_assignments: std::collections::HashMap::new(),
-        reviewer_in_progress_comment_ids: std::collections::HashMap::new(),
-        reviewed_prs: std::collections::HashSet::new(),
-        prs_needing_review: 0,
-        reviewer_restart_counts: std::collections::HashMap::new(),
-        reviewer_escalations_posted: std::collections::HashSet::new(),
-        orphaned_pr_lead_nudges_sent: std::collections::HashSet::new(),
-        coworkers_with_unblocked_deps: std::collections::HashSet::new(),
-        usage_limit_nudge_scheduled: false,
-        usage_limit_nudge_at: None,
-        usage_limited_coworkers: std::collections::HashSet::new(),
-        api_error_coworkers: std::collections::HashSet::new(),
-        auth_error_coworkers: std::collections::HashSet::new(),
-        tool_name_conflict_coworkers: std::collections::HashSet::new(),
-        coworkers_with_active_tools: std::collections::HashSet::new(),
-        channel_messages: vec![],
-        archived_channels: std::collections::HashSet::new(),
-        daemon_logs: vec![],
-        lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        tasks_with_worktrees: std::collections::HashSet::new(),
-        task_worktree_map: std::collections::HashMap::new(),
-        worktree_branch_owners: std::collections::HashMap::new(),
-        merged_pr_branches: std::collections::HashMap::new(),
-        worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
-        now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
-        default_channel: "test-repo".to_string(),
-        repo_owner: None,
-        github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
-        freshly_fetched_rate_limit: None,
-        sessions: HashMap::new(),
-        session_task_map: HashMap::new(),
-        session_name_map: HashMap::new(),
-        name_session_map: HashMap::new(),
-        orphan_spawn_cooldown_active: false,
-        session_dispatch_cooldown_active: false,
-        spawn_failure_cooldown_names: std::collections::HashSet::new(),
-        recently_recovered_session_ids: std::collections::HashSet::new(),
-        stale_working_dir_sessions: std::collections::HashSet::new(),
-        session_profile_map: HashMap::new(),
-        limited_pool_profiles: std::collections::HashSet::new(),
-    }
+    let mut snap = crate::daemon::snapshot::minimal_snapshot_for_test();
+    snap.coworkers.running_coworkers = running;
+    snap.coworkers.active_names = active_names;
+    snap.is_at_dev_limit = is_at_dev_limit;
+    snap.pending_tasks_without_owners = pending_tasks;
+    snap
 }
 
 /// Make a test DaemonState with the given max_coworkers setting.

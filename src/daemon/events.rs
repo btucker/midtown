@@ -119,10 +119,10 @@ pub async fn evaluate_tick(
             // run pure cleanup logic (doesn't make API calls, just reads snapshot state).
             let mut effects = Vec::new();
 
-            if snap.github_rate_limit.is_critical() {
+            if snap.pr.github_rate_limit.is_critical() {
                 tracing::warn!(
                     "Skipping PR poll (GitHub API quota critical: {})",
-                    snap.github_rate_limit.summary()
+                    snap.pr.github_rate_limit.summary()
                 );
             } else {
                 // Normal PR polling when quota is not critical
@@ -150,7 +150,7 @@ pub async fn evaluate_tick(
                     let retention_period = chrono::Duration::hours(retention_hours as i64);
                     effects.extend(super::health::check_for_stale_worktrees(
                         &snap.worktree_registry,
-                        &snap.active_names,
+                        &snap.coworkers.active_names,
                         retention_period,
                     ));
                 }
@@ -172,10 +172,10 @@ pub async fn evaluate_tick(
             // The rate limit data was fetched before snapshot collection and passed in
             // via snap.freshly_fetched_rate_limit.
             let mut effects = Vec::new();
-            if let Some(rate_limit) = &snap.freshly_fetched_rate_limit {
+            if let Some(rate_limit) = &snap.pr.freshly_fetched_rate_limit {
                 // Check if state changed (low → critical, critical → recovered, etc.)
-                let was_critical = snap.github_rate_limit.is_critical();
-                let was_low = snap.github_rate_limit.is_low();
+                let was_critical = snap.pr.github_rate_limit.is_critical();
+                let was_low = snap.pr.github_rate_limit.is_low();
                 let now_critical = rate_limit.is_critical();
                 let now_low = rate_limit.is_low();
 

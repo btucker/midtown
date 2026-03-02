@@ -429,10 +429,10 @@ where
 
             should_recover_task(
                 &task,
-                &snap.merged_pr_numbers,
+                &snap.pr.merged_pr_numbers,
                 repo_path,
-                &snap.tasks_with_open_prs,
-                &snap.github_open_pr_task_ids,
+                &snap.pr.tasks_with_open_prs,
+                &snap.pr.github_open_pr_task_ids,
             )
         })
         .cloned()
@@ -448,6 +448,7 @@ where
     // by giving the system time to process the task completion.
     let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
     let recently_stopped: HashSet<String> = snap
+        .coworkers
         .coworker_stop_times
         .iter()
         .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
@@ -458,12 +459,12 @@ where
     let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
-        active_names: &snap.active_names,
+        active_names: &snap.coworkers.active_names,
         at_dev_limit: snap.is_at_dev_limit,
-        coworkers_with_open_prs: &snap.coworkers_with_open_prs,
-        review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+        coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
+        review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
-        attached_coworkers: &snap.attached_coworkers,
+        attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names: &channel_lead_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
@@ -815,7 +816,12 @@ where
         // uses or_insert_with for existing session records, leaving is_running=false even
         // after a successful resume. The live process check ensures we don't loop on the
         // same stopped-session record every tick while the coworker is actually running.
-        if record.is_running || snap.active_session_ids.contains(&record.session_id) {
+        if record.is_running
+            || snap
+                .coworkers
+                .active_session_ids
+                .contains(&record.session_id)
+        {
             debug!(
                 "Task !{} has running session {} -- no recovery needed",
                 task_id, record.session_id
@@ -856,6 +862,7 @@ where
         // A coworker can have a stopped task session AND a running reviewer session.
         // Resuming the task session would interrupt their review work.
         if snap
+            .reviewer
             .active_reviewers
             .contains(&coworker_name.to_lowercase())
         {
@@ -1025,6 +1032,7 @@ where
     // by giving the system time to process the task completion.
     let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
     let recently_stopped: HashSet<String> = snap
+        .coworkers
         .coworker_stop_times
         .iter()
         .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
@@ -1037,12 +1045,12 @@ where
     let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
-        active_names: &snap.active_names,
+        active_names: &snap.coworkers.active_names,
         at_dev_limit: snap.is_at_dev_limit,
-        coworkers_with_open_prs: &snap.coworkers_with_open_prs,
-        review_feedback_pr_coworkers: &snap.review_feedback_pr_coworkers,
+        coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
+        review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
-        attached_coworkers: &snap.attached_coworkers,
+        attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names: &channel_lead_names,
     };
     let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
@@ -1055,10 +1063,10 @@ where
     if let Some(task) = task_lookup(&recovery.task_id)
         && !should_recover_task_optional_repo(
             &task,
-            &snap.merged_pr_numbers,
+            &snap.pr.merged_pr_numbers,
             repo_path,
-            &snap.tasks_with_open_prs,
-            &snap.github_open_pr_task_ids,
+            &snap.pr.tasks_with_open_prs,
+            &snap.pr.github_open_pr_task_ids,
         )
     {
         debug!(
@@ -1421,7 +1429,11 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
         let mut workers_with_times: Vec<(String, Option<chrono::DateTime<chrono::Utc>>)> = workers
             .into_iter()
             .map(|name| {
-                let start_time = snap.coworker_start_times.get(&name.to_lowercase()).copied();
+                let start_time = snap
+                    .coworkers
+                    .coworker_start_times
+                    .get(&name.to_lowercase())
+                    .copied();
                 (name, start_time)
             })
             .collect();
@@ -1903,7 +1915,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
 
     debug!(
         "Task assignment state: active={}",
-        snap.running_coworkers.len()
+        snap.coworkers.running_coworkers.len()
     );
 
     let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap, state);
@@ -1940,7 +1952,8 @@ fn dispatch_owned_pending_tasks(
 
     for (task_id, task_subject, owner) in snap.pending_tasks_with_owners.iter() {
         // Skip tasks whose explicit PR field references a merged PR.
-        if let Some(pr_num) = get_merged_task_pr(task_id, &snap.all_tasks, &snap.merged_pr_numbers)
+        if let Some(pr_num) =
+            get_merged_task_pr(task_id, &snap.all_tasks, &snap.pr.merged_pr_numbers)
         {
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
@@ -1987,7 +2000,10 @@ fn dispatch_owned_pending_tasks(
             !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
         };
 
-        let is_owner_reviewer = snap.active_reviewers.contains(&owner.to_lowercase());
+        let is_owner_reviewer = snap
+            .reviewer
+            .active_reviewers
+            .contains(&owner.to_lowercase());
         let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
         let is_channel_lead = snap
             .channel_lead_sessions
@@ -1997,7 +2013,7 @@ fn dispatch_owned_pending_tasks(
             task_id,
             task_subject,
             owner,
-            &snap.active_names,
+            &snap.coworkers.active_names,
             snap.is_at_dev_limit,
             on_nudge_cooldown,
             is_owner_reviewer,
@@ -2183,17 +2199,21 @@ fn dispatch_unowned_pending_tasks(
     let mut effects = Vec::new();
 
     // Log PR review priority state for diagnostics, but never block task dispatch.
-    let active_review_count = snap.active_reviewers.len();
+    let active_review_count = snap.reviewer.active_reviewers.len();
     let prs_with_reviewers = snap
+        .reviewer
         .reviewer_pr_assignments
         .values()
         .collect::<HashSet<_>>()
         .len();
-    let unserved_prs = snap.prs_needing_review.saturating_sub(prs_with_reviewers);
+    let unserved_prs = snap
+        .reviewer
+        .prs_needing_review
+        .saturating_sub(prs_with_reviewers);
     if unserved_prs > 0 {
         debug!(
             "PR review state: {} unserved PR(s) need review ({} total, {} already have reviewers), {} active reviewers — task dispatch proceeds independently",
-            unserved_prs, snap.prs_needing_review, prs_with_reviewers, active_review_count
+            unserved_prs, snap.reviewer.prs_needing_review, prs_with_reviewers, active_review_count
         );
     }
 
@@ -2211,6 +2231,7 @@ fn dispatch_unowned_pending_tasks(
     // Use running coworkers from snapshot (excludes lead and channel leads).
     let channel_lead_names = snap.channel_lead_names();
     let current_coworker_count = snap
+        .coworkers
         .running_coworkers
         .iter()
         .filter(|cw| is_non_lead_coworker(&cw.name, &snap.repo_name, &channel_lead_names))
@@ -2248,7 +2269,7 @@ fn dispatch_unowned_pending_tasks(
         // Skip tasks whose explicit PR field references a merged PR.
         // We have the full Task struct here, so check task.pr directly (O(1))
         // instead of scanning all_tasks by ID like dispatch_owned_pending_tasks does.
-        if let Some(pr_num) = task.pr.filter(|pr| snap.merged_pr_numbers.contains(pr)) {
+        if let Some(pr_num) = task.pr.filter(|pr| snap.pr.merged_pr_numbers.contains(pr)) {
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
                 task.id, pr_num
@@ -2360,8 +2381,12 @@ fn dispatch_unowned_pending_tasks(
             name
         };
 
-        let already_running = snap.active_names.contains(&coworker_name.to_lowercase());
+        let already_running = snap
+            .coworkers
+            .active_names
+            .contains(&coworker_name.to_lowercase());
         let is_coworker_reviewer = snap
+            .reviewer
             .active_reviewers
             .contains(&coworker_name.to_lowercase());
         let is_busy_from_snapshot = snap.busy_coworkers.contains(&coworker_name.to_lowercase());
@@ -2621,7 +2646,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
         if let Some(pr_number) = task.pr {
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
-            if snap.merged_pr_numbers.contains(&pr_number) {
+            if snap.pr.merged_pr_numbers.contains(&pr_number) {
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.repo_name,
@@ -2655,7 +2680,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
             // Check if ALL referenced PRs are merged
             let all_merged = pr_numbers
                 .iter()
-                .all(|pr_num| snap.merged_pr_numbers.contains(pr_num));
+                .all(|pr_num| snap.pr.merged_pr_numbers.contains(pr_num));
 
             if all_merged {
                 let pr_list = pr_numbers
@@ -2740,6 +2765,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // conflicting effects for the same task in the same tick.
     let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
     let recently_stopped: HashSet<String> = snap
+        .coworkers
         .coworker_stop_times
         .iter()
         .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
@@ -2757,8 +2783,8 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         // protected from reset even when only the GitHub source has them.
         // NOTE: This guard must fire before the ownerless check so that ownerless tasks
         // with open PRs are also protected.
-        if snap.tasks_with_open_prs.contains_key(task_id)
-            || snap.github_open_pr_task_ids.contains_key(task_id)
+        if snap.pr.tasks_with_open_prs.contains_key(task_id)
+            || snap.pr.github_open_pr_task_ids.contains_key(task_id)
         {
             continue;
         }
@@ -2772,6 +2798,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             && let Ok(pr_num) = pr_num_str.parse::<u64>()
         {
             let pr_is_open = snap
+                .pr
                 .open_prs_data
                 .iter()
                 .any(|pr| pr.get("number").and_then(|n| n.as_u64()) == Some(pr_num));
@@ -2800,7 +2827,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         }
 
         // Only reset if the owner is NOT active (already shut down / on break)
-        if snap.active_names.contains(&owner_clean) {
+        if snap.coworkers.active_names.contains(&owner_clean) {
             continue;
         }
 

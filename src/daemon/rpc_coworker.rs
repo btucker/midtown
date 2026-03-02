@@ -377,8 +377,8 @@ pub(super) async fn handle_coworker_report_state(
         // going idle. This prevents the case where a reviewer calls `midtown state idle`
         // before completing their review (e.g., thinking they're done but forgot to post).
         let pre_snap = snapshot::collect_world_snapshot(state).await;
-        if let Some(&pr_number) = pre_snap.reviewer_pr_assignments.get(name)
-            && !pre_snap.reviewed_prs.contains(&pr_number)
+        if let Some(&pr_number) = pre_snap.reviewer.reviewer_pr_assignments.get(name)
+            && !pre_snap.reviewer.reviewed_prs.contains(&pr_number)
         {
             warn!(
                 "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",

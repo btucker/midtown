@@ -2635,7 +2635,8 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
 
     // For RateLimitCheckTick, fetch fresh rate limit data before evaluation
     if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
-        snap.freshly_fetched_rate_limit = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+        snap.pr.freshly_fetched_rate_limit =
+            crate::github_rate_limit::GitHubRateLimit::fetch().await;
     }
 
     let tick_effects = events::evaluate_tick(event, &snap, state).await;
