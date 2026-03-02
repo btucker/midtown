@@ -739,13 +739,15 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
 /// Resolve a session ID to its coworker name and deliver a nudge message.
 ///
 /// Shared implementation for `NudgeSession` and `NudgeSessionWithCallbacks`.
-/// Returns `true` on successful delivery, `false` on failure (name not found
-/// or send error). On success, the nudge is recorded for attribution tracking.
+/// Returns `None` on failure (name not found or send error). On success,
+/// the nudge is recorded for attribution tracking and an optional
+/// `PostToChannel` effect is returned for the caller to execute — posting
+/// the nudge content to the coworker's DM channel for observability.
 async fn send_session_nudge(
     state: &DaemonState,
     session_id: &str,
     reason: &super::wake_reason::WakeReason,
-) -> bool {
+) -> Option<Vec<Effect>> {
     let name = state
         .session_to_name
         .lock()
@@ -757,17 +759,31 @@ async fn send_session_nudge(
             "NudgeSession: no name found for session {} — cannot deliver",
             session_id
         );
-        return false;
+        return None;
     };
     let msg = reason.to_nudge_message();
     match state.session_manager.send_message(&name, &msg).await {
         Ok(()) => {
             state.record_pending_nudge(&name, &msg);
-            true
+
+            // Build a PostToChannel effect for the coworker's DM channel.
+            // Only for real coworkers (pool names like "lexington"), not fork sessions
+            // ("lexington-web-push-a1b2") or other ephemeral sessions.
+            // Skip DmFromUser — the user's message is already in the DM channel
+            // (written by rpc_channel.rs before the nudge effect was created).
+            let mut follow_up = Vec::new();
+            if !reason.already_in_dm_channel() && crate::coworker::is_coworker_name(&name) {
+                follow_up.push(Effect::PostToChannel {
+                    sender: reason.sender().to_owned(),
+                    message: msg,
+                    channel: Some(format!("dm-{}", name)),
+                });
+            }
+            Some(follow_up)
         }
         Err(e) => {
             warn!("Failed to nudge session {}: {}", session_id, e);
-            false
+            None
         }
     }
 }
@@ -2831,7 +2847,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::NudgeSession { session_id, reason } => {
-                send_session_nudge(state, &session_id, &reason).await;
+                if let Some(follow_up) = send_session_nudge(state, &session_id, &reason).await {
+                    Box::pin(execute_effects(follow_up, state)).await;
+                }
             }
             Effect::NudgeSessionWithCallbacks {
                 session_id,
@@ -2851,8 +2869,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     })
                     .collect();
 
-                if send_session_nudge(state, &session_id, &reason).await {
-                    Box::pin(execute_effects(on_success, state)).await;
+                if let Some(follow_up) = send_session_nudge(state, &session_id, &reason).await {
+                    let mut all = on_success;
+                    all.extend(follow_up);
+                    Box::pin(execute_effects(all, state)).await;
                 }
                 // Clear in-flight markers regardless of success/failure
                 for task_id in &task_ids {

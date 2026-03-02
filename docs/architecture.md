@@ -580,6 +580,7 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
 ```
 
 - **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`.
+- **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
 - **Session separator**: When `SpawnSession` spawns a non-reviewer coworker, a `PostSystemMessage` separator (e.g., "─── Task !42: Fix auth bug ───") is posted to `dm-<name>` to visually delineate session boundaries. Reviewer sessions skip DM separators since they are ephemeral PR-scoped sessions.
 - **Reviewer exclusion**: Reviewer sessions do not stream output to DM channels and do not receive DM separators, keeping the DM channel system focused on persistent dev coworkers.
 
