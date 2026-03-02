@@ -15,10 +15,12 @@
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
   import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
+  import SearchPalette from '$lib/SearchPalette.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
+  import SearchIcon from '@lucide/svelte/icons/search'
 
   $effect(() => {
     if ($theme === 'dark') {
@@ -30,6 +32,14 @@
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
   let projectDropdownOpen = $state(false)
+  let searchOpen = $state(false)
+
+  function handleKeydown(e) {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      e.preventDefault()
+      searchOpen = !searchOpen
+    }
+  }
 
   // DM channel detection for tab bar filtering
   let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
@@ -111,6 +121,8 @@
 
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <svelte:head>
   <title>Midtown</title>
   <meta name="theme-color" content={$theme === 'dark' ? '#0a0a0b' : '#ffffff'} />
@@ -119,6 +131,7 @@
 <div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">
   {#if $activeProject}
     <CelebrationEffects />
+    <SearchPalette bind:open={searchOpen} />
     <SidebarProvider>
       <SwipeGestures />
       <Sidebar>
@@ -156,6 +169,13 @@
             {:else}
               <h1>Midtown</h1>
             {/if}
+            <button
+              class="theme-toggle"
+              onclick={() => searchOpen = true}
+              title="Search messages (⌘K)"
+            >
+              <SearchIcon size={16} />
+            </button>
             <button
               data-testid="theme-toggle"
               class="theme-toggle"
@@ -204,6 +224,13 @@
             {/if}
           </div>
           <MiniRepoStatus />
+          <button
+            class="mobile-search-btn ml-auto p-1.5 text-muted-foreground hover:text-foreground"
+            onclick={() => searchOpen = true}
+            title="Search messages"
+          >
+            <SearchIcon size={16} />
+          </button>
         </header>
 
         {#if activeView === 'board'}
