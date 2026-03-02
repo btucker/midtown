@@ -171,7 +171,13 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
 
 **Do NOT include numeric scores in @{project_name} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
 
-The threshold filters the PR comment to avoid noise for the PR author, but the lead sees everything. Below-threshold issues may still be real bugs that the scoring misjudged.
+The threshold filters the PR comment to avoid noise for the PR author, but below-threshold issues may still be real bugs that the scoring misjudged — that's why you escalate them to the lead.
+
+**HANDLING LEAD TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, update your existing review comment to include it:
+
+1. Recover your comment ID if needed: `COMMENT_ID=$(gh pr view {pr_number} --json comments --jq '[.comments[] | select(.body | test("midtown: {name}"))] | last | .url' | grep -o '[0-9]*$')`
+2. Edit the comment with `gh api -X PATCH` to append the new issue to the findings list
+3. If the PR was already approved, the new blocker changes the review status — the author will see it in the updated comment
 
 **Progress (100%)**: After posting your final review comment and any @{project_name} notifications:
 ```bash
