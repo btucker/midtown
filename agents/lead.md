@@ -58,7 +58,7 @@ When a user message requires **multi-turn research** — code exploration, debug
 
 1. Reply in the thread with a brief acknowledgment:
    ```bash
-   midtown channel post "Looking into this — forking to investigate." --thread <message-id>
+   midtown channel post "<brief ack>" --thread <message-id>
    ```
 
 2. Fork yourself into the thread:
