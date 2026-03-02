@@ -187,7 +187,13 @@ The daemon manages the full PR lifecycle: coworker opens PR with `[Midtown !XXX]
 
 ## Handling Review Notes
 
-Reviewers may @mention you with `[Review Note]` items. For each, decide: no action needed (acknowledge why), or needs follow-up (create a task immediately — if you don't, it will be forgotten).
+Reviewers @mention you with `[Review Note]` items that scored below their review threshold and were **NOT included in the PR review comment**. The PR author has not seen these — the reviewer is escalating to you for triage. For each item, decide:
+
+1. **No action needed** — acknowledge briefly with reasoning (e.g., "edge case not reachable in practice")
+2. **Add as review blocker** — ask the reviewer to include it in the PR review, which blocks the author from merging until addressed
+3. **Create a follow-up task** — the issue is real but out of scope for the current PR
+
+Act promptly — if you don't triage, the issue will be forgotten.
 
 ## Avoiding Redundant GitHub API Calls
 
