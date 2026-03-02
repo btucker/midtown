@@ -395,7 +395,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 3. **Gate 3 — Feedback addressed**: For each review comment ID in `pr_review_comment_ids`, checks that a subsequent PR comment contains `<!-- addresses-review: {id} -->`. Unaddressed feedback blocks the merge.
 
 **Review comment ID collection**: Review comment database IDs are collected via two paths:
-- **Webhook path** (primary): When `handle_issue_comment` detects a code review (via `is_review_comment()`), the `WebhookEvent.review_comment_id` field carries the comment's database ID. The daemon handler persists it via `add_review_comment_id()`.
+- **Webhook path** (primary): When `handle_issue_comment` or `handle_review_comment` detects a code review (via `is_review_comment()`), the `WebhookEvent.review_comment_id` field carries the comment's database ID. Both handlers also process `"edited"` events to catch the placeholder-then-edit pattern (post a placeholder, then edit it with the final review). Edits to already-posted reviews (e.g. typo fixes) are ignored. The daemon handler persists review comment IDs via `add_review_comment_id()`.
 - **Polling fallback**: When `is_pr_reviewed()` first detects a review via `pr_has_completed_review_uncached()`, it calls `fetch_review_comment_ids()` to retrieve comment IDs from the GitHub REST API.
 
 **State**: `pr_review_comment_ids: HashMap<u64, Vec<u64>>` in `GitHubState` maps PR numbers to lists of review comment database IDs. Persisted in `daemon-state.json`.

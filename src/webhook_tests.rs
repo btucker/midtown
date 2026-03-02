@@ -1264,6 +1264,12 @@ fn test_handle_review_comment_edited_placeholder_to_review() {
     let event = handle_review_comment(&payload).unwrap().unwrap();
     assert_eq!(event.reviewed_pr, Some(77));
     assert_eq!(event.review_comment_id, Some(300));
+    // Edited events should say "posted review (edited)" not "left review comment"
+    assert!(
+        event.message.content.contains("posted review (edited) on"),
+        "edited review message should use 'posted review (edited)' wording, got: {}",
+        event.message.content
+    );
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 77);
     assert_eq!(activity.actor, "park");
@@ -1354,6 +1360,64 @@ fn test_handle_review_comment_edited_no_changes_field() {
     let event = handle_review_comment(&payload).unwrap().unwrap();
     assert_eq!(event.reviewed_pr, Some(77));
     assert_eq!(event.review_comment_id, Some(303));
+}
+
+#[test]
+fn test_handle_review_comment_created_with_review_signature() {
+    // A 'created' review comment with a code review signature should
+    // populate reviewed_pr, review_author, and review_comment_id.
+    let payload = serde_json::json!({
+        "action": "created",
+        "pull_request": {
+            "number": 88,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 400,
+            "user": {"login": "btucker"},
+            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - ship it!"
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let event = handle_review_comment(&payload).unwrap().unwrap();
+    assert_eq!(event.reviewed_pr, Some(88));
+    assert_eq!(event.review_author.as_deref(), Some("park"));
+    assert_eq!(event.review_comment_id, Some(400));
+    // Created events should use the original "left review comment" wording
+    assert!(
+        event.message.content.contains("left review comment on"),
+        "created review message should use 'left review comment' wording, got: {}",
+        event.message.content
+    );
+}
+
+#[test]
+fn test_handle_review_comment_created_without_review_signature() {
+    // A 'created' review comment without a review signature should NOT
+    // populate reviewed_pr or review_comment_id (it's a regular inline comment).
+    let payload = serde_json::json!({
+        "action": "created",
+        "pull_request": {
+            "number": 88,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 401,
+            "user": {"login": "reviewer"},
+            "body": "Consider using a match here instead."
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let event = handle_review_comment(&payload).unwrap().unwrap();
+    assert_eq!(event.reviewed_pr, None);
+    assert_eq!(event.review_author, None);
+    assert_eq!(event.review_comment_id, None);
 }
 
 #[test]

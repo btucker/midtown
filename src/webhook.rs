@@ -62,9 +62,10 @@ pub struct WebhookEvent {
     /// marking the PR as reviewed. Prevents bot comments from triggering
     /// premature "reviewed and CI green" alerts.
     pub review_author: Option<String>,
-    /// The database ID of the review comment (issue comment) that triggered `reviewed_pr`.
+    /// The database ID of the comment that triggered `reviewed_pr`.
     /// Used to populate `pr_review_comment_ids` for Gate 3 merge gating.
-    /// Only set for issue comments that are code reviews (not formal GitHub reviews).
+    /// Set by `handle_issue_comment` and `handle_review_comment` when a code
+    /// review signature is detected (not set for formal GitHub reviews).
     pub review_comment_id: Option<u64>,
     /// A formal review state change (approved / changes_requested) — triggers immediate
     /// nudge of the PR owner instead of waiting for the next polling cycle.
@@ -1036,9 +1037,14 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     let clean_body = strip_frontmatter(&event.comment.body);
     let preview = truncate_comment(&clean_body, 50);
 
+    let verb = if is_edited {
+        "posted review (edited) on"
+    } else {
+        "left review comment on"
+    };
     let action_text = format!(
-        "{} left review comment on PR #{}: {}",
-        commenter, event.pull_request.number, preview
+        "{} {} PR #{}: {}",
+        commenter, verb, event.pull_request.number, preview
     );
 
     // Check if this comment is a Claude code review (for review status caching)
