@@ -143,15 +143,20 @@
     tick().then(() => resizeTextarea())
   })
 
-  // Clear thinking when real InProgress tool items arrive — check both thread-scoped
-  // items (for forked leads) and channel-scoped items (for channel leads / DM channels).
+  // Clear thinking when real InProgress tool items arrive.
+  // When a fork is handling the thread, its tool calls land in threadToolItems — use
+  // those exclusively to avoid channel-lead crosstalk (the original bug). When no fork
+  // exists (threadToolItems empty), the channel lead handles the reply and its tool
+  // events go to agentToolItems — fall back to those so the thinking indicator clears.
   $effect(() => {
     const parentId = $threadData?.parentMessage?.id
     const channelName = $threadData?.channelName ?? 'midtown'
     const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
     const channelItems = $agentToolItems[channelName] || []
-    const hasInProgress = threadItems.some((item) => item.status === 'InProgress')
-      || channelItems.some((item) => item.status === 'InProgress')
+    // Prefer thread-scoped items when a fork is active (any items present);
+    // fall back to channel items when no fork has produced thread tool calls.
+    const items = threadItems.length > 0 ? threadItems : channelItems
+    const hasInProgress = items.some((item) => item.status === 'InProgress')
     if (hasInProgress) {
       thinking = false
       if (thinkingTimeout) {

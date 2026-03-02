@@ -798,4 +798,66 @@ describe('handleUpdate universal_items — thread_parent_id routes to threadTool
     vi.advanceTimersByTime(3000)
     expect(get(threadToolItems)['msg-9999']).toHaveLength(2)
   })
+
+  it('does not clear thread tool items when a non-fork sender posts a thread reply', () => {
+    // Bug 1 regression: the thread-clear guard checked `msg.from !== 'user'`,
+    // so ANY non-user sender (coworker, lead) posting to the thread would
+    // prematurely clear the fork's tool display. Only the fork that owns the
+    // thread's tool items should trigger the clear.
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+
+    // A coworker (not the fork) posts a reply in the same thread
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-cw', from: 'manhattan', content: 'noted', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    // Advance well past the clear delay — items must NOT be cleared
+    vi.advanceTimersByTime(10000)
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+  })
+
+  it('does not clear thread tool items when the lead posts a thread reply', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+
+    // The lead posts in the thread (not the fork)
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-lead', from: 'lead', content: 'checking in', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    vi.advanceTimersByTime(10000)
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+  })
+
+  it('clears thread tool items only when the owning fork posts a reply', () => {
+    // Setup: fork-abcd owns the thread tool items
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+
+    // Non-fork reply — should NOT trigger clear
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-cw', from: 'manhattan', content: 'hey', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:01Z' },
+    })
+    vi.advanceTimersByTime(10000)
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+
+    // Fork's own reply — SHOULD trigger clear after delay
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-fork', from: 'fork-abcd', content: 'done!', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:02Z' },
+    })
+    vi.advanceTimersByTime(5000)
+    expect(get(threadToolItems)['msg-9999']).toBeUndefined()
+  })
 })
