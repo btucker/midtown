@@ -504,6 +504,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         if app.focused_pane == FocusedPane::InputBar
                             && !app.input_text.is_empty()
                             && !app.channel_switcher.show
+                            && !app.search.show
                         {
                             if app.input_cursor > 0 {
                                 let byte_idx =
@@ -523,7 +524,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                             }
                             // Preserve kill chain even on no-op (cursor at pos 0)
                             app.last_was_kill = true;
-                        } else if !app.channel_switcher.show {
+                        } else if !app.channel_switcher.show && !app.search.show {
                             // Input is empty or not in InputBar: half-page scroll up.
                             app.half_page_up();
                         }
@@ -532,7 +533,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     KeyCode::Char('w') => {
                         // Ctrl+W: kill previous word (only in InputBar,
                         // not when channel switcher is open)
-                        if app.focused_pane == FocusedPane::InputBar && !app.channel_switcher.show {
+                        if app.focused_pane == FocusedPane::InputBar
+                            && !app.channel_switcher.show
+                            && !app.search.show
+                        {
                             if app.input_cursor > 0 {
                                 let chars: Vec<char> = app.input_text.chars().collect();
                                 let mut pos = app.input_cursor;
@@ -593,6 +597,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         if app.focused_pane == FocusedPane::InputBar
                             && !app.input_text.is_empty()
                             && !app.channel_switcher.show
+                            && !app.search.show
                         {
                             if app.input_cursor < app.input_text.chars().count() {
                                 let byte_idx =
@@ -600,7 +605,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.input_text.remove(byte_idx);
                                 app.detect_autocomplete_trigger();
                             }
-                        } else if !app.channel_switcher.show {
+                        } else if !app.channel_switcher.show && !app.search.show {
                             // Input is empty or not in InputBar: half-page scroll down.
                             app.half_page_down();
                         }
@@ -611,6 +616,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         // and not when channel switcher is open)
                         if app.focused_pane == FocusedPane::InputBar
                             && !app.channel_switcher.show
+                            && !app.search.show
                             && let Some(ref yanked) = app.kill_ring.clone()
                         {
                             let byte_idx =
@@ -626,6 +632,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         // Ctrl+V: check clipboard for image and store as pending_image.
                         // Only active when focused on InputBar or Chat (not channel switcher).
                         if !app.channel_switcher.show
+                            && !app.search.show
                             && (app.focused_pane == FocusedPane::InputBar
                                 || app.focused_pane == FocusedPane::Chat)
                             && let Ok(Some(info)) = try_read_clipboard_image()
@@ -647,6 +654,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     // Esc dismisses channel switcher if showing
                     if app.channel_switcher.show {
                         app.dismiss_channel_switcher();
+                        EventResult::Continue
+                    // Esc dismisses search overlay if showing
+                    } else if app.search.show {
+                        app.dismiss_search();
                         EventResult::Continue
                     // Esc dismisses autocomplete if showing
                     } else if app.autocomplete.show {
@@ -690,6 +701,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     if app.channel_switcher.show {
                         app.channel_switcher_select_prev();
                         EventResult::Continue
+                    } else if app.search.show {
+                        app.search_select_prev();
+                        EventResult::Continue
                     } else if app.autocomplete.show {
                         app.autocomplete_select_prev();
                         EventResult::Continue
@@ -709,6 +723,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 KeyCode::Down => {
                     if app.channel_switcher.show {
                         app.channel_switcher_select_next();
+                        EventResult::Continue
+                    } else if app.search.show {
+                        app.search_select_next();
                         EventResult::Continue
                     } else if app.autocomplete.show {
                         app.autocomplete_select_next();
@@ -755,6 +772,15 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                         EventResult::Continue
                     } else if app.channel_switcher.show {
                         app.channel_switcher_select();
+                        EventResult::Continue
+                    } else if app.search.show {
+                        // Enter in search: re-execute if query changed since last search
+                        // or no results yet; otherwise select the highlighted result
+                        if app.search.results.is_empty() || app.search.results_are_stale() {
+                            app.execute_search();
+                        } else {
+                            app.search_select();
+                        }
                         EventResult::Continue
                     } else if app.autocomplete.show {
                         app.insert_autocomplete_item();
@@ -897,6 +923,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     if app.channel_switcher.show {
                         app.channel_switcher_backspace();
                         EventResult::Continue
+                    } else if app.search.show {
+                        app.search_backspace();
+                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Thread {
                         // Delete character in thread input
                         if app.thread_input_cursor > 0 {
@@ -979,6 +1008,9 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                     if app.channel_switcher.show {
                         app.channel_switcher_input(c);
                         EventResult::Continue
+                    } else if app.search.show {
+                        app.search_input(c);
+                        EventResult::Continue
                     } else if app.focused_pane == FocusedPane::Thread {
                         // Insert character into thread input
                         let byte_idx = char_index_to_byte_index(
@@ -1009,6 +1041,10 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 }
                                 'G' => {
                                     app.scroll_to_bottom();
+                                    return EventResult::Continue;
+                                }
+                                '/' => {
+                                    app.toggle_search();
                                     return EventResult::Continue;
                                 }
                                 _ => {}
@@ -1196,6 +1232,11 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                 // Route pasted text to channel switcher filter
                 for c in text.chars() {
                     app.channel_switcher_input(c);
+                }
+            } else if app.search.show {
+                // Route pasted text to search input
+                for c in text.chars() {
+                    app.search_input(c);
                 }
             } else {
                 // Bracketed paste: insert the entire pasted string at cursor position.
@@ -2882,6 +2923,10 @@ mod tests {
 #[path = "channel_switcher_tests.rs"]
 #[cfg(test)]
 mod channel_switcher_tests;
+
+#[path = "search_tests.rs"]
+#[cfg(test)]
+mod search_tests;
 
 #[path = "emacs_keybinding_tests.rs"]
 #[cfg(test)]

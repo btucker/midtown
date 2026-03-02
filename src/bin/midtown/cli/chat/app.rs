@@ -430,6 +430,8 @@ pub struct App {
     pub autocomplete: AutocompleteState,
     /// Channel switcher overlay state
     pub channel_switcher: ChannelSwitcherState,
+    /// Search overlay state (/ quick search)
+    pub search: SearchState,
     /// Whether to show archived channels in the board panel
     pub show_archived_channels: bool,
     /// Spinner animation frame counter for coworker progress display
@@ -569,6 +571,33 @@ pub struct ChannelSwitcherItem {
     pub unread_count: usize,
 }
 
+/// Search overlay state (/ quick search across all channels)
+#[derive(Debug, Clone, Default)]
+pub struct SearchState {
+    /// Whether the search overlay is shown
+    pub show: bool,
+    /// Input text for the search query
+    pub input: String,
+    /// Search results to display
+    pub results: Vec<midtown::search::SearchResult>,
+    /// Selected index in the results list
+    pub selected_index: usize,
+    /// Whether a search is currently in progress
+    pub loading: bool,
+    /// Error message from the last search attempt
+    pub error: Option<String>,
+    /// The query that produced the current results (used to detect stale results)
+    pub last_query: String,
+}
+
+impl SearchState {
+    /// Returns true when the input has changed since the last search was executed,
+    /// meaning the current results are stale and Enter should re-execute.
+    pub fn results_are_stale(&self) -> bool {
+        !self.results.is_empty() && self.input.trim() != self.last_query
+    }
+}
+
 /// Interval between PR/kanban data refreshes (30 seconds).
 ///
 /// PR data requires a GitHub GraphQL round-trip, cached for 60s on the daemon side.
@@ -705,6 +734,7 @@ impl App {
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
+            search: SearchState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
             spinner_last_tick: Instant::now(),
@@ -2743,6 +2773,145 @@ impl App {
         self.channel_switcher.selected_index = 0;
     }
 
+    // ── Search overlay methods ────────────────────────────────────────
+
+    /// Toggle the search overlay open/closed
+    pub fn toggle_search(&mut self) {
+        if self.search.show {
+            self.dismiss_search();
+        } else {
+            self.search.show = true;
+            self.search.input.clear();
+            self.search.results.clear();
+            self.search.selected_index = 0;
+            self.search.loading = false;
+            self.search.error = None;
+        }
+    }
+
+    /// Dismiss the search overlay without selecting
+    pub fn dismiss_search(&mut self) {
+        self.search.show = false;
+        self.search.input.clear();
+        self.search.results.clear();
+        self.search.selected_index = 0;
+        self.search.loading = false;
+        self.search.error = None;
+    }
+
+    /// Append a character to the search input
+    pub fn search_input(&mut self, c: char) {
+        if !self.search.show {
+            return;
+        }
+        self.search.input.push(c);
+    }
+
+    /// Backspace in the search input
+    pub fn search_backspace(&mut self) {
+        if !self.search.show {
+            return;
+        }
+        self.search.input.pop();
+    }
+
+    /// Navigate search selection up
+    pub fn search_select_prev(&mut self) {
+        if !self.search.show || self.search.results.is_empty() {
+            return;
+        }
+        if self.search.selected_index == 0 {
+            self.search.selected_index = self.search.results.len() - 1;
+        } else {
+            self.search.selected_index -= 1;
+        }
+    }
+
+    /// Navigate search selection down
+    pub fn search_select_next(&mut self) {
+        if !self.search.show || self.search.results.is_empty() {
+            return;
+        }
+        self.search.selected_index = (self.search.selected_index + 1) % self.search.results.len();
+    }
+
+    /// Execute the search query using midtown::search::search_messages_sync
+    pub fn execute_search(&mut self) {
+        let query = self.search.input.trim().to_string();
+        if query.is_empty() {
+            self.search.results.clear();
+            self.search.selected_index = 0;
+            return;
+        }
+
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let project_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+
+        self.search.loading = true;
+        self.search.last_query = query.clone();
+        match midtown::search::search_messages_sync(&project_dir, &query, 50) {
+            Ok(response) => {
+                self.search.results = response.results;
+                self.search.selected_index = 0;
+                self.search.loading = false;
+                self.search.error = None;
+            }
+            Err(e) => {
+                self.search.results.clear();
+                self.search.selected_index = 0;
+                self.search.loading = false;
+                self.search.error = Some(e);
+            }
+        }
+    }
+
+    /// Select the currently highlighted search result and navigate to that channel
+    pub fn search_select(&mut self) {
+        if !self.search.show || self.search.results.is_empty() {
+            return;
+        }
+
+        let result = &self.search.results[self.search.selected_index];
+        // Strip `.archived` suffix — rg path parser returns directory names like
+        // `foo.archived` for archived channels, but the canonical channel name is `foo`.
+        let channel_name = result
+            .channel
+            .strip_suffix(".archived")
+            .unwrap_or(&result.channel)
+            .to_string();
+
+        // Switch to the result's channel
+        let channel_repo =
+            midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+        let base_dir = midtown::paths::projects_dir_for_repo(&channel_repo);
+        let channels_dir = base_dir.join("channels");
+        let has_active = channels_dir
+            .join(&channel_name)
+            .join("history")
+            .join("current.jsonl")
+            .exists();
+        let has_archived = channels_dir
+            .join(format!("{}.archived", &channel_name))
+            .join("history")
+            .join("current.jsonl")
+            .exists();
+        self.selected_channel_archived = has_archived && !has_active;
+        self.selected_channel = channel_name.clone();
+        self.board_selection = Some(BoardSelection::Channel(channel_name));
+
+        // Close the search overlay
+        self.search.show = false;
+        self.search.input.clear();
+        self.search.results.clear();
+        self.search.selected_index = 0;
+        self.search.loading = false;
+        self.search.error = None;
+
+        // Load messages from the selected channel
+        self.load_channel_messages();
+    }
+
     /// Get the current frame index mapped to a braille spinner character.
     /// Used in tests to verify that `tick_spinner()` advances the frame.
     #[cfg(test)]
@@ -4084,6 +4253,7 @@ pub(super) mod tests {
             channel_unread_counts: HashMap::new(),
             autocomplete: AutocompleteState::default(),
             channel_switcher: ChannelSwitcherState::default(),
+            search: SearchState::default(),
             show_archived_channels: false,
             spinner_frame: 0,
             spinner_last_tick: Instant::now(),
