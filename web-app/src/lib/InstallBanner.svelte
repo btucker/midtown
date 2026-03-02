@@ -37,9 +37,9 @@
     deferredPrompt.prompt()
     const { outcome } = await deferredPrompt.userChoice
     deferredPrompt = null
-    if (outcome === 'accepted') {
-      dismiss()
-    }
+    // Hide banner regardless — the prompt can only fire once per page load,
+    // so the button would be a no-op if the user dismissed
+    dismiss()
   }
 
   onMount(() => {
@@ -57,7 +57,7 @@
       return
     }
 
-    // Android/Chrome: listen for beforeinstallprompt
+    // Chromium-based browsers: listen for beforeinstallprompt
     function handleBeforeInstall(e) {
       e.preventDefault()
       deferredPrompt = e
@@ -73,7 +73,7 @@
 </script>
 
 {#if showBanner}
-  <div class="install-banner flex items-center gap-2 border-b border-border bg-card px-3 py-2 text-[0.82rem] text-foreground">
+  <div class="install-banner flex items-center gap-2 border-b border-border bg-card px-3 py-2 text-[0.82rem] text-foreground md:hidden">
     {#if isIos}
       <Share size={15} class="flex-shrink-0 text-muted-foreground" />
       <span class="flex-1 min-w-0">
