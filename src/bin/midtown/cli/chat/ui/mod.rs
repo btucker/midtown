@@ -148,6 +148,11 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Vec<Hyperlink> {
         chat::draw_channel_switcher_overlay(f, app, f.area());
     }
 
+    // Draw search overlay on top of everything
+    if app.search.show {
+        chat::draw_search_overlay(f, app, f.area());
+    }
+
     hyperlinks
 }
 

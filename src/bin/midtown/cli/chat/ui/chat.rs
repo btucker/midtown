@@ -752,6 +752,163 @@ pub fn draw_channel_switcher_overlay(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(paragraph, popup_area);
 }
 
+/// Draw the search overlay (/ quick search across all channels)
+pub fn draw_search_overlay(f: &mut Frame, app: &App, area: Rect) {
+    if !app.search.show {
+        return;
+    }
+
+    let palette = app.theme.palette();
+
+    // Calculate centered popup size
+    let popup_width = 60u16.min(area.width.saturating_sub(4));
+    let max_visible_items = 10;
+    let item_count = app.search.results.len().min(max_visible_items);
+    // 1 line for input + 1 separator + N result lines + 2 borders (minimum 5 lines)
+    let popup_height = (3 + item_count.max(1) as u16).min(area.height.saturating_sub(4));
+
+    // Center the popup
+    let popup_x = (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // Clear the area first to ensure background is rendered properly
+    f.render_widget(Clear, popup_area);
+
+    // Build the content
+    let mut lines = Vec::new();
+
+    // Input line with / prefix
+    let input_line = format!("/ {}", app.search.input);
+    lines.push(Line::from(Span::styled(
+        input_line,
+        Style::default().fg(palette.fg).add_modifier(Modifier::BOLD),
+    )));
+
+    // Separator line
+    lines.push(Line::from(Span::styled(
+        "─".repeat(popup_width.saturating_sub(2) as usize),
+        Style::default().fg(palette.muted),
+    )));
+
+    // Results list
+    if app.search.loading {
+        lines.push(Line::from(Span::styled(
+            " Searching...",
+            Style::default().fg(palette.muted),
+        )));
+    } else if let Some(ref err) = app.search.error {
+        let err_text = if err.len() > popup_width as usize - 4 {
+            format!(" {}...", &err[..popup_width as usize - 7])
+        } else {
+            format!(" {}", err)
+        };
+        lines.push(Line::from(Span::styled(
+            err_text,
+            Style::default().fg(palette.error),
+        )));
+    } else if app.search.results.is_empty() {
+        let hint = if app.search.input.is_empty() {
+            " Type to search messages..."
+        } else {
+            " No results — press Enter to search"
+        };
+        lines.push(Line::from(Span::styled(
+            hint,
+            Style::default().fg(palette.muted),
+        )));
+    } else {
+        // Calculate scrolling offset to keep selected item visible
+        let total_results = app.search.results.len();
+        let selected = app.search.selected_index;
+
+        let offset = if selected < max_visible_items / 2 {
+            0
+        } else if selected >= total_results.saturating_sub(max_visible_items / 2) {
+            total_results.saturating_sub(max_visible_items)
+        } else {
+            selected.saturating_sub(max_visible_items / 2)
+        };
+
+        for (i, result) in app
+            .search
+            .results
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(max_visible_items)
+        {
+            let is_selected = i == app.search.selected_index;
+            let inner_width = popup_width.saturating_sub(2) as usize;
+
+            // Format: " #channel sender: snippet"
+            let channel_display = super::format_channel_display_name(&result.channel);
+            let prefix = format!(" {} {}: ", channel_display, result.from);
+            let snippet_width = inner_width.saturating_sub(prefix.len());
+            let snippet = if result.snippet.len() > snippet_width {
+                format!(
+                    "{}...",
+                    &result.snippet[..result
+                        .snippet
+                        .floor_char_boundary(snippet_width.saturating_sub(3))]
+                )
+            } else {
+                result.snippet.clone()
+            };
+
+            let style = if is_selected {
+                Style::default()
+                    .fg(palette.bg)
+                    .bg(palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.fg)
+            };
+
+            let channel_style = if is_selected {
+                Style::default()
+                    .fg(palette.bg)
+                    .bg(palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.accent)
+            };
+
+            let snippet_style = if is_selected {
+                Style::default().fg(palette.bg).bg(palette.accent)
+            } else {
+                Style::default().fg(palette.muted)
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", channel_display), channel_style),
+                Span::styled(format!("{}: ", result.from), style),
+                Span::styled(snippet, snippet_style),
+            ]));
+        }
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette.accent))
+        .title(" Search (/) ")
+        .title_style(
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(palette.bg));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, popup_area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::app::tests::test_app;
