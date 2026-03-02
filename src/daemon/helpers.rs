@@ -536,7 +536,12 @@ fn extract_midtown_frontmatter_name(body: &str) -> Option<String> {
 /// Comparison is case-insensitive. Returns `true` if:
 /// - No assigned reviewer (accept any review)
 /// - Author extracted from body matches the assigned reviewer
-/// - No author can be extracted from body (conservative: accept the review)
+///
+/// Returns `false` if an assigned reviewer exists but the author cannot be
+/// extracted or doesn't match — this prevents bot comments without midtown
+/// attribution from being treated as completed reviews. Callers handling
+/// formal reviews (APPROVED/CHANGES_REQUESTED) should apply their own
+/// fallback for bodyless reviews (see `json_has_completed_review`).
 pub fn review_author_matches(body: &str, assigned_reviewer: Option<&str>) -> bool {
     let Some(reviewer) = assigned_reviewer else {
         return true; // No assigned reviewer — accept any review

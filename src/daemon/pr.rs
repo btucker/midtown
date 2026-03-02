@@ -3355,6 +3355,7 @@ pub(super) fn json_has_completed_review(
 
     false
 }
+
 /// Extract review comment IDs from a JSON array of GitHub issue comments.
 ///
 /// Filters for comments containing a review signature and returns their
