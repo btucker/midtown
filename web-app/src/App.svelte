@@ -29,6 +29,8 @@
     } else {
       document.documentElement.classList.remove('dark')
     }
+    const favicon = document.getElementById('favicon')
+    if (favicon) favicon.href = $theme === 'dark' ? '/favicon-dark.png' : '/favicon-light.png'
   })
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
@@ -157,7 +159,7 @@
       <Sidebar>
         <SidebarHeader class="p-3 pt-safe-offset-3">
           <div class="header-left">
-            <img src="/logo.png" alt="Midtown" class="header-logo hidden md:block" />
+            <img src={$theme === 'dark' ? '/midtown-dark-logo.svg' : '/midtown-light-logo.svg'} alt="Midtown" class="header-logo hidden md:block" />
             {#if $projects.length > 0}
               <div class="project-selector">
                 <button class="project-trigger" onclick={toggleProjectDropdown}>

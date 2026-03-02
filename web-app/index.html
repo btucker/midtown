@@ -1,8 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/png" id="favicon" href="/favicon-dark.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
     <script>
-      // FOUC prevention: apply theme class before first paint
+      // FOUC prevention: apply theme class and set theme-aware assets before first paint.
+      // All theme-dependent DOM setup lives in this single block to avoid fragile
+      // cross-script dependencies on the isLight variable.
       var isLight = localStorage.getItem('midtown-theme') === 'light'
       if (!isLight) {
         document.documentElement.classList.add('dark')
@@ -12,12 +20,11 @@
       statusBarMeta.name = 'apple-mobile-web-app-status-bar-style'
       statusBarMeta.content = isLight ? 'default' : 'black-translucent'
       document.head.appendChild(statusBarMeta)
+      // Theme-aware favicon: override the default dark PNG when in light mode
+      if (isLight) {
+        document.getElementById('favicon').href = '/favicon-light.png'
+      }
     </script>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Midtown Mobile</title>
   </head>
   <body>

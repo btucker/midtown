@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="723 250 2650 3150" width="100%">
+  <defs>
+    <mask id="gaps" maskUnits="userSpaceOnUse" x="723" y="250" width="2650" height="3150">
+      <rect x="723" y="250" width="2650" height="3150" fill="white"/>
+      <path d="M2253,3300 L2333,1530 Q2333,1330 2533,1330 L2993,1330 Q3193,1330 3193,1530 L3273,3300 Z"
+            fill="white" stroke="black" stroke-width="50"/>
+      <path d="M1553,3300 L1633,930 Q1633,730 1833,730 L2293,730 Q2493,730 2493,930 L2573,3300 Z"
+            fill="white" stroke="black" stroke-width="50"/>
+      <path d="M823,3300 L903,1840 Q903,1640 1103,1640 L1563,1640 Q1763,1640 1763,1840 L1843,3300 Z"
+            fill="white" stroke="black" stroke-width="50"/>
+    </mask>
+  </defs>
+  <g mask="url(#gaps)">
+    <!-- Blue-gray (back building, tapered) -->
+    <path d="M2253,3300 L2333,1530 Q2333,1330 2533,1330 L2993,1330 Q3193,1330 3193,1530 L3273,3300 Z"
+          fill="#5A7A92"/>
+    <!-- Antenna -->
+    <line x1="2063" y1="730" x2="2063" y2="350" stroke="#7EB0BE" stroke-width="32" stroke-linecap="round"/>
+    <!-- Teal (middle building, tapered) -->
+    <path d="M1553,3300 L1633,930 Q1633,730 1833,730 L2293,730 Q2493,730 2493,930 L2573,3300 Z"
+          fill="#7EB0BE"/>
+    <!-- Light teal (front building, tapered) -->
+    <path d="M823,3300 L903,1840 Q903,1640 1103,1640 L1563,1640 Q1763,1640 1763,1840 L1843,3300 Z"
+          fill="#A2D4DC"/>
+  </g>
+</svg>
