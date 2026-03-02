@@ -765,9 +765,11 @@ async fn send_session_nudge(
             state.record_pending_nudge(&name, &msg);
 
             // Post the nudge content to the coworker's DM channel for observability.
+            // Only for real coworkers (pool names like "lexington"), not fork sessions
+            // ("lexington-web-push-a1b2") or other ephemeral sessions.
             // Skip DmFromUser — the user's message is already in the DM channel
             // (written by rpc_channel.rs before the nudge effect was created).
-            if !reason.already_in_dm_channel() {
+            if !reason.already_in_dm_channel() && crate::coworker::is_coworker_name(&name) {
                 let dm_channel = format!("dm-{}", name);
                 let sender = reason.sender();
                 let dm_msg = crate::message::Message::for_channel(
