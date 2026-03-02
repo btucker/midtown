@@ -38,6 +38,7 @@
 
       if (deltaX >= MIN_SWIPE_X && deltaX >= deltaY * SWIPE_RATIO) {
         if ($threadData) {
+          // pushState: true (default) — swipe-to-dismiss creates a history entry
           closeThread()
         } else if (!sidebar.openMobile) {
           sidebar.setOpenMobile(true)

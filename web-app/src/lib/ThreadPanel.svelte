@@ -262,6 +262,8 @@
   let scrollArea = $derived(isDesktop ? desktopScrollArea : mobileScrollArea)
   let textareaEl = $derived(isDesktop ? desktopTextareaEl : mobileTextareaEl)
 
+  // pushState: true (default) — user-initiated close should create a history entry
+  // so the back button can reopen the thread.
   function handleClose() { closeThread() }
   function handleWindowKeydown(event) {
     if (event.key === 'Escape' && !event.defaultPrevented) handleClose()
