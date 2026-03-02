@@ -550,3 +550,109 @@ fn test_draw_lead_indicator_name_bold_when_only_completed_entries() {
         cell.modifier
     );
 }
+
+// ── Overlay height tests ─────────────────────────────────────────────
+
+#[test]
+fn test_channel_switcher_overlay_height_with_one_item() {
+    // Layout: Borders::ALL (top + bottom = 2) + input line (1) + separator (1) + 1 item = 5
+    // The old formula `3 + N` gave 4 for 1 item, clipping the bottom border.
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.channel_switcher.show = true;
+    app.channel_switcher.filtered_channels = vec![super::super::super::app::ChannelSwitcherItem {
+        name: "general".to_string(),
+        unread_count: 0,
+    }];
+
+    let area = Rect::new(0, 0, 80, 40);
+    terminal
+        .draw(|f| {
+            draw_channel_switcher_overlay(f, &app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+
+    // popup_width=50, popup_x=(80-50)/2=15. Expected height=4+1=5, popup_y=(40-5)/2=17.
+    // Use the left edge (popup_x=15) to find corner characters.
+    let popup_x = 15u16;
+    let top_y = (0u16..40)
+        .find(|&y| {
+            let sym = buffer.cell((popup_x, y)).map(|c| c.symbol().to_string());
+            sym.as_deref() == Some("┌")
+        })
+        .expect("Should find top-left corner '┌' of channel switcher overlay");
+
+    // With correct height=5, bottom border is at top_y + 4
+    let bottom_y = top_y + 4;
+    let bottom_sym = buffer
+        .cell((popup_x, bottom_y))
+        .map(|c| c.symbol().to_string());
+    assert_eq!(
+        bottom_sym.as_deref(),
+        Some("└"),
+        "Bottom-left corner '└' should be at row {} (height=5 from top_y={}). \
+         Got {:?} — with the old `3+N` formula, height would be 4 and this row would be empty.",
+        bottom_y,
+        top_y,
+        bottom_sym
+    );
+}
+
+#[test]
+fn test_search_overlay_height_with_one_result() {
+    // Same layout as channel switcher: 2 borders + 1 input + 1 separator + 1 item = 5
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let backend = TestBackend::new(80, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut app = test_app();
+    app.search.show = true;
+    app.search.results = vec![midtown::search::SearchResult {
+        id: "1".to_string(),
+        from: "alice".to_string(),
+        content: "hello".to_string(),
+        timestamp: "2025-01-01T00:00:00Z".to_string(),
+        channel: "general".to_string(),
+        message_type: "text".to_string(),
+        snippet: "hello".to_string(),
+    }];
+
+    // popup_width=60, popup_x=(80-60)/2=10. Expected height=4+1=5, popup_y=(40-5)/2=17.
+    let area = Rect::new(0, 0, 80, 40);
+    terminal
+        .draw(|f| {
+            draw_search_overlay(f, &app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+
+    let popup_x = 10u16;
+    let top_y = (0u16..40)
+        .find(|&y| {
+            let sym = buffer.cell((popup_x, y)).map(|c| c.symbol().to_string());
+            sym.as_deref() == Some("┌")
+        })
+        .expect("Should find top-left corner '┌' of search overlay");
+
+    let bottom_y = top_y + 4;
+    let bottom_sym = buffer
+        .cell((popup_x, bottom_y))
+        .map(|c| c.symbol().to_string());
+    assert_eq!(
+        bottom_sym.as_deref(),
+        Some("└"),
+        "Bottom-left corner '└' should be at row {} (height=5 from top_y={})",
+        bottom_y,
+        top_y,
+    );
+}
