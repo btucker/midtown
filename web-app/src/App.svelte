@@ -156,7 +156,7 @@
       <Sidebar>
         <SidebarHeader class="p-3 pt-safe-offset-3">
           <div class="header-left">
-            <img src="/logo.png" alt="Midtown" class="header-logo hidden md:block" />
+            <img src={$theme === 'dark' ? '/midtown-dark-logo.svg' : '/midtown-light-logo.svg'} alt="Midtown" class="header-logo hidden md:block" />
             {#if $projects.length > 0}
               <div class="project-selector">
                 <button class="project-trigger" onclick={toggleProjectDropdown}>

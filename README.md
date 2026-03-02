@@ -1,4 +1,4 @@
-<div align="center"><img src="docs/images/logo.png" width="100" alt="Midtown logo"></div>
+<div align="center"><img src="docs/identity/midtown-dark.png" width="100" alt="Midtown logo"></div>
 
 # Midtown
 
