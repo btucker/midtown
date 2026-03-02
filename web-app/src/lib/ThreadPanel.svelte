@@ -19,11 +19,6 @@
   import DiffView from './DiffView.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
-  const THREAD_SENDER_OVERRIDES = {
-    midtown: '#585858',
-  }
-  const THREAD_DIM_SENDERS = ['midtown']
-
   // Thread panel resize state (desktop only)
   const THREAD_PANEL_WIDTH_KEY = 'thread-panel:width'
   const THREAD_PANEL_DEFAULT_WIDTH = 380
@@ -378,15 +373,13 @@
           msg={$threadData.parentMessage}
           msgs={[$threadData.parentMessage]}
           index={0}
-          senderOverrides={THREAD_SENDER_OVERRIDES}
-          dimSenders={THREAD_DIM_SENDERS}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
-              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
-              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent($threadData.parentMessage), getApiBase())}</span>
+              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">*</span>
+              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">{@html renderContent(getActionContent($threadData.parentMessage), getApiBase())}</span>
             </div>
           {:else if isAction($threadData.parentMessage) && hasMermaid($threadData.parentMessage.content)}
             {#each parseSegments(getActionContent($threadData.parentMessage)) as segment, si}
@@ -395,18 +388,18 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">*</span>
                   {:else}
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
-                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
+                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                 </div>
               {/if}
             {/each}
           {:else}
             {#each parseInsightSegments($threadData.parentMessage.content) as segment}
               {#if segment.type === 'insight'}
-                <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}80">
+                <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}80">
                   {#if hasMermaid(segment.content)}
                     {#each parseSegments(segment.content) as mseg}
                       {#if mseg.type === 'mermaid'}
@@ -424,11 +417,11 @@
                   {#if mseg.type === 'mermaid'}
                     <MermaidDiagram code={mseg.content} />
                   {:else}
-                    <div class="break-words message-text {isDimSender($threadData.parentMessage.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
+                    <div class="break-words message-text {isDimSender($threadData.parentMessage.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
                   {/if}
                 {/each}
               {:else}
-                <div class="break-words message-text {isDimSender($threadData.parentMessage.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+                <div class="break-words message-text {isDimSender($threadData.parentMessage.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
               {/if}
             {/each}
           {/if}
@@ -456,16 +449,14 @@
             {msg}
             msgs={timelineMessages}
             index={entry.msgIndex}
-            senderOverrides={THREAD_SENDER_OVERRIDES}
-            dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
               {#each parseSegments(getActionContent(msg)) as segment, si}
@@ -474,18 +465,18 @@
                 {:else}
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                     {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}
             {:else}
               {#each parseInsightSegments(msg.content) as segment}
                 {#if segment.type === 'insight'}
-                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}80">
+                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}80">
                     {#if hasMermaid(segment.content)}
                       {#each parseSegments(segment.content) as mseg}
                         {#if mseg.type === 'mermaid'}
@@ -503,11 +494,11 @@
                     {#if mseg.type === 'mermaid'}
                       <MermaidDiagram code={mseg.content} />
                     {:else}
-                      <div class="break-words message-text {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
+                      <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
                     {/if}
                   {/each}
                 {:else}
-                  <div class="break-words message-text {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+                  <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
             {/if}
@@ -573,15 +564,13 @@
           msg={$threadData.parentMessage}
           msgs={[$threadData.parentMessage]}
           index={0}
-          senderOverrides={THREAD_SENDER_OVERRIDES}
-          dimSenders={THREAD_DIM_SENDERS}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
-              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
-              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent($threadData.parentMessage), getApiBase())}</span>
+              <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">*</span>
+              <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">{@html renderContent(getActionContent($threadData.parentMessage), getApiBase())}</span>
             </div>
           {:else if isAction($threadData.parentMessage) && hasMermaid($threadData.parentMessage.content)}
             {#each parseSegments(getActionContent($threadData.parentMessage)) as segment, si}
@@ -590,18 +579,18 @@
               {:else}
                 <div class="flex gap-0 break-words">
                   {#if si === 0}
-                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                    <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">*</span>
                   {:else}
                     <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                   {/if}
-                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
+                  <span class="action-text flex-1 min-w-0" style="color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                 </div>
               {/if}
             {/each}
           {:else}
             {#each parseInsightSegments($threadData.parentMessage.content) as segment}
               {#if segment.type === 'insight'}
-                <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor($threadData.parentMessage.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}80">
+                <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor($threadData.parentMessage.from, undefined, $threadData?.channelName)}80">
                   {#if hasMermaid(segment.content)}
                     {#each parseSegments(segment.content) as mseg}
                       {#if mseg.type === 'mermaid'}
@@ -619,11 +608,11 @@
                   {#if mseg.type === 'mermaid'}
                     <MermaidDiagram code={mseg.content} />
                   {:else}
-                    <div class="break-words message-text {isDimSender($threadData.parentMessage.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
+                    <div class="break-words message-text {isDimSender($threadData.parentMessage.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
                   {/if}
                 {/each}
               {:else}
-                <div class="break-words message-text {isDimSender($threadData.parentMessage.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+                <div class="break-words message-text {isDimSender($threadData.parentMessage.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
               {/if}
             {/each}
           {/if}
@@ -651,16 +640,14 @@
             {msg}
             msgs={timelineMessages}
             index={entry.msgIndex}
-            senderOverrides={THREAD_SENDER_OVERRIDES}
-            dimSenders={THREAD_DIM_SENDERS}
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">*</span>
+                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
               </div>
             {:else if isAction(msg) && hasMermaid(msg.content)}
               {#each parseSegments(getActionContent(msg)) as segment, si}
@@ -669,18 +656,18 @@
                 {:else}
                   <div class="flex gap-0 break-words">
                     {#if si === 0}
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">*</span>
+                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">*</span>
                     {:else}
                       <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
                     {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
+                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}">{@html renderContent(segment.content, getApiBase())}</span>
                   </div>
                 {/if}
               {/each}
             {:else}
               {#each parseInsightSegments(msg.content) as segment}
                 {#if segment.type === 'insight'}
-                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, THREAD_SENDER_OVERRIDES, $threadData?.channelName)}80">
+                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, undefined, $threadData?.channelName)}80">
                     {#if hasMermaid(segment.content)}
                       {#each parseSegments(segment.content) as mseg}
                         {#if mseg.type === 'mermaid'}
@@ -698,11 +685,11 @@
                     {#if mseg.type === 'mermaid'}
                       <MermaidDiagram code={mseg.content} />
                     {:else}
-                      <div class="break-words message-text {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
+                      <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
                     {/if}
                   {/each}
                 {:else}
-                  <div class="break-words message-text {isDimSender(msg.from, THREAD_DIM_SENDERS) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+                  <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
             {/if}
