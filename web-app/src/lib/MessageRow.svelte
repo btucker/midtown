@@ -26,6 +26,12 @@
     return msg.from === 'midtown' && TASK_DIVIDER_RE.test((msg.content || '').trim())
   }
 
+  // renderContent() wraps output in block-level <p> tags via marked.parse().
+  // Strip the outer <p>...</p> so the label can sit inline within the divider flex row.
+  function renderInline(text) {
+    return renderContent(text, getApiBase()).replace(/^<p>/, '').replace(/<\/p>\s*$/, '')
+  }
+
   function avatarLetter(name) {
     return (name || '?')[0].toUpperCase()
   }
@@ -35,7 +41,7 @@
   <!-- Task divider: centered HR with task link -->
   <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
     <div class="flex-1 h-px bg-border/60"></div>
-    <span>{@html renderContent(msg.content.replace(/^───\s*/, '').replace(/\s*───$/, ''), getApiBase())}</span>
+    <span>{@html renderInline(msg.content.replace(/^───\s*/, '').replace(/\s*───$/, ''))}</span>
     <div class="flex-1 h-px bg-border/60"></div>
   </div>
 {:else if senderChanged(msgs, index)}

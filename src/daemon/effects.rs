@@ -1279,6 +1279,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_success,
                 on_failure,
             } => {
+                // NOTE: No DM separator is posted here. This effect is used for
+                // orphan recovery (respawning a crashed coworker for the same task).
+                // The initial separator was already posted by AssignAndSpawn or
+                // SpawnSession when the task was first assigned.
+                //
                 // Extract task IDs from on_success RecordTaskAssignment effects
                 // to clear their in-flight markers after the spawn completes.
                 let task_ids: Vec<String> = on_success
@@ -1320,8 +1325,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_failure,
             } => {
                 // Spawn the coworker and set ownership + in_progress on disk.
-                // The coworker also claims the task via `midtown task claim` after starting,
-                // which writes ownership directly via the daemon.
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -1375,7 +1378,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         if let Some(separator_effect) = build_dm_separator_effect(
                             &owner,
                             &task_id,
-                            task_subject.as_deref(),
+                            task_subject.as_deref().filter(|s| !s.is_empty()),
                             false,
                         ) {
                             Box::pin(execute_effects(vec![separator_effect], state)).await;

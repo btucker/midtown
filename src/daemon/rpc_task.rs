@@ -691,7 +691,7 @@ pub(super) async fn handle_task_claim(
                     e
                 );
                 last_err = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         }
     }

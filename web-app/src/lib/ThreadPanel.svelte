@@ -14,6 +14,7 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskCard from './TaskCard.svelte'
   import DiffView from './DiffView.svelte'
@@ -465,11 +466,7 @@
           {@const msg = entry.data}
           {@const dayLabel = dateChanged(timelineMessages, entry.msgIndex)}
           {#if dayLabel}
-            <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
-              <div class="flex-1 h-px bg-border/60"></div>
-              <span>{dayLabel}</span>
-              <div class="flex-1 h-px bg-border/60"></div>
-            </div>
+            <DayDivider label={dayLabel} />
           {/if}
           <MessageRow
             {msg}
@@ -664,11 +661,7 @@
           {@const msg = entry.data}
           {@const dayLabel = dateChanged(timelineMessages, entry.msgIndex)}
           {#if dayLabel}
-            <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
-              <div class="flex-1 h-px bg-border/60"></div>
-              <span>{dayLabel}</span>
-              <div class="flex-1 h-px bg-border/60"></div>
-            </div>
+            <DayDivider label={dayLabel} />
           {/if}
           <MessageRow
             {msg}

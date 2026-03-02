@@ -9,6 +9,7 @@
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
   import MessageRow from './MessageRow.svelte'
+  import DayDivider from './DayDivider.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
   // Windowed rendering: only render a slice of messages near the viewport.
@@ -783,11 +784,7 @@
           {@const globalIndex = renderStartIndex + i}
           {@const dayLabel = dateChanged(channelMessages, globalIndex)}
           {#if dayLabel}
-            <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
-              <div class="flex-1 h-px bg-border/60"></div>
-              <span>{dayLabel}</span>
-              <div class="flex-1 h-px bg-border/60"></div>
-            </div>
+            <DayDivider label={dayLabel} />
           {/if}
           <div
             data-testid="message-row"
