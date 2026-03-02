@@ -991,6 +991,22 @@ export function closeThread() {
   threadData.set(null)
 }
 
+// Search messages across all channels
+export async function searchMessages(query, limit = 50) {
+  try {
+    const params = new URLSearchParams({ q: query, limit: String(limit) })
+    const res = await fetch(`${getApiBase()}/search?${params}`)
+    if (res.ok) {
+      return await res.json()
+    }
+    console.error(`Search API returned ${res.status}: ${res.statusText}`)
+    return { results: [], query, total: 0, error: true }
+  } catch (err) {
+    console.error('Failed to search messages:', err)
+    return { results: [], query, total: 0, error: true }
+  }
+}
+
 // Select (or create-then-select) a DM channel for the given coworker name.
 // DM channels are named `dm-<coworkerName>` on the backend.
 // If the channel doesn't exist yet, it's created first, then selected.
