@@ -1067,8 +1067,9 @@ pub(super) async fn handle_session_clear(
 /// Derive a short, human-readable slug from message content for fork session names.
 ///
 /// Extracts the first 1-3 meaningful words from a message, lowercased and joined with
-/// hyphens. Strips @mentions, punctuation, and common filler words. Falls back to the
-/// first 8 characters of `thread_parent_id` if no meaningful words are found.
+/// hyphens. Strips @mentions, replaces all non-alphanumeric characters with hyphens
+/// (collapsing consecutive hyphens), and filters common filler words. Falls back to
+/// the first 8 characters of `thread_parent_id` if no meaningful words are found.
 fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
     // Words to skip when building the slug
     static STOP_WORDS: &[&str] = &[
