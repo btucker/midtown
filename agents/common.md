@@ -65,7 +65,7 @@ midtown channel post "found the root cause in auth.rs" --task 42
 
 In the TUI, use `/thread` to pick a message and open the thread panel.
 
-**Thread notifications:** Thread replies are routed to the forked lead session that owns the thread — there is no automatic broadcast to all thread participants. The fork should @mention other participants when a reply contains information they need to act on (e.g., a question directed at them, a decision affecting their work, or context they explicitly requested). Don't @mention for routine updates the fork can handle alone.
+**Thread notifications:** Thread replies are routed to the forked lead session that owns the thread — there is no automatic broadcast to all thread participants. The fork decides when to loop in other participants via @mentions. The fork should @mention others when a reply contains information they need to act on (e.g., a question directed at them, a decision affecting their work, or context they explicitly requested). Don't @mention for routine updates the fork can handle alone.
 
 ## Useful Commands
 
