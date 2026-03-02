@@ -15,6 +15,8 @@
   import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/components/ui/collapsible'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
   import ChevronRight from '@lucide/svelte/icons/chevron-right'
+  import Bell from '@lucide/svelte/icons/bell'
+  import BellOff from '@lucide/svelte/icons/bell-off'
 
   let channelsExpanded = $state(true)
 
@@ -54,7 +56,7 @@
       <AuthSwitcher />
       {#if $pushSupported}
         <button
-          class="push-toggle cursor-pointer border-none bg-transparent p-1 text-base transition-opacity duration-200 {$pushSubscribed ? 'subscribed opacity-100' : 'opacity-50'} {$pushPermission === 'denied' ? 'denied cursor-not-allowed opacity-25' : ''} hover:opacity-100"
+          class="push-toggle flex cursor-pointer items-center rounded border-none bg-transparent p-[5px] text-muted-foreground transition-all duration-200 hover:bg-accent hover:text-foreground {$pushSubscribed ? 'subscribed' : ''} {$pushPermission === 'denied' ? 'denied cursor-not-allowed opacity-25' : ''}"
           onclick={togglePush}
           disabled={$pushPermission === 'denied'}
           title={$pushPermission === 'denied'
@@ -63,7 +65,11 @@
               ? 'Disable push notifications'
               : 'Enable push notifications'}
         >
-          {$pushSubscribed ? '🔔' : '🔕'}
+          {#if $pushSubscribed}
+            <Bell size={16} />
+          {:else}
+            <BellOff size={16} />
+          {/if}
         </button>
       {/if}
       <span
