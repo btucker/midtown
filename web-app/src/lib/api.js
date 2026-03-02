@@ -999,10 +999,12 @@ export async function searchMessages(query, limit = 50) {
     if (res.ok) {
       return await res.json()
     }
+    console.error(`Search API returned ${res.status}: ${res.statusText}`)
+    return { results: [], query, total: 0, error: true }
   } catch (err) {
     console.error('Failed to search messages:', err)
+    return { results: [], query, total: 0, error: true }
   }
-  return { results: [], query, total: 0 }
 }
 
 // Select (or create-then-select) a DM channel for the given coworker name.

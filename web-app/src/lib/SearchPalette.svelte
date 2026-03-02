@@ -2,9 +2,8 @@
   import { CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '$lib/components/ui/command'
   import HashIcon from '@lucide/svelte/icons/hash'
   import AtSignIcon from '@lucide/svelte/icons/at-sign'
-  import { searchMessages } from './api.js'
+  import { searchMessages, fetchHistory, selectDm } from './api.js'
   import { activeChannel, channels, messagesByChannel } from './store.js'
-  import { fetchHistory } from './api.js'
   import { getSenderColor } from './messageUtils.js'
 
   let { open = $bindable(false) } = $props()
@@ -12,27 +11,41 @@
   let query = $state('')
   let results = $state([])
   let loading = $state(false)
-  let debounceTimer = $state(null)
+  let error = $state(false)
+  // Plain `let` — timer IDs have no UI relevance and must not be reactive
+  // (writing $state inside $effect re-triggers the effect infinitely).
+  let debounceTimer = null
 
   // Debounced search: fire API call 300ms after the user stops typing.
   // Guards against stale responses: only apply results if the query hasn't
   // changed and the dialog is still open when the response arrives.
   $effect(() => {
-    if (debounceTimer) clearTimeout(debounceTimer)
     const q = query.trim()
     if (!q) {
       results = []
       loading = false
+      error = false
       return
     }
     loading = true
+    error = false
     debounceTimer = setTimeout(async () => {
-      const response = await searchMessages(q)
-      if (query.trim() === q && open) {
-        results = response.results || []
-        loading = false
+      try {
+        const response = await searchMessages(q)
+        if (query.trim() === q && open) {
+          results = response.results || []
+          loading = false
+          error = !!response.error
+        }
+      } catch {
+        if (query.trim() === q && open) {
+          results = []
+          loading = false
+          error = true
+        }
       }
     }, 300)
+    return () => clearTimeout(debounceTimer)
   })
 
   // Reset state when dialog closes
@@ -41,20 +54,26 @@
       query = ''
       results = []
       loading = false
-      if (debounceTimer) clearTimeout(debounceTimer)
+      error = false
     }
   })
 
   function selectResult(result) {
-    activeChannel.set(result.channel)
-    // Clear unread count for the navigated channel
-    channels.update((list) =>
-      list.map((ch) => (ch.name === result.channel ? { ...ch, unread: 0 } : ch))
-    )
-    // Ensure channel messages are loaded
-    const existing = $messagesByChannel[result.channel]
-    if (!existing || existing.length === 0) {
-      fetchHistory(result.channel)
+    if (result.channel.startsWith('dm-')) {
+      // DM channels need selectDm() to ensure the channel appears in the sidebar
+      const coworkerName = result.channel.replace(/^dm-/, '')
+      selectDm(coworkerName)
+    } else {
+      activeChannel.set(result.channel)
+      // Clear unread count for the navigated channel
+      channels.update((list) =>
+        list.map((ch) => (ch.name === result.channel ? { ...ch, unread: 0 } : ch))
+      )
+      // Ensure channel messages are loaded
+      const existing = $messagesByChannel[result.channel]
+      if (!existing || existing.length === 0) {
+        fetchHistory(result.channel)
+      }
     }
     open = false
   }
@@ -80,9 +99,11 @@
 
 <CommandDialog bind:open shouldFilter={false} title="Search messages" description="Search across all channel messages">
   <CommandInput placeholder="Search messages..." bind:value={query} />
-  <CommandList class="max-h-[400px]">
+  <CommandList class="max-h-[min(400px,calc(60vh-env(safe-area-inset-bottom)))]">
     {#if loading}
       <div class="py-6 text-center text-sm text-muted-foreground">Searching...</div>
+    {:else if error}
+      <div class="py-6 text-center text-sm text-destructive">Search failed. Try again.</div>
     {:else if query.trim() && results.length === 0}
       <CommandEmpty>No results found.</CommandEmpty>
     {:else if results.length > 0}
