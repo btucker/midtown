@@ -298,6 +298,14 @@ enum WebserverCommand {
         #[arg(long)]
         static_dir: Option<std::path::PathBuf>,
 
+        /// Path to TLS certificate file (PEM format)
+        #[arg(long)]
+        tls_cert: Option<std::path::PathBuf>,
+
+        /// Path to TLS private key file (PEM format)
+        #[arg(long)]
+        tls_key: Option<std::path::PathBuf>,
+
         /// Run in foreground (don't daemonize) - for debugging
         #[arg(long)]
         foreground: bool,
@@ -751,6 +759,8 @@ fn main() {
             WebserverCommand::Run {
                 port,
                 static_dir,
+                tls_cert,
+                tls_key,
                 foreground,
             } => {
                 let mut config = midtown::webserver::WebserverConfig::default();
@@ -760,6 +770,11 @@ fn main() {
                 if static_dir.is_some() {
                     config.static_dir = static_dir.clone();
                 }
+
+                // TLS config: CLI args take precedence over config.toml
+                let global_config = midtown::config::GlobalConfig::load();
+                config.tls_cert = tls_cert.clone().or(global_config.webserver.tls_cert);
+                config.tls_key = tls_key.clone().or(global_config.webserver.tls_key);
 
                 // Set up tracing
                 tracing_subscriber::fmt::init();
