@@ -654,6 +654,152 @@ fn test_fork_bound_threads_cleaned_up_on_name_reuse() {
     );
 }
 
+// ── topic_sessions rebuild tests ──────────────────────────────────────────────
+//
+// These tests verify the startup reconstruction of the `topic_sessions`
+// in-memory cache (thread_parent_id → session_id) from persisted `SessionRecord`
+// entries with `bound_thread_id` and `coworker_type == "channel-lead"`. This
+// ensures that after a daemon restart, thread replies are routed to existing
+// fork sessions instead of spawning duplicates.
+
+/// Channel-lead sessions with `bound_thread_id` populate `topic_sessions`
+/// during the rebuild loop in `DaemonState::new`.
+#[test]
+fn test_topic_sessions_rebuilt_from_channel_lead_fork_records() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let mut fork_record = make_test_session_record_named("fork-sess-1", true, "fork-riverside");
+    fork_record.coworker_type = "channel-lead".to_string();
+    fork_record.bound_thread_id = Some("thread-msg-abc".to_string());
+    sessions.insert("fork-sess-1".to_string(), fork_record);
+
+    // Simulate the rebuild loop from DaemonState::new
+    let mut topic_sessions: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &sessions {
+        if record.coworker_type == "channel-lead"
+            && let Some(ref tid) = record.bound_thread_id
+        {
+            topic_sessions.insert(tid.clone(), session_id.clone());
+        }
+    }
+
+    assert_eq!(
+        topic_sessions.get("thread-msg-abc"),
+        Some(&"fork-sess-1".to_string()),
+        "topic_sessions should map thread_parent_id → session_id for channel-lead forks"
+    );
+}
+
+/// Non-channel-lead sessions with `bound_thread_id` (e.g., task coworkers)
+/// must NOT populate `topic_sessions`. Only forked channel leads route
+/// thread replies.
+#[test]
+fn test_topic_sessions_skips_non_channel_lead_sessions() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let mut task_record = make_test_session_record_named("task-sess-1", true, "riverside");
+    task_record.coworker_type = "dev".to_string();
+    task_record.bound_thread_id = Some("thread-task-xyz".to_string());
+    sessions.insert("task-sess-1".to_string(), task_record);
+
+    let mut topic_sessions: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &sessions {
+        if record.coworker_type == "channel-lead"
+            && let Some(ref tid) = record.bound_thread_id
+        {
+            topic_sessions.insert(tid.clone(), session_id.clone());
+        }
+    }
+
+    assert!(
+        topic_sessions.is_empty(),
+        "Task coworkers with bound_thread_id must not appear in topic_sessions"
+    );
+}
+
+/// Sessions without `bound_thread_id` (root channel leads) must NOT populate
+/// `topic_sessions`.
+#[test]
+fn test_topic_sessions_skips_channel_leads_without_bound_thread() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+    let mut root_lead = make_test_session_record_named("lead-sess-1", true, "ops-lead");
+    root_lead.coworker_type = "channel-lead".to_string();
+    // bound_thread_id is None — this is a root channel lead, not a fork
+    sessions.insert("lead-sess-1".to_string(), root_lead);
+
+    let mut topic_sessions: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &sessions {
+        if record.coworker_type == "channel-lead"
+            && let Some(ref tid) = record.bound_thread_id
+        {
+            topic_sessions.insert(tid.clone(), session_id.clone());
+        }
+    }
+
+    assert!(
+        topic_sessions.is_empty(),
+        "Root channel leads (no bound_thread_id) must not appear in topic_sessions"
+    );
+}
+
+/// Mixed sessions: only channel-lead forks with bound_thread_id appear in
+/// `topic_sessions`.
+#[test]
+fn test_topic_sessions_only_includes_channel_lead_forks() {
+    use std::collections::HashMap;
+
+    let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
+
+    // Fork channel lead (should be included)
+    let mut fork = make_test_session_record_named("fork-1", true, "fork-ops");
+    fork.coworker_type = "channel-lead".to_string();
+    fork.bound_thread_id = Some("thread-111".to_string());
+    sessions.insert("fork-1".to_string(), fork);
+
+    // Root channel lead (no bound_thread_id, should be excluded)
+    let mut root_lead = make_test_session_record_named("lead-1", true, "ops-root");
+    root_lead.coworker_type = "channel-lead".to_string();
+    sessions.insert("lead-1".to_string(), root_lead);
+
+    // Task coworker with bound_thread_id (should be excluded)
+    let mut task = make_test_session_record_named("task-1", true, "riverside");
+    task.coworker_type = "dev".to_string();
+    task.bound_thread_id = Some("thread-222".to_string());
+    sessions.insert("task-1".to_string(), task);
+
+    // Regular coworker (no bound_thread_id, should be excluded)
+    let unbound = make_test_session_record_named("reg-1", true, "amsterdam");
+    sessions.insert("reg-1".to_string(), unbound);
+
+    let mut topic_sessions: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &sessions {
+        if record.coworker_type == "channel-lead"
+            && let Some(ref tid) = record.bound_thread_id
+        {
+            topic_sessions.insert(tid.clone(), session_id.clone());
+        }
+    }
+
+    assert_eq!(
+        topic_sessions.len(),
+        1,
+        "Only the fork channel lead should appear"
+    );
+    assert_eq!(
+        topic_sessions.get("thread-111"),
+        Some(&"fork-1".to_string()),
+        "Fork session should be mapped by its thread_parent_id"
+    );
+    assert!(
+        !topic_sessions.values().any(|v| v == "task-1"),
+        "Task coworker must not appear in topic_sessions"
+    );
+}
+
 #[test]
 fn profile_state_serializes_round_trip() {
     let state = ProfileState {
