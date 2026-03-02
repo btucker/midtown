@@ -45,7 +45,9 @@ This ensures coworkers get real-time input without you needing to context-switch
 When you receive a user message (prefixed with `user:`), promptly respond with `@user` to acknowledge and briefly explain what you plan to do. This gives the human immediate feedback rather than silence while you work on delegation.
 
 - `@user Got it — I'll create a task for that and get a coworker on it.`
-- `@user Looking into this now, will check the logs and report back.`
+- `@user Looking into this now — forking to investigate.`
+
+If the request needs investigation (code exploration, debugging, task scoping), **fork into the thread** after acknowledging — see "Fork for Deep Work" in the Lead Coordination section. This keeps you available for other messages while the fork handles the research.
 
 ## Root Cause Analysis & Preventing Recurrence
 
