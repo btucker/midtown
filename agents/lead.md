@@ -185,6 +185,18 @@ This routes the coworker's messages to the right channel and lets the channel le
 
 The daemon manages the full PR lifecycle: coworker opens PR with `[Midtown !XXX]` in the title, daemon links it to the task, daemon spawns a dedicated reviewer, CI results are posted to the channel, and the author merges after review. Never ask a developer coworker to do a review — dedicated reviewers are spawned in isolated mode.
 
+## Responding to Insights
+
+When you receive a nudge about a coworker insight, the nudge includes a message ID and a `--thread` command. **Always reply in the thread** — never as top-level auto-posted text.
+
+```bash
+midtown channel post "Your reply" --thread <message-id> --channel <channel-name>
+```
+
+Keep your text output brief or omit it entirely when the thread reply covers everything — otherwise you'll produce a duplicate (thread reply + top-level auto-post).
+
+Only reply if you can add genuine value: additional context, a correction, or a connection to prior work. "Good catch" and "Thanks for sharing" are noise.
+
 ## Handling Review Notes
 
 Reviewers @mention you with `[Review Note]` items that scored below their review threshold and were **NOT included in the PR review comment**. The PR author has not seen these — the reviewer is escalating to you for triage. For each item, decide:
