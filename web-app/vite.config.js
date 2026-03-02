@@ -2,21 +2,17 @@ import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
+import { VitePWA } from 'vite-plugin-pwa'
 
-const nodeMajor = Number(process.versions.node.split('.')[0])
-const shouldEnablePwa = nodeMajor >= 1 && nodeMajor < 24
-
-const vitePwaPlugin = async () => {
-  if (!shouldEnablePwa) {
-    console.log(
-      'Node.js >=24 is not supported by the current vite-plugin-pwa toolchain in this repo,',
-      'so source builds skip service worker generation.',
-    )
-    return []
-  }
-
-  const { VitePWA } = await import('vite-plugin-pwa')
-  return [
+export default defineConfig({
+  resolve: {
+    alias: {
+      $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
+    },
+  },
+  plugins: [
+    svelte(),
+    tailwindcss(),
     VitePWA({
       strategies: 'injectManifest',
       srcDir: 'src',
@@ -55,16 +51,7 @@ const vitePwaPlugin = async () => {
         enabled: false,
       },
     }),
-  ]
-}
-
-export default defineConfig(async () => ({
-  resolve: {
-    alias: {
-      $lib: fileURLToPath(new URL('./src/lib', import.meta.url)),
-    },
-  },
-  plugins: [svelte(), tailwindcss(), ...(await vitePwaPlugin())],
+  ],
   server: {
     proxy: {
       '/api': {
@@ -79,4 +66,4 @@ export default defineConfig(async () => ({
   test: {
     exclude: ['e2e/**', 'node_modules/**'],
   },
-}))
+})

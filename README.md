@@ -18,7 +18,7 @@ Coworkers are the agents created to pick up and execute those tasks. Coworkers o
 
 1. Install the [GitHub CLI](https://cli.github.com/).
 2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
-3. Install [Node.js](https://nodejs.org/) (only needed when building from source — release binaries and Docker images include a pre-built web app). Source builds are validated with Node.js 20/22; Node 24 is not currently supported for `vite-plugin-pwa` until upstream toolchain compatibility is restored.
+3. Install [Node.js](https://nodejs.org/) (only needed when building from source — release binaries and Docker images include a pre-built web app).
 
 ### 1. Install
 
