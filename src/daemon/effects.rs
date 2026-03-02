@@ -3033,7 +3033,11 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 /// Auto-merge a PR using `gh pr merge --squash --auto`.
 ///
 /// Posts a channel message on success or failure.
-/// Invoked by `Effect::MergePr` after the `pr.merge` RPC verifies all gates.
+///
+/// Invoked by two paths:
+/// - `Effect::MergePr` — after the `pr.merge` RPC verifies all gates (reviewer, review, CI, feedback).
+/// - `Effect::AutoMergePr` — proactively from the stuck-PR polling path in `pr.rs`, gated on
+///   `is_auto_mergeable()` (approved + CI green) AND no active daemon-assigned reviewer.
 async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     use super::helpers::truncate_str;
 

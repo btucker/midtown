@@ -243,7 +243,7 @@ All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The exe
 
 The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's dual-path nudge (headless session manager or headed intercom) when the channel is the default channel.
 
-Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is rebuilt at startup from session records and then maintained during runtime; `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts.
+Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is rebuilt at startup from session records and then maintained during runtime; `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts. Typed variants (`TaskAssigned`, `TaskClaimed`, `SessionRecovery`, `ReviewAssigned`) carry structured data and generate rich messages (e.g., `ReviewAssigned` loads the full `agents/reviewer-resume.md` template); the generic `Nudge` variant wraps freeform strings for health alerts and ops notifications.
 
 Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
@@ -402,7 +402,9 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Effect**: On success, `Effect::MergePr` calls `gh pr merge --squash --auto` with `current_dir` set to the repo path.
 
-**Pre-gate — Reviewer active**: Before the three gates, the RPC handler checks `get_reviewer(pr_number)`. If a reviewer coworker is still assigned, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working.
+**Proactive auto-merge** (`Effect::AutoMergePr`): The stuck-PR polling path in `pr.rs` emits `AutoMergePr` when `is_auto_mergeable()` returns true (approved + CI green + no conflicts + all checks complete) AND no active daemon-assigned reviewer. This proactively enables GitHub's auto-merge queue for merge-ready PRs without requiring a coworker to call `midtown pr merge`. Uses `StuckConditionType::AutoMerge` for deduplication (independent of the `MergeReady` nudge, which fires after a delay as a fallback). Both `MergePr` and `AutoMergePr` call the same `auto_merge_pr()` function.
+
+**Pre-gate — Reviewer active**: Before the three gates, the RPC handler checks `get_reviewer(pr_number)`. If a reviewer coworker is still assigned, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
 
 **Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the same reviewer check in `pr_action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), `PrApproved` is suppressed so workflow scripts don't prematurely nudge the author to merge. The `Approved` nudge cooldown is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
 
@@ -602,7 +604,7 @@ If no script is found, the daemon falls back to its compiled-in default behavior
 
 ### Invocation
 
-The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, and `dispatch.rs`. The effect executes the script as:
+The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, `dispatch.rs`, `rpc_task.rs` (task creation → `TaskCreated`), and `rpc_channel.rs` (channel posts → `CoworkerMessage` / `ChannelMessage`). The effect executes the script as:
 
 ```
 uv run workflow.py --event '{"type":"pr.opened",...}' \

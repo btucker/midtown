@@ -803,3 +803,49 @@ fn auto_merge_condition_cleared_when_pr_no_longer_mergeable() {
         "auto-merge should be allowed after condition was cleared and re-tracked"
     );
 }
+
+#[test]
+fn cleanup_retains_nudged_entries_past_first_detected_cutoff() {
+    // Verifies that cleanup() retains entries where last_nudged is recent
+    // even if first_detected has aged beyond the cutoff. This prevents
+    // AutoMerge (and other one-shot conditions) from re-firing after cleanup.
+    let mut tracker = StuckConditionTracker::new();
+
+    // Manually insert an entry with an old first_detected but recent last_nudged.
+    // The cutoff is STUCK_NUDGE_COOLDOWN_SECS * 2 = 60 min.
+    // Simulate: first_detected 90 min ago, last_nudged 5 min ago.
+    let old_first = Instant::now() - Duration::from_secs(90 * 60);
+    let recent_nudge = Instant::now() - Duration::from_secs(5 * 60);
+    tracker.conditions.insert(
+        ("42".to_string(), StuckConditionType::AutoMerge),
+        (old_first, Some(recent_nudge), 1),
+    );
+
+    tracker.cleanup();
+
+    // Entry should be retained because last_nudged is recent
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::AutoMerge),
+        "nudged AutoMerge entry should survive cleanup and remain on cooldown"
+    );
+}
+
+#[test]
+fn cleanup_evicts_entries_where_both_timestamps_are_old() {
+    let mut tracker = StuckConditionTracker::new();
+
+    // Both first_detected and last_nudged are older than the cutoff
+    let old = Instant::now() - Duration::from_secs(90 * 60);
+    tracker.conditions.insert(
+        ("42".to_string(), StuckConditionType::MergeReady),
+        (old, Some(old), 2),
+    );
+
+    tracker.cleanup();
+
+    // Entry should be evicted — both timestamps are beyond cutoff
+    assert!(
+        !tracker.should_nudge("42", StuckConditionType::MergeReady),
+        "fully stale entry should be evicted by cleanup (should_nudge returns false for untracked)"
+    );
+}

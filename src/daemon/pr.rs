@@ -1635,16 +1635,28 @@ async fn collect_stuck_condition_effects(
 
         // --- Scenario 3: Approved + CI green but not merging ---
         if is_auto_mergeable(pr) {
-            // Enable GitHub auto-merge on first detection (idempotent if already enabled).
-            // Uses a separate AutoMerge condition so the delayed MergeReady nudge
-            // still fires if the PR doesn't actually merge.
-            tracker.track(&pr_id, StuckConditionType::AutoMerge);
-            if tracker.should_nudge(&pr_id, StuckConditionType::AutoMerge) {
-                effects.push(Effect::AutoMergePr {
-                    pr_number,
-                    title: title.to_string(),
-                });
-                tracker.record_nudge(&pr_id, StuckConditionType::AutoMerge);
+            // Gate: don't auto-merge while a daemon-assigned reviewer is still working.
+            // Mirrors the pre-gate in handle_pr_merge (rpc_prs.rs) that prevents the
+            // PR #1624 incident. Uses get_reviewer() (raw presence, no timeout) with
+            // a bypass when the review is already cached as complete.
+            let has_active_reviewer = {
+                let ps = state.persistent_state.lock().await;
+                ps.github.get_reviewer(pr_number).is_some()
+                    && !ps.github.has_cached_review(pr_number)
+            };
+
+            if !has_active_reviewer {
+                // Enable GitHub auto-merge on first detection (idempotent if already enabled).
+                // Uses a separate AutoMerge condition so the delayed MergeReady nudge
+                // still fires if the PR doesn't actually merge.
+                tracker.track(&pr_id, StuckConditionType::AutoMerge);
+                if tracker.should_nudge(&pr_id, StuckConditionType::AutoMerge) {
+                    effects.push(Effect::AutoMergePr {
+                        pr_number,
+                        title: title.to_string(),
+                    });
+                    tracker.record_nudge(&pr_id, StuckConditionType::AutoMerge);
+                }
             }
 
             let first_detected = tracker.track(&pr_id, StuckConditionType::MergeReady);

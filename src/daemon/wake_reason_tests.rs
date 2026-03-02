@@ -147,6 +147,7 @@ fn task_nudges_include_reply_instruction() {
     let claimed = WakeReason::TaskClaimed {
         task_id: "7".to_string(),
         subject: "Build widget".to_string(),
+        plan_section: String::new(),
     };
     assert!(
         claimed.to_nudge_message().contains("--task 7"),
@@ -169,6 +170,39 @@ fn task_nudges_include_reply_instruction() {
     assert!(
         created.to_nudge_message().contains("--task 7"),
         "TaskCreated nudge should include --task reply instruction"
+    );
+}
+
+#[test]
+fn review_assigned_nudge_uses_rich_template() {
+    let reason = WakeReason::ReviewAssigned { pr_number: 42 };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("Resume reviewing PR #42"),
+        "ReviewAssigned should use the full reviewer-resume template, not a one-liner"
+    );
+    assert!(
+        msg.contains("gh pr comment 42"),
+        "ReviewAssigned should include PR comment instructions from the template"
+    );
+}
+
+#[test]
+fn task_claimed_nudge_includes_plan_section() {
+    let reason = WakeReason::TaskClaimed {
+        task_id: "7".to_string(),
+        subject: "Build widget".to_string(),
+        plan_section: "\n\n## Execution Skill\n\n**Use the `superpowers:deploy` skill.**"
+            .to_string(),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("Execution Skill"),
+        "TaskClaimed nudge should include plan section when provided"
+    );
+    assert!(
+        msg.contains("superpowers:deploy"),
+        "TaskClaimed nudge should include execution skill from plan section"
     );
 }
 
@@ -227,7 +261,8 @@ fn sender_returns_midtown_for_system_nudges() {
     assert_eq!(
         WakeReason::TaskClaimed {
             task_id: "1".into(),
-            subject: "s".into()
+            subject: "s".into(),
+            plan_section: String::new(),
         }
         .sender(),
         "midtown"

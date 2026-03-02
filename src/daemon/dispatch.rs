@@ -2469,6 +2469,9 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
         coworkers_dispatched_this_tick.insert(coworker_name.to_lowercase());
 
+        // Build plan section before branching — both paths may need it.
+        let plan_section = build_plan_prompt_section(&task.id, snap);
+
         if already_running {
             // Step 2a: Coworker is already running (grouped task) — nudge to claim the task.
             // The coworker runs `midtown task claim`, which writes ownership directly
@@ -2508,13 +2511,13 @@ pub(super) fn spawn_for_pending_tasks_excluding(
                 reason: super::wake_reason::WakeReason::TaskClaimed {
                     task_id: task.id.clone(),
                     subject: task.subject.clone(),
+                    plan_section: plan_section.clone(),
                 },
                 on_success: assign_callbacks,
             });
         } else {
             // Step 2b: Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
-            let plan_section = build_plan_prompt_section(&task.id, snap);
             let prompt =
                 crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
 
