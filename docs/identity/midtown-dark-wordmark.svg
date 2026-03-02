@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="800 1000 9500 2400" width="100%">
+  <defs>
+    <mask id="gaps" maskUnits="userSpaceOnUse" x="-5000" y="-5000" width="20000" height="20000">
+      <rect x="-5000" y="-5000" width="20000" height="20000" fill="white"/>
+      <path d="M2253,3500 L2333,1530 Q2333,1330 2533,1330 L2993,1330 Q3193,1330 3193,1530 L3273,3500 Z"
+            fill="white" stroke="black" stroke-width="130"/>
+      <path d="M1553,3500 L1633,930 Q1633,730 1833,730 L2293,730 Q2493,730 2493,930 L2573,3500 Z"
+            fill="white" stroke="black" stroke-width="130"/>
+      <path d="M973,3500 L1053,1840 Q1053,1640 1253,1640 L1713,1640 Q1913,1640 1913,1840 L1993,3500 Z"
+            fill="white" stroke="black" stroke-width="130"/>
+    </mask>
+  </defs>
+  <g transform="translate(2048,3300) scale(0.65) translate(-2048,-3300)" mask="url(#gaps)">
+    <path d="M2253,3300 L2333,1530 Q2333,1330 2533,1330 L2993,1330 Q3193,1330 3193,1530 L3273,3300 Z" fill="#5A7A92"/>
+    <line x1="2063" y1="730" x2="2063" y2="350" stroke="#7EB0BE" stroke-width="49" stroke-linecap="round"/>
+    <path d="M1553,3300 L1633,930 Q1633,730 1833,730 L2293,730 Q2493,730 2493,930 L2573,3300 Z" fill="#7EB0BE"/>
+    <path d="M973,3300 L1053,1840 Q1053,1640 1253,1640 L1713,1640 Q1913,1640 1913,1840 L1993,3300 Z" fill="#A2D4DC"/>
+  </g>
+  <text x="3300" y="3300" font-family="Raleway, sans-serif" font-size="1300" font-weight="600" letter-spacing="-55" fill="#A2D4DC">Midtown</text>
+</svg>
