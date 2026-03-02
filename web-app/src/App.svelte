@@ -16,6 +16,7 @@
   import SwipeGestures from '$lib/SwipeGestures.svelte'
   import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
   import SearchPalette from '$lib/SearchPalette.svelte'
+  import InstallBanner from '$lib/InstallBanner.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject, setupHistoryNavigation, replaceNavState, openThread } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
@@ -251,6 +252,8 @@
             <SearchIcon size={16} />
           </button>
         </header>
+
+        <InstallBanner />
 
         {#if activeView === 'board'}
           <div class="board-content flex flex-1 min-h-0 overflow-hidden" class:thread-open-mobile={!!$threadData}>
