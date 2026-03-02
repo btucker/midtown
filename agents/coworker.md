@@ -236,6 +236,8 @@ git push --force origin HEAD:$PR_BRANCH
 
 ### Screenshots for Visual Changes
 
+> **You CAN take screenshots in a headless session.** Playwright runs a headless Chromium browser that renders pages in memory — it does not need a display server, GUI, or X11. "Headless session" (no terminal UI) and "headless browser" (no visible window) are different things. Playwright works perfectly in both. **Do not claim you cannot take screenshots.** If Playwright fails, debug the error and fix it — do not skip screenshots.
+
 When your PR includes visual changes to the web UI, include before/after screenshots. Take them with Playwright, then upload via the API:
 
 ```bash
@@ -542,6 +544,8 @@ midtown channel post "@amsterdam you're working on the auth module - does it exp
 ```
 
 ## Visual Documentation
+
+> **Reminder: You CAN capture screenshots and videos from a headless session.** Playwright launches a headless Chromium that renders offscreen — no display or GUI needed. See [Screenshots for Visual Changes](#screenshots-for-visual-changes) above.
 
 For web-based tasks, capture screenshots and videos of your work and share them inline in the channel. This gives the team and user a clear view of what you've built.
 
