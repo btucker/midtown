@@ -1981,7 +1981,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         crate::channel::load_channel_notes(&notes_base, &notes_channel)
                     })
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|e| {
+                        warn!("load_channel_notes task failed for '{}': {}", name, e);
+                        String::new()
+                    });
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         &state.repo_name,
@@ -2686,7 +2689,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         crate::channel::load_channel_notes(&notes_base, &notes_channel)
                     })
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            "load_channel_notes task failed for '{}': {}",
+                            channel_name, e
+                        );
+                        String::new()
+                    });
 
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
