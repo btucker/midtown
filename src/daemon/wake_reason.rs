@@ -52,6 +52,33 @@ pub enum WakeReason {
 }
 
 impl WakeReason {
+    /// The sender to attribute this nudge to in channel logs.
+    ///
+    /// Returns the logical originator of the nudge — used when posting
+    /// nudge content to DM channels for observability.
+    pub fn sender(&self) -> &str {
+        match self {
+            Self::Mention { from, .. } => from.as_str(),
+            Self::InsightPosted { agent, .. } => agent.as_str(),
+            Self::UserMessage { .. } | Self::DmFromUser { .. } => "user",
+            // System-originated nudges
+            Self::TaskCreated { .. }
+            | Self::TaskAssigned { .. }
+            | Self::TaskClaimed { .. }
+            | Self::SessionRecovery { .. }
+            | Self::ReviewAssigned { .. }
+            | Self::Nudge { .. } => "midtown",
+        }
+    }
+
+    /// Whether this nudge's content is already present in the DM channel.
+    ///
+    /// `DmFromUser` messages are written to `dm-<name>` by the RPC post handler
+    /// before the nudge effect is created, so posting again would duplicate.
+    pub fn already_in_dm_channel(&self) -> bool {
+        matches!(self, Self::DmFromUser { .. })
+    }
+
     /// Format as a nudge message for an already-running session.
     pub fn to_nudge_message(&self) -> String {
         match self {

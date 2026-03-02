@@ -213,3 +213,128 @@ fn dm_from_user_nudge_message_reply_instruction_uses_coworker_name() {
         "reply instruction should reference the coworker's DM channel"
     );
 }
+
+#[test]
+fn sender_returns_midtown_for_system_nudges() {
+    assert_eq!(
+        WakeReason::TaskAssigned {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .sender(),
+        "midtown"
+    );
+    assert_eq!(
+        WakeReason::TaskClaimed {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .sender(),
+        "midtown"
+    );
+    assert_eq!(
+        WakeReason::SessionRecovery {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .sender(),
+        "midtown"
+    );
+    assert_eq!(
+        WakeReason::ReviewAssigned { pr_number: 42 }.sender(),
+        "midtown"
+    );
+    assert_eq!(
+        WakeReason::Nudge {
+            message: "hi".into()
+        }
+        .sender(),
+        "midtown"
+    );
+    assert_eq!(
+        WakeReason::TaskCreated {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .sender(),
+        "midtown"
+    );
+}
+
+#[test]
+fn sender_returns_from_for_mention() {
+    let reason = WakeReason::Mention {
+        from: "lexington".to_string(),
+        content: "check this".to_string(),
+        msg_id: "msg-1".to_string(),
+    };
+    assert_eq!(reason.sender(), "lexington");
+}
+
+#[test]
+fn sender_returns_agent_for_insight() {
+    let reason = WakeReason::InsightPosted {
+        insight: "interesting".into(),
+        agent: "broadway".into(),
+        msg_id: "msg-1".into(),
+        task_id: None,
+        channel_name: "ops".into(),
+    };
+    assert_eq!(reason.sender(), "broadway");
+}
+
+#[test]
+fn sender_returns_user_for_user_messages() {
+    assert_eq!(
+        WakeReason::UserMessage {
+            content: "hi".into(),
+            msg_id: "m".into()
+        }
+        .sender(),
+        "user"
+    );
+    assert_eq!(
+        WakeReason::DmFromUser {
+            content: "hi".into(),
+            msg_id: "m".into(),
+            coworker_name: "park".into()
+        }
+        .sender(),
+        "user"
+    );
+}
+
+#[test]
+fn already_in_dm_channel_only_for_dm_from_user() {
+    assert!(
+        WakeReason::DmFromUser {
+            content: "hi".into(),
+            msg_id: "m".into(),
+            coworker_name: "park".into()
+        }
+        .already_in_dm_channel()
+    );
+
+    // All others should return false
+    assert!(
+        !WakeReason::TaskAssigned {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .already_in_dm_channel()
+    );
+    assert!(
+        !WakeReason::Mention {
+            from: "lex".into(),
+            content: "c".into(),
+            msg_id: "m".into()
+        }
+        .already_in_dm_channel()
+    );
+    assert!(
+        !WakeReason::Nudge {
+            message: "hi".into()
+        }
+        .already_in_dm_channel()
+    );
+}

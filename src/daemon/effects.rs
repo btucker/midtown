@@ -763,6 +763,24 @@ async fn send_session_nudge(
     match state.session_manager.send_message(&name, &msg).await {
         Ok(()) => {
             state.record_pending_nudge(&name, &msg);
+
+            // Post the nudge content to the coworker's DM channel for observability.
+            // Skip DmFromUser — the user's message is already in the DM channel
+            // (written by rpc_channel.rs before the nudge effect was created).
+            if !reason.already_in_dm_channel() {
+                let dm_channel = format!("dm-{}", name);
+                let sender = reason.sender();
+                let dm_msg = crate::message::Message::for_channel(
+                    &dm_channel,
+                    sender,
+                    &msg,
+                    crate::message::MessageType::Text,
+                );
+                if let Err(e) = state.send_and_broadcast_async(&dm_msg).await {
+                    warn!("Failed to post nudge to DM channel dm-{}: {}", name, e);
+                }
+            }
+
             true
         }
         Err(e) => {
