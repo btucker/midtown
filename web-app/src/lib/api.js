@@ -143,8 +143,14 @@ export function switchProject(projectName, webhookPort) {
   activeProject.set(projectName)
 
   if (webhookPort) {
-    // Connect to the project's daemon directly via its webhook port
-    projectApiBase = `http://${window.location.hostname}:${webhookPort}`
+    if (window.location.protocol === 'https:') {
+      // HTTPS: proxy through the webserver to avoid mixed content errors.
+      // The webserver forwards requests to the daemon's webhook port.
+      projectApiBase = `${window.location.origin}/api/projects/${projectName}/proxy`
+    } else {
+      // HTTP: connect to the project's daemon directly via its webhook port
+      projectApiBase = `http://${window.location.hostname}:${webhookPort}`
+    }
   } else {
     // No webhook port - project daemon may not be running
     projectApiBase = ''
