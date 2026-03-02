@@ -422,7 +422,7 @@ The `/api/channels/history` endpoint accepts an optional `thread_parent_id` quer
 - Absent: returns only top-level messages (where `thread_parent_id` is `None`), with `reply_count` and `last_reply` metadata when replies exist
 - Present: returns only thread replies matching the given parent ID
 
-When a thread reply is posted via `midtown channel post --thread <id>`, the daemon routes the nudge to the forked lead session that owns the thread (looked up via `topic_sessions`). The fork session has full thread context and decides when to loop in other participants via @mentions — there is no automatic broadcast to all thread participants.
+When a thread reply is posted via `midtown channel post --thread <id>`, the daemon routes the nudge to the forked lead session that owns the thread (looked up via `topic_sessions`). The fork session has full thread context and decides when to loop in other participants via @mentions — there is no automatic broadcast to all thread participants. The fork should @mention others when a reply contains information they need to act on (e.g., a question directed at them, a decision affecting their work, or context they explicitly requested).
 
 ## Chat TUI
 
