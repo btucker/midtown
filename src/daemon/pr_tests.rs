@@ -3652,3 +3652,88 @@ fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
         "COMMENTED with empty body should be rejected — weak state, likely a bot"
     );
 }
+
+/// Draft PRs should be skipped entirely in poll_prs_for_issues, producing no
+/// orphaned PR alerts even when they have merge conflicts and no active owner.
+///
+/// This prevents noisy repeated warnings for draft PRs like PR #1453
+/// (codex/matrix-bridge-spike) that have merge conflicts but don't need
+/// immediate action since they're still drafts.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_draft_pr_skipped_in_orphaned_pr_alerts() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    // Create a draft PR with a merge conflict and no active owner —
+    // without the draft check this would trigger an orphaned PR alert
+    let pr_json = json!({
+        "number": 1453,
+        "headRefName": "codex/matrix-bridge-spike",
+        "title": "feat: add midtown view --matrix mode",
+        "mergeable": "CONFLICTING",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": true,
+    });
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let pr_list_file = temp_dir.path().join("pr_list.json");
+    std::fs::write(
+        &pr_list_file,
+        serde_json::to_string(&vec![pr_json]).unwrap(),
+    )
+    .unwrap();
+
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            format!("#!/bin/bash\ncat {}", pr_list_file.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let snap = minimal_snapshot_for_test();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let result = poll_prs_for_issues(&snap, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
+
+    let effects = result.expect("poll_prs_for_issues should succeed");
+
+    // Draft PRs must produce no effects — no orphaned PR warnings, no nudges
+    assert!(
+        effects.is_empty(),
+        "Draft PR should be skipped entirely, producing no effects. Got: {:?}",
+        effects
+    );
+
+    // Double-check: no orphaned PR warning messages
+    let has_orphan_warning = effects.iter().any(|e| {
+        matches!(e, Effect::PostSystemMessage { message, .. } if message.contains("Orphaned PR"))
+    });
+    assert!(
+        !has_orphan_warning,
+        "Draft PR must not trigger orphaned PR alerts"
+    );
+}
