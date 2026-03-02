@@ -1240,3 +1240,123 @@ fn review_author_matches_bot_comment_rejected() {
         "Bot comment without frontmatter should not match assigned reviewer"
     );
 }
+
+// ---------------------------------------------------------------------------
+// is_non_lead_coworker tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_non_lead_coworker_excludes_project_lead() {
+    let channel_leads = std::collections::HashSet::new();
+    assert!(!is_non_lead_coworker("midtown", "midtown", &channel_leads));
+    assert!(!is_non_lead_coworker("lead", "midtown", &channel_leads));
+}
+
+#[test]
+fn is_non_lead_coworker_excludes_channel_leads() {
+    let channel_leads: std::collections::HashSet<String> =
+        ["ops".to_string()].into_iter().collect();
+    assert!(!is_non_lead_coworker("ops", "midtown", &channel_leads));
+}
+
+#[test]
+fn is_non_lead_coworker_includes_regular_coworkers() {
+    let channel_leads: std::collections::HashSet<String> =
+        ["ops".to_string()].into_iter().collect();
+    assert!(is_non_lead_coworker("lexington", "midtown", &channel_leads));
+    assert!(is_non_lead_coworker("madison", "midtown", &channel_leads));
+}
+
+// ---------------------------------------------------------------------------
+// PrFields tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pr_fields_from_json_extracts_core_fields() {
+    let pr = json!({
+        "number": 42,
+        "title": "Fix the auth bug",
+        "headRefName": "lexington/fix-auth",
+        "isDraft": false,
+    });
+    let pf = PrFields::from_json(&pr);
+    assert_eq!(pf.number, 42);
+    assert_eq!(pf.title, "Fix the auth bug");
+    assert_eq!(pf.head_ref, "lexington/fix-auth");
+    assert!(!pf.is_draft);
+}
+
+#[test]
+fn pr_fields_from_json_defaults_missing_fields() {
+    let pr = json!({});
+    let pf = PrFields::from_json(&pr);
+    assert_eq!(pf.number, 0);
+    assert_eq!(pf.title, "");
+    assert_eq!(pf.head_ref, "");
+    assert!(!pf.is_draft);
+}
+
+#[test]
+fn pr_fields_author_login_and_review_decision() {
+    let pr = json!({
+        "number": 99,
+        "title": "Add feature",
+        "headRefName": "york/add-feature",
+        "isDraft": true,
+        "author": {"login": "btucker"},
+        "reviewDecision": "APPROVED",
+        "mergeable": "CONFLICTING",
+    });
+    let pf = PrFields::from_json(&pr);
+    assert!(pf.is_draft);
+    assert_eq!(pf.author_login(), "btucker");
+    assert_eq!(pf.review_decision(), "APPROVED");
+    assert_eq!(pf.mergeable(), "CONFLICTING");
+}
+
+// ---------------------------------------------------------------------------
+// get_merged_task_pr tests
+// ---------------------------------------------------------------------------
+
+/// Helper to construct a minimal Task for testing.
+fn make_task(id: &str, pr: Option<u64>) -> crate::tasks::Task {
+    crate::tasks::Task {
+        id: id.to_string(),
+        subject: "Test task".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr,
+        created_at: None,
+    }
+}
+
+#[test]
+fn get_merged_task_pr_returns_merged_pr_number() {
+    let tasks = vec![make_task("42", Some(123))];
+    let merged: std::collections::HashSet<u64> = [123].into_iter().collect();
+    assert_eq!(get_merged_task_pr("42", &tasks, &merged), Some(123));
+}
+
+#[test]
+fn get_merged_task_pr_returns_none_for_unmerged_pr() {
+    let tasks = vec![make_task("42", Some(123))];
+    let merged: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    assert_eq!(get_merged_task_pr("42", &tasks, &merged), None);
+}
+
+#[test]
+fn get_merged_task_pr_returns_none_for_task_without_pr() {
+    let tasks = vec![make_task("42", None)];
+    let merged: std::collections::HashSet<u64> = [123].into_iter().collect();
+    assert_eq!(get_merged_task_pr("42", &tasks, &merged), None);
+}
+
+#[test]
+fn get_merged_task_pr_returns_none_for_unknown_task() {
+    let tasks: Vec<crate::tasks::Task> = vec![];
+    let merged: std::collections::HashSet<u64> = [123].into_iter().collect();
+    assert_eq!(get_merged_task_pr("42", &tasks, &merged), None);
+}

@@ -776,16 +776,16 @@ pub(super) async fn poll_prs_for_issues(
         let formatted_prs: Vec<serde_json::Value> = prs
             .iter()
             .map(|pr| {
+                let pf = PrFields::from_json(pr);
                 let status = format_pr_status_for_rpc(pr);
-                let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                let task_id = crate::tasks::extract_task_id_from_pr_title(title);
+                let task_id = crate::tasks::extract_task_id_from_pr_title(pf.title);
                 let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
                 serde_json::json!({
-                    "number": pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
-                    "title": title,
-                    "author": pr.get("author").and_then(|a| a.get("login")).and_then(|l| l.as_str()).unwrap_or("unknown"),
-                    "headRefName": pr.get("headRefName").and_then(|r| r.as_str()),
-                    "isDraft": pr.get("isDraft").and_then(|d| d.as_bool()),
+                    "number": pf.number,
+                    "title": pf.title,
+                    "author": pf.author_login(),
+                    "headRefName": pf.head_ref,
+                    "isDraft": pf.is_draft,
                     "status": status,
                     "task_id": task_id,
                     "task_name": task_name,
@@ -865,18 +865,15 @@ pub(super) async fn poll_prs_for_issues(
     }
 
     for pr in &prs {
-        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let pf = PrFields::from_json(pr);
 
         // Skip draft PRs — they don't need orphaned PR alerts or issue nudges
-        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-        if is_draft {
+        if pf.is_draft {
             continue;
         }
 
         // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
-        let owner_opt = resolve_pr_owner(pr_number, head_ref, snap);
+        let owner_opt = resolve_pr_owner(pf.number, pf.head_ref, snap);
 
         // Check for actionable issues
         let issues = detect_pr_issues(pr);
@@ -891,15 +888,15 @@ pub(super) async fn poll_prs_for_issues(
             // branch registration directly in addition to the resolved name. This prevents
             // false orphan detection when a coworker was reassigned mid-workflow.
             let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner)
-                || snap.worktree_branch_owners.contains_key(head_ref);
+                || snap.worktree_branch_owners.contains_key(pf.head_ref);
 
             // If the owner has no active worktree, treat this as an orphaned PR
             if !has_active_worktree && !issues.is_empty() {
                 effects.extend(
                     collect_orphaned_pr_effects(
-                        pr_number,
-                        title,
-                        head_ref,
+                        pf.number,
+                        pf.title,
+                        pf.head_ref,
                         Some(owner),
                         &issues,
                         state,
@@ -915,7 +912,8 @@ pub(super) async fn poll_prs_for_issues(
         // doesn't match coworker/branch pattern) that have critical issues
         if owner_opt.is_none() && !issues.is_empty() {
             effects.extend(
-                collect_orphaned_pr_effects(pr_number, title, head_ref, None, &issues, state).await,
+                collect_orphaned_pr_effects(pf.number, pf.title, pf.head_ref, None, &issues, state)
+                    .await,
             );
             // Continue to skip normal PR processing for this fully orphaned PR
             continue;
@@ -931,7 +929,7 @@ pub(super) async fn poll_prs_for_issues(
             // Check if we should nudge for this issue
             let should_nudge = {
                 let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pr_number, issue_type)
+                tracker.should_nudge(pf.number, issue_type)
             };
 
             if !should_nudge {
@@ -948,7 +946,7 @@ pub(super) async fn poll_prs_for_issues(
             // to see what was said without running extra `gh` commands.
             let review_content = match issue_type {
                 PrIssueType::ChangesRequested | PrIssueType::Approved => {
-                    fetch_review_content(pr_number).await
+                    fetch_review_content(pf.number).await
                 }
                 _ => None,
             };
@@ -956,8 +954,8 @@ pub(super) async fn poll_prs_for_issues(
             // Format the nudge message
             let message = format!(
                 "PR #{} ({}) - {}: {}{}",
-                pr_number,
-                truncate_str(title, 40),
+                pf.number,
+                truncate_str(pf.title, 40),
                 issue_type,
                 get_issue_action(issue_type),
                 review_content.as_deref().unwrap_or("")
@@ -967,7 +965,7 @@ pub(super) async fn poll_prs_for_issues(
             let (mut pr_ctx, channel_lead_names) = {
                 let ps = state.persistent_state.lock().await;
                 (
-                    PrContext::from_persistent_state(&ps, pr_number),
+                    PrContext::from_persistent_state(&ps, pf.number),
                     ps.channel_lead_names(),
                 )
             };
@@ -975,7 +973,7 @@ pub(super) async fn poll_prs_for_issues(
             // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
             // Catches cases where the reviewer assignment is cleared but the coworker
             // session is still in Reviewing phase.
-            pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
+            pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
 
             // Decide action using pure decision function with handoff support
             let action = decide_pr_issue_action_with_handoff(
@@ -988,7 +986,7 @@ pub(super) async fn poll_prs_for_issues(
             );
 
             effects.extend(pr_action_to_effects(
-                action, pr_number, title, issue_type, state, &pr_ctx,
+                action, pf.number, pf.title, issue_type, state, &pr_ctx,
             ));
         }
     }
@@ -1028,17 +1026,12 @@ pub(super) async fn poll_prs_for_issues(
     let prs_needing_review: usize = prs
         .iter()
         .filter(|pr| {
-            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let review_decision = pr
-                .get("reviewDecision")
-                .and_then(|r| r.as_str())
-                .unwrap_or("");
-            let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+            let pf = PrFields::from_json(pr);
             // PR needs review if it's not a draft, has no formal review, and no Claude comment review
-            pr_number != 0
-                && !is_draft
-                && review_decision.is_empty()
-                && !reviewed_prs.contains(&pr_number)
+            pf.number != 0
+                && !pf.is_draft
+                && pf.review_decision().is_empty()
+                && !reviewed_prs.contains(&pf.number)
         })
         .count();
     // Cache coworker names whose PRs have CI passed + review feedback (for idle shutdown protection).
@@ -1047,14 +1040,10 @@ pub(super) async fn poll_prs_for_issues(
         let review_feedback: HashSet<String> = prs
             .iter()
             .filter(|pr| {
-                let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                let review_decision = pr
-                    .get("reviewDecision")
-                    .and_then(|r| r.as_str())
-                    .unwrap_or("");
+                let pf = PrFields::from_json(pr);
                 all_ci_checks_passed(pr)
-                    && reviewed_prs.contains(&pr_number)
-                    && review_decision != "APPROVED"
+                    && reviewed_prs.contains(&pf.number)
+                    && pf.review_decision() != "APPROVED"
             })
             .filter_map(|pr| {
                 pr.get("headRefName")
@@ -1134,19 +1123,13 @@ async fn collect_green_with_feedback_effects(
         }
 
         // Skip if already approved (will be auto-merged or nudged via Approved issue type)
-        let review_decision = pr
-            .get("reviewDecision")
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
-        if review_decision == "APPROVED" {
+        let pf = PrFields::from_json(pr);
+        if pf.review_decision() == "APPROVED" {
             continue;
         }
 
-        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-
         // Only process coworker-owned PRs — session-first, branch fallback.
-        let owner = match resolve_pr_owner(pr_number, head_ref, snap) {
+        let owner = match resolve_pr_owner(pr_number, pf.head_ref, snap) {
             Some(o) => o,
             None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
         };
@@ -1186,7 +1169,7 @@ async fn collect_green_with_feedback_effects(
         let message = format!(
             "PR #{} ({}) - {}: {}{}",
             pr_number,
-            truncate_str(title, 40),
+            truncate_str(pf.title, 40),
             PrIssueType::GreenWithFeedback,
             get_issue_action(PrIssueType::GreenWithFeedback),
             review_suffix
@@ -1217,7 +1200,7 @@ async fn collect_green_with_feedback_effects(
         effects.extend(pr_action_to_effects(
             action,
             pr_number,
-            title,
+            pf.title,
             PrIssueType::GreenWithFeedback,
             state,
             &pr_ctx,
@@ -1551,8 +1534,11 @@ async fn collect_stuck_condition_effects(
                             let mut busy: Vec<String> = running
                                 .iter()
                                 .filter(|cw| {
-                                    !is_project_lead(&cw.name, &state.repo_name)
-                                        && !channel_lead_names.contains(&cw.name)
+                                    is_non_lead_coworker(
+                                        &cw.name,
+                                        &state.repo_name,
+                                        &channel_lead_names,
+                                    )
                                 })
                                 .map(|cw| cw.name.clone())
                                 .collect();
@@ -1582,8 +1568,11 @@ async fn collect_stuck_condition_effects(
                             let mut busy: Vec<String> = running
                                 .iter()
                                 .filter(|cw| {
-                                    !is_project_lead(&cw.name, &state.repo_name)
-                                        && !channel_lead_names.contains(&cw.name)
+                                    is_non_lead_coworker(
+                                        &cw.name,
+                                        &state.repo_name,
+                                        &channel_lead_names,
+                                    )
                                 })
                                 .map(|cw| cw.name.clone())
                                 .collect();
