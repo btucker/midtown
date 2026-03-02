@@ -132,9 +132,13 @@ pub fn handle_screenshot(
         "screenshot.png".to_string()
     };
 
-    // Write to a temp file first
+    // Write to a unique temp file (PID-scoped to avoid clobbering from concurrent coworkers)
     let tmp_dir = std::env::temp_dir();
-    let tmp_path = tmp_dir.join(&filename);
+    let tmp_path = tmp_dir.join(format!(
+        "midtown-screenshot-{}-{}",
+        std::process::id(),
+        filename
+    ));
 
     // Run Playwright to capture the screenshot
     eprintln!("Capturing screenshot of {}...", url);
@@ -160,9 +164,19 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
-    // Upload to the daemon's webhook API
-    let webhook_port =
-        std::env::var("MIDTOWN_WEBHOOK_PORT").unwrap_or_else(|_| "47023".to_string());
+    // Resolve the daemon's webhook port:
+    //   1. MIDTOWN_WEBHOOK_PORT env var (set by daemon for coworker sessions)
+    //   2. Project config daemon.webhook_port (persisted by assign_webhook_port)
+    //   3. Default (47023)
+    let webhook_port = std::env::var("MIDTOWN_WEBHOOK_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or_else(|| {
+            midtown::paths::detect_repo_name()
+                .map(|repo| midtown::config::get_project_daemon_config(&repo))
+                .and_then(|cfg| cfg.webhook_port)
+                .unwrap_or(midtown::daemon::DEFAULT_WEBHOOK_PORT)
+        });
     let upload_url = format!("http://127.0.0.1:{}/api/upload", webhook_port);
 
     let file_bytes =
