@@ -34,7 +34,7 @@ pub enum CoworkerRole {
     ChannelLead {
         /// The channel this lead is responsible for.
         channel_name: String,
-        /// Domain context injected at startup (e.g., recent tasks, PRs).
+        /// Domain context injected at startup from channel notes files.
         domain_context: String,
     },
 }
@@ -354,9 +354,10 @@ impl LaunchConfig {
 
         if let Some(channel_name) = channel {
             // Channel lead — delegate to channel_lead factory
-            let base_dir = crate::paths::projects_dir_for_repo(&repo);
-            let domain_context = crate::channel::load_channel_notes(&base_dir, channel_name);
-            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, domain_context)
+            // Note: domain_context is empty here; callers that need notes
+            // should load them via load_channel_notes() and pass directly
+            // to channel_lead() to keep this function I/O-free.
+            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "")
         } else {
             // Project Lead
             let auth_provider = crate::config::get_execution_provider_for_role(
@@ -449,7 +450,7 @@ impl LaunchConfig {
     /// their channel via `midtown channel post --channel {name}`.
     ///
     /// The `domain_context` is injected into the system prompt at spawn time.
-    /// On first spawn it can be empty; accumulated context comes from session persistence.
+    /// Callers load it from channel notes files via `load_channel_notes()`.
     ///
     /// The session name equals the channel name directly (e.g., "auth" for channel "auth").
     /// Channel leads are identified via `channel_lead_sessions` in persistent state,

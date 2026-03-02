@@ -39,6 +39,20 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
     let mut config = midtown::launch::LaunchConfig::lead(&repo_name, channel);
     config.session_mode = midtown::launch::SessionMode::Resume;
 
+    // Load channel notes into domain_context for channel leads
+    if let Some(channel_name) = channel {
+        let base_dir = midtown::paths::projects_dir_for_repo(&repo_name);
+        let notes = midtown::load_channel_notes(&base_dir, channel_name);
+        if !notes.is_empty()
+            && let midtown::launch::CoworkerRole::ChannelLead {
+                ref mut domain_context,
+                ..
+            } = config.role
+        {
+            *domain_context = notes;
+        }
+    }
+
     // Resolve auth profile for this project/provider
     let profile_dir = midtown::auth::active_profile_dir_for_project_with_provider(
         &repo_name,
