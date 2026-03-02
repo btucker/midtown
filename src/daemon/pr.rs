@@ -3242,8 +3242,15 @@ pub(super) async fn handle_ci_completion_for_review_spawn(
 /// - A formal GitHub review submission (APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED)
 /// - A comment-based coworker review detected via review signature.
 ///
+/// When `assigned_reviewer` is provided, only reviews authored by that reviewer
+/// are considered complete. This prevents bot comments or other coworkers' comments
+/// from prematurely marking a PR as reviewed.
+///
 /// Fetches both reviews and comments in a single API call to reduce GitHub API usage.
-pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
+pub(super) fn pr_has_completed_review_uncached(
+    pr_number: u64,
+    assigned_reviewer: Option<&str>,
+) -> bool {
     let output = std::process::Command::new("gh")
         .args([
             "pr",
@@ -3265,38 +3272,7 @@ pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
                 }
             };
 
-            // Check formal reviews first (Codex / GitHub-native review flow).
-            if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
-                for review in reviews {
-                    if let Some(state) = review.get("state").and_then(|s| s.as_str()) {
-                        let state_upper = state.to_ascii_uppercase();
-                        if matches!(
-                            state_upper.as_str(),
-                            "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED"
-                        ) {
-                            return true;
-                        }
-                    }
-                    if let Some(body) = review.get("body").and_then(|b| b.as_str())
-                        && text_contains_review_signature(body)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            // Check comments (where coworkers post comment-based reviews).
-            if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
-                for comment in comments {
-                    if let Some(body) = comment.get("body").and_then(|b| b.as_str())
-                        && text_contains_review_signature(body)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            false
+            json_has_completed_review(&json, assigned_reviewer)
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3312,6 +3288,60 @@ pub(super) fn pr_has_completed_review_uncached(pr_number: u64) -> bool {
             false
         }
     }
+}
+
+/// Pure logic for checking if parsed review JSON contains a completed review.
+///
+/// Extracted from `pr_has_completed_review_uncached` for testability (no subprocess).
+///
+/// When `assigned_reviewer` is `Some`, only reviews authored by that reviewer
+/// are accepted. When `None`, any valid review is accepted (backward-compatible).
+pub(super) fn json_has_completed_review(
+    json: &serde_json::Value,
+    assigned_reviewer: Option<&str>,
+) -> bool {
+    // Check formal reviews first (Codex / GitHub-native review flow).
+    if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
+        for review in reviews {
+            let has_review_state = if let Some(state) = review.get("state").and_then(|s| s.as_str())
+            {
+                let state_upper = state.to_ascii_uppercase();
+                matches!(
+                    state_upper.as_str(),
+                    "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED"
+                )
+            } else {
+                false
+            };
+
+            let has_review_body = review
+                .get("body")
+                .and_then(|b| b.as_str())
+                .is_some_and(text_contains_review_signature);
+
+            if has_review_state || has_review_body {
+                // Check author if assigned reviewer is specified
+                let body = review.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                if review_author_matches(body, assigned_reviewer) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check comments (where coworkers post comment-based reviews).
+    if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
+        for comment in comments {
+            if let Some(body) = comment.get("body").and_then(|b| b.as_str())
+                && text_contains_review_signature(body)
+                && review_author_matches(body, assigned_reviewer)
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 /// Extract review comment IDs from a JSON array of GitHub issue comments.
 ///

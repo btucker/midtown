@@ -1115,3 +1115,128 @@ fn gate3_passes_when_no_review_comment_ids() {
     assert!(all_addressed);
     assert!(unaddressed.is_empty());
 }
+
+// ── extract_review_author_from_body tests ───────────────────────────────
+
+#[test]
+fn extract_author_from_frontmatter() {
+    let body = "<!-- midtown: pleasant -->\n## Code Review by pleasant\nLooks good!";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("pleasant".to_string())
+    );
+}
+
+#[test]
+fn extract_author_from_frontmatter_case_insensitive() {
+    let body = "<!-- midtown: Pleasant -->\nReviewed by pleasant";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("pleasant".to_string())
+    );
+}
+
+#[test]
+fn extract_author_from_reviewed_by() {
+    let body = "LGTM! Reviewed by columbus\nAll checks pass.";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("columbus".to_string())
+    );
+}
+
+#[test]
+fn extract_author_from_emoji_reviewed_by() {
+    let body = "🤖 Reviewed by lexington\nGreat code!";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("lexington".to_string())
+    );
+}
+
+#[test]
+fn extract_author_from_code_review_header() {
+    let body = "## Code Review by madison\n\nLooks clean.";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("madison".to_string())
+    );
+}
+
+#[test]
+fn extract_author_none_for_plain_code_review() {
+    // "### Code review" without "by NAME" and no frontmatter — author unknown
+    let body = "### Code review\n\nNo issues found.";
+    assert_eq!(extract_review_author_from_body(body), None);
+}
+
+#[test]
+fn extract_author_none_for_regular_comment() {
+    let body = "Just a regular comment, not a review.";
+    assert_eq!(extract_review_author_from_body(body), None);
+}
+
+#[test]
+fn extract_author_frontmatter_takes_priority() {
+    // Frontmatter says "amsterdam" but body says "Reviewed by broadway"
+    // Frontmatter should win (it's the explicit attribution)
+    let body = "<!-- midtown: amsterdam -->\nReviewed by broadway";
+    assert_eq!(
+        extract_review_author_from_body(body),
+        Some("amsterdam".to_string())
+    );
+}
+
+// ── review_author_matches tests ─────────────────────────────────────────
+
+#[test]
+fn review_author_matches_no_assigned_reviewer() {
+    // No assigned reviewer — accept any review
+    assert!(review_author_matches("Reviewed by anyone", None));
+}
+
+#[test]
+fn review_author_matches_correct_reviewer() {
+    let body = "<!-- midtown: pleasant -->\n## Code Review by pleasant\nLGTM";
+    assert!(review_author_matches(body, Some("pleasant")));
+}
+
+#[test]
+fn review_author_matches_wrong_reviewer() {
+    // Bot or different coworker posted the review
+    let body = "<!-- midtown: codecov -->\nReviewed by codecov";
+    assert!(
+        !review_author_matches(body, Some("pleasant")),
+        "Should reject review from wrong author"
+    );
+}
+
+#[test]
+fn review_author_matches_case_insensitive() {
+    let body = "<!-- midtown: Pleasant -->\nReviewed by Pleasant";
+    assert!(review_author_matches(body, Some("pleasant")));
+}
+
+#[test]
+fn review_author_matches_rejects_unknown_author() {
+    // Review exists but no author can be determined — conservative rejection
+    // This prevents bot comments that have no midtown frontmatter from
+    // being treated as the assigned reviewer's review
+    let body = "### Code review\n\nNo issues found.";
+    assert!(
+        !review_author_matches(body, Some("pleasant")),
+        "Unknown author should not match assigned reviewer"
+    );
+}
+
+#[test]
+fn review_author_matches_bot_comment_rejected() {
+    // Simulates the PR #1657 bug: a bot (codecov) posts a comment that
+    // happens to be detected as a review signature. The assigned reviewer
+    // (pleasant) hasn't posted yet, so this should NOT mark the PR as reviewed.
+    let body = "Some bot output that doesn't have midtown frontmatter";
+    assert!(
+        !review_author_matches(body, Some("pleasant")),
+        "Bot comment without frontmatter should not match assigned reviewer"
+    );
+}

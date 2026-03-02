@@ -470,6 +470,89 @@ pub fn text_contains_review_signature(text: &str) -> bool {
         || text_has_code_review_header(text)
 }
 
+/// Extract the review author name from a review body.
+///
+/// Checks multiple patterns (in priority order):
+/// 1. `<!-- midtown: name -->` frontmatter (most reliable — explicit attribution)
+/// 2. `Reviewed by NAME` or `🤖 Reviewed by NAME` signature
+/// 3. `## Code Review by NAME` header pattern
+///
+/// Returns `None` if no author can be determined (e.g., `### Code review` with
+/// no frontmatter — the review exists but authorship is unknown).
+pub fn extract_review_author_from_body(text: &str) -> Option<String> {
+    // Priority 1: frontmatter (explicit, most reliable)
+    if let Some(name) = extract_midtown_frontmatter_name(text) {
+        return Some(name);
+    }
+
+    // Priority 2: "Reviewed by NAME" or "🤖 Reviewed by NAME"
+    for line in text.lines() {
+        for prefix in &["🤖 Reviewed by ", "Reviewed by "] {
+            if let Some(rest) = line.find(prefix).map(|i| &line[i + prefix.len()..]) {
+                let name = rest.split_whitespace().next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    return Some(name.to_lowercase());
+                }
+            }
+        }
+    }
+
+    // Priority 3: "## Code Review by NAME" header
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            let content = trimmed.trim_start_matches('#').trim();
+            let content_lower = content.to_lowercase();
+            if let Some(rest) = content_lower.strip_prefix("code review by ") {
+                let name = rest.split_whitespace().next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract the coworker name from `<!-- midtown: name -->` frontmatter.
+///
+/// Unlike `coworker_from_frontmatter` (which validates against the known
+/// coworker list), this returns the raw name for flexible matching.
+fn extract_midtown_frontmatter_name(body: &str) -> Option<String> {
+    let start = body.find("<!-- midtown:")?;
+    let after_start = &body[start + 13..];
+    let end = after_start.find("-->")?;
+    let name = after_start[..end].trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_lowercase())
+    }
+}
+
+/// Check if a review's author matches the assigned reviewer.
+///
+/// Comparison is case-insensitive. Returns `true` if:
+/// - No assigned reviewer (accept any review)
+/// - Author extracted from body matches the assigned reviewer
+/// - No author can be extracted from body (conservative: accept the review)
+pub fn review_author_matches(body: &str, assigned_reviewer: Option<&str>) -> bool {
+    let Some(reviewer) = assigned_reviewer else {
+        return true; // No assigned reviewer — accept any review
+    };
+
+    match extract_review_author_from_body(body) {
+        Some(author) => author.eq_ignore_ascii_case(reviewer),
+        None => {
+            // Can't determine author — conservative: don't accept as the assigned
+            // reviewer's review. This prevents bot comments without midtown
+            // attribution from being treated as completed reviews.
+            false
+        }
+    }
+}
+
 /// Check if text contains a "Code Review" header at any markdown heading level.
 ///
 /// Matches patterns like:
