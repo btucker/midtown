@@ -45,11 +45,13 @@
   onMount(() => {
     if (isStandalone() || isDismissed()) return
 
-    // Detect iOS Safari (not standalone, not Chrome/Firefox on iOS)
+    // Detect iOS/iPadOS Safari (not standalone, not Chrome/Firefox on iOS)
     const ua = navigator.userAgent
     const isiOS = /iPhone|iPad|iPod/.test(ua) && !navigator.standalone
+    // iPadOS 13+ reports as Macintosh — detect via touch support
+    const isIPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1 && navigator.standalone !== true
     // Exclude non-Safari browsers on iOS (they show as CriOS, FxiOS, etc.)
-    const isSafari = isiOS && /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua)
+    const isSafari = (isiOS || isIPadOS) && /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua)
 
     if (isSafari) {
       isIos = true
