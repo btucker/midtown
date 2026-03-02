@@ -3352,6 +3352,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                 }
 
+                // Capture whether this is a strong formal review (APPROVED/CHANGES_REQUESTED)
+                // before review_state_change is moved. Used below for review identity matching.
+                let is_strong_formal_review = webhook_event.review_state_change.as_ref().is_some_and(|r| {
+                    matches!(r.state, crate::webhook::ReviewState::Approved | crate::webhook::ReviewState::ChangesRequested)
+                });
+
                 // Nudge PR owner immediately on review state change (approved / changes_requested)
                 if let Some(review_change) = webhook_event.review_state_change {
                     let state = Arc::clone(&state);
@@ -3385,9 +3391,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             author.eq_ignore_ascii_case(reviewer)
                         }
                         (None, Some(_)) => {
-                            // Review detected but author unknown — don't mark as
-                            // reviewed since we can't confirm it's the assigned reviewer
-                            false
+                            // Review detected but author unknown — accept if it's
+                            // a strong formal review (APPROVED/CHANGES_REQUESTED),
+                            // reject weak states (COMMENTED/DISMISSED) that bots produce.
+                            // The assigned reviewer may submit APPROVED with empty body.
+                            is_strong_formal_review
                         }
                         (_, None) => {
                             // No assigned reviewer — accept any review (backward compat)

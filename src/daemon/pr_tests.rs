@@ -3590,3 +3590,65 @@ fn json_review_rejects_formal_review_without_attribution() {
         "Formal review should be accepted when no reviewer is assigned"
     );
 }
+
+/// Formal APPROVED/CHANGES_REQUESTED reviews with empty body should be accepted
+/// even when an assigned reviewer exists. These are strong deliberate actions
+/// unlikely from bots, and the assigned reviewer may submit them without text.
+#[test]
+fn json_review_accepts_bodyless_approved_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "APPROVED",
+                "body": "",
+                "author": {"login": "btucker"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        json_has_completed_review(&json, Some("pleasant")),
+        "APPROVED with empty body should be accepted — strong state, not a bot"
+    );
+}
+
+/// CHANGES_REQUESTED with empty body should also be accepted (strong state).
+#[test]
+fn json_review_accepts_bodyless_changes_requested_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "CHANGES_REQUESTED",
+                "body": "",
+                "author": {"login": "btucker"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        json_has_completed_review(&json, Some("pleasant")),
+        "CHANGES_REQUESTED with empty body should be accepted — strong state"
+    );
+}
+
+/// COMMENTED with empty body should still be rejected (weak state, common from bots).
+#[test]
+fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
+    let json = json!({
+        "reviews": [
+            {
+                "state": "COMMENTED",
+                "body": "",
+                "author": {"login": "some-bot[bot]"}
+            }
+        ],
+        "comments": []
+    });
+
+    assert!(
+        !json_has_completed_review(&json, Some("pleasant")),
+        "COMMENTED with empty body should be rejected — weak state, likely a bot"
+    );
+}

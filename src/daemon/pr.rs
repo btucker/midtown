@@ -3303,16 +3303,17 @@ pub(super) fn json_has_completed_review(
     // Check formal reviews first (Codex / GitHub-native review flow).
     if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
         for review in reviews {
-            let has_review_state = if let Some(state) = review.get("state").and_then(|s| s.as_str())
-            {
-                let state_upper = state.to_ascii_uppercase();
+            let state_upper = review
+                .get("state")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_ascii_uppercase());
+
+            let has_review_state = state_upper.as_deref().is_some_and(|s| {
                 matches!(
-                    state_upper.as_str(),
+                    s,
                     "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED"
                 )
-            } else {
-                false
-            };
+            });
 
             let has_review_body = review
                 .get("body")
@@ -3320,9 +3321,20 @@ pub(super) fn json_has_completed_review(
                 .is_some_and(text_contains_review_signature);
 
             if has_review_state || has_review_body {
-                // Check author if assigned reviewer is specified
                 let body = review.get("body").and_then(|b| b.as_str()).unwrap_or("");
-                if review_author_matches(body, assigned_reviewer) {
+
+                // For formal reviews with strong states (APPROVED / CHANGES_REQUESTED),
+                // accept even without body attribution. These are intentional review
+                // actions unlikely from bots, and the assigned reviewer may submit
+                // them with an empty body. Weak states (COMMENTED / DISMISSED) still
+                // require author verification to avoid bot false positives.
+                let is_strong_state = state_upper
+                    .as_deref()
+                    .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
+
+                if review_author_matches(body, assigned_reviewer)
+                    || (is_strong_state && assigned_reviewer.is_some())
+                {
                     return true;
                 }
             }
