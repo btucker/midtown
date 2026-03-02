@@ -42,8 +42,16 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     };
 
     // Read all persistent state in a single lock: reviewer assignments, worktree PR map,
-    // rate limit, channel lead names, and task-message-id map. Avoids multiple lock acquires.
-    let (reviewer_pr_map, worktree_pr_map, rate_limit, channel_lead_names, task_message_ids) = {
+    // rate limit, channel lead names, task-message-id map, and task-thread-id map.
+    // Avoids multiple lock acquires.
+    let (
+        reviewer_pr_map,
+        worktree_pr_map,
+        rate_limit,
+        channel_lead_names,
+        task_message_ids,
+        task_thread_ids,
+    ) = {
         let ps = state.persistent_state.lock().await;
         let rev_map: std::collections::HashMap<String, u64> = ps
             .github
@@ -63,12 +71,14 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             .collect();
         let channel_leads = ps.channel_lead_names();
         let msg_ids = ps.task_message_id.clone();
+        let thread_ids = ps.task_thread_id.clone();
         (
             rev_map,
             wt_map,
             ps.github.rate_limit.clone(),
             channel_leads,
             msg_ids,
+            thread_ids,
         )
     };
 
@@ -96,7 +106,7 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // Note: get_all_tasks and read_tasks read from Claude Code task storage (local
     // filesystem), not GitHub API, so they're fast and don't cause rate limit timeouts.
     let (tasks, recent_activity, task_pr_map) = match tokio::task::spawn_blocking(move || {
-        let tasks = get_all_tasks(&task_message_ids);
+        let tasks = get_all_tasks(&task_message_ids, &task_thread_ids);
         let recent_activity = get_recent_channel_activity();
         // Build task -> PR number map from task files with explicit PR associations.
         let task_pr_map: std::collections::HashMap<u32, u64> = crate::tasks::read_tasks()
@@ -227,8 +237,23 @@ fn resolve_pr_number(
 /// Get all tasks from Claude Code task storage with their status.
 fn get_all_tasks(
     task_message_ids: &std::collections::HashMap<String, String>,
+    task_thread_ids: &std::collections::HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
-    crate::tasks::read_tasks()
+    map_tasks_to_json(
+        crate::tasks::read_tasks(),
+        task_message_ids,
+        task_thread_ids,
+    )
+}
+
+/// Map a list of tasks to JSON values, enriching each with message_id and thread_id
+/// from the daemon's persistent state maps.
+fn map_tasks_to_json(
+    tasks: Vec<crate::tasks::Task>,
+    task_message_ids: &std::collections::HashMap<String, String>,
+    task_thread_ids: &std::collections::HashMap<String, String>,
+) -> Vec<serde_json::Value> {
+    tasks
         .into_iter()
         .map(|task| {
             let status = match task.status {
@@ -237,6 +262,7 @@ fn get_all_tasks(
                 crate::tasks::TaskStatus::Completed => "completed",
             };
             let message_id = task_message_ids.get(&task.id).cloned();
+            let thread_id = task_thread_ids.get(&task.id).cloned();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
@@ -244,6 +270,7 @@ fn get_all_tasks(
                 "assignee": task.owner,
                 "channel": task.channel,
                 "message_id": message_id,
+                "thread_id": thread_id,
             })
         })
         .collect()

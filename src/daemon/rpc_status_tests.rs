@@ -3,7 +3,7 @@
 use crate::rpc::RequestId;
 
 use super::super::DaemonState;
-use super::{handle_status, resolve_pr_number, tag_channel_leads_and_count};
+use super::{handle_status, map_tasks_to_json, resolve_pr_number, tag_channel_leads_and_count};
 
 // ============================================================================
 // Integration test helper
@@ -297,4 +297,84 @@ fn test_resolve_pr_none_when_task_id_has_no_pr() {
         resolve_pr_number(Some(99), "amsterdam", &task_pr, &reviewer, &worktree),
         None
     );
+}
+
+// ─── Tests for map_tasks_to_json (task → JSON with message_id and thread_id) ───
+
+fn make_task(id: &str, subject: &str, status: crate::tasks::TaskStatus) -> crate::tasks::Task {
+    crate::tasks::Task {
+        id: id.to_string(),
+        subject: subject.to_string(),
+        status,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    }
+}
+
+#[test]
+fn test_map_tasks_includes_thread_id_and_message_id() {
+    let tasks = vec![make_task(
+        "42",
+        "Fix auth bug",
+        crate::tasks::TaskStatus::InProgress,
+    )];
+    let msg_ids = [("42".to_string(), "msg-abc".to_string())]
+        .into_iter()
+        .collect();
+    let thread_ids = [("42".to_string(), "thread-xyz".to_string())]
+        .into_iter()
+        .collect();
+
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids);
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0]["id"], "42");
+    assert_eq!(result[0]["subject"], "Fix auth bug");
+    assert_eq!(result[0]["status"], "in_progress");
+    assert_eq!(result[0]["message_id"], "msg-abc");
+    assert_eq!(result[0]["thread_id"], "thread-xyz");
+}
+
+#[test]
+fn test_map_tasks_thread_id_null_when_absent() {
+    let tasks = vec![make_task(
+        "99",
+        "Add feature",
+        crate::tasks::TaskStatus::Pending,
+    )];
+    let msg_ids = [("99".to_string(), "msg-only".to_string())]
+        .into_iter()
+        .collect();
+    let thread_ids = std::collections::HashMap::new();
+
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids);
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0]["message_id"], "msg-only");
+    assert!(
+        result[0]["thread_id"].is_null(),
+        "thread_id should be null when absent"
+    );
+}
+
+#[test]
+fn test_map_tasks_both_ids_null_when_absent() {
+    let tasks = vec![make_task(
+        "7",
+        "New task",
+        crate::tasks::TaskStatus::Completed,
+    )];
+    let msg_ids = std::collections::HashMap::new();
+    let thread_ids = std::collections::HashMap::new();
+
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids);
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0]["status"], "completed");
+    assert!(result[0]["message_id"].is_null());
+    assert!(result[0]["thread_id"].is_null());
 }

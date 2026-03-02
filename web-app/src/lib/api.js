@@ -852,10 +852,14 @@ export async function fetchThread(channelName, parentMessageId) {
 
 // Open a thread panel for the given parent message
 export function openThread(parentMessage, channelName) {
-  // Find any tasks associated with this thread's parent message
+  // Find any tasks associated with this thread's parent message.
+  // Check both thread_id and message_id: for tasks created with --thread-id,
+  // thread_id (the conversation root) differs from message_id (the announcement).
   const { inProgress, backlog } = get(kanbanData)
   const allTasks = [...inProgress, ...backlog]
-  const tasks = allTasks.filter((t) => t.message_id === parentMessage.id)
+  const tasks = allTasks.filter(
+    (t) => t.thread_id === parentMessage.id || t.message_id === parentMessage.id,
+  )
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
   fetchThread(channelName, parentMessage.id).then((fetched) => {
@@ -883,28 +887,31 @@ export function openThread(parentMessage, channelName) {
 }
 
 // Open a thread panel for a task, showing task card(s) above the thread.
-// If task.message_id is present, fetches thread replies for that message.
-// If task.message_id is absent, shows the task card with no backing thread.
+// If task.thread_id or task.message_id is present, fetches thread replies.
+// If neither is present, shows the task card with no backing thread.
 export function openTaskThread(task, channelName) {
-  if (!task.message_id) {
+  if (!task.thread_id && !task.message_id) {
     // No creation message — show task card only, replies sent as top-level messages
     threadData.set({ parentMessage: null, channelName, messages: [], tasks: [task] })
     return
   }
 
-  // Resolve thread parent: if the creation message is itself a thread reply,
-  // root the thread at the top-level parent so all sibling replies are visible.
+  // Resolve thread parent: prefer thread_id (the conversation thread root) over
+  // message_id (the announcement message). Falls back to resolving via the
+  // creation message's thread_parent_id for legacy tasks without thread_id.
   const channelMsgs = get(messagesByChannel)[channelName] || []
-  const creationMsg = channelMsgs.find((m) => m.id === task.message_id)
-  const parentMessageId = creationMsg?.thread_parent_id ?? task.message_id
+  const parentMessageId = task.thread_id
+    ?? channelMsgs.find((m) => m.id === task.message_id)?.thread_parent_id
+    ?? task.message_id
 
-  // Find all tasks whose creation message falls under the same thread parent
+  // Find all tasks whose thread roots under the same parent
   const { inProgress, backlog } = get(kanbanData)
   const allTasks = [...inProgress, ...backlog]
   const tasks = allTasks.filter((t) => {
-    if (!t.message_id) return false
-    const msg = channelMsgs.find((m) => m.id === t.message_id)
-    const tParent = msg?.thread_parent_id ?? t.message_id
+    if (!t.thread_id && !t.message_id) return false
+    const tParent = t.thread_id
+      ?? channelMsgs.find((m) => m.id === t.message_id)?.thread_parent_id
+      ?? t.message_id
     return tParent === parentMessageId
   })
   // Always include the clicked task even if not found above
