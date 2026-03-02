@@ -1493,6 +1493,17 @@ impl Channel {
 /// This is a standalone function (not a `Channel` method) because callers
 /// in the daemon often have a `base_dir` without a `Channel` instance.
 pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
+    // Validate channel name to prevent path traversal (defense-in-depth:
+    // callers pass names from daemon state which should already be valid,
+    // but we guard the filesystem boundary here too).
+    if channel_name.is_empty()
+        || !channel_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return String::new();
+    }
+
     let notes_dir = base_dir.join("channels").join(channel_name).join("notes");
 
     if !notes_dir.is_dir() {

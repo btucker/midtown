@@ -2163,3 +2163,18 @@ fn test_load_channel_notes_sorts_alphabetically() {
     assert!(a_pos < m_pos, "a-first should come before m-middle");
     assert!(m_pos < z_pos, "m-middle should come before z-last");
 }
+
+#[test]
+fn test_load_channel_notes_rejects_path_traversal() {
+    let temp_dir = TempDir::new().unwrap();
+    // Create notes in a sibling directory that path traversal could reach
+    let sibling = temp_dir.path().join("secret").join("notes");
+    fs::create_dir_all(&sibling).unwrap();
+    fs::write(sibling.join("leak.md"), "sensitive data").unwrap();
+
+    // Path traversal attempts should return empty, not the sibling content
+    assert!(load_channel_notes(temp_dir.path(), "../secret").is_empty());
+    assert!(load_channel_notes(temp_dir.path(), "foo/bar").is_empty());
+    assert!(load_channel_notes(temp_dir.path(), "..").is_empty());
+    assert!(load_channel_notes(temp_dir.path(), "").is_empty());
+}
