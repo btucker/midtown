@@ -103,7 +103,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown session attach name/<n>` | Attach to a headless session |
 | `midtown session detach <name>` | Resume headless execution |
 | `midtown session clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
-| `midtown session fork <thread-id>` | Fork the calling session into a thread-bound session |
+| `midtown session fork --thread-id <id>` | Fork the calling session into a thread-bound session |
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
@@ -553,7 +553,7 @@ Each topic channel can have a **channel lead** — a headless Claude Code sessio
 
 **What channel leads don't do:** Channel leads don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
 
-**Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown session fork <thread-id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID. For messages requiring investigation, the channel lead posts a brief acknowledgment first (so the user sees immediate feedback), then forks — the fork handles the rest of the conversation. The project lead also self-forks for multi-turn research (code exploration, debugging, task scoping) to stay responsive to other messages on the main channel.
+**Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown session fork --thread-id <id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID. For messages requiring investigation, the channel lead posts a brief acknowledgment first (so the user sees immediate feedback), then forks — the fork handles the rest of the conversation. The project lead also self-forks for multi-turn research (code exploration, debugging, task scoping) to stay responsive to other messages on the main channel.
 
 When a forked session creates a task, it can pass `--thread-id <message-id>` to `midtown task create` (the CLI automatically uses `$MIDTOWN_BOUND_THREAD_ID` inside forked sessions). The daemon stores that binding with the task so the coworker spawned for it posts updates back into the originating thread, even across restarts or session resumes.
 

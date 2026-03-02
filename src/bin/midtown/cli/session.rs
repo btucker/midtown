@@ -46,7 +46,8 @@ pub enum SessionCommand {
     /// history. The fork becomes the handler for user replies in that thread.
     Fork {
         /// The message ID of the thread root to fork for.
-        thread_parent_id: String,
+        #[arg(long = "thread-id")]
+        thread_id: String,
         /// The session ID of the calling session. Falls back to $MIDTOWN_SESSION_ID.
         #[arg(long = "session-id")]
         session_id: Option<String>,
@@ -264,7 +265,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
         SessionCommand::View { target, watch } => handle_view(target, *watch, client),
         SessionCommand::Clear { target } => client.session_clear(target),
         SessionCommand::Fork {
-            thread_parent_id,
+            thread_id,
             session_id,
             name,
         } => {
@@ -274,7 +275,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
                 .ok_or_else(|| {
                     "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
                 })?;
-            client.session_fork(thread_parent_id, &sid, name.as_deref())
+            client.session_fork(thread_id, &sid, name.as_deref())
         }
     }
 }

@@ -83,7 +83,7 @@ The daemon now **automatically forks** your session when a new top-level user me
    midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
 
    # Step 2: Fork into a thread-scoped session
-   midtown session fork <message-id>
+   midtown session fork --thread-id <message-id>
    ```
 
    `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.

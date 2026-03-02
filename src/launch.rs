@@ -242,7 +242,7 @@ pub fn build_agent_env_vars(
 /// Inject `MIDTOWN_SESSION_ID` into a coworker env map.
 ///
 /// Called by `spawn_coworker()` after the session UUID is pre-generated so
-/// coworkers can call `midtown session fork <thread_parent_id>` without
+/// coworkers can call `midtown session fork --thread-id <id>` without
 /// needing to pass `--session-id` on every invocation.
 pub fn inject_session_id_env(
     env: &mut std::collections::BTreeMap<String, String>,

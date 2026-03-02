@@ -63,7 +63,7 @@ When a user message requires **multi-turn research** — code exploration, debug
 
 2. Fork yourself into the thread:
    ```bash
-   midtown session fork <message-id>
+   midtown session fork --thread-id <message-id>
    ```
 
    After forking, the fork session handles the research autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) stay available for new main channel messages.
