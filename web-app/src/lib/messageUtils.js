@@ -171,3 +171,43 @@ export function timeChanged(msgs, index) {
   if (index === 0 || senderChanged(msgs, index)) return false
   return formatTimeCompact(msgs[index].timestamp) !== formatTimeCompact(msgs[index - 1].timestamp)
 }
+
+const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000
+
+/**
+ * Returns a date label string when a day divider should appear before msgs[index],
+ * or null if no divider is needed.
+ *
+ * A divider appears when:
+ * - The calendar date changes between consecutive messages, or
+ * - There's a gap of 8+ hours on the same calendar day.
+ *
+ * Date format: "Today", "Yesterday", or "March 2, 2026" for older dates.
+ */
+export function dateChanged(msgs, index) {
+  if (index === 0) return null
+  const curr = new Date(msgs[index].timestamp)
+  const prev = new Date(msgs[index - 1].timestamp)
+  if (isNaN(curr.getTime()) || isNaN(prev.getTime())) return null
+
+  const currDay = new Date(curr.getFullYear(), curr.getMonth(), curr.getDate())
+  const prevDay = new Date(prev.getFullYear(), prev.getMonth(), prev.getDate())
+
+  const dayChanged = currDay.getTime() !== prevDay.getTime()
+  const longGap = !dayChanged && (curr.getTime() - prev.getTime() >= EIGHT_HOURS_MS)
+
+  if (!dayChanged && !longGap) return null
+
+  return formatDateLabel(curr)
+}
+
+function formatDateLabel(date) {
+  const now = new Date()
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  const diffDays = Math.round((today.getTime() - target.getTime()) / (24 * 60 * 60 * 1000))
+
+  if (diffDays === 0) return 'Today'
+  if (diffDays === 1) return 'Yesterday'
+  return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+}

@@ -1,7 +1,7 @@
 <script>
   import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
-  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments } from './messageUtils.js'
+  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
   import { tick, onMount, untrack } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
@@ -781,6 +781,14 @@
 
         {#each visibleMessages as msg, i}
           {@const globalIndex = renderStartIndex + i}
+          {@const dayLabel = dateChanged(channelMessages, globalIndex)}
+          {#if dayLabel}
+            <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
+              <div class="flex-1 h-px bg-border/60"></div>
+              <span>{dayLabel}</span>
+              <div class="flex-1 h-px bg-border/60"></div>
+            </div>
+          {/if}
           <div
             data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}

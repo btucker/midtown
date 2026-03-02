@@ -630,8 +630,8 @@ pub(super) async fn handle_task_metadata(
 /// Handle task.claim RPC — a coworker claims a task by writing directly to disk.
 ///
 /// Validates the task exists and is pending, then sets owner and status to in_progress
-/// directly. No Lead proxy needed.
-pub(super) fn handle_task_claim(
+/// directly. No Lead proxy needed. Posts a task divider to the coworker's DM channel.
+pub(super) async fn handle_task_claim(
     id: RequestId,
     task_id: &str,
     from: &str,
@@ -660,6 +660,7 @@ pub(super) fn handle_task_claim(
         );
     }
 
+    let task_subject = task.subject.clone();
     let repo_name = state.repo_name.clone();
 
     // Write owner and status directly to disk (with retry on transient failures).
@@ -704,6 +705,18 @@ pub(super) fn handle_task_claim(
 
     // Record in-memory assignment for busy tracking (only after disk write succeeds)
     state.record_task_assignment(from, task_id);
+
+    // Post task divider to the coworker's DM channel
+    let separator = if task_subject.is_empty() {
+        format!("─── Task !{} ───", task_id)
+    } else {
+        format!("─── Task !{}: {} ───", task_id, task_subject)
+    };
+    let mut msg = Message::system(separator);
+    msg.channel = Some(format!("dm-{}", from));
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post task divider for task !{}: {}", task_id, e);
+    }
 
     info!("Task claim: {} claimed task !{} directly", from, task_id);
 

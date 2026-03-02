@@ -20,12 +20,25 @@
     children = undefined,
   } = $props()
 
+  const TASK_DIVIDER_RE = /^─── Task !.+───$/
+
+  function isTaskDivider(msg) {
+    return msg.from === 'midtown' && TASK_DIVIDER_RE.test((msg.content || '').trim())
+  }
+
   function avatarLetter(name) {
     return (name || '?')[0].toUpperCase()
   }
 </script>
 
-{#if senderChanged(msgs, index)}
+{#if isTaskDivider(msg)}
+  <!-- Task divider: centered HR with task link -->
+  <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
+    <div class="flex-1 h-px bg-border/60"></div>
+    <span>{@html renderContent(msg.content.replace(/^───\s*/, '').replace(/\s*───$/, ''), getApiBase())}</span>
+    <div class="flex-1 h-px bg-border/60"></div>
+  </div>
+{:else if senderChanged(msgs, index)}
   <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
     <div

@@ -1367,6 +1367,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 task_id, e
                             );
                         }
+                        // Post task divider to the coworker's DM channel
+                        let task_subject = crate::tasks::read_tasks_for_repo(Some(&repo_name))
+                            .into_iter()
+                            .find(|t| t.id == task_id)
+                            .map(|t| t.subject);
+                        if let Some(separator_effect) = build_dm_separator_effect(
+                            &owner,
+                            &task_id,
+                            task_subject.as_deref(),
+                            false,
+                        ) {
+                            Box::pin(execute_effects(vec![separator_effect], state)).await;
+                        }
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
