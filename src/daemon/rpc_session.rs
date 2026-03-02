@@ -1210,13 +1210,16 @@ pub(super) async fn create_fork_session(
     let team = crate::mailbox::team_name_for_repo(repo_name);
 
     // Build a human-readable fork name from the caller name and the hint.
-    // e.g. "web-push-notifications" or "ops-tls-config".
-    // Falls back to "fork-{uuid-prefix}" when no hint or caller name is available.
+    // e.g. "web-push-notifications-a1b2" or "ops-tls-config-c3d4".
+    // Always includes a short thread ID suffix to guarantee uniqueness per thread
+    // (two forks from the same caller with similar messages must not collide in
+    // name_to_session / fork_bound_threads).
+    let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
     let fork_name = if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
         let slug = slugify_fork_hint(hint, thread_parent_id);
         match &caller_name {
-            Some(name) => format!("{}-{}", name, slug),
-            None => format!("fork-{}", slug),
+            Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
+            None => format!("fork-{}-{}", slug, tid_suffix),
         }
     } else {
         format!(
