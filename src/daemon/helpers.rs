@@ -162,6 +162,23 @@ pub(crate) fn is_project_lead(name: &str, repo_name: &str) -> bool {
     name.eq_ignore_ascii_case("lead") || name.eq_ignore_ascii_case(repo_name)
 }
 
+/// Check if a coworker name is a "non-lead" coworker (i.e., not the project lead
+/// and not a channel lead).
+///
+/// This replaces the repeated compound predicate
+/// `!is_project_lead(&name, repo) && !channel_lead_names.contains(&name)`
+/// that appeared in 5+ locations across dispatch.rs, pr.rs, and mod.rs.
+///
+/// Returns `true` for regular coworkers and reviewers.
+/// Returns `false` for the project lead and channel leads.
+pub(crate) fn is_non_lead_coworker(
+    name: &str,
+    repo_name: &str,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> bool {
+    !is_project_lead(name, repo_name) && !channel_lead_names.contains(name)
+}
+
 /// Check if a branch is a lead branch (starts with "lead/").
 ///
 /// Lead branches (e.g., "lead/fix-bug") indicate the PR is authored by the Lead,
@@ -315,6 +332,72 @@ pub fn is_lead_authored_pr(pr: &serde_json::Value, repo_owner: Option<&str>) -> 
 // ---------------------------------------------------------------------------
 // PR helpers
 // ---------------------------------------------------------------------------
+
+/// Lightweight view of commonly accessed PR JSON fields.
+///
+/// Extracts the fields that are repeatedly parsed from `serde_json::Value`
+/// across the daemon (number, title, headRefName, isDraft appear 5-10 times each).
+/// Call sites that need rare fields can still access the raw JSON via `json`.
+pub struct PrFields<'a> {
+    pub number: u64,
+    pub title: &'a str,
+    pub head_ref: &'a str,
+    pub is_draft: bool,
+    /// The raw JSON value, for accessing fields not extracted here.
+    pub json: &'a serde_json::Value,
+}
+
+impl<'a> PrFields<'a> {
+    /// Extract common fields from a PR JSON value.
+    ///
+    /// This replaces the repeated chains like:
+    /// ```ignore
+    /// let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+    /// let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
+    /// let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+    /// let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+    /// ```
+    pub fn from_json(json: &'a serde_json::Value) -> Self {
+        Self {
+            number: json.get("number").and_then(|n| n.as_u64()).unwrap_or(0),
+            title: json.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+            head_ref: json
+                .get("headRefName")
+                .and_then(|r| r.as_str())
+                .unwrap_or(""),
+            is_draft: json
+                .get("isDraft")
+                .and_then(|d| d.as_bool())
+                .unwrap_or(false),
+            json,
+        }
+    }
+
+    /// Get the PR author's GitHub login.
+    pub fn author_login(&self) -> &str {
+        self.json
+            .get("author")
+            .and_then(|a| a.get("login"))
+            .and_then(|l| l.as_str())
+            .unwrap_or("unknown")
+    }
+
+    /// Get the review decision (e.g., "APPROVED", "CHANGES_REQUESTED").
+    pub fn review_decision(&self) -> &str {
+        self.json
+            .get("reviewDecision")
+            .and_then(|r| r.as_str())
+            .unwrap_or("")
+    }
+
+    /// Get the mergeable status (e.g., "MERGEABLE", "CONFLICTING").
+    pub fn mergeable(&self) -> &str {
+        self.json
+            .get("mergeable")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+    }
+}
 
 /// Detect actionable issues for a PR.
 pub fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
@@ -872,6 +955,32 @@ pub fn all_review_feedback_addressed(
         .collect();
 
     (unaddressed.is_empty(), unaddressed)
+}
+
+// ---------------------------------------------------------------------------
+// Task–PR helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a task's explicit PR has been merged.
+///
+/// Looks up the task by ID in `all_tasks`, checks if it has a `pr` field,
+/// and if so checks whether that PR number is in the merged set.
+///
+/// Returns the merged PR number if found, `None` otherwise.
+///
+/// This replaces the duplicate pattern in `dispatch.rs` (Case 1 and Case 2)
+/// that scanned `all_tasks` for the task, extracted its `pr`, and checked
+/// `merged_pr_numbers`.
+pub fn get_merged_task_pr(
+    task_id: &str,
+    all_tasks: &[crate::tasks::Task],
+    merged_pr_numbers: &std::collections::HashSet<u64>,
+) -> Option<u64> {
+    all_tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .and_then(|t| t.pr)
+        .filter(|pr_num| merged_pr_numbers.contains(pr_num))
 }
 
 // ---------------------------------------------------------------------------

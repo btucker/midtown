@@ -13,7 +13,7 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
-use super::helpers::is_project_lead;
+use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -189,13 +189,14 @@ fn task_completed_effects(
 
 /// Look up the session record for a task, if one exists.
 /// Returns None if no session is associated with this task.
+///
+/// Delegates to [`snapshot::WorldSnapshot::find_session_for_task`].
 #[cfg(test)]
 fn find_session_for_task<'a>(
     task_id: &str,
     snap: &'a snapshot::WorldSnapshot,
 ) -> Option<&'a crate::daemon::state::SessionRecord> {
-    let session_id = snap.session_task_map.get(task_id)?;
-    snap.sessions.get(session_id)
+    snap.find_session_for_task(task_id)
 }
 
 // ============================================================================
@@ -797,22 +798,23 @@ where
         }
 
         // Check if this task has a session record.
-        let session_id = match snap.session_task_map.get(task_id) {
-            Some(id) => id,
-            None => {
-                // No session record — collect for legacy fallback path below.
-                tasks_without_sessions.push((task_id.clone(), task_subject.clone(), owner.clone()));
-                continue;
-            }
-        };
-
-        let record = match snap.sessions.get(session_id) {
+        let record = match snap.find_session_for_task(task_id) {
             Some(r) => r,
             None => {
-                warn!(
-                    "Session {} referenced by task !{} not found in sessions map",
-                    session_id, task_id
-                );
+                if snap.session_task_map.contains_key(task_id) {
+                    // session_task_map has the entry but sessions map is stale
+                    warn!(
+                        "Session for task !{} referenced in session_task_map but not found in sessions map",
+                        task_id
+                    );
+                } else {
+                    // No session record — collect for legacy fallback path below.
+                    tasks_without_sessions.push((
+                        task_id.clone(),
+                        task_subject.clone(),
+                        owner.clone(),
+                    ));
+                }
                 continue;
             }
         };
@@ -1930,21 +1932,8 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // This indicates the task's work is IN that PR (not just about it).
         // Pattern matching task descriptions would cause false positives when
         // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
-        let task_pr_merged = snap
-            .all_tasks
-            .iter()
-            .find(|t| &t.id == task_id)
-            .and_then(|t| t.pr)
-            .map(|pr_num| snap.merged_pr_numbers.contains(&pr_num))
-            .unwrap_or(false);
-
-        if task_pr_merged {
-            let pr_num = snap
-                .all_tasks
-                .iter()
-                .find(|t| &t.id == task_id)
-                .and_then(|t| t.pr)
-                .unwrap(); // Safe: we just checked it exists
+        if let Some(pr_num) = get_merged_task_pr(task_id, &snap.all_tasks, &snap.merged_pr_numbers)
+        {
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
                 task_id, pr_num
@@ -2182,18 +2171,11 @@ pub(super) fn spawn_for_pending_tasks_excluding(
     // Exclude the lead and channel leads: headless lead and channel lead sessions
     // register in CoworkerManager but are not dev/reviewer slots. Including them
     // would incorrectly consume dev slots and cause under-spawning.
-    let channel_lead_names: std::collections::HashSet<&str> = snap
-        .channel_lead_sessions
-        .keys()
-        .map(|s| s.as_str())
-        .collect();
+    let channel_lead_names = snap.channel_lead_names();
     let current_coworker_count = snap
         .running_coworkers
         .iter()
-        .filter(|cw| {
-            !is_project_lead(&cw.name, &snap.repo_name)
-                && !channel_lead_names.contains(cw.name.as_str())
-        })
+        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.repo_name, &channel_lead_names))
         .count();
 
     for task in pending_unowned.iter() {
@@ -2235,8 +2217,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // This indicates the task's work is IN that PR (not just about it).
         // Pattern matching task descriptions would cause false positives when
         // tasks reference merged PRs for context (e.g., "Fix bug from PR #123").
-        if let Some(pr_num) = task.pr
-            && snap.merged_pr_numbers.contains(&pr_num)
+        if let Some(pr_num) = get_merged_task_pr(&task.id, &snap.all_tasks, &snap.merged_pr_numbers)
         {
             info!(
                 "Auto-completing stale task !{}: PR #{} has been merged",
@@ -2256,14 +2237,15 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         // Session-aware dispatch: if this pending task has a stopped session
         // from a previous attempt, resume it instead of spawning fresh.
         // This preserves context and worktree state from the previous run.
-        if let Some(session_id) = snap.session_task_map.get(&task.id)
-            && let Some(record) = snap.sessions.get(session_id)
-        {
+        if let Some(record) = snap.find_session_for_task(&task.id) {
             if !record.is_running {
                 // Check per-session cooldown to prevent crash loops.
                 // Same guard as orphan recovery (line ~817): if a recovery was
                 // recently attempted for this session, skip to avoid spinning.
-                if snap.recently_recovered_session_ids.contains(session_id) {
+                if snap
+                    .recently_recovered_session_ids
+                    .contains(&record.session_id)
+                {
                     debug!(
                         "Pending task !{} has recently-recovered session {} — skipping (cooldown)",
                         task.id, record.session_id

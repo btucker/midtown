@@ -484,6 +484,22 @@ impl WorldSnapshot {
         self.channel_lead_sessions.keys().cloned().collect()
     }
 
+    /// Look up the session record for a task, if one exists.
+    ///
+    /// Chains `session_task_map` (task_id → session_id) and `sessions`
+    /// (session_id → record). Returns `None` if no session is associated
+    /// with this task or if the session_id is stale.
+    ///
+    /// This replaces the repeated `snap.session_task_map.get(id)? → snap.sessions.get(sid)?`
+    /// chain that appeared in 5+ locations across dispatch.rs and pr.rs.
+    pub fn find_session_for_task(
+        &self,
+        task_id: &str,
+    ) -> Option<&crate::daemon::state::SessionRecord> {
+        let session_id = self.session_task_map.get(task_id)?;
+        self.sessions.get(session_id)
+    }
+
     /// Build a [`crate::rules::StuckExemptions`] view from this snapshot.
     ///
     /// Centralises the four-field construction used by every stuck-detection

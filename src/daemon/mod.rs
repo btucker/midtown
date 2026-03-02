@@ -1108,8 +1108,7 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !helpers::is_project_lead(&cw.name, &self.repo_name)
-                    && !channel_lead_names.contains(&cw.name)
+                helpers::is_non_lead_coworker(&cw.name, &self.repo_name, channel_lead_names)
             })
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
@@ -1129,8 +1128,7 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                !helpers::is_project_lead(&cw.name, &self.repo_name)
-                    && !channel_lead_names.contains(&cw.name)
+                helpers::is_non_lead_coworker(&cw.name, &self.repo_name, channel_lead_names)
             })
             .count();
         non_lead_count >= self.max_coworkers

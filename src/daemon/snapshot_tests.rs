@@ -1071,3 +1071,151 @@ fn test_recently_recovered_session_ids_populated_from_cooldowns() {
     );
     assert_eq!(recently_recovered.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// find_session_for_task tests
+// ---------------------------------------------------------------------------
+
+/// Minimal helper: build a WorldSnapshot with only the session fields populated.
+/// Constructs the struct directly with empty/default values to avoid json! macro
+/// recursion limits.
+fn snapshot_with_sessions(
+    session_task_map: HashMap<String, String>,
+    sessions: HashMap<String, crate::daemon::state::SessionRecord>,
+) -> WorldSnapshot {
+    use chrono::Utc;
+    let rate_limit = crate::github_rate_limit::GitHubRateLimit {
+        graphql: crate::github_rate_limit::QuotaState {
+            limit: 5000,
+            used: 0,
+            remaining: 5000,
+            reset: 0,
+        },
+        core: crate::github_rate_limit::QuotaState {
+            limit: 5000,
+            used: 0,
+            remaining: 5000,
+            reset: 0,
+        },
+        last_updated: Utc::now(),
+    };
+    WorldSnapshot {
+        active_coworkers: vec![],
+        running_coworkers: vec![],
+        coworker_snapshots: vec![],
+        active_names: HashSet::new(),
+        active_session_ids: HashSet::new(),
+        session_name: "test".to_string(),
+        coworker_start_times: HashMap::new(),
+        coworker_stop_times: HashMap::new(),
+        headless_process_health: HashMap::new(),
+        attached_coworkers: HashMap::new(),
+        in_progress_tasks: vec![],
+        busy_coworkers: HashSet::new(),
+        coworker_task_assignments: HashMap::new(),
+        all_tasks: vec![],
+        pending_tasks_with_owners: vec![],
+        pending_tasks_without_owners: vec![],
+        task_channel: HashMap::new(),
+        task_model_map: HashMap::new(),
+        task_plan_map: HashMap::new(),
+        task_execution_skill_map: HashMap::new(),
+        channel_lead_sessions: HashMap::new(),
+        coworkers_with_open_prs: HashSet::new(),
+        coworkers_with_merged_prs: HashSet::new(),
+        merged_pr_numbers: HashSet::new(),
+        ci_passed_pr_coworkers: HashSet::new(),
+        review_feedback_pr_coworkers: HashSet::new(),
+        open_prs_data: vec![],
+        github_open_pr_task_ids: HashMap::new(),
+        pending_task_owners: HashSet::new(),
+        tasks_with_open_prs: HashMap::new(),
+        pr_task_associations: HashMap::new(),
+        active_reviewers: HashSet::new(),
+        reviewing_phase_coworkers: HashSet::new(),
+        reviewer_pr_assignments: HashMap::new(),
+        reviewer_in_progress_comment_ids: HashMap::new(),
+        reviewed_prs: HashSet::new(),
+        prs_needing_review: 0,
+        reviewer_restart_counts: HashMap::new(),
+        reviewer_escalations_posted: HashSet::new(),
+        orphaned_pr_lead_nudges_sent: HashSet::new(),
+        github_rate_limit: rate_limit,
+        freshly_fetched_rate_limit: None,
+        coworkers_with_unblocked_deps: HashSet::new(),
+        usage_limit_nudge_scheduled: false,
+        usage_limit_nudge_at: None,
+        usage_limited_coworkers: HashSet::new(),
+        api_error_coworkers: HashSet::new(),
+        auth_error_coworkers: HashSet::new(),
+        tool_name_conflict_coworkers: HashSet::new(),
+        coworkers_with_active_tools: HashSet::new(),
+        archived_channels: HashSet::new(),
+        channel_messages: vec![],
+        daemon_logs: vec![],
+        tasks_with_worktrees: HashSet::new(),
+        task_worktree_map: HashMap::new(),
+        worktree_registry: Default::default(),
+        worktree_branch_owners: HashMap::new(),
+        merged_pr_branches: HashMap::new(),
+        lead_session_refresh_interval_secs: 0,
+        is_at_coworker_limit: false,
+        is_at_dev_limit: false,
+        now_utc: Utc::now(),
+        repo_name: "test".to_string(),
+        default_channel: String::new(),
+        repo_owner: None,
+        orphan_spawn_cooldown_active: false,
+        session_dispatch_cooldown_active: false,
+        spawn_failure_cooldown_names: HashSet::new(),
+        recently_recovered_session_ids: HashSet::new(),
+        sessions,
+        session_task_map,
+        session_name_map: HashMap::new(),
+        name_session_map: HashMap::new(),
+        stale_working_dir_sessions: HashSet::new(),
+        session_profile_map: HashMap::new(),
+        limited_pool_profiles: HashSet::new(),
+    }
+}
+
+#[test]
+fn find_session_for_task_returns_record_when_chain_resolves() {
+    let snap = snapshot_with_sessions(
+        [("42".to_string(), "sess-abc".to_string())]
+            .into_iter()
+            .collect(),
+        [(
+            "sess-abc".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-abc".to_string(),
+                task_id: Some("42".to_string()),
+                current_name: Some("lexington".to_string()),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+    );
+
+    let record = snap.find_session_for_task("42");
+    assert!(record.is_some());
+    assert_eq!(record.unwrap().session_id, "sess-abc");
+}
+
+#[test]
+fn find_session_for_task_returns_none_for_unknown_task() {
+    let snap = snapshot_with_sessions(HashMap::new(), HashMap::new());
+    assert!(snap.find_session_for_task("999").is_none());
+}
+
+#[test]
+fn find_session_for_task_returns_none_when_session_id_stale() {
+    let snap = snapshot_with_sessions(
+        [("42".to_string(), "sess-gone".to_string())]
+            .into_iter()
+            .collect(),
+        HashMap::new(), // sessions map doesn't have "sess-gone"
+    );
+    assert!(snap.find_session_for_task("42").is_none());
+}
