@@ -72,6 +72,20 @@ fn parse_duration(s: &str) -> Option<Duration> {
     }
 }
 
+/// Build the initial framing message for a newly forked channel lead session.
+///
+/// This message establishes the fork's thread-scoped role before the user's
+/// message arrives. It reinforces that the fork is a coordinator — it investigates,
+/// scopes work, and creates tasks, but never implements code.
+fn fork_initial_framing(channel_name: &str) -> String {
+    format!(
+        "You are a thread-scoped fork of the channel lead for #{channel_name}. \
+         Your job is to investigate the user's request, scope the work, and create a task. \
+         You do NOT write code — use Read, Glob, Grep to understand the codebase, \
+         then create a well-described task for a coworker via `midtown task create`."
+    )
+}
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -301,11 +315,30 @@ pub(super) async fn handle_channel_post(
                     )
                     .await
                     {
-                        Ok((fork_sid, _)) => {
+                        Ok((fork_sid, is_existing)) => {
                             debug!(
-                                "channel.post: auto-forked for message {} → fork session {}",
-                                wake_msg_id, fork_sid
+                                "channel.post: auto-forked for message {} → fork session {} (existing={})",
+                                wake_msg_id, fork_sid, is_existing
                             );
+                            // Fresh forks get a framing nudge that establishes their
+                            // thread-scoped role before the user message arrives.
+                            // Note: if this nudge fails (e.g., session not yet ready),
+                            // the fork still has hard tool restrictions via --disallowedTools
+                            // and inherits the parent's system prompt context.
+                            if !is_existing {
+                                let framing = fork_initial_framing(channel_name);
+                                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
+                                    session_id: fork_sid.clone(),
+                                    reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                                        message: framing,
+                                    },
+                                };
+                                crate::daemon::effects::execute_effects(
+                                    vec![framing_effect],
+                                    state,
+                                )
+                                .await;
+                            }
                             Some(fork_sid)
                         }
                         Err(e) => {

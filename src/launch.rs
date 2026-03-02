@@ -260,6 +260,23 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
     channel_name.to_string()
 }
 
+/// Tools that channel leads (and their forks) are not allowed to use.
+///
+/// Channel leads are coordinators and domain experts — they scope work and create
+/// tasks, but never implement code. This list is passed as `--disallowedTools` to
+/// the Claude CLI, providing hard enforcement that the LLM cannot bypass.
+///
+/// Note: `Bash` is intentionally NOT included because channel leads need it for
+/// coordination commands (`midtown task create`, `midtown channel post`, etc.).
+/// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
+/// modify code", which is sufficient since Edit/Write are hard-blocked here.
+pub fn channel_lead_disallowed_tools() -> Vec<String> {
+    ["Edit", "Write", "NotebookEdit"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///
@@ -565,6 +582,15 @@ impl LaunchConfig {
             &config_dir,
         );
 
+        // Channel leads get hard tool restrictions — they are coordinators,
+        // not implementers. This is enforced at the CLI level via --disallowedTools
+        // so the LLM cannot bypass it.
+        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. }) {
+            channel_lead_disallowed_tools()
+        } else {
+            vec![]
+        };
+
         HeadlessConfig {
             model: self.model.clone(),
             system_prompt,
@@ -585,6 +611,7 @@ impl LaunchConfig {
             auth_provider: self.auth_provider,
             env,
             fork_session: false,
+            disallowed_tools,
         }
     }
 

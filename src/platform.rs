@@ -116,6 +116,9 @@ fn build_claude_common_args(
 /// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
 ///   to avoid "Tool names must be unique" errors. Fork-resume sessions additionally
 ///   get `--session-id <uuid>` so the daemon can register them without waiting for init.
+///
+/// Both modes may include `--disallowedTools` (comma-separated) for hard tool
+/// restrictions that the LLM cannot bypass (e.g., channel lead code-edit blocks).
 pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     // Exhaustive destructure so new HeadlessConfig fields force explicit
     // handling decisions in this platform mapper.
@@ -139,6 +142,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         session_id,
         env: _env,
         fork_session,
+        disallowed_tools,
     } = config;
 
     let is_resume = resume_session_id.is_some();
@@ -211,6 +215,12 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     if !*allow_tools {
         args.push("--tools".to_string());
         args.push(String::new());
+    }
+
+    // Tool restrictions — hard enforcement via CLI flag, not bypassable by LLM
+    if !disallowed_tools.is_empty() {
+        args.push("--disallowedTools".to_string());
+        args.push(disallowed_tools.join(","));
     }
 
     // Settings file — skip on resume to avoid duplicate tool registrations.

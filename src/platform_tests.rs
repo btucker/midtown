@@ -129,6 +129,7 @@ fn test_headless_config() -> HeadlessConfig {
         auth_provider: AuthProvider::Claude,
         env: std::collections::BTreeMap::new(),
         fork_session: false,
+        disallowed_tools: vec![],
     }
 }
 
@@ -245,6 +246,40 @@ fn test_claude_headless_args_tools_disabled() {
         args[tools_idx + 1],
         "",
         "Should pass empty string to --tools"
+    );
+}
+
+#[test]
+fn test_claude_headless_args_disallowed_tools_when_set() {
+    let config = HeadlessConfig {
+        disallowed_tools: vec!["Edit".to_string(), "Write".to_string(), "Bash".to_string()],
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+
+    assert!(
+        args.contains(&"--disallowedTools".to_string()),
+        "Non-empty disallowed_tools should add --disallowedTools flag"
+    );
+    let idx = args.iter().position(|a| a == "--disallowedTools").unwrap();
+    assert_eq!(
+        args[idx + 1],
+        "Edit,Write,Bash",
+        "Should pass comma-separated tool names"
+    );
+}
+
+#[test]
+fn test_claude_headless_args_disallowed_tools_empty_omitted() {
+    let config = HeadlessConfig {
+        disallowed_tools: vec![],
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+
+    assert!(
+        !args.contains(&"--disallowedTools".to_string()),
+        "Empty disallowed_tools should not add --disallowedTools flag"
     );
 }
 

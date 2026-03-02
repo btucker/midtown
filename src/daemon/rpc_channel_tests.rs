@@ -1956,3 +1956,30 @@ fn test_dm_from_user_wake_reason_reply_instruction() {
         "reply instruction should include the midtown command"
     );
 }
+
+#[test]
+fn test_fork_initial_framing_contains_channel_name() {
+    let framing = fork_initial_framing("proj-auth");
+    assert!(
+        framing.contains("#proj-auth"),
+        "Fork framing should reference the channel: {framing}"
+    );
+}
+
+#[test]
+fn test_fork_initial_framing_mentions_no_code() {
+    let framing = fork_initial_framing("web");
+    assert!(
+        framing.contains("do NOT write code") || framing.contains("You do NOT write code"),
+        "Fork framing should tell the fork not to write code: {framing}"
+    );
+}
+
+#[test]
+fn test_fork_initial_framing_mentions_task_creation() {
+    let framing = fork_initial_framing("web");
+    assert!(
+        framing.contains("midtown task create"),
+        "Fork framing should mention task creation: {framing}"
+    );
+}

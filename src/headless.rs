@@ -124,6 +124,14 @@ pub struct HeadlessConfig {
     /// creates a new independent session ID. Used for forked channel lead topic sessions.
     #[serde(default)]
     pub fork_session: bool,
+    /// Tools to disallow in this session.
+    ///
+    /// When non-empty, maps to `--disallowedTools` CLI flag. This is a hard
+    /// restriction enforced by the Claude CLI tool registry — the model cannot
+    /// override it. Used to prevent channel lead sessions from using code
+    /// modification tools (Edit, Write, Bash, NotebookEdit).
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1138,6 +1146,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         session_id,
         env: _env,
         fork_session,
+        disallowed_tools,
     } = config;
 
     let mut unsupported = Vec::new();
@@ -1152,6 +1161,9 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
     }
     if session_id.is_some() {
         unsupported.push("session_id");
+    }
+    if !disallowed_tools.is_empty() {
+        unsupported.push("disallowed_tools");
     }
     if !unsupported.is_empty() {
         return Err(format!(
