@@ -28,6 +28,8 @@
     } else {
       document.documentElement.classList.remove('dark')
     }
+    const favicon = document.getElementById('favicon')
+    if (favicon) favicon.href = $theme === 'dark' ? '/favicon-dark.png' : '/favicon-light.png'
   })
 
   let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
