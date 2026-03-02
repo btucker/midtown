@@ -17,7 +17,7 @@
   import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
   import SearchPalette from '$lib/SearchPalette.svelte'
   import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject } from '$lib/api.js'
+  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject, setupHistoryNavigation, replaceNavState, openThread } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
   import SearchIcon from '@lucide/svelte/icons/search'
@@ -78,8 +78,26 @@
     }
     if (targetProject) {
       switchProject(targetProject.name, targetProject.webhook_port)
-      history.replaceState(null, '', '/' + encodeURIComponent(targetProject.name))
+
+      // Deep-link: read channel/thread from URL query params
+      const params = new URLSearchParams(window.location.search)
+      const urlChannel = params.get('channel')
+      const urlThread = params.get('thread')
+
+      // Deep-link: restore channel and/or thread from URL.
+      // Use the URL channel if present, else default to the project's main channel.
+      const deepLinkChannel = urlChannel || targetProject.name
+      if (urlChannel) {
+        activeChannel.set(urlChannel)
+      }
+      if (urlThread) {
+        openThread({ id: urlThread, from: '', content: '' }, deepLinkChannel, { pushState: false })
+      }
+      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined })
     }
+    // Set up browser back/forward navigation
+    const cleanupHistory = setupHistoryNavigation()
+
     // Refresh project list every 30s
     const projectInterval = setInterval(fetchProjects, 30000)
     // Initialize and listen for viewport width changes
@@ -104,6 +122,7 @@
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
     return () => {
+      cleanupHistory()
       clearInterval(projectInterval)
       window.removeEventListener('resize', updateViewportWidth)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
@@ -113,7 +132,7 @@
   function selectProject(project) {
     if (project.status === 'running' && project.webhook_port) {
       switchProject(project.name, project.webhook_port)
-      history.replaceState(null, '', '/' + encodeURIComponent(project.name))
+      replaceNavState({ channel: project.name })
       projectDropdownOpen = false
     }
   }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
 import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems, threadToolItems } from './store.js'
-import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject } from './api.js'
+import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject, pushNavState, closeThread } from './api.js'
 
 describe('fetchHistory', () => {
   let originalFetch
@@ -340,9 +340,13 @@ describe('fetchChannels — is_dm field', () => {
 
 describe('selectDm', () => {
   let originalFetch
+  let originalHistory
 
   beforeEach(() => {
     originalFetch = globalThis.fetch
+    // Mock browser history API (not available in Node test environment)
+    originalHistory = globalThis.history
+    globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() }
     channels.set([
       { name: 'midtown', unread: 0, has_pr: false, ci_status: null, is_dm: false },
       { name: 'dm-alice', unread: 3, has_pr: false, ci_status: null, is_dm: true },
@@ -353,6 +357,7 @@ describe('selectDm', () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch
+    globalThis.history = originalHistory
   })
 
   it('switches to existing DM channel without creating it', async () => {
@@ -859,5 +864,73 @@ describe('handleUpdate universal_items — thread_parent_id routes to threadTool
     })
     vi.advanceTimersByTime(5000)
     expect(get(threadToolItems)['msg-9999']).toBeUndefined()
+  })
+})
+
+describe('pushNavState — URL construction', () => {
+  let originalHistory
+
+  beforeEach(() => {
+    originalHistory = globalThis.history
+    globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() }
+    activeProject.set('myproject')
+  })
+
+  afterEach(() => {
+    globalThis.history = originalHistory
+    activeProject.set(null)
+  })
+
+  it('includes channel param in URL when thread is on the default channel', () => {
+    pushNavState({ channel: 'myproject', thread: 'msg-123' })
+    const [, , url] = globalThis.history.pushState.mock.calls[0]
+    const parsed = new URL(url, 'http://localhost')
+    expect(parsed.searchParams.get('channel')).toBe('myproject')
+    expect(parsed.searchParams.get('thread')).toBe('msg-123')
+  })
+
+  it('omits channel param when no thread and channel matches project', () => {
+    pushNavState({ channel: 'myproject' })
+    const [, , url] = globalThis.history.pushState.mock.calls[0]
+    const parsed = new URL(url, 'http://localhost')
+    expect(parsed.searchParams.get('channel')).toBeNull()
+    expect(parsed.pathname).toBe('/myproject')
+  })
+
+  it('includes channel param when channel differs from project', () => {
+    pushNavState({ channel: 'other-channel' })
+    const [, , url] = globalThis.history.pushState.mock.calls[0]
+    const parsed = new URL(url, 'http://localhost')
+    expect(parsed.searchParams.get('channel')).toBe('other-channel')
+  })
+})
+
+describe('closeThread — history push behavior', () => {
+  let originalHistory
+
+  beforeEach(() => {
+    originalHistory = globalThis.history
+    globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() }
+    activeProject.set('myproject')
+    activeChannel.set('myproject')
+    threadData.set({ parentMessage: { id: 'msg-1' }, channelName: 'myproject', messages: [], tasks: [] })
+  })
+
+  afterEach(() => {
+    globalThis.history = originalHistory
+    activeProject.set(null)
+    threadData.set(null)
+  })
+
+  it('pushes history entry by default', () => {
+    closeThread()
+    expect(get(threadData)).toBeNull()
+    expect(globalThis.history.pushState).toHaveBeenCalled()
+  })
+
+  it('does not push history when pushState is false', () => {
+    closeThread({ pushState: false })
+    expect(get(threadData)).toBeNull()
+    expect(globalThis.history.pushState).not.toHaveBeenCalled()
   })
 })

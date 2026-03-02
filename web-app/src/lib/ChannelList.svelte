@@ -1,7 +1,7 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
   import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
-  import { fetchHistory, fetchChannels, getApiBase, closeThread } from './api.js'
+  import { fetchHistory, fetchChannels, getApiBase, closeThread, pushNavState } from './api.js'
   import {
     getChannelTaskCount,
     getChannelCiStatus,
@@ -67,7 +67,8 @@
 
     // Close thread panel when switching channels — thread context is
     // channel-scoped and should not carry over to a different channel.
-    closeThread()
+    // pushState: false because we push our own entry below with the new channel.
+    closeThread({ pushState: false })
 
     // Compute and apply the new expanded state for this channel.
     // computeExpandedAfterChannelNameClick handles two cases:
@@ -86,6 +87,7 @@
     }
 
     activeChannel.set(channelName)
+    pushNavState({ channel: channelName })
 
     // Clear unread count for this channel
     channels.update((channelList) =>
