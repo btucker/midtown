@@ -14,7 +14,9 @@
   let loading = $state(false)
   let debounceTimer = $state(null)
 
-  // Debounced search: fire API call 300ms after the user stops typing
+  // Debounced search: fire API call 300ms after the user stops typing.
+  // Guards against stale responses: only apply results if the query hasn't
+  // changed and the dialog is still open when the response arrives.
   $effect(() => {
     if (debounceTimer) clearTimeout(debounceTimer)
     const q = query.trim()
@@ -26,8 +28,10 @@
     loading = true
     debounceTimer = setTimeout(async () => {
       const response = await searchMessages(q)
-      results = response.results || []
-      loading = false
+      if (query.trim() === q && open) {
+        results = response.results || []
+        loading = false
+      }
     }, 300)
   })
 
