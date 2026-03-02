@@ -19,6 +19,7 @@ import {
   authSwitching,
   usageData,
   agentToolItems,
+  threadToolItems,
   pendingQuestions,
   threadData,
   showArchivedChannels,
@@ -136,6 +137,7 @@ export function switchProject(projectName, webhookPort) {
   agentClearTimeouts.forEach((t) => clearTimeout(t))
   agentClearTimeouts.clear()
   agentToolItems.set({})
+  threadToolItems.set({})
   threadData.set(null)
   connected.set(false)
 
@@ -474,6 +476,24 @@ export function handleUpdate(update) {
           return td
         })
 
+        // Schedule a delayed clear of thread tool activity when the fork posts a reply.
+        // Mirrors the channel-scoped clear logic below for top-level messages.
+        if (msg.from && msg.from !== 'user') {
+          const threadClearKey = `thread:${msg.thread_parent_id}`
+          if (agentClearTimeouts.has(threadClearKey)) {
+            clearTimeout(agentClearTimeouts.get(threadClearKey))
+          }
+          const timeout = setTimeout(() => {
+            agentClearTimeouts.delete(threadClearKey)
+            threadToolItems.update((byThread) => {
+              const updated = { ...byThread }
+              delete updated[msg.thread_parent_id]
+              return updated
+            })
+          }, TOOL_ITEMS_CLEAR_DELAY_MS)
+          agentClearTimeouts.set(threadClearKey, timeout)
+        }
+
         // Increment reply_count on the parent message in messagesByChannel
         messagesByChannel.update((byChannel) => {
           const channelMsgs = byChannel[channelName]
@@ -589,22 +609,35 @@ export function handleUpdate(update) {
       break
     }
     case 'universal_items': {
-      // Tool call activity keyed by channel.
-      // data: { agent_name: string, channel: string|null, items: UniversalItem[] }
-      // channel is null for the main lead (store under the active project name), or a topic
-      // channel name for channel leads (store under that channel name).
-      const channelKey = update.data.channel ?? get(activeProject)
-      // If a delayed clear is pending for this channel, cancel it — new tool activity
-      // means the agent is still working and the strip should not reset yet.
-      if (agentClearTimeouts.has(channelKey)) {
-        clearTimeout(agentClearTimeouts.get(channelKey))
-        agentClearTimeouts.delete(channelKey)
+      // Tool call activity keyed by channel or thread.
+      // data: { agent_name, channel, thread_parent_id?, items }
+      // When thread_parent_id is present, the items belong to a forked lead working
+      // in a thread — route them to threadToolItems so they appear in the thread panel
+      // instead of the main channel activity strip.
+      const threadId = update.data.thread_parent_id
+      if (threadId) {
+        if (agentClearTimeouts.has(`thread:${threadId}`)) {
+          clearTimeout(agentClearTimeouts.get(`thread:${threadId}`))
+          agentClearTimeouts.delete(`thread:${threadId}`)
+        }
+        threadToolItems.update((byThread) => {
+          const existing = byThread[threadId] || []
+          const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
+          return { ...byThread, [threadId]: merged }
+        })
+      } else {
+        // Channel-scoped: main lead or channel lead tool calls.
+        const channelKey = update.data.channel ?? get(activeProject)
+        if (agentClearTimeouts.has(channelKey)) {
+          clearTimeout(agentClearTimeouts.get(channelKey))
+          agentClearTimeouts.delete(channelKey)
+        }
+        agentToolItems.update((byChannel) => {
+          const existing = byChannel[channelKey] || []
+          const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
+          return { ...byChannel, [channelKey]: merged }
+        })
       }
-      agentToolItems.update((byChannel) => {
-        const existing = byChannel[channelKey] || []
-        const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT)
-        return { ...byChannel, [channelKey]: merged }
-      })
       break
     }
     case 'coworker_question':

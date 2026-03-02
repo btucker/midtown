@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
-import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems } from './store.js'
+import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems, threadToolItems } from './store.js'
 import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject } from './api.js'
 
 describe('fetchHistory', () => {
@@ -710,5 +710,92 @@ describe('handleUpdate universal_items — null channel uses activeProject, not 
     const items = get(agentToolItems)
     expect(items['my-project']).toHaveLength(1)
     expect(items['midtown']).toBeUndefined()
+  })
+})
+
+describe('handleUpdate universal_items — thread_parent_id routes to threadToolItems', () => {
+  const sampleItem = {
+    status: 'InProgress',
+    content: [{ ToolCall: { call_id: 'tc-1', name: 'Read', semantic_header: 'Read file.txt' } }],
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    agentToolItems.set({})
+    threadToolItems.set({})
+    activeProject.set('midtown')
+    messagesByChannel.set({ midtown: [], web: [] })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    activeProject.set(null)
+  })
+
+  it('stores items in threadToolItems when thread_parent_id is present', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+
+    // Should be in threadToolItems, NOT agentToolItems
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+    expect(get(agentToolItems)['web']).toBeUndefined()
+  })
+
+  it('stores items in agentToolItems when thread_parent_id is absent', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'web', items: [sampleItem] },
+    })
+
+    expect(get(agentToolItems)['web']).toHaveLength(1)
+    expect(get(threadToolItems)).toEqual({})
+  })
+
+  it('clears thread tool items after delay when a thread reply arrives', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+
+    // Fork posts a reply in the thread
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-1', from: 'fork-abcd', content: 'Done!', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    // Items still present before delay
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(1)
+
+    // After delay, items are cleared
+    vi.advanceTimersByTime(5000)
+    expect(get(threadToolItems)['msg-9999']).toBeUndefined()
+  })
+
+  it('cancels thread clear timeout when new thread tool activity arrives', () => {
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [sampleItem] },
+    })
+
+    // Fork posts a reply — schedules delayed clear
+    handleUpdate({
+      type: 'channel_message',
+      data: { id: 'reply-1', from: 'fork-abcd', content: 'status', channel: 'web', thread_parent_id: 'msg-9999', timestamp: '2026-01-01T00:00:00Z' },
+    })
+
+    // New tool activity arrives before delay — cancels the pending clear
+    vi.advanceTimersByTime(2000)
+    const newItem = { ...sampleItem, content: [{ ToolCall: { call_id: 'tc-2', name: 'Edit', semantic_header: 'Edit app.js' } }] }
+    handleUpdate({
+      type: 'universal_items',
+      data: { channel: 'web', agent_name: 'fork-abcd', thread_parent_id: 'msg-9999', items: [newItem] },
+    })
+
+    // Advance past original delay — items should still be present
+    vi.advanceTimersByTime(3000)
+    expect(get(threadToolItems)['msg-9999']).toHaveLength(2)
   })
 })

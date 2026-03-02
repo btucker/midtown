@@ -156,12 +156,16 @@ pub fn process_coworker_output(
 /// that has an active channel lead, that lead's tool calls are broadcast with the
 /// channel name so the web UI can display them only when viewing that topic channel.
 ///
+/// Forked leads (thread-bound sessions) include `thread_parent_id` so the frontend
+/// routes their tool calls to the thread panel instead of the main channel activity strip.
+///
 /// Coworker tool calls are never shown.
 pub fn process_universal_events(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
     fork_bound_channels: &HashMap<String, String>,
+    fork_bound_threads: &HashMap<String, String>,
 ) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
@@ -173,6 +177,7 @@ pub fn process_universal_events(
             effects.push(Effect::BroadcastUniversalItems {
                 agent_name: main_lead_session_name.to_string(),
                 channel: None,
+                thread_parent_id: None,
                 items,
             });
         }
@@ -187,21 +192,26 @@ pub fn process_universal_events(
                 effects.push(Effect::BroadcastUniversalItems {
                     agent_name: channel_name.clone(),
                     channel: Some(channel_name.clone()),
+                    thread_parent_id: None,
                     items,
                 });
             }
         }
     }
 
-    // Forked lead tool calls should be visible to only the fork's target channel.
+    // Forked lead tool calls: tagged with thread_parent_id so the frontend routes them
+    // to the thread panel. The channel is still set so the frontend knows which channel
+    // the thread belongs to (used for the thread activity drawer).
     for (fork_name, channel_name) in fork_bound_channels {
         if let Some(fork_events) = events.get(fork_name.as_str()) {
             let items =
                 crate::universal_events::claude::extract_tool_events(fork_events, timestamp);
             if !items.is_empty() {
+                let thread_parent_id = fork_bound_threads.get(fork_name).cloned();
                 effects.push(Effect::BroadcastUniversalItems {
                     agent_name: fork_name.clone(),
                     channel: Some(channel_name.clone()),
+                    thread_parent_id,
                     items,
                 });
             }

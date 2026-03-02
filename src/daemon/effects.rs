@@ -147,9 +147,13 @@ pub enum Effect {
     ///
     /// `channel` is `None` for the main lead (displayed in the main channel)
     /// or `Some(channel_name)` for a channel lead (displayed only in that topic channel).
+    ///
+    /// `thread_parent_id` is set for fork-bound sessions whose tool calls should appear
+    /// in the thread panel rather than the main channel activity strip.
     BroadcastUniversalItems {
         agent_name: String,
         channel: Option<String>,
+        thread_parent_id: Option<String>,
         items: Vec<crate::universal_events::UniversalItem>,
     },
     /// Record a cooldown entry (category + key).
@@ -1038,6 +1042,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::BroadcastUniversalItems {
                 agent_name,
                 channel,
+                thread_parent_id,
                 items,
             } => {
                 // Store items in DaemonState for TUI RPC consumers (kanban.data).
@@ -1056,6 +1061,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     crate::web::UniversalItemsData {
                         agent_name,
                         channel,
+                        thread_parent_id,
                         items,
                     },
                 ));
