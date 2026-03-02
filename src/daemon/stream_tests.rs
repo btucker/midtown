@@ -507,7 +507,13 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
 fn test_process_universal_events_no_events() {
     let events = HashMap::new();
     let channel_leads = HashMap::new();
-    let effects = process_universal_events(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -524,7 +530,13 @@ fn test_process_universal_events_text_only_no_effects() {
             extra: json!(null),
         }],
     );
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -541,16 +553,27 @@ fn test_process_universal_events_lead_tool_use_produces_effect() {
             extra: json!(null),
         }],
     );
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::BroadcastUniversalItems {
             agent_name,
             channel,
+            thread_parent_id,
             items,
         } => {
             assert_eq!(agent_name, "lead");
             assert!(channel.is_none(), "Main lead should have no channel");
+            assert!(
+                thread_parent_id.is_none(),
+                "Main lead should have no thread_parent_id"
+            );
             assert_eq!(items.len(), 1);
         }
         _ => panic!("Expected BroadcastUniversalItems effect"),
@@ -571,7 +594,13 @@ fn test_process_universal_events_coworker_tool_use_ignored() {
         }],
     );
     // Coworker tool calls are not shown to the user — only lead and channel lead tool calls are.
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -599,7 +628,13 @@ fn test_process_universal_events_only_lead_when_multiple_agents() {
         }],
     );
     // Only the lead's tool calls produce an effect; coworker events are ignored.
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::BroadcastUniversalItems {
@@ -630,12 +665,19 @@ fn test_process_universal_events_channel_lead_tool_use_produces_channel_scoped_e
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_universal_events(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::BroadcastUniversalItems {
             agent_name,
             channel,
+            thread_parent_id,
             items,
         } => {
             assert_eq!(agent_name, "web");
@@ -643,6 +685,10 @@ fn test_process_universal_events_channel_lead_tool_use_produces_channel_scoped_e
                 channel.as_deref(),
                 Some("web"),
                 "Channel lead should be tagged with its channel"
+            );
+            assert!(
+                thread_parent_id.is_none(),
+                "Channel lead should have no thread_parent_id"
             );
             assert_eq!(items.len(), 1);
         }
@@ -665,7 +711,13 @@ fn test_process_universal_events_channel_lead_not_in_sessions_is_ignored() {
         }],
     );
     // No channel leads registered → "web" session is treated as a regular coworker.
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -695,7 +747,13 @@ fn test_process_universal_events_lead_and_channel_lead_produce_separate_effects(
     let mut channel_leads = HashMap::new();
     channel_leads.insert("features".to_string(), "cl-session-id".to_string());
 
-    let effects = process_universal_events(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert_eq!(effects.len(), 2);
 
     // Verify both effects are present with correct scoping.
@@ -727,7 +785,13 @@ fn test_process_universal_events_channel_lead_registered_but_no_events_produces_
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_universal_events(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_universal_events(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+    );
     assert!(
         effects.is_empty(),
         "No effect when channel lead has no events this tick"
@@ -750,16 +814,73 @@ fn test_process_universal_events_forked_session_tool_use_is_scoped_to_channel() 
     let mut fork_bound_channels = HashMap::new();
     fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
 
-    let effects = process_universal_events(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &fork_bound_channels,
+        &HashMap::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::BroadcastUniversalItems {
             agent_name,
             channel,
+            thread_parent_id,
             items,
         } => {
             assert_eq!(agent_name, "fork-1234");
             assert_eq!(channel.as_deref(), Some("topic-omega"));
+            assert!(
+                thread_parent_id.is_none(),
+                "Fork without thread binding should have no thread_parent_id"
+            );
+            assert_eq!(items.len(), 1);
+        }
+        _ => panic!("Expected BroadcastUniversalItems effect"),
+    }
+}
+
+#[test]
+fn test_process_universal_events_forked_session_with_thread_binding_includes_thread_parent_id() {
+    let mut events = HashMap::new();
+    events.insert(
+        "fork-abcd".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut fork_bound_channels = HashMap::new();
+    fork_bound_channels.insert("fork-abcd".to_string(), "web".to_string());
+    let mut fork_bound_threads = HashMap::new();
+    fork_bound_threads.insert("fork-abcd".to_string(), "msg-9999".to_string());
+
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &fork_bound_channels,
+        &fork_bound_threads,
+    );
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::BroadcastUniversalItems {
+            agent_name,
+            channel,
+            thread_parent_id,
+            items,
+        } => {
+            assert_eq!(agent_name, "fork-abcd");
+            assert_eq!(channel.as_deref(), Some("web"));
+            assert_eq!(
+                thread_parent_id.as_deref(),
+                Some("msg-9999"),
+                "Fork with thread binding should include thread_parent_id"
+            );
             assert_eq!(items.len(), 1);
         }
         _ => panic!("Expected BroadcastUniversalItems effect"),

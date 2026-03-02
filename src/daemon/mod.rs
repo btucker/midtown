@@ -3603,11 +3603,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let coworker_effects =
                         stream::process_coworker_output(&events, &coworker_names);
 
+                    let fork_bound_threads = state.fork_bound_threads.lock().unwrap();
                     let universal_effects = stream::process_universal_events(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.repo_name,
                         &fork_bound_channels,
+                        &fork_bound_threads,
                     );
                     (lead_effects, coworker_effects, universal_effects)
                 };

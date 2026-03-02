@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems } from './store.js'
+  import { threadData, agentToolItems, threadToolItems } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments } from './messageUtils.js'
@@ -143,11 +143,16 @@
     tick().then(() => resizeTextarea())
   })
 
-  // Clear thinking when real InProgress tool items arrive for this thread's channel.
+  // Clear thinking when real InProgress tool items arrive — check both thread-scoped
+  // items (for forked leads) and channel-scoped items (for channel leads / DM channels).
   $effect(() => {
+    const parentId = $threadData?.parentMessage?.id
     const channelName = $threadData?.channelName ?? 'midtown'
-    const items = $agentToolItems[channelName] || []
-    if (items.some((item) => item.status === 'InProgress')) {
+    const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
+    const channelItems = $agentToolItems[channelName] || []
+    const hasInProgress = threadItems.some((item) => item.status === 'InProgress')
+      || channelItems.some((item) => item.status === 'InProgress')
+    if (hasInProgress) {
       thinking = false
       if (thinkingTimeout) {
         clearTimeout(thinkingTimeout)
@@ -505,7 +510,7 @@
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer channelName={$threadData?.channelName} {thinking} />
+    <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Input -->
     <form class="flex gap-2 px-3 pt-2 pb-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
@@ -700,7 +705,7 @@
     </div>
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer channelName={$threadData?.channelName} {thinking} />
+    <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Mobile input -->
     <form class="flex gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>

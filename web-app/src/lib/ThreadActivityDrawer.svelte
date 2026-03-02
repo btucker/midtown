@@ -3,14 +3,15 @@
    * ThreadActivityDrawer — terminal-styled slide-up drawer above the thread reply input.
    *
    * Props:
-   *   channelName — the channel whose tool items to display (e.g. "web")
-   *   thinking    — true when the user just sent a message and we're waiting for tool calls
+   *   channelName    — the channel whose tool items to display (e.g. "web")
+   *   threadParentId — when set, reads from threadToolItems[id] instead of agentToolItems[channel]
+   *   thinking       — true when the user just sent a message and we're waiting for tool calls
    */
-  import { agentToolItems } from './store.js'
+  import { agentToolItems, threadToolItems } from './store.js'
   import { onDestroy } from 'svelte'
   import { slide } from 'svelte/transition'
 
-  let { channelName, thinking = false } = $props()
+  let { channelName, threadParentId = null, thinking = false } = $props()
 
   const AGE_OUT_MS = 3000
   const MAX_VISIBLE = 10
@@ -24,16 +25,21 @@
   let completedAt = $state(new Map())
   let expired = $state(new Set())
 
-  // Reset both maps when channelName changes (switching threads clears stale state)
+  // Reset both maps when the thread changes (switching threads clears stale state)
   $effect(() => {
     channelName // track dependency
+    threadParentId // track dependency
     completedAt = new Map()
     expired = new Set()
   })
 
-  // Build merged view: fold ToolResults into their ToolCalls
+  // Build merged view: fold ToolResults into their ToolCalls.
+  // When threadParentId is set, read from the thread-scoped store; otherwise fall back
+  // to the channel-scoped store (for non-fork threads like DM channels).
   let merged = $derived.by(() => {
-    const items = $agentToolItems[channelName ?? 'midtown'] || []
+    const items = threadParentId
+      ? ($threadToolItems[threadParentId] || [])
+      : ($agentToolItems[channelName ?? 'midtown'] || [])
     const resultStatus = {}
     for (const item of items) {
       for (const part of item.content) {
