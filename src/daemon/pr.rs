@@ -579,13 +579,6 @@ async fn collect_orphaned_pr_effects(
     effects
 }
 
-/// Poll all open PRs and return effects for actionable issues.
-///
-/// Fetches PR data from GitHub, reads tracker state to avoid duplicate nudges,
-/// and returns a list of effects to execute. The caller is responsible for
-/// executing the returned effects via `execute_effects()`.
-///
-/// Called from `evaluate_tick(PrPollTick)` in the main event loop.
 /// Cleanup expired tracking entries and stale state.
 ///
 /// Cleans up: PR issue tracker, persistent state (expired reviewer assignments,
@@ -738,6 +731,7 @@ async fn update_pr_caches(
     }
 
     // Detect abandoned PRs (closed without merge) and reset associated tasks.
+    // This uses pure decision logic that takes only snapshot data and returns effects.
     let open_pr_numbers: Vec<u64> = prs
         .iter()
         .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
@@ -882,7 +876,7 @@ async fn process_pr_issue_nudges(
 ///
 /// Pre-collects review status, computes prs_needing_review count, and caches
 /// coworker names whose PRs have CI passed + review feedback.
-async fn update_review_status_cache(
+fn update_review_status_cache(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
@@ -918,6 +912,13 @@ async fn update_review_status_cache(
     cache.review_feedback_pr_owners = review_feedback;
 }
 
+/// Poll all open PRs and return effects for actionable issues.
+///
+/// Fetches PR data from GitHub, reads tracker state to avoid duplicate nudges,
+/// and returns a list of effects to execute. The caller is responsible for
+/// executing the returned effects via `execute_effects()`.
+///
+/// Called from `evaluate_tick(PrPollTick)` in the main event loop.
 pub(super) async fn poll_prs_for_issues(
     snap: &WorldSnapshot,
     state: &DaemonState,
@@ -1094,7 +1095,7 @@ pub(super) async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
 
-    update_review_status_cache(state, &prs, &reviewed_prs).await;
+    update_review_status_cache(state, &prs, &reviewed_prs);
 
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
@@ -1463,24 +1464,6 @@ fn pr_action_to_effects(
     effects
 }
 
-/// Check for stuck conditions and return effects to nudge the lead.
-///
-/// This function runs during each PR poll cycle and checks for:
-/// 1. PRs open with no review for too long
-/// 2. PRs with unresolved feedback for too long
-/// 3. PRs that are approved + CI green but not merging
-/// 4. Coworkers who are silent (no channel activity) for too long
-/// 5. Review backlog (more PRs need review than slots available)
-///
-/// Returns effects (NudgeCoworker, PostSystemMessage) instead of executing
-/// side effects inline. Each condition has a cooldown tracked via the
-/// stuck_tracker to avoid spamming. For stuck conditions that @mention the lead,
-/// the channel's chat monitor handles routing the nudge.
-///
-/// The `reviewed_prs` parameter contains PR numbers that have completed reviews
-/// (comment-based or formal), pre-collected before this function to keep
-/// decision logic free of async API calls.
-///
 /// Pre-fetched data for stuck condition evaluation.
 ///
 /// Bundles async state lookups done once before the per-PR loop, so individual
@@ -1498,6 +1481,23 @@ struct StuckEvalContext<'a> {
     active_reviewer_prs: HashSet<u64>,
 }
 
+/// Check for stuck conditions and return effects to nudge the lead.
+///
+/// This function runs during each PR poll cycle and checks for:
+/// 1. PRs open with no review for too long
+/// 2. PRs with unresolved feedback for too long
+/// 3. PRs that are approved + CI green but not merging
+/// 4. Coworkers who are silent (no channel activity) for too long
+/// 5. Review backlog (more PRs need review than slots available)
+///
+/// Returns effects (NudgeCoworker, PostSystemMessage) instead of executing
+/// side effects inline. Each condition has a cooldown tracked via the
+/// stuck_tracker to avoid spamming. For stuck conditions that @mention the lead,
+/// the channel's chat monitor handles routing the nudge.
+///
+/// The `reviewed_prs` parameter contains PR numbers that have completed reviews
+/// (comment-based or formal), pre-collected before this function to keep
+/// decision logic free of async API calls.
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -1783,6 +1783,9 @@ fn merge_ready_scenario(
     }
 
     // Gate: don't auto-merge while a daemon-assigned reviewer is still working.
+    // Mirrors the pre-gate in handle_pr_merge (rpc_prs.rs) that prevents the
+    // PR #1624 incident. Uses get_reviewer() (raw presence, no timeout) with
+    // a bypass when the review is already cached as complete.
     if !has_active_reviewer {
         tracker.track(pr_id, StuckConditionType::AutoMerge);
         if tracker.should_nudge(pr_id, StuckConditionType::AutoMerge) {
