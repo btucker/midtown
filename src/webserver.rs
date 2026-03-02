@@ -12,6 +12,8 @@
 //! - `GET /api/projects/:name/zellij-web-url` - Get Zellij web client URL for project
 //! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
 //! - `GET /api/projects/:name/channels/:channel_name/notes` - List channel notes (markdown files)
+//! - `GET /api/projects/:name/proxy/api/ws` - WebSocket proxy to per-project daemon
+//! - `ANY /api/projects/:name/proxy/*` - HTTP reverse proxy to per-project daemon
 //! - `GET /api/health` - Health check
 //! - `GET /` - Serve static web UI (SPA)
 
@@ -24,10 +26,12 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{Json, Response};
-use axum::routing::get;
+use axum::response::{IntoResponse, Json, Response};
+use axum::routing::{any, get};
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -81,6 +85,8 @@ pub enum ProjectStatus {
 #[derive(Clone)]
 struct WebserverState {
     inner: Arc<RwLock<WebserverStateInner>>,
+    /// HTTP client for proxying requests to daemon webhook servers.
+    http_client: reqwest::Client,
 }
 
 struct WebserverStateInner {
@@ -93,6 +99,7 @@ impl WebserverState {
             inner: Arc::new(RwLock::new(WebserverStateInner {
                 projects: HashMap::new(),
             })),
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -469,6 +476,154 @@ fn extract_note_title(filename: &str, content: &str) -> String {
         .join(" ")
 }
 
+// --- HTTPS reverse proxy handlers ---
+//
+// When TLS is configured on the webserver, the browser refuses to make direct
+// HTTP/WS requests to the daemon's webhook port (mixed content). These handlers
+// proxy daemon traffic through the HTTPS webserver so every request stays on the
+// secure origin.
+
+/// WebSocket proxy: accept upgrade on the webserver, connect to the daemon's WS,
+/// and bridge messages bidirectionally.
+async fn proxy_ws_handler(
+    State(state): State<WebserverState>,
+    Path(name): Path<String>,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, StatusCode> {
+    let project = state
+        .get_project(&name)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let port = project
+        .webhook_port
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let target_url = format!("ws://127.0.0.1:{}/api/ws", port);
+
+    Ok(ws.on_upgrade(move |socket| async move {
+        if let Err(e) = proxy_ws_bridge(socket, &target_url).await {
+            warn!("WebSocket proxy error for project {}: {}", name, e);
+        }
+    }))
+}
+
+/// Bridge a client WebSocket to the daemon's WebSocket, forwarding messages
+/// in both directions until either side closes.
+async fn proxy_ws_bridge(
+    client_ws: WebSocket,
+    target_url: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio_tungstenite::tungstenite::Message as TMsg;
+
+    let (daemon_ws, _) = tokio_tungstenite::connect_async(target_url).await?;
+    let (mut daemon_write, mut daemon_read) = daemon_ws.split();
+    let (mut client_write, mut client_read) = client_ws.split();
+
+    // Client → Daemon
+    let client_to_daemon = async {
+        while let Some(Ok(msg)) = client_read.next().await {
+            let fwd = match msg {
+                WsMessage::Text(t) => TMsg::Text(t.to_string().into()),
+                WsMessage::Binary(b) => TMsg::Binary(b.to_vec().into()),
+                WsMessage::Ping(p) => TMsg::Ping(p.to_vec().into()),
+                WsMessage::Pong(p) => TMsg::Pong(p.to_vec().into()),
+                WsMessage::Close(_) => return,
+            };
+            if daemon_write.send(fwd).await.is_err() {
+                return;
+            }
+        }
+    };
+
+    // Daemon → Client
+    let daemon_to_client = async {
+        while let Some(Ok(msg)) = daemon_read.next().await {
+            let fwd = match msg {
+                TMsg::Text(t) => WsMessage::Text(t.to_string().into()),
+                TMsg::Binary(b) => WsMessage::Binary(b),
+                TMsg::Ping(p) => WsMessage::Ping(p),
+                TMsg::Pong(p) => WsMessage::Pong(p),
+                TMsg::Close(_) => return,
+                _ => continue,
+            };
+            if client_write.send(fwd).await.is_err() {
+                return;
+            }
+        }
+    };
+
+    // Run both directions concurrently; stop when either side finishes.
+    tokio::select! {
+        _ = client_to_daemon => {}
+        _ = daemon_to_client => {}
+    }
+
+    Ok(())
+}
+
+/// HTTP reverse proxy: forward any request to the daemon's webhook port.
+///
+/// Preserves the method, query string, Content-Type header, and body so that
+/// both GET and POST endpoints (status, channels, auth, upload, etc.) work
+/// transparently through the proxy.
+async fn proxy_http_handler(
+    State(state): State<WebserverState>,
+    Path((name, rest)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response<Body>, StatusCode> {
+    let project = state
+        .get_project(&name)
+        .await
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let port = project
+        .webhook_port
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let rest = rest.trim_start_matches('/');
+    let query = request
+        .uri()
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
+    let target_url = format!("http://127.0.0.1:{}/{}{}", port, rest, query);
+
+    let method = request.method().clone();
+    let content_type = request.headers().get(header::CONTENT_TYPE).cloned();
+
+    // Read the incoming body (11 MiB limit matches the daemon's DefaultBodyLimit)
+    let body_bytes = axum::body::to_bytes(request.into_body(), 11 * 1024 * 1024)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let mut upstream = state.http_client.request(method, &target_url);
+    if let Some(ct) = content_type {
+        upstream = upstream.header(header::CONTENT_TYPE, ct);
+    }
+    if !body_bytes.is_empty() {
+        upstream = upstream.body(body_bytes);
+    }
+
+    let upstream_resp = upstream.send().await.map_err(|e| {
+        warn!("Proxy request failed for {}: {}", target_url, e);
+        StatusCode::BAD_GATEWAY
+    })?;
+
+    let status =
+        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let resp_content_type = upstream_resp.headers().get(header::CONTENT_TYPE).cloned();
+    let body = upstream_resp
+        .bytes()
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    let mut builder = Response::builder().status(status);
+    if let Some(ct) = resp_content_type {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    }
+    builder
+        .body(Body::from(body))
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+}
+
 /// Run the standalone webserver.
 pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let state = WebserverState::new();
@@ -502,7 +657,11 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
         .route(
             "/projects/{name}/channels/{channel_name}/notes",
             get(project_channel_notes),
-        );
+        )
+        // HTTPS proxy routes: forward daemon API through the TLS-enabled webserver
+        // so the browser never makes direct HTTP requests to the daemon port.
+        .route("/projects/{name}/proxy/api/ws", get(proxy_ws_handler))
+        .route("/projects/{name}/proxy/{*rest}", any(proxy_http_handler));
 
     let mut app = Router::new().nest("/api", api).layer(cors);
 
@@ -567,6 +726,7 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::post;
 
     #[test]
     fn test_default_webserver_port() {
@@ -959,5 +1119,218 @@ mod tests {
         let notes = result.0.as_array().unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0]["title"], "Getting Started");
+    }
+
+    // --- proxy handler tests ---
+
+    /// Build a WebserverState pre-loaded with the given projects.
+    async fn state_with_projects(projects: Vec<ProjectInfo>) -> WebserverState {
+        let state = WebserverState::new();
+        let mut guard = state.inner.write().await;
+        guard.projects = projects.into_iter().map(|p| (p.name.clone(), p)).collect();
+        drop(guard);
+        state
+    }
+
+    #[tokio::test]
+    async fn test_proxy_http_returns_not_found_for_unknown_project() {
+        let state = state_with_projects(vec![]).await;
+        let req = axum::http::Request::builder()
+            .uri("/api/projects/nonexistent/proxy/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let result = proxy_http_handler(
+            State(state),
+            Path(("nonexistent".to_string(), "api/status".to_string())),
+            req,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_http_returns_service_unavailable_when_no_webhook_port() {
+        let projects = vec![ProjectInfo {
+            name: "test-proj".to_string(),
+            status: ProjectStatus::Stopped,
+            daemon_socket: None,
+            webhook_port: None,
+        }];
+        let state = state_with_projects(projects).await;
+        let req = axum::http::Request::builder()
+            .uri("/api/projects/test-proj/proxy/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let result = proxy_http_handler(
+            State(state),
+            Path(("test-proj".to_string(), "api/status".to_string())),
+            req,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_http_returns_bad_gateway_when_daemon_unreachable() {
+        // Use a port that definitely has nothing listening on it
+        let projects = vec![ProjectInfo {
+            name: "test-proj".to_string(),
+            status: ProjectStatus::Running,
+            daemon_socket: None,
+            webhook_port: Some(19999),
+        }];
+        let state = state_with_projects(projects).await;
+        let req = axum::http::Request::builder()
+            .uri("/api/projects/test-proj/proxy/api/status")
+            .body(Body::empty())
+            .unwrap();
+        let result = proxy_http_handler(
+            State(state),
+            Path(("test-proj".to_string(), "api/status".to_string())),
+            req,
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// Verify the proxy forwards GET requests to the daemon's actual port and
+    /// returns the response. Spins up a tiny axum server as a stand-in daemon.
+    #[tokio::test]
+    async fn test_proxy_http_forwards_get_request() {
+        // Start a tiny HTTP server to act as the daemon webhook server
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let daemon_app = axum::Router::new().route(
+            "/api/status",
+            get(|| async { axum::Json(serde_json::json!({"ok": true})) }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, daemon_app).await.unwrap();
+        });
+
+        let projects = vec![ProjectInfo {
+            name: "test-proj".to_string(),
+            status: ProjectStatus::Running,
+            daemon_socket: None,
+            webhook_port: Some(port),
+        }];
+        let state = state_with_projects(projects).await;
+        let req = axum::http::Request::builder()
+            .uri("/api/projects/test-proj/proxy/api/status")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy_http_handler(
+            State(state),
+            Path(("test-proj".to_string(), "api/status".to_string())),
+            req,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"ok": true}));
+    }
+
+    /// Verify the proxy forwards POST requests with body and Content-Type.
+    #[tokio::test]
+    async fn test_proxy_http_forwards_post_with_body() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let daemon_app = axum::Router::new().route(
+            "/api/channels/create",
+            post(|body: axum::Json<serde_json::Value>| async move {
+                axum::Json(serde_json::json!({"created": body.0["name"]}))
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, daemon_app).await.unwrap();
+        });
+
+        let projects = vec![ProjectInfo {
+            name: "test-proj".to_string(),
+            status: ProjectStatus::Running,
+            daemon_socket: None,
+            webhook_port: Some(port),
+        }];
+        let state = state_with_projects(projects).await;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/projects/test-proj/proxy/api/channels/create")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"name":"dm-test"}"#))
+            .unwrap();
+
+        let response = proxy_http_handler(
+            State(state),
+            Path(("test-proj".to_string(), "api/channels/create".to_string())),
+            req,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["created"], "dm-test");
+    }
+
+    /// Verify query string parameters are forwarded through the proxy.
+    #[tokio::test]
+    async fn test_proxy_http_forwards_query_params() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        #[derive(Deserialize)]
+        struct QueryParams {
+            channel: Option<String>,
+        }
+
+        let daemon_app = axum::Router::new().route(
+            "/api/channels/history",
+            get(
+                |axum::extract::Query(q): axum::extract::Query<QueryParams>| async move {
+                    axum::Json(serde_json::json!({"channel": q.channel}))
+                },
+            ),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, daemon_app).await.unwrap();
+        });
+
+        let projects = vec![ProjectInfo {
+            name: "test-proj".to_string(),
+            status: ProjectStatus::Running,
+            daemon_socket: None,
+            webhook_port: Some(port),
+        }];
+        let state = state_with_projects(projects).await;
+        let req = axum::http::Request::builder()
+            .uri("/api/projects/test-proj/proxy/api/channels/history?channel=web")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy_http_handler(
+            State(state),
+            Path(("test-proj".to_string(), "api/channels/history".to_string())),
+            req,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["channel"], "web");
     }
 }

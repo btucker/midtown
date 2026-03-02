@@ -81,6 +81,9 @@ syntect = { version = "5", default-features = false, features = ["default-themes
 # Async file tailing for instant message updates
 tailf = "0.1"
 futures = "0.3"
+
+# WebSocket client for HTTPS proxy (bridges webserver ↔ daemon WS)
+tokio-tungstenite = "0.26"
 unicode-width = "0.2.0"
 
 # Web Push notifications (VAPID + RFC8030)
