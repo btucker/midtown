@@ -1237,6 +1237,126 @@ fn test_pull_request_event_routes_to_ops_channel() {
 }
 
 #[test]
+fn test_handle_review_comment_edited_placeholder_to_review() {
+    // Reviewer posts a placeholder inline comment, then edits it with a review.
+    // The 'edited' event should be processed (non-review → review transition).
+    let payload = serde_json::json!({
+        "action": "edited",
+        "pull_request": {
+            "number": 77,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 300,
+            "user": {"login": "btucker"},
+            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found."
+        },
+        "changes": {
+            "body": {
+                "from": "## Review Status\n\nReview in progress by park..."
+            }
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let event = handle_review_comment(&payload).unwrap().unwrap();
+    assert_eq!(event.reviewed_pr, Some(77));
+    assert_eq!(event.review_comment_id, Some(300));
+    let activity = event.pr_activity.unwrap();
+    assert_eq!(activity.pr_number, 77);
+    assert_eq!(activity.actor, "park");
+}
+
+#[test]
+fn test_handle_review_comment_edited_review_typo_fix_ignored() {
+    // An edit to an already-posted review (e.g. fixing a typo) should be ignored.
+    let payload = serde_json::json!({
+        "action": "edited",
+        "pull_request": {
+            "number": 77,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 301,
+            "user": {"login": "btucker"},
+            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found. Fixed typo."
+        },
+        "changes": {
+            "body": {
+                "from": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no isues found."
+            }
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let result = handle_review_comment(&payload).unwrap();
+    assert!(
+        result.is_none(),
+        "edits to existing review comments should be ignored"
+    );
+}
+
+#[test]
+fn test_handle_review_comment_edited_without_review_signature() {
+    // An 'edited' event on a non-review comment should be ignored.
+    let payload = serde_json::json!({
+        "action": "edited",
+        "pull_request": {
+            "number": 77,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 302,
+            "user": {"login": "btucker"},
+            "body": "Updated my earlier suggestion — use a match here instead."
+        },
+        "changes": {
+            "body": {
+                "from": "Consider using a match here."
+            }
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let result = handle_review_comment(&payload).unwrap();
+    assert!(
+        result.is_none(),
+        "edited non-review comments should be ignored"
+    );
+}
+
+#[test]
+fn test_handle_review_comment_edited_no_changes_field() {
+    // An 'edited' event without a `changes` field should still process
+    // a non-review → review transition since we can't know the previous body.
+    let payload = serde_json::json!({
+        "action": "edited",
+        "pull_request": {
+            "number": 77,
+            "head": {"ref": "madison/refactor"},
+            "body": "PR body here"
+        },
+        "comment": {
+            "id": 303,
+            "user": {"login": "btucker"},
+            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLooks good!"
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let event = handle_review_comment(&payload).unwrap().unwrap();
+    assert_eq!(event.reviewed_pr, Some(77));
+    assert_eq!(event.review_comment_id, Some(303));
+}
+
+#[test]
 fn test_check_run_event_routes_to_ops_channel() {
     let payload = r#"{
             "action": "completed",
