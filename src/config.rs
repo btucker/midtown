@@ -618,6 +618,27 @@ impl DaemonSection {
     }
 }
 
+/// Webserver configuration (TLS, etc.).
+///
+/// This is the `[webserver]` section of `~/.midtown/config.toml`:
+/// ```toml
+/// [webserver]
+/// tls_cert = "/path/to/cert.pem"
+/// tls_key = "/path/to/key.pem"
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct WebserverSection {
+    /// Path to TLS certificate file (PEM format).
+    /// For Tailscale: `tailscale cert <hostname>` generates `<hostname>.crt`.
+    #[serde(default)]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to TLS private key file (PEM format).
+    /// For Tailscale: `tailscale cert <hostname>` generates `<hostname>.key`.
+    #[serde(default)]
+    pub tls_key: Option<PathBuf>,
+}
+
 /// Role-specific execution provider settings.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ExecutionSection {
@@ -833,6 +854,10 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub daemon: DaemonSection,
 
+    /// Webserver configuration (TLS, etc.)
+    #[serde(default)]
+    pub webserver: WebserverSection,
+
     /// Default execution provider settings.
     #[serde(default)]
     pub execution: ExecutionSection,
@@ -970,6 +995,15 @@ impl GlobalConfig {
 # GitHub username for gh CLI authentication
 # When set, fetches token and sets GH_TOKEN env var at daemon startup
 # github_user = ""
+
+[webserver]
+# TLS certificate file path (PEM format)
+# For Tailscale: tailscale cert <hostname> generates <hostname>.crt
+# tls_cert = "/path/to/cert.pem"
+
+# TLS private key file path (PEM format)
+# For Tailscale: tailscale cert <hostname> generates <hostname>.key
+# tls_key = "/path/to/key.pem"
 
 [execution]
 # Global default provider for all roles (unless overridden per-role): "claude", "codex", or "zai"
@@ -2172,6 +2206,8 @@ name = "solo"
         assert!(config.default.max_coworkers.is_none());
         assert!(config.plugins.required.is_empty());
         assert!(config.daemon.webhook_port.is_none());
+        assert!(config.webserver.tls_cert.is_none());
+        assert!(config.webserver.tls_key.is_none());
         assert!(config.execution.lead_provider.is_none());
         assert!(config.execution.coworker_provider.is_none());
     }
@@ -2182,6 +2218,9 @@ name = "solo"
         assert!(template.contains("[default]"));
         assert!(template.contains("[plugins]"));
         assert!(template.contains("[daemon]"));
+        assert!(template.contains("[webserver]"));
+        assert!(template.contains("tls_cert"));
+        assert!(template.contains("tls_key"));
         assert!(template.contains("[execution]"));
         assert!(template.contains("max_coworkers"));
         assert!(template.contains("webhook_port"));

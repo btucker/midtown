@@ -865,18 +865,28 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     }
 
     // Step 3: Auto-launch shared webserver if not running
+    let global_config = midtown::config::GlobalConfig::load();
+    let webserver_scheme = if global_config.webserver.tls_cert.is_some()
+        && global_config.webserver.tls_key.is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
     if !webserver_is_running() {
         emit_startup_progress(96, "starting shared webserver");
         match launch_webserver() {
             Ok(()) => messages.push(format!(
-                "Started webserver on http://localhost:{}",
+                "Started webserver on {}://localhost:{}",
+                webserver_scheme,
                 midtown::webserver::DEFAULT_WEBSERVER_PORT
             )),
             Err(e) => messages.push(format!("Warning: Failed to start webserver: {}", e)),
         }
     } else {
         messages.push(format!(
-            "Webserver running at http://localhost:{}",
+            "Webserver running at {}://localhost:{}",
+            webserver_scheme,
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         ));
         emit_startup_progress(96, "shared webserver already running");
@@ -917,6 +927,16 @@ fn launch_webserver() -> Result<(), String> {
 
     let mut cmd = Command::new(&exe);
     cmd.args(["webserver", "run"]);
+
+    // Pass TLS config from global config if set
+    let global_config = midtown::config::GlobalConfig::load();
+    if let Some(ref cert) = global_config.webserver.tls_cert {
+        cmd.args(["--tls-cert", &cert.to_string_lossy()]);
+    }
+    if let Some(ref key) = global_config.webserver.tls_key {
+        cmd.args(["--tls-key", &key.to_string_lossy()]);
+    }
+
     // Don't pass --foreground so it daemonizes itself
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1000,14 +1020,24 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
     let was_running = stop_webserver()?;
     // stop_webserver() polls until confirmed dead, no extra sleep needed
     launch_webserver()?;
+    let global_config = midtown::config::GlobalConfig::load();
+    let scheme = if global_config.webserver.tls_cert.is_some()
+        && global_config.webserver.tls_key.is_some()
+    {
+        "https"
+    } else {
+        "http"
+    };
     if was_running {
         Ok(Response::message(format!(
-            "Restarted webserver on http://localhost:{}",
+            "Restarted webserver on {}://localhost:{}",
+            scheme,
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         )))
     } else {
         Ok(Response::message(format!(
-            "Started webserver on http://localhost:{}",
+            "Started webserver on {}://localhost:{}",
+            scheme,
             midtown::webserver::DEFAULT_WEBSERVER_PORT
         )))
     }

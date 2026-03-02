@@ -163,7 +163,7 @@ The multi-project webserver serves the web UI and proxies to per-project daemons
 
 | Command | Description |
 |---------|-------------|
-| `midtown webserver run [--port 47022] [--foreground]` | Start the webserver |
+| `midtown webserver run [--port 47022] [--tls-cert PATH --tls-key PATH] [--foreground]` | Start the webserver |
 | `midtown webserver stop` | Stop the webserver |
 | `midtown webserver restart` | Restart the webserver |
 
@@ -240,6 +240,10 @@ webhook_secret = "your-secret"        # GitHub webhook signature secret
 webhook_restart_interval_secs = 300   # Webhook forwarder restart interval
 pr_poll_interval_secs = 30            # PR polling interval
 chat_monitor_enabled = true           # Enable @mention routing
+
+[webserver]
+tls_cert = "/path/to/cert.pem"       # TLS certificate (PEM format)
+tls_key = "/path/to/key.pem"         # TLS private key (PEM format)
 
 [execution]
 lead_provider = "claude"              # Default for all leads ("claude", "codex", or "zai")
