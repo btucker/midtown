@@ -579,6 +579,339 @@ async fn collect_orphaned_pr_effects(
     effects
 }
 
+/// Cleanup expired tracking entries and stale state.
+///
+/// Cleans up: PR issue tracker, persistent state (expired reviewer assignments,
+/// session ID backfill, stale webhook events), cooldowns, and RPC response cache.
+/// Preserves assignments for running reviewer coworkers so active reviews aren't
+/// interrupted.
+async fn cleanup_pr_tracking_state(
+    state: &DaemonState,
+    snap: &WorldSnapshot,
+    running_coworker_names: &HashSet<String>,
+    running_reviewer_session_ids: &HashSet<String>,
+    review_branch_owners: &HashSet<String>,
+) {
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.cleanup();
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
+        // Backfill reviewer_session_id for assignments created before the session
+        // started (optimistic assignment pattern: assign before spawn completes).
+        let reviewer_session_map: HashMap<String, String> = snap
+            .running_coworkers
+            .iter()
+            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
+            .filter_map(|c| {
+                c.session_id
+                    .as_ref()
+                    .map(|sid| (c.name.clone(), sid.clone()))
+            })
+            .collect();
+        ps.github
+            .backfill_reviewer_session_ids(&reviewer_session_map);
+        ps.github.cleanup_stale_webhook_events();
+    }
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
+    }
+    state.cleanup_rpc_response_cache().await;
+}
+
+/// Update PR-related caches and detect abandoned PRs.
+///
+/// Updates: open PR owner cache, formatted PR data for RPC, CI-passed owner cache,
+/// PR break sessions. Also detects abandoned PRs (closed without merge) and cleans
+/// up persistent reviewer assignments for closed PRs.
+async fn update_pr_caches(
+    state: &DaemonState,
+    snap: &WorldSnapshot,
+    prs: &[serde_json::Value],
+    running_coworker_names: &HashSet<String>,
+    running_reviewer_session_ids: &HashSet<String>,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    // Cache open PR owners for reuse by get_coworkers_with_open_prs
+    {
+        let owners: HashSet<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
+            })
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_pr_owners = owners;
+    }
+
+    // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
+    {
+        let tasks = &snap.all_tasks;
+        let task_map: std::collections::HashMap<u64, String> = tasks
+            .iter()
+            .filter_map(|t| {
+                let id = t.id.parse::<u64>().ok()?;
+                Some((id, t.subject.clone()))
+            })
+            .collect();
+
+        let formatted_prs: Vec<serde_json::Value> = prs
+            .iter()
+            .map(|pr| {
+                let pf = PrFields::from_json(pr);
+                let status = format_pr_status_for_rpc(pr);
+                let task_id = crate::tasks::extract_task_id_from_pr_title(pf.title);
+                let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
+                serde_json::json!({
+                    "number": pf.number,
+                    "title": pf.title,
+                    "author": pf.author_login(),
+                    "headRefName": pf.head_ref,
+                    "isDraft": pf.is_draft,
+                    "status": status,
+                    "task_id": task_id,
+                    "task_name": task_name,
+                })
+            })
+            .collect();
+
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.open_prs_data = formatted_prs;
+    }
+
+    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
+    {
+        let ci_passed: HashSet<String> = prs
+            .iter()
+            .filter(|pr| all_ci_checks_passed(pr))
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
+            })
+            .collect();
+        let mut cache = state.pr_coworker_cache.write().unwrap();
+        cache.ci_passed_pr_owners = ci_passed;
+        cache.pr_poll_initialized = true;
+    }
+
+    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
+    {
+        let active_pr_coworkers: HashSet<String> = prs
+            .iter()
+            .filter_map(|pr| {
+                pr.get("headRefName")
+                    .and_then(|r| r.as_str())
+                    .and_then(|branch| {
+                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
+                    })
+            })
+            .collect();
+        let mut sessions = state.pr_break_sessions.write().unwrap();
+        let before = sessions.len();
+        sessions.retain(|name, _| active_pr_coworkers.contains(name));
+        let removed = before - sessions.len();
+        if removed > 0 {
+            info!(
+                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
+                removed
+            );
+        }
+    }
+
+    // Detect abandoned PRs (closed without merge) and reset associated tasks.
+    // This uses pure decision logic that takes only snapshot data and returns effects.
+    let open_pr_numbers: Vec<u64> = prs
+        .iter()
+        .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+        .collect();
+    effects.extend(detect_abandoned_pr_tasks(
+        snap,
+        &open_pr_numbers,
+        &state.repo_name,
+    ));
+
+    // Clean up persistent reviewer assignments for PRs that are no longer open.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_closed_prs(&open_pr_numbers);
+        ps.github
+            .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!("Failed to save daemon-state.json after cleanup: {}", e);
+        }
+    }
+
+    effects
+}
+
+/// Process per-PR issue detection and generate nudge effects.
+///
+/// For each non-draft PR: resolves the owner, detects actionable issues (merge
+/// conflicts, CI failures, review status), handles orphaned PRs, and generates
+/// nudge effects using the author-driven merge decision model.
+async fn process_pr_issue_nudges(
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for pr in prs {
+        let pf = PrFields::from_json(pr);
+
+        if pf.is_draft {
+            continue;
+        }
+
+        // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
+        let owner_opt = resolve_pr_owner(pf.number, pf.head_ref, snap);
+        let issues = detect_pr_issues(pr);
+
+        // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
+        if let Some(ref owner) = owner_opt {
+            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner)
+                || snap.worktree_branch_owners.contains_key(pf.head_ref);
+
+            if !has_active_worktree && !issues.is_empty() {
+                effects.extend(
+                    collect_orphaned_pr_effects(
+                        pf.number,
+                        pf.title,
+                        pf.head_ref,
+                        Some(owner),
+                        &issues,
+                        state,
+                    )
+                    .await,
+                );
+                continue;
+            }
+        }
+
+        // Handle PRs with no determinable owner that have critical issues
+        if owner_opt.is_none() && !issues.is_empty() {
+            effects.extend(
+                collect_orphaned_pr_effects(pf.number, pf.title, pf.head_ref, None, &issues, state)
+                    .await,
+            );
+            continue;
+        }
+
+        let owner = match owner_opt {
+            Some(o) => o,
+            None => continue,
+        };
+
+        for issue_type in issues {
+            let should_nudge = {
+                let tracker = state.pr_issue_tracker.lock().await;
+                tracker.should_nudge(pf.number, issue_type)
+            };
+
+            if !should_nudge {
+                continue;
+            }
+
+            use crate::rules::decide_pr_issue_action_with_handoff;
+
+            let review_content = match issue_type {
+                PrIssueType::ChangesRequested | PrIssueType::Approved => {
+                    fetch_review_content(pf.number).await
+                }
+                _ => None,
+            };
+
+            let message = format!(
+                "PR #{} ({}) - {}: {}{}",
+                pf.number,
+                truncate_str(pf.title, 40),
+                issue_type,
+                get_issue_action(issue_type),
+                review_content.as_deref().unwrap_or("")
+            );
+
+            let (mut pr_ctx, channel_lead_names) = {
+                let ps = state.persistent_state.lock().await;
+                (
+                    PrContext::from_persistent_state(&ps, pf.number),
+                    ps.channel_lead_names(),
+                )
+            };
+
+            pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
+
+            let action = decide_pr_issue_action_with_handoff(
+                &owner,
+                active_coworkers,
+                idle_coworkers,
+                state.is_at_dev_limit(&channel_lead_names),
+                pr_ctx.session_context.as_ref(),
+                &message,
+            );
+
+            effects.extend(pr_action_to_effects(
+                action, pf.number, pf.title, issue_type, state, &pr_ctx,
+            ));
+        }
+    }
+
+    effects
+}
+
+/// Update review status caches after processing PR issues.
+///
+/// Pre-collects review status, computes prs_needing_review count, and caches
+/// coworker names whose PRs have CI passed + review feedback.
+fn update_review_status_cache(
+    state: &DaemonState,
+    prs: &[serde_json::Value],
+    reviewed_prs: &HashSet<u64>,
+) {
+    let prs_needing_review: usize = prs
+        .iter()
+        .filter(|pr| {
+            let pf = PrFields::from_json(pr);
+            pf.number != 0
+                && !pf.is_draft
+                && pf.review_decision().is_empty()
+                && !reviewed_prs.contains(&pf.number)
+        })
+        .count();
+
+    let review_feedback: HashSet<String> = prs
+        .iter()
+        .filter(|pr| {
+            let pf = PrFields::from_json(pr);
+            all_ci_checks_passed(pr)
+                && reviewed_prs.contains(&pf.number)
+                && pf.review_decision() != "APPROVED"
+        })
+        .filter_map(|pr| {
+            pr.get("headRefName")
+                .and_then(|r| r.as_str())
+                .and_then(coworker_from_branch)
+        })
+        .collect();
+
+    let mut cache = state.pr_coworker_cache.write().unwrap();
+    cache.prs_needing_review = prs_needing_review;
+    cache.review_feedback_pr_owners = review_feedback;
+}
+
 /// Poll all open PRs and return effects for actionable issues.
 ///
 /// Fetches PR data from GitHub, reads tracker state to avoid duplicate nudges,
@@ -699,41 +1032,14 @@ pub(super) async fn poll_prs_for_issues(
 
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    // Cleanup old tracking entries, but preserve assignments for RUNNING coworkers
-    // so reviewers don't lose their PR tracking while actively reviewing.
-    // Using running_coworkers (not active_coworkers) ensures that idle/stopped
-    // reviewers have their assignments cleaned up, freeing slots for new reviews.
-    {
-        let mut tracker = state.pr_issue_tracker.lock().await;
-        tracker.cleanup();
-    }
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_expired_preserving(
-            &running_coworker_names,
-            Some(&running_reviewer_session_ids),
-        );
-        // Backfill reviewer_session_id for assignments created before the session
-        // started (optimistic assignment pattern: assign before spawn completes).
-        let reviewer_session_map: HashMap<String, String> = snap
-            .running_coworkers
-            .iter()
-            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
-            .filter_map(|c| {
-                c.session_id
-                    .as_ref()
-                    .map(|sid| (c.name.clone(), sid.clone()))
-            })
-            .collect();
-        ps.github
-            .backfill_reviewer_session_ids(&reviewer_session_map);
-        ps.github.cleanup_stale_webhook_events();
-    }
-    {
-        let mut cooldowns = state.cooldowns.lock().unwrap();
-        cooldowns.cleanup(Duration::from_secs(7200)); // 2 hours
-    }
-    state.cleanup_rpc_response_cache().await;
+    cleanup_pr_tracking_state(
+        state,
+        snap,
+        &running_coworker_names,
+        &running_reviewer_session_ids,
+        &review_branch_owners,
+    )
+    .await;
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
     // open PRs, but verify via the state field to guard against stale/cached results)
@@ -745,251 +1051,20 @@ pub(super) async fn poll_prs_for_issues(
         })
         .collect();
 
-    // Cache open PR owners for reuse by get_coworkers_with_open_prs
-    {
-        let owners: HashSet<String> = prs
-            .iter()
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.open_pr_owners = owners;
-    }
-
-    // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
-    // Format the PR data similarly to get_open_prs() in rpc.rs, including task enrichment.
-    {
-        let tasks = &snap.all_tasks;
-        let task_map: std::collections::HashMap<u64, String> = tasks
-            .iter()
-            .filter_map(|t| {
-                let id = t.id.parse::<u64>().ok()?;
-                Some((id, t.subject.clone()))
-            })
-            .collect();
-
-        let formatted_prs: Vec<serde_json::Value> = prs
-            .iter()
-            .map(|pr| {
-                let pf = PrFields::from_json(pr);
-                let status = format_pr_status_for_rpc(pr);
-                let task_id = crate::tasks::extract_task_id_from_pr_title(pf.title);
-                let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
-                serde_json::json!({
-                    "number": pf.number,
-                    "title": pf.title,
-                    "author": pf.author_login(),
-                    "headRefName": pf.head_ref,
-                    "isDraft": pf.is_draft,
-                    "status": status,
-                    "task_id": task_id,
-                    "task_name": task_name,
-                })
-            })
-            .collect();
-
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.open_prs_data = formatted_prs;
-    }
-
-    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
-    {
-        let ci_passed: HashSet<String> = prs
-            .iter()
-            .filter(|pr| all_ci_checks_passed(pr))
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.ci_passed_pr_owners = ci_passed;
-        // Mark PR poll as initialized so orphan detection knows we have PR data.
-        // This prevents false positive orphan warnings during daemon startup when
-        // orphan checks run before the first PR poll completes.
-        cache.pr_poll_initialized = true;
-    }
-
-    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
-    {
-        let active_pr_coworkers: HashSet<String> = prs
-            .iter()
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
-            })
-            .collect();
-        let mut sessions = state.pr_break_sessions.write().unwrap();
-        let before = sessions.len();
-        sessions.retain(|name, _| active_pr_coworkers.contains(name));
-        let removed = before - sessions.len();
-        if removed > 0 {
-            info!(
-                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
-                removed
-            );
-        }
-    }
-
-    // Detect abandoned PRs (closed without merge) and reset associated tasks.
-    // This uses pure decision logic that takes only snapshot data and returns effects.
-    let open_pr_numbers: Vec<u64> = prs
-        .iter()
-        .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
-        .collect();
-    let abandoned_pr_effects = detect_abandoned_pr_tasks(snap, &open_pr_numbers, &state.repo_name);
-    effects.extend(abandoned_pr_effects);
-
-    // Clean up persistent reviewer assignments for PRs that are no longer open.
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github.cleanup_expired_preserving(
+    effects.extend(
+        update_pr_caches(
+            state,
+            snap,
+            &prs,
             &running_coworker_names,
-            Some(&running_reviewer_session_ids),
-        );
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!("Failed to save daemon-state.json after cleanup: {}", e);
-        }
-    }
+            &running_reviewer_session_ids,
+        )
+        .await,
+    );
 
-    for pr in &prs {
-        let pf = PrFields::from_json(pr);
-
-        // Skip draft PRs — they don't need orphaned PR alerts or issue nudges
-        if pf.is_draft {
-            continue;
-        }
-
-        // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
-        let owner_opt = resolve_pr_owner(pf.number, pf.head_ref, snap);
-
-        // Check for actionable issues
-        let issues = detect_pr_issues(pr);
-
-        // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
-        // coworker_from_branch_with_map returns Some("york") for "york/fix-auth" even if
-        // york has no worktree, so we need to check if the owner is actually active.
-        if let Some(ref owner) = owner_opt {
-            // Check if this owner has an active worktree (i.e., is actually working).
-            // When session-based resolution returns a different name than the branch prefix
-            // (e.g., session says "madison" but branch is "lexington/fix-auth"), check the
-            // branch registration directly in addition to the resolved name. This prevents
-            // false orphan detection when a coworker was reassigned mid-workflow.
-            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner)
-                || snap.worktree_branch_owners.contains_key(pf.head_ref);
-
-            // If the owner has no active worktree, treat this as an orphaned PR
-            if !has_active_worktree && !issues.is_empty() {
-                effects.extend(
-                    collect_orphaned_pr_effects(
-                        pf.number,
-                        pf.title,
-                        pf.head_ref,
-                        Some(owner),
-                        &issues,
-                        state,
-                    )
-                    .await,
-                );
-                // Continue to skip the normal PR processing for this orphaned PR
-                continue;
-            }
-        }
-
-        // Handle PRs with no determinable owner (not in worktree_branch_owners and
-        // doesn't match coworker/branch pattern) that have critical issues
-        if owner_opt.is_none() && !issues.is_empty() {
-            effects.extend(
-                collect_orphaned_pr_effects(pf.number, pf.title, pf.head_ref, None, &issues, state)
-                    .await,
-            );
-            // Continue to skip normal PR processing for this fully orphaned PR
-            continue;
-        }
-
-        // Skip PRs that don't have a coworker owner (e.g., dependabot, feature branches)
-        let owner = match owner_opt {
-            Some(o) => o,
-            None => continue,
-        };
-
-        for issue_type in issues {
-            // Check if we should nudge for this issue
-            let should_nudge = {
-                let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pf.number, issue_type)
-            };
-
-            if !should_nudge {
-                continue;
-            }
-
-            // Author-driven merge decisions: Instead of auto-merging approved PRs,
-            // nudge the author so THEY can decide to merge. This keeps merge decisions
-            // with the agent who has full context of the PR and review feedback.
-            use crate::rules::decide_pr_issue_action_with_handoff;
-
-            // Embed review content for issue types that involve review feedback.
-            // ChangesRequested/Approved carry a formal review; the coworker needs
-            // to see what was said without running extra `gh` commands.
-            let review_content = match issue_type {
-                PrIssueType::ChangesRequested | PrIssueType::Approved => {
-                    fetch_review_content(pf.number).await
-                }
-                _ => None,
-            };
-
-            // Format the nudge message
-            let message = format!(
-                "PR #{} ({}) - {}: {}{}",
-                pf.number,
-                truncate_str(pf.title, 40),
-                issue_type,
-                get_issue_action(issue_type),
-                review_content.as_deref().unwrap_or("")
-            );
-
-            // Extract all decision context from persistent state in one lock
-            let (mut pr_ctx, channel_lead_names) = {
-                let ps = state.persistent_state.lock().await;
-                (
-                    PrContext::from_persistent_state(&ps, pf.number),
-                    ps.channel_lead_names(),
-                )
-            };
-
-            // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
-            // Catches cases where the reviewer assignment is cleared but the coworker
-            // session is still in Reviewing phase.
-            pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
-
-            // Decide action using pure decision function with handoff support
-            let action = decide_pr_issue_action_with_handoff(
-                &owner,
-                &active_coworkers,
-                &idle_coworkers,
-                state.is_at_dev_limit(&channel_lead_names),
-                pr_ctx.session_context.as_ref(),
-                &message,
-            );
-
-            effects.extend(pr_action_to_effects(
-                action, pf.number, pf.title, issue_type, state, &pr_ctx,
-            ));
-        }
-    }
+    effects.extend(
+        process_pr_issue_nudges(snap, state, &prs, &active_coworkers, &idle_coworkers).await,
+    );
 
     // Polling fallback for review comment notifications (when webhooks are degraded)
     effects.extend(
@@ -1020,41 +1095,7 @@ pub(super) async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
 
-    // Compute prs_needing_review and update cache (must happen here, not in effect
-    // collection functions which should be pure). This value is used by task dispatch
-    // to prioritize PR reviews over new task pickup.
-    let prs_needing_review: usize = prs
-        .iter()
-        .filter(|pr| {
-            let pf = PrFields::from_json(pr);
-            // PR needs review if it's not a draft, has no formal review, and no Claude comment review
-            pf.number != 0
-                && !pf.is_draft
-                && pf.review_decision().is_empty()
-                && !reviewed_prs.contains(&pf.number)
-        })
-        .count();
-    // Cache coworker names whose PRs have CI passed + review feedback (for idle shutdown protection).
-    // This mirrors the criteria in collect_green_with_feedback_effects: CI green, reviewed, not approved.
-    {
-        let review_feedback: HashSet<String> = prs
-            .iter()
-            .filter(|pr| {
-                let pf = PrFields::from_json(pr);
-                all_ci_checks_passed(pr)
-                    && reviewed_prs.contains(&pf.number)
-                    && pf.review_decision() != "APPROVED"
-            })
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(coworker_from_branch)
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.prs_needing_review = prs_needing_review;
-        cache.review_feedback_pr_owners = review_feedback;
-    }
+    update_review_status_cache(state, &prs, &reviewed_prs);
 
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
@@ -1423,6 +1464,23 @@ fn pr_action_to_effects(
     effects
 }
 
+/// Pre-fetched data for stuck condition evaluation.
+///
+/// Bundles async state lookups done once before the per-PR loop, so individual
+/// scenario functions can be synchronous.
+struct StuckEvalContext<'a> {
+    review_mode: crate::config::ReviewMode,
+    branch_owners: &'a HashMap<String, String>,
+    channel_lead_names: HashSet<String>,
+    has_available_slots: bool,
+    running_coworkers: Vec<crate::coworker::Coworker>,
+    repo_name: &'a str,
+    /// PR numbers that have a reviewer assigned in persistent state.
+    assigned_prs: HashSet<u64>,
+    /// PR numbers with an active reviewer who hasn't finished their cached review.
+    active_reviewer_prs: HashSet<u64>,
+}
+
 /// Check for stuck conditions and return effects to nudge the lead.
 ///
 /// This function runs during each PR poll cycle and checks for:
@@ -1440,7 +1498,6 @@ fn pr_action_to_effects(
 /// The `reviewed_prs` parameter contains PR numbers that have completed reviews
 /// (comment-based or formal), pre-collected before this function to keep
 /// decision logic free of async API calls.
-///
 async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
@@ -1453,317 +1510,83 @@ async fn collect_stuck_condition_effects(
     tracker.cleanup();
 
     let now = Instant::now();
-
-    // Track how many nudges we send this cycle (for logging)
     let mut nudge_count = 0;
 
-    // --- Scenario 1: PR open with no review for N minutes ---
+    // Pre-fetch async data so per-PR scenario functions can be synchronous.
+    let ctx = {
+        let ps = state.persistent_state.lock().await;
+        let assigned: HashSet<u64> = prs
+            .iter()
+            .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+            .filter(|&n| ps.github.is_assigned(n))
+            .collect();
+        let active_reviewers: HashSet<u64> = prs
+            .iter()
+            .filter_map(|pr| {
+                let n = pr.get("number").and_then(|n| n.as_u64())?;
+                if ps.github.get_reviewer(n).is_some() && !ps.github.has_cached_review(n) {
+                    Some(n)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let channel_lead_names = ps.channel_lead_names();
+        let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
+        StuckEvalContext {
+            review_mode,
+            branch_owners,
+            channel_lead_names,
+            has_available_slots,
+            running_coworkers: state.coworkers.list_running(),
+            repo_name: &state.repo_name,
+            assigned_prs: assigned,
+            active_reviewer_prs: active_reviewers,
+        }
+    };
+
     for pr in prs {
-        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-        if pr_number == 0 {
-            continue;
-        }
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
-        if is_draft {
+        let pf = PrFields::from_json(pr);
+        if pf.number == 0 || pf.is_draft {
             continue;
         }
 
-        let review_decision = pr
-            .get("reviewDecision")
-            .and_then(|r| r.as_str())
-            .unwrap_or("");
-
+        let review_decision = pf.review_decision();
         let age_secs = get_pr_age_secs(pr).unwrap_or(0);
-        let pr_id = pr_number.to_string();
+        let pr_id = pf.number.to_string();
+        let has_completed_review = reviewed_prs.contains(&pf.number);
 
-        // Check for completed review coverage from pre-collected cache.
-        // This includes comment-based coworker reviews and formal GitHub reviews.
-        // Uses pre-collected
-        // data to keep decision logic free of async API calls.
-        let has_completed_review = reviewed_prs.contains(&pr_number);
+        nudge_count += no_review_scenario(
+            &mut effects,
+            &mut tracker,
+            &pf,
+            review_decision,
+            age_secs,
+            has_completed_review,
+            &ctx,
+        );
 
-        // No review decision at all, no completed review yet, and PR is old enough
-        if review_decision.is_empty()
-            && !has_completed_review
-            && age_secs >= STUCK_NO_REVIEW_DURATION.as_secs()
-        {
-            tracker.track(&pr_id, StuckConditionType::NoReview);
-            if tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
-                let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
-                let nudge = if review_mode == crate::config::ReviewMode::GithubApp {
-                    if should_escalate(prior_nudges) {
-                        format!(
-                            "@ops PR #{} ({}) has been open for {} minutes with no review while execution.review_mode=github_app. Check GitHub App review delivery/config.",
-                            pr_number,
-                            truncate_str(title, 40),
-                            age_secs / 60,
-                        )
-                    } else {
-                        format!(
-                            "@ops PR #{} ({}) has been open for {} minutes and is still waiting for GitHub App review (execution.review_mode=github_app).",
-                            pr_number,
-                            truncate_str(title, 40),
-                            age_secs / 60,
-                        )
-                    }
-                } else {
-                    // Check if a reviewer is assigned (daemon tried to self-heal)
-                    let (is_assigned, channel_lead_names) = {
-                        let ps = state.persistent_state.lock().await;
-                        let assigned = ps.github.is_assigned(pr_number);
-                        (assigned, ps.channel_lead_names())
-                    };
-                    let has_available_slots =
-                        state.has_available_coworker_slot(&channel_lead_names);
+        nudge_count += unresolved_feedback_scenario(
+            &mut effects,
+            &mut tracker,
+            &pf,
+            &pr_id,
+            review_decision,
+            now,
+        );
 
-                    if should_escalate(prior_nudges) {
-                        // Escalation: this has persisted too long, suggest investigation
-                        let context = if is_assigned && has_available_slots {
-                            "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
-                        } else if !is_assigned && has_available_slots {
-                            "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
-                        } else if is_assigned {
-                            "A reviewer was assigned but hasn't posted a review.".to_string()
-                        } else {
-                            let head_ref =
-                                pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                            let pr_author =
-                                coworker_from_branch_with_map(head_ref, Some(branch_owners));
-                            let running = state.coworkers.list_running();
-                            let mut busy: Vec<String> = running
-                                .iter()
-                                .filter(|cw| {
-                                    is_non_lead_coworker(
-                                        &cw.name,
-                                        &state.repo_name,
-                                        &channel_lead_names,
-                                    )
-                                })
-                                .map(|cw| cw.name.clone())
-                                .collect();
-                            busy.sort();
-                            format!(
-                                "No reviewer could be assigned — {}",
-                                format_no_reviewer_reason(&busy, pr_author.as_deref())
-                            )
-                        };
-                        format!(
-                            "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
-                            pr_number,
-                            truncate_str(title, 40),
-                            age_secs / 60,
-                            context,
-                        )
-                    } else {
-                        // Normal warning
-                        let context = if is_assigned {
-                            "I assigned a reviewer but no review has been posted yet".to_string()
-                        } else {
-                            let head_ref =
-                                pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-                            let pr_author =
-                                coworker_from_branch_with_map(head_ref, Some(branch_owners));
-                            let running = state.coworkers.list_running();
-                            let mut busy: Vec<String> = running
-                                .iter()
-                                .filter(|cw| {
-                                    is_non_lead_coworker(
-                                        &cw.name,
-                                        &state.repo_name,
-                                        &channel_lead_names,
-                                    )
-                                })
-                                .map(|cw| cw.name.clone())
-                                .collect();
-                            busy.sort();
-                            format!(
-                                "I couldn't assign a reviewer — {}",
-                                format_no_reviewer_reason(&busy, pr_author.as_deref())
-                            )
-                        };
-                        format!(
-                            "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
-                            pr_number,
-                            truncate_str(title, 40),
-                            age_secs / 60,
-                            context,
-                        )
-                    }
-                };
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear(&pr_id, StuckConditionType::NoReview);
-        }
-
-        // --- Scenario 2: Unresolved feedback (changes requested) for N minutes ---
-        if review_decision == "CHANGES_REQUESTED" {
-            let first_detected = tracker.track(&pr_id, StuckConditionType::UnresolvedFeedback);
-            let stuck_duration = now.duration_since(first_detected);
-
-            if stuck_duration >= STUCK_UNRESOLVED_FEEDBACK_DURATION
-                && tracker.should_nudge(&pr_id, StuckConditionType::UnresolvedFeedback)
-            {
-                let prior_nudges =
-                    tracker.nudge_count(&pr_id, StuckConditionType::UnresolvedFeedback);
-
-                let nudge = if should_escalate(prior_nudges) {
-                    format!(
-                        "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
-                        pr_number,
-                        truncate_str(title, 40),
-                        stuck_duration.as_secs() / 60,
-                    )
-                } else {
-                    format!(
-                        "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
-                        pr_number,
-                        truncate_str(title, 40),
-                        stuck_duration.as_secs() / 60,
-                    )
-                };
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge(&pr_id, StuckConditionType::UnresolvedFeedback);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear(&pr_id, StuckConditionType::UnresolvedFeedback);
-        }
-
-        // --- Scenario 3: Approved + CI green but not merging ---
-        if is_auto_mergeable(pr) {
-            // Gate: don't auto-merge while a daemon-assigned reviewer is still working.
-            // Mirrors the pre-gate in handle_pr_merge (rpc_prs.rs) that prevents the
-            // PR #1624 incident. Uses get_reviewer() (raw presence, no timeout) with
-            // a bypass when the review is already cached as complete.
-            let has_active_reviewer = {
-                let ps = state.persistent_state.lock().await;
-                ps.github.get_reviewer(pr_number).is_some()
-                    && !ps.github.has_cached_review(pr_number)
-            };
-
-            if !has_active_reviewer {
-                // Enable GitHub auto-merge on first detection (idempotent if already enabled).
-                // Uses a separate AutoMerge condition so the delayed MergeReady nudge
-                // still fires if the PR doesn't actually merge.
-                tracker.track(&pr_id, StuckConditionType::AutoMerge);
-                if tracker.should_nudge(&pr_id, StuckConditionType::AutoMerge) {
-                    effects.push(Effect::AutoMergePr {
-                        pr_number,
-                        title: title.to_string(),
-                    });
-                    tracker.record_nudge(&pr_id, StuckConditionType::AutoMerge);
-                }
-            }
-
-            let first_detected = tracker.track(&pr_id, StuckConditionType::MergeReady);
-            let stuck_duration = now.duration_since(first_detected);
-
-            if stuck_duration >= STUCK_MERGE_READY_DURATION
-                && tracker.should_nudge(&pr_id, StuckConditionType::MergeReady)
-            {
-                let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::MergeReady);
-
-                let nudge = if should_escalate(prior_nudges) {
-                    format!(
-                        "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
-                        pr_number,
-                        truncate_str(title, 40),
-                        stuck_duration.as_secs() / 60,
-                    )
-                } else {
-                    format!(
-                        "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
-                        pr_number,
-                        truncate_str(title, 40),
-                        stuck_duration.as_secs() / 60,
-                    )
-                };
-                effects.extend(stuck_nudge_effects(&nudge));
-                tracker.record_nudge(&pr_id, StuckConditionType::MergeReady);
-                nudge_count += 1;
-            }
-        } else {
-            tracker.clear(&pr_id, StuckConditionType::MergeReady);
-            tracker.clear(&pr_id, StuckConditionType::AutoMerge);
-        }
+        nudge_count += merge_ready_scenario(
+            &mut effects,
+            &mut tracker,
+            &pf,
+            &pr_id,
+            pr,
+            ctx.active_reviewer_prs.contains(&pf.number),
+            now,
+        );
     }
 
-    // --- Scenario 4: Silent coworker (claimed task, no channel activity) ---
-    {
-        let busy_coworkers = state.get_all_busy_coworkers();
-        let records = state.coworker_records.read().await;
-
-        for name in &busy_coworkers {
-            let last_activity: Option<Instant> =
-                records.get(name.as_str()).and_then(|r| r.last_activity);
-            let is_silent = match last_activity {
-                Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
-                // No activity recorded — coworker hasn't posted to channel yet.
-                // They're still initializing (loading plugins, restoring session, etc.).
-                // Only start the silence clock after their first channel message.
-                None => false,
-            };
-
-            if is_silent {
-                tracker.track(name, StuckConditionType::SilentCoworker);
-                if tracker.should_nudge(name, StuckConditionType::SilentCoworker) {
-                    let task_info = crate::tasks::get_in_progress_tasks_with_subjects()
-                        .into_iter()
-                        .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
-                        .map(|(id, subject, _)| {
-                            format!("task !{} ({})", id, truncate_str(&subject, 30))
-                        })
-                        .unwrap_or_else(|| "their task".to_string());
-
-                    let prior_nudges =
-                        tracker.nudge_count(name, StuckConditionType::SilentCoworker);
-
-                    if prior_nudges == 0 {
-                        // First nudge: ask the coworker directly before escalating
-                        let nudge_msg = format!(
-                            "Status check — you've been quiet on {} for over {} minutes. \
-                             Are you stuck or still working?",
-                            task_info,
-                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
-                        );
-                        effects.push(Effect::nudge_session(
-                            state.session_id_for_name(name),
-                            nudge_msg,
-                        ));
-                        // Post to channel so it's visible
-                        effects.push(Effect::PostSystemMessage {
-                            message: format!(
-                                "⚠️ Nudging {} — silent on {} for over {} minutes",
-                                name,
-                                task_info,
-                                STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
-                            ),
-                            channel: Some(OPS_CHANNEL.to_string()),
-                        });
-                    } else {
-                        // Escalation: coworker didn't respond, notify ops
-                        let nudge = format!(
-                            "@ops {} has been silent on {} for over {} minutes \
-                             (nudged {} previously with no response)",
-                            name,
-                            task_info,
-                            STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
-                            name,
-                        );
-                        effects.extend(stuck_nudge_effects(&nudge));
-                    }
-                    tracker.record_nudge(name, StuckConditionType::SilentCoworker);
-                    nudge_count += 1;
-                }
-            } else {
-                tracker.clear(name, StuckConditionType::SilentCoworker);
-            }
-        }
-    }
+    nudge_count += silent_coworker_scenario(&mut effects, &mut tracker, state).await;
 
     if nudge_count > 0 {
         info!(
@@ -1773,6 +1596,321 @@ async fn collect_stuck_condition_effects(
     }
 
     effects
+}
+
+/// Scenario 1: PR open with no review for N minutes.
+///
+/// Tracks PRs that have no formal review decision and no completed comment-based
+/// review. After STUCK_NO_REVIEW_DURATION, nudges ops with context about whether
+/// a reviewer was assigned and whether coworker slots are available.
+fn no_review_scenario(
+    effects: &mut Vec<Effect>,
+    tracker: &mut super::trackers::StuckConditionTracker,
+    pf: &PrFields,
+    review_decision: &str,
+    age_secs: u64,
+    has_completed_review: bool,
+    ctx: &StuckEvalContext,
+) -> u32 {
+    let pr_id = pf.number.to_string();
+
+    if !review_decision.is_empty()
+        || has_completed_review
+        || age_secs < STUCK_NO_REVIEW_DURATION.as_secs()
+    {
+        tracker.clear(&pr_id, StuckConditionType::NoReview);
+        return 0;
+    }
+
+    tracker.track(&pr_id, StuckConditionType::NoReview);
+    if !tracker.should_nudge(&pr_id, StuckConditionType::NoReview) {
+        return 0;
+    }
+
+    let prior_nudges = tracker.nudge_count(&pr_id, StuckConditionType::NoReview);
+
+    let nudge = if ctx.review_mode == crate::config::ReviewMode::GithubApp {
+        no_review_nudge_github_app(pf, age_secs, prior_nudges)
+    } else {
+        no_review_nudge_self_review(pf, age_secs, prior_nudges, ctx)
+    };
+
+    effects.extend(stuck_nudge_effects(&nudge));
+    tracker.record_nudge(&pr_id, StuckConditionType::NoReview);
+    1
+}
+
+fn no_review_nudge_github_app(pf: &PrFields, age_secs: u64, prior_nudges: u32) -> String {
+    if should_escalate(prior_nudges) {
+        format!(
+            "@ops PR #{} ({}) has been open for {} minutes with no review while execution.review_mode=github_app. Check GitHub App review delivery/config.",
+            pf.number,
+            truncate_str(pf.title, 40),
+            age_secs / 60,
+        )
+    } else {
+        format!(
+            "@ops PR #{} ({}) has been open for {} minutes and is still waiting for GitHub App review (execution.review_mode=github_app).",
+            pf.number,
+            truncate_str(pf.title, 40),
+            age_secs / 60,
+        )
+    }
+}
+
+fn no_review_nudge_self_review(
+    pf: &PrFields,
+    age_secs: u64,
+    prior_nudges: u32,
+    ctx: &StuckEvalContext,
+) -> String {
+    let is_assigned = ctx.assigned_prs.contains(&pf.number);
+
+    let build_busy_reason = || {
+        let pr_author = coworker_from_branch_with_map(pf.head_ref, Some(ctx.branch_owners));
+        let mut busy: Vec<String> = ctx
+            .running_coworkers
+            .iter()
+            .filter(|cw| is_non_lead_coworker(&cw.name, ctx.repo_name, &ctx.channel_lead_names))
+            .map(|cw| cw.name.clone())
+            .collect();
+        busy.sort();
+        format_no_reviewer_reason(&busy, pr_author.as_deref())
+    };
+
+    if should_escalate(prior_nudges) {
+        let context = if is_assigned && ctx.has_available_slots {
+            "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
+        } else if !is_assigned && ctx.has_available_slots {
+            "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
+        } else if is_assigned {
+            "A reviewer was assigned but hasn't posted a review.".to_string()
+        } else {
+            format!("No reviewer could be assigned — {}", build_busy_reason())
+        };
+        format!(
+            "@ops PR #{} ({}) has been stuck for {} minutes with no review — {} Consider running `midtown e2e capture` to debug.",
+            pf.number,
+            truncate_str(pf.title, 40),
+            age_secs / 60,
+            context,
+        )
+    } else {
+        let context = if is_assigned {
+            "I assigned a reviewer but no review has been posted yet".to_string()
+        } else {
+            format!("I couldn't assign a reviewer — {}", build_busy_reason())
+        };
+        format!(
+            "@ops PR #{} ({}) has been open for {} minutes with no review — {}",
+            pf.number,
+            truncate_str(pf.title, 40),
+            age_secs / 60,
+            context,
+        )
+    }
+}
+
+/// Scenario 2: Unresolved feedback (changes requested) for N minutes.
+///
+/// Tracks PRs with CHANGES_REQUESTED review decision. After
+/// STUCK_UNRESOLVED_FEEDBACK_DURATION, nudges ops that the author hasn't
+/// pushed changes in response to review feedback.
+fn unresolved_feedback_scenario(
+    effects: &mut Vec<Effect>,
+    tracker: &mut super::trackers::StuckConditionTracker,
+    pf: &PrFields,
+    pr_id: &str,
+    review_decision: &str,
+    now: Instant,
+) -> u32 {
+    if review_decision != "CHANGES_REQUESTED" {
+        tracker.clear(pr_id, StuckConditionType::UnresolvedFeedback);
+        return 0;
+    }
+
+    let first_detected = tracker.track(pr_id, StuckConditionType::UnresolvedFeedback);
+    let stuck_duration = now.duration_since(first_detected);
+
+    if stuck_duration < STUCK_UNRESOLVED_FEEDBACK_DURATION
+        || !tracker.should_nudge(pr_id, StuckConditionType::UnresolvedFeedback)
+    {
+        return 0;
+    }
+
+    let prior_nudges = tracker.nudge_count(pr_id, StuckConditionType::UnresolvedFeedback);
+
+    let nudge = if should_escalate(prior_nudges) {
+        format!(
+            "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't responded despite repeated nudges. The coworker may be stuck or the task may need reassignment.",
+            pf.number,
+            truncate_str(pf.title, 40),
+            stuck_duration.as_secs() / 60,
+        )
+    } else {
+        format!(
+            "@ops PR #{} ({}) has had unresolved review feedback for {} minutes — the author hasn't pushed new changes",
+            pf.number,
+            truncate_str(pf.title, 40),
+            stuck_duration.as_secs() / 60,
+        )
+    };
+
+    effects.extend(stuck_nudge_effects(&nudge));
+    tracker.record_nudge(pr_id, StuckConditionType::UnresolvedFeedback);
+    1
+}
+
+/// Scenario 3: Approved + CI green but not merging.
+///
+/// When a PR is auto-mergeable (approved + CI green), enables GitHub auto-merge
+/// on first detection. If the PR still hasn't merged after STUCK_MERGE_READY_DURATION,
+/// nudges ops. Gates auto-merge behind active reviewer check to prevent merging
+/// while a review is in progress.
+fn merge_ready_scenario(
+    effects: &mut Vec<Effect>,
+    tracker: &mut super::trackers::StuckConditionTracker,
+    pf: &PrFields,
+    pr_id: &str,
+    pr: &serde_json::Value,
+    has_active_reviewer: bool,
+    now: Instant,
+) -> u32 {
+    if !is_auto_mergeable(pr) {
+        tracker.clear(pr_id, StuckConditionType::MergeReady);
+        tracker.clear(pr_id, StuckConditionType::AutoMerge);
+        return 0;
+    }
+
+    // Gate: don't auto-merge while a daemon-assigned reviewer is still working.
+    // Mirrors the pre-gate in handle_pr_merge (rpc_prs.rs) that prevents the
+    // PR #1624 incident. Uses get_reviewer() (raw presence, no timeout) with
+    // a bypass when the review is already cached as complete.
+    if !has_active_reviewer {
+        tracker.track(pr_id, StuckConditionType::AutoMerge);
+        if tracker.should_nudge(pr_id, StuckConditionType::AutoMerge) {
+            effects.push(Effect::AutoMergePr {
+                pr_number: pf.number,
+                title: pf.title.to_string(),
+            });
+            tracker.record_nudge(pr_id, StuckConditionType::AutoMerge);
+        }
+    }
+
+    let first_detected = tracker.track(pr_id, StuckConditionType::MergeReady);
+    let stuck_duration = now.duration_since(first_detected);
+
+    if stuck_duration < STUCK_MERGE_READY_DURATION
+        || !tracker.should_nudge(pr_id, StuckConditionType::MergeReady)
+    {
+        return 0;
+    }
+
+    let prior_nudges = tracker.nudge_count(pr_id, StuckConditionType::MergeReady);
+
+    let nudge = if should_escalate(prior_nudges) {
+        format!(
+            "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — the author isn't responding to merge nudges. Consider merging manually or investigating the coworker.",
+            pf.number,
+            truncate_str(pf.title, 40),
+            stuck_duration.as_secs() / 60,
+        )
+    } else {
+        format!(
+            "@ops PR #{} ({}) is approved and CI is green but hasn't merged after {} minutes — author may need a nudge to merge",
+            pf.number,
+            truncate_str(pf.title, 40),
+            stuck_duration.as_secs() / 60,
+        )
+    };
+
+    effects.extend(stuck_nudge_effects(&nudge));
+    tracker.record_nudge(pr_id, StuckConditionType::MergeReady);
+    1
+}
+
+/// Scenario 4: Silent coworker (claimed task, no channel activity).
+///
+/// Checks busy coworkers for extended silence. First nudge asks the coworker
+/// directly; subsequent nudges escalate to ops. Only starts the silence clock
+/// after a coworker's first channel message (to avoid false positives during
+/// initialization).
+async fn silent_coworker_scenario(
+    effects: &mut Vec<Effect>,
+    tracker: &mut super::trackers::StuckConditionTracker,
+    state: &DaemonState,
+) -> u32 {
+    let busy_coworkers = state.get_all_busy_coworkers();
+    let records = state.coworker_records.read().await;
+    let mut nudge_count = 0;
+
+    for name in &busy_coworkers {
+        let last_activity: Option<Instant> =
+            records.get(name.as_str()).and_then(|r| r.last_activity);
+        let is_silent = match last_activity {
+            Some(last) => last.elapsed() >= STUCK_SILENT_COWORKER_DURATION,
+            // No activity recorded — coworker hasn't posted to channel yet.
+            // They're still initializing (loading plugins, restoring session, etc.).
+            // Only start the silence clock after their first channel message.
+            None => false,
+        };
+
+        if !is_silent {
+            tracker.clear(name, StuckConditionType::SilentCoworker);
+            continue;
+        }
+
+        tracker.track(name, StuckConditionType::SilentCoworker);
+        if !tracker.should_nudge(name, StuckConditionType::SilentCoworker) {
+            continue;
+        }
+
+        let task_info = crate::tasks::get_in_progress_tasks_with_subjects()
+            .into_iter()
+            .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
+            .map(|(id, subject, _)| format!("task !{} ({})", id, truncate_str(&subject, 30)))
+            .unwrap_or_else(|| "their task".to_string());
+
+        let prior_nudges = tracker.nudge_count(name, StuckConditionType::SilentCoworker);
+
+        if prior_nudges == 0 {
+            // First nudge: ask the coworker directly before escalating
+            let nudge_msg = format!(
+                "Status check — you've been quiet on {} for over {} minutes. \
+                 Are you stuck or still working?",
+                task_info,
+                STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+            );
+            effects.push(Effect::nudge_session(
+                state.session_id_for_name(name),
+                nudge_msg,
+            ));
+            effects.push(Effect::PostSystemMessage {
+                message: format!(
+                    "⚠️ Nudging {} — silent on {} for over {} minutes",
+                    name,
+                    task_info,
+                    STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                ),
+                channel: Some(OPS_CHANNEL.to_string()),
+            });
+        } else {
+            // Escalation: coworker didn't respond, notify ops
+            let nudge = format!(
+                "@ops {} has been silent on {} for over {} minutes \
+                 (nudged {} previously with no response)",
+                name,
+                task_info,
+                STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+                name,
+            );
+            effects.extend(stuck_nudge_effects(&nudge));
+        }
+        tracker.record_nudge(name, StuckConditionType::SilentCoworker);
+        nudge_count += 1;
+    }
+
+    nudge_count
 }
 
 /// Determine if a stuck condition should escalate based on nudge count.
