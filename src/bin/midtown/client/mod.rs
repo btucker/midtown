@@ -199,12 +199,15 @@ impl DaemonClient {
         self.channel_post_as(message, &from, channel, None)
     }
 
-    /// Post a message threaded to a task's announcement message.
+    /// Post a message threaded to a task's thread.
     ///
-    /// Resolves the task's announcement message ID via `task.metadata`, then
-    /// posts as a thread reply. Returns an error if the task is not found
-    /// (daemon returns RPC error) or if the task has no announcement message
-    /// (e.g. created before threading was added).
+    /// Resolves the task's thread parent via `task.metadata`, preferring
+    /// `thread_id` (the conversation thread root) over `message_id` (the
+    /// announcement message). When a task was created with `--thread-id`,
+    /// the announcement is a reply within that thread, so using `message_id`
+    /// would create nested replies instead of siblings. Falls back to
+    /// `message_id` for tasks created without `--thread-id` (where both
+    /// are equal). Returns an error if neither is available.
     pub fn channel_post_for_task(
         &self,
         message: &str,
@@ -212,12 +215,16 @@ impl DaemonClient {
         task_id: &str,
     ) -> Result<Response, String> {
         let metadata = self.task_metadata(task_id)?;
+        // Prefer thread_id (conversation root) over message_id (announcement).
+        // When --thread-id was used, message_id points to a reply within the
+        // thread, so using it as thread_parent_id would nest replies incorrectly.
         let thread_parent_id = metadata
-            .get("message_id")
+            .get("thread_id")
             .and_then(|v| v.as_str())
+            .or_else(|| metadata.get("message_id").and_then(|v| v.as_str()))
             .ok_or_else(|| {
                 format!(
-                    "Task !{} has no announcement message (may have been created before threading was added)",
+                    "Task !{} has no thread or announcement message (may have been created before threading was added)",
                     task_id
                 )
             })?
