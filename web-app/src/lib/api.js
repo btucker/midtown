@@ -889,7 +889,10 @@ export async function fetchThread(channelName, parentMessageId) {
 }
 
 // Open a thread panel for the given parent message
-export function openThread(parentMessage, channelName) {
+// Open a thread panel for the given parent message.
+// Pass { pushState: false } during deep-link initialization to avoid
+// pushing a history entry that replaceNavState would immediately replace.
+export function openThread(parentMessage, channelName, { pushState = true } = {}) {
   // Find any tasks associated with this thread's parent message.
   // Check both thread_id and message_id: for tasks created with --thread-id,
   // thread_id (the conversation root) differs from message_id (the announcement).
@@ -900,7 +903,9 @@ export function openThread(parentMessage, channelName) {
   )
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
-  pushNavState({ channel: channelName, thread: parentMessage.id })
+  if (pushState) {
+    pushNavState({ channel: channelName, thread: parentMessage.id })
+  }
   fetchThread(channelName, parentMessage.id).then((fetched) => {
     // Guard against stale fetch: the user may have opened a different thread
     // (or closed the panel) while this fetch was in flight. Only apply results
@@ -984,11 +989,14 @@ export function openTaskThread(task, channelName) {
 // ── Browser history helpers ──────────────────────────────────────────────────
 
 // Build a URL path for the given navigation state.
+// Always includes `channel` when a thread is present so deep-links work
+// even when the channel name matches the project name.
 function buildNavUrl(state) {
   const project = get(activeProject)
   if (!project) return '/'
   let url = '/' + encodeURIComponent(project)
-  if (state.channel && state.channel !== project) {
+  const needsChannel = state.channel && (state.channel !== project || state.thread)
+  if (needsChannel) {
     url += '?channel=' + encodeURIComponent(state.channel)
   }
   if (state.thread) {

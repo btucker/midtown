@@ -74,16 +74,16 @@
       const urlChannel = params.get('channel')
       const urlThread = params.get('thread')
 
+      // Deep-link: restore channel and/or thread from URL.
+      // Use the URL channel if present, else default to the project's main channel.
+      const deepLinkChannel = urlChannel || targetProject.name
       if (urlChannel) {
         activeChannel.set(urlChannel)
-        fetchHistory(urlChannel)
-        if (urlThread) {
-          openThread({ id: urlThread, from: '', content: '' }, urlChannel)
-        }
-        replaceNavState({ channel: urlChannel, thread: urlThread || undefined })
-      } else {
-        replaceNavState({ channel: targetProject.name })
       }
+      if (urlThread) {
+        openThread({ id: urlThread, from: '', content: '' }, deepLinkChannel, { pushState: false })
+      }
+      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined })
     }
     // Set up browser back/forward navigation
     const cleanupHistory = setupHistoryNavigation()
