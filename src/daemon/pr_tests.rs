@@ -3737,3 +3737,160 @@ async fn test_draft_pr_skipped_in_orphaned_pr_alerts() {
         "Draft PR must not trigger orphaned PR alerts"
     );
 }
+
+// ── AutoMergePr reviewer gate tests ─────────────────────────────────────
+
+/// Issue #1 from review: AutoMergePr must NOT be emitted when a daemon-assigned
+/// reviewer is still active. This prevents the PR #1624 incident where a merge
+/// happened while a reviewer was actively working.
+#[tokio::test]
+async fn auto_merge_blocked_when_reviewer_active() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42u64;
+
+    // Assign a reviewer to this PR (without marking the review as cached/complete)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            "york",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
+    }
+
+    // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
+    let pr_json = json!({
+        "number": pr_number,
+        "title": "feat: some feature",
+        "headRefName": "lexington/some-feature",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+    });
+
+    let reviewed_prs = std::collections::HashSet::new();
+    let branch_owners = std::collections::HashMap::new();
+    let review_mode = crate::config::ReviewMode::Local;
+
+    let effects = collect_stuck_condition_effects(
+        &state,
+        &[pr_json],
+        &reviewed_prs,
+        &branch_owners,
+        review_mode,
+    )
+    .await;
+
+    let has_auto_merge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AutoMergePr { .. }));
+
+    assert!(
+        !has_auto_merge,
+        "AutoMergePr must NOT be emitted when an active reviewer is assigned. \
+         This is the gate that prevents the PR #1624 incident. Got: {:?}",
+        effects
+    );
+}
+
+/// Complement of the above: AutoMergePr SHOULD fire when the PR is auto-mergeable
+/// and no reviewer is assigned.
+#[tokio::test]
+async fn auto_merge_fires_when_no_reviewer() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42u64;
+
+    // No reviewer assigned — persistent state is clean
+
+    let pr_json = json!({
+        "number": pr_number,
+        "title": "feat: some feature",
+        "headRefName": "lexington/some-feature",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+    });
+
+    let reviewed_prs = std::collections::HashSet::new();
+    let branch_owners = std::collections::HashMap::new();
+    let review_mode = crate::config::ReviewMode::Local;
+
+    let effects = collect_stuck_condition_effects(
+        &state,
+        &[pr_json],
+        &reviewed_prs,
+        &branch_owners,
+        review_mode,
+    )
+    .await;
+
+    let has_auto_merge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AutoMergePr { .. }));
+
+    assert!(
+        has_auto_merge,
+        "AutoMergePr should fire when PR is auto-mergeable and no reviewer is assigned. \
+         Got: {:?}",
+        effects
+    );
+}
+
+/// The has_cached_review bypass: AutoMergePr should fire when a reviewer is
+/// assigned but the review is already cached as complete (no longer actively
+/// working).
+#[tokio::test]
+async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42u64;
+
+    // Assign reviewer AND mark review as cached (complete)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            "york",
+            crate::github_state::AssignmentSource::PollingFallback,
+        );
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    let pr_json = json!({
+        "number": pr_number,
+        "title": "feat: some feature",
+        "headRefName": "lexington/some-feature",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+    });
+
+    let reviewed_prs = std::collections::HashSet::new();
+    let branch_owners = std::collections::HashMap::new();
+    let review_mode = crate::config::ReviewMode::Local;
+
+    let effects = collect_stuck_condition_effects(
+        &state,
+        &[pr_json],
+        &reviewed_prs,
+        &branch_owners,
+        review_mode,
+    )
+    .await;
+
+    let has_auto_merge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AutoMergePr { .. }));
+
+    assert!(
+        has_auto_merge,
+        "AutoMergePr should fire when reviewer is assigned but review is already cached \
+         (has_cached_review bypass). Got: {:?}",
+        effects
+    );
+}
