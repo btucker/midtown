@@ -121,6 +121,14 @@ In addition to daemon-managed headless sessions, users can launch **headed (inte
 
 Both use `SessionMode::Resume` (`--continue`) so they resume an existing Claude session or start fresh. The `exec()` pattern means the Midtown process is fully replaced — no parent process lingers. Initial prompts are written to temp files and passed as positional args via `$(cat /path)`.
 
+### Daemon-Bypass CLI Commands
+
+Some CLI subcommands bypass the daemon RPC entirely, communicating directly with the webhook HTTP API or performing local-only work:
+
+- `midtown coworker screenshot <url>` — runs Playwright locally to capture a screenshot, then uploads the PNG via multipart HTTP POST to the webhook server's `/api/upload` endpoint. No daemon RPC connection is needed. The webhook port is resolved from `MIDTOWN_WEBHOOK_PORT` env var, project config, or the default (47023).
+
+These commands are intercepted in `main.rs` *before* the `DaemonClient::connect()` call and return early. They are also listed in the `unreachable!()` catch-all in the daemon-connected match arm to make the dispatch intent explicit.
+
 ### HeadlessSession I/O Architecture
 
 `HeadlessSession` (`src/headless.rs`) manages the child process and exposes a typed event stream. Claude sessions use a **background reader** pattern to avoid OS pipe-buffer stalls:

@@ -1008,6 +1008,11 @@ fn main() {
 
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
+        // Screenshot is handled before daemon connection (Playwright + HTTP upload)
+        Commands::Coworker {
+            command: Some(cli::CoworkerCommand::Screenshot { .. }),
+            ..
+        } => unreachable!("Screenshot is handled before daemon connection"),
         Commands::Coworker {
             command: Some(cmd), ..
         } => cli::handle_coworker(cmd, &client),

@@ -110,6 +110,17 @@ fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     Ok(Response::message(rendered.trim_end().to_string()))
 }
 
+/// RAII guard that removes a temp file on drop, ensuring cleanup on all exit paths.
+pub(crate) struct TempFileGuard {
+    pub(crate) path: std::path::PathBuf,
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Take a screenshot of a URL using Playwright, upload it, and return
 /// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
 ///
@@ -164,6 +175,11 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
+    // Guard ensures temp file is cleaned up on all exit paths (including early returns)
+    let _guard = TempFileGuard {
+        path: tmp_path.clone(),
+    };
+
     // Resolve the daemon's webhook port:
     //   1. MIDTOWN_WEBHOOK_PORT env var (set by daemon for coworker sessions)
     //   2. Project config daemon.webhook_port (persisted by assign_webhook_port)
@@ -212,10 +228,8 @@ pub fn handle_screenshot(
         .and_then(|v| v.as_str())
         .ok_or("Upload response missing 'path' field")?;
 
-    // Clean up temp file
-    let _ = std::fs::remove_file(&tmp_path);
-
     // Return the [Attached: /path] markdown
+    // (temp file cleanup happens automatically via TempFileGuard drop)
     let attached = format!("[Attached: {}]", path);
     eprintln!("Screenshot uploaded: {}", path);
     Ok(Response::message(attached))
@@ -386,3 +400,7 @@ fn select_task() -> Result<midtown::tasks::Task, String> {
         eprintln!("Enter a number between 1 and {}.", tasks.len());
     }
 }
+
+#[path = "coworker_tests.rs"]
+#[cfg(test)]
+mod coworker_tests;
