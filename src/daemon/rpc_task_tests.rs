@@ -337,6 +337,106 @@ fn test_task_thread_id_defaults_to_empty_on_old_state() {
     );
 }
 
+// ── --task thread resolution tests ───────────────────────────────────────────
+//
+// These tests verify the semantics that `--task <id>` should resolve to
+// `task_thread_id` (the conversation thread root) rather than `task_message_id`
+// (the announcement message). When a task is created with `--thread-id <parent>`,
+// the announcement becomes a reply within that thread, so using `task_message_id`
+// as the thread parent would nest replies incorrectly.
+
+/// When a task is created with `--thread-id`, the `--task` resolution should
+/// prefer `task_thread_id` (the parent thread) over `task_message_id` (the
+/// announcement reply). This mirrors the logic in `channel_post_for_task`.
+#[test]
+fn test_task_thread_resolution_prefers_thread_id_over_message_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+    let parent_thread = "user-original-message-uuid";
+    let announcement_reply = "announcement-reply-uuid";
+
+    // Task created with --thread-id: announcement is a reply in the parent thread
+    ps.task_thread_id
+        .insert(task_id.to_string(), parent_thread.to_string());
+    ps.task_message_id
+        .insert(task_id.to_string(), announcement_reply.to_string());
+
+    // Simulate the --task resolution logic from channel_post_for_task:
+    // prefer thread_id, fall back to message_id
+    let resolved = ps
+        .task_thread_id
+        .get(task_id)
+        .or_else(|| ps.task_message_id.get(task_id));
+
+    assert_eq!(
+        resolved,
+        Some(&parent_thread.to_string()),
+        "--task should resolve to the parent thread, not the announcement reply"
+    );
+    assert_ne!(
+        resolved,
+        Some(&announcement_reply.to_string()),
+        "using task_message_id would create nested replies instead of siblings"
+    );
+}
+
+/// When a task is created without `--thread-id`, `task_thread_id` equals
+/// `task_message_id`, so `--task` resolution produces the same result
+/// regardless of which field is used.
+#[test]
+fn test_task_thread_resolution_equivalent_without_explicit_thread_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+    let announcement_id = "announcement-uuid";
+
+    // Task created without --thread-id: both point to the announcement
+    ps.task_message_id
+        .insert(task_id.to_string(), announcement_id.to_string());
+    ps.task_thread_id
+        .insert(task_id.to_string(), announcement_id.to_string());
+
+    let resolved = ps
+        .task_thread_id
+        .get(task_id)
+        .or_else(|| ps.task_message_id.get(task_id));
+
+    assert_eq!(
+        resolved,
+        Some(&announcement_id.to_string()),
+        "--task should resolve to the announcement message (same as thread_id)"
+    );
+}
+
+/// Backward compatibility: tasks created before `task_thread_id` was introduced
+/// only have `task_message_id`. The resolution should fall back to `message_id`.
+#[test]
+fn test_task_thread_resolution_falls_back_to_message_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "42";
+    let announcement_id = "old-announcement-uuid";
+
+    // Legacy task: only has task_message_id, no task_thread_id
+    ps.task_message_id
+        .insert(task_id.to_string(), announcement_id.to_string());
+
+    let resolved = ps
+        .task_thread_id
+        .get(task_id)
+        .or_else(|| ps.task_message_id.get(task_id));
+
+    assert_eq!(
+        resolved,
+        Some(&announcement_id.to_string()),
+        "should fall back to message_id when thread_id is not available"
+    );
+}
+
 // ── task_created_message_author tests ────────────────────────────────────────
 
 /// For the main channel, the task-created message should be attributed to "lead".

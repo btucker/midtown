@@ -605,6 +605,7 @@ pub(super) async fn handle_task_metadata(
     let plan = ps.task_plan.get(task_id).cloned();
     let execution_skill = ps.task_execution_skill.get(task_id).cloned();
     let message_id = ps.task_message_id.get(task_id).cloned();
+    let thread_id = ps.task_thread_id.get(task_id).cloned();
 
     Response::success(
         id,
@@ -614,6 +615,7 @@ pub(super) async fn handle_task_metadata(
             "plan": plan,
             "execution_skill": execution_skill,
             "message_id": message_id,
+            "thread_id": thread_id,
         }),
     )
 }
