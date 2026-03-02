@@ -110,6 +110,17 @@ fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     Ok(Response::message(rendered.trim_end().to_string()))
 }
 
+/// RAII guard that removes a temp file on drop, ensuring cleanup on all exit paths.
+pub(crate) struct TempFileGuard {
+    pub(crate) path: std::path::PathBuf,
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Take a screenshot of a URL using Playwright, upload it, and return
 /// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
 ///
@@ -164,6 +175,23 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
+    upload_and_cleanup(&tmp_path, &filename)
+}
+
+/// Upload a screenshot file and clean up the temp file afterward.
+///
+/// Creates a `TempFileGuard` over `tmp_path` so the file is removed on all exit
+/// paths (success, early error return, or panic). Resolves the webhook port from
+/// env/config, uploads via multipart POST, and returns `[Attached: /path]` markdown.
+pub(crate) fn upload_and_cleanup(
+    tmp_path: &std::path::Path,
+    filename: &str,
+) -> Result<Response, String> {
+    // Guard ensures temp file is cleaned up on all exit paths (including early returns)
+    let _guard = TempFileGuard {
+        path: tmp_path.to_path_buf(),
+    };
+
     // Resolve the daemon's webhook port:
     //   1. MIDTOWN_WEBHOOK_PORT env var (set by daemon for coworker sessions)
     //   2. Project config daemon.webhook_port (persisted by assign_webhook_port)
@@ -180,12 +208,12 @@ pub fn handle_screenshot(
     let upload_url = format!("http://127.0.0.1:{}/api/upload", webhook_port);
 
     let file_bytes =
-        std::fs::read(&tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+        std::fs::read(tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
 
     let form = reqwest::blocking::multipart::Form::new().part(
         "file",
         reqwest::blocking::multipart::Part::bytes(file_bytes)
-            .file_name(filename.clone())
+            .file_name(filename.to_string())
             .mime_str("image/png")
             .map_err(|e| format!("Failed to set MIME type: {}", e))?,
     );
@@ -212,10 +240,8 @@ pub fn handle_screenshot(
         .and_then(|v| v.as_str())
         .ok_or("Upload response missing 'path' field")?;
 
-    // Clean up temp file
-    let _ = std::fs::remove_file(&tmp_path);
-
     // Return the [Attached: /path] markdown
+    // (temp file cleanup happens automatically via TempFileGuard drop)
     let attached = format!("[Attached: {}]", path);
     eprintln!("Screenshot uploaded: {}", path);
     Ok(Response::message(attached))
@@ -386,3 +412,7 @@ fn select_task() -> Result<midtown::tasks::Task, String> {
         eprintln!("Enter a number between 1 and {}.", tasks.len());
     }
 }
+
+#[path = "coworker_tests.rs"]
+#[cfg(test)]
+mod tests;
