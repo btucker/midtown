@@ -139,6 +139,7 @@ pub struct SnapshotCoworkerState {
     /// Lowercase names of running coworkers (for fast lookup).
     pub active_names: HashSet<String>,
     /// Session IDs of active coworkers (for session-first lookups).
+    /// Populated alongside `active_names` during snapshot collection.
     #[serde(default)]
     pub active_session_ids: HashSet<String>,
     /// Tmux session name (e.g., "midtown-projectname").
@@ -146,8 +147,15 @@ pub struct SnapshotCoworkerState {
     /// Coworker start times keyed by lowercase name.
     pub coworker_start_times: HashMap<String, DateTime<Utc>>,
     /// Coworker stop times keyed by lowercase name.
+    /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
+    /// features that need to know the last activity time of inactive coworkers.
     pub coworker_stop_times: HashMap<String, DateTime<Utc>>,
     /// Coworkers currently in "attached" state, mapped to their attach timestamp.
+    ///
+    /// Entries are added (with current time) on attach, removed on detach.
+    /// Must be excluded from stuck detection and orphan recovery.
+    /// The timestamp enables auto-detach of stale entries when the interactive
+    /// session ends without a proper `midtown session detach`.
     pub attached_coworkers: HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
@@ -158,32 +166,45 @@ pub struct SnapshotPrState {
     pub coworkers_with_open_prs: HashSet<String>,
     /// Coworkers whose PR was recently merged.
     pub coworkers_with_merged_prs: HashSet<String>,
-    /// PR numbers of recently merged PRs.
+    /// PR numbers of recently merged PRs. Used by task dispatch to skip
+    /// tasks that reference a merged PR (e.g., "Address review feedback on PR #709").
     pub merged_pr_numbers: HashSet<u64>,
-    /// Coworkers whose open PR has all CI checks passing.
+    /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
     pub ci_passed_pr_coworkers: HashSet<String>,
     /// Coworkers whose open PR has CI passed AND has review feedback to address.
+    /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
     pub review_feedback_pr_coworkers: HashSet<String>,
-    /// Open PR data (from last GitHub poll).
+    /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
+    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
-    /// Maps task_id → pr_number.
+    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
+    /// by catching cases where pr_author_sessions is stale after a daemon restart but the
+    /// PR title contains `[Midtown !{task_id}]`. Used by:
+    /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
+    /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
+    ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
     #[serde(default)]
     pub github_open_pr_task_ids: HashMap<String, u64>,
     /// Task IDs that have associated open PRs (from PrAuthorSession).
-    /// Maps task_id → pr_number.
+    /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
+    /// tasks whose PR is open but whose owner is no longer active.
     pub tasks_with_open_prs: HashMap<String, u64>,
     /// PR numbers with associated task IDs (from PrAuthorSession).
-    /// Maps pr_number → task_id.
+    /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
+    /// when PRs are closed without merging.
     #[serde(deserialize_with = "u64_key_map::deserialize")]
     pub pr_task_associations: HashMap<u64, String>,
     /// PR numbers for which the lead has already been nudged about an orphaned PR.
+    /// Prevents `reconcile_orphaned_prs` from nudging on every polling tick.
     #[serde(default)]
     pub orphaned_pr_lead_nudges_sent: HashSet<u64>,
     /// GitHub API rate limit state (GraphQL and REST quotas).
+    /// Used by adaptive throttling to reduce polling frequency when quotas run low.
     pub github_rate_limit: crate::github_rate_limit::GitHubRateLimit,
     /// Freshly fetched rate limit data (only populated during RateLimitCheckTick).
+    /// This carries the new rate limit state from the API fetch to the decision phase.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub freshly_fetched_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
 }
@@ -191,24 +212,32 @@ pub struct SnapshotPrState {
 /// Reviewer tracking — assignments, escalations, review status.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotReviewerState {
-    /// Currently active reviewers.
+    /// Currently active reviewers (from both in-memory tracker and persistent state).
     pub active_reviewers: HashSet<String>,
     /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
+    /// Defense-in-depth guard for idle shutdown: protects reviewers when their
+    /// assignment timestamp has expired but their session is still working.
     #[serde(default)]
     pub reviewing_phase_coworkers: HashSet<String>,
-    /// Reviewer → assigned PR number mapping.
+    /// Reviewer → assigned PR number mapping (from github-state.json).
     pub reviewer_pr_assignments: HashMap<String, u64>,
     /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
+    /// Maps PR number → GitHub comment database ID.
+    /// Pre-collected during snapshot (cached to minimize API calls).
     #[serde(default, deserialize_with = "u64_key_map::deserialize")]
     pub reviewer_in_progress_comment_ids: HashMap<u64, u64>,
-    /// PRs that have been verified as reviewed.
+    /// PRs that have been verified as reviewed (Claude review comment exists).
+    /// Pre-collected during snapshot so decision logic doesn't need API calls.
     pub reviewed_prs: HashSet<u64>,
-    /// Count of open PRs that need review.
+    /// Count of open PRs that need review (not draft, no Claude review, no formal review).
+    /// Used by task dispatch to prioritize reviews over new task pickup.
     pub prs_needing_review: usize,
     /// PR number → restart count for reviewer assignments.
+    /// Used by stuck reviewer detection to implement backoff.
     #[serde(deserialize_with = "u64_key_map::deserialize")]
     pub reviewer_restart_counts: HashMap<u64, u32>,
-    /// PR numbers for which a reviewer escalation warning has been posted.
+    /// PR numbers for which a reviewer escalation warning has already been posted.
+    /// Prevents the escalation warning from firing every tick after max restarts.
     pub reviewer_escalations_posted: HashSet<u64>,
 }
 
@@ -216,6 +245,8 @@ pub struct SnapshotReviewerState {
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotHealthState {
     /// Health state of headless coworker processes, keyed by coworker name.
+    /// Replaces pane scraping: stuck detection uses `last_event_at`,
+    /// usage limits and API errors use structured flags set from stream events.
     pub headless_process_health: HashMap<String, ProcessHealth>,
     /// Whether a usage-limit nudge is already scheduled.
     pub usage_limit_nudge_scheduled: bool,
@@ -223,21 +254,33 @@ pub struct SnapshotHealthState {
     #[serde(skip)]
     pub usage_limit_nudge_at: Option<tokio::time::Instant>,
     /// Coworkers currently at a usage limit (derived from `headless_process_health`).
+    /// These coworkers should be excluded from stuck detection, idle warnings,
+    /// and task assignment until the limit expires.
     pub usage_limited_coworkers: HashSet<String>,
     /// Coworkers currently experiencing API errors (derived from `headless_process_health`).
+    /// Like usage limits, these should be excluded from stuck detection, but
+    /// unlike usage limits, they should receive periodic nudges to retry.
     pub api_error_coworkers: HashSet<String>,
     /// Coworkers currently experiencing authentication errors (OAuth token expired).
+    /// Unlike API errors and usage limits, auth errors require user intervention
+    /// to re-authenticate and will not resolve with retries or time.
     #[serde(default)]
     pub auth_error_coworkers: HashSet<String>,
-    /// Coworkers currently experiencing tool name conflicts.
+    /// Coworkers currently experiencing tool name conflicts (duplicate MCP tool names).
+    /// These coworkers need a restart to resolve the conflict.
     #[serde(default)]
     pub tool_name_conflict_coworkers: HashSet<String>,
     /// Coworkers with active in-flight work (pending tool/subagent or pending API turn).
+    /// These sessions are protected from idle shutdown — killing mid-turn can drop responses.
     #[serde(default)]
     pub coworkers_with_active_tools: HashSet<String>,
 }
 
 /// Immutable snapshot of the daemon's world, collected once per tick.
+///
+/// Each field is owned data — no references back to `DaemonState`. This means
+/// evaluation functions that take `&WorldSnapshot` cannot accidentally trigger
+/// side effects on the underlying state.
 ///
 /// Fields are organized into domain-specific nested structs:
 /// - [`SnapshotCoworkerState`]: coworker identity, lifecycle, presence
@@ -246,7 +289,7 @@ pub struct SnapshotHealthState {
 /// - [`SnapshotHealthState`]: process health, usage limits, error states
 ///
 /// Nested structs use `#[serde(flatten)]` so the JSON representation stays flat
-/// (backwards-compatible with existing test fixtures).
+/// (backwards-compatible with existing test fixtures and serializable for debugging).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
@@ -312,6 +355,9 @@ pub struct WorldSnapshot {
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
     pub coworkers_with_unblocked_deps: HashSet<String>,
     /// Coworkers who have pending tasks assigned to them (task.owner set, status=pending).
+    /// Provides defense-in-depth idle shutdown protection alongside `busy_coworkers`
+    /// (in-memory assignment tracking). Both paths are checked to prevent the
+    /// spawn→idle→break loop (see PR #650).
     pub pending_task_owners: HashSet<String>,
 
     // ── Channel state ──────────────────────────────────────────────────
