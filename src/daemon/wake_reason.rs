@@ -4,6 +4,19 @@
 //! nudge effects (`NudgeChannelLead`, `NudgeSession`) to format messages
 //! for running sessions and initial prompts for fresh spawns.
 
+/// Thread context for messages that are thread replies.
+///
+/// Bundles the parent message ID and channel name together so the type system
+/// enforces that both are always present (or both absent). This prevents a
+/// future caller from accidentally setting one without the other.
+#[derive(Debug, Clone)]
+pub struct ThreadContext {
+    /// The parent message ID that anchors this thread.
+    pub parent_id: String,
+    /// The channel name, used to format `--channel` instructions.
+    pub channel_name: String,
+}
+
 /// Why a session is being woken up.
 #[derive(Debug, Clone)]
 pub enum WakeReason {
@@ -11,7 +24,12 @@ pub enum WakeReason {
     /// A task was created in the channel.
     TaskCreated { task_id: String, subject: String },
     /// A user posted a message in the channel.
-    UserMessage { content: String, msg_id: String },
+    UserMessage {
+        content: String,
+        msg_id: String,
+        /// Thread context when this message is a thread reply.
+        thread_ctx: Option<ThreadContext>,
+    },
     /// An insight was posted in the channel.
     InsightPosted {
         insight: String,
@@ -94,8 +112,23 @@ impl WakeReason {
                      {footer}"
                 )
             }
-            Self::UserMessage { content, msg_id } => {
-                format!("user ({msg_id}): {content}")
+            Self::UserMessage {
+                content,
+                msg_id,
+                thread_ctx,
+            } => {
+                if let Some(ctx) = thread_ctx {
+                    format!(
+                        "user ({msg_id}): {content}\n\n\
+                         This is a thread reply. To reply in the thread:\n  \
+                         midtown channel post \"...\" --thread {} --channel {}\n\
+                         To read recent thread context:\n  \
+                         midtown channel read --last 50 --channel {}",
+                        ctx.parent_id, ctx.channel_name, ctx.channel_name
+                    )
+                } else {
+                    format!("user ({msg_id}): {content}")
+                }
             }
             Self::InsightPosted {
                 insight,
@@ -186,10 +219,25 @@ impl WakeReason {
                      Reply with: `midtown channel post \"...\" --task {task_id}`"
                 )
             }
-            Self::UserMessage { content, .. } => {
+            Self::UserMessage {
+                content,
+                thread_ctx,
+                ..
+            } => {
+                let thread_section = if let Some(ctx) = thread_ctx {
+                    format!(
+                        "\n\nThis is a thread reply. To reply in the thread:\n  \
+                         midtown channel post \"...\" --thread {} --channel {}\n\
+                         To read recent thread context:\n  \
+                         midtown channel read --last 50 --channel {}",
+                        ctx.parent_id, ctx.channel_name, ctx.channel_name
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
                     "## Wake trigger\nA user posted in your channel:\n  \
-                     {content}\n\n\
+                     {content}{thread_section}\n\n\
                      ## First Actions\n\
                      1. Read recent messages in #{channel_name} for context\n\
                      2. Respond to the user's message"

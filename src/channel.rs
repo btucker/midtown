@@ -992,6 +992,55 @@ impl Channel {
         Ok(messages)
     }
 
+    /// Check whether a message with the given ID exists in the channel.
+    ///
+    /// Performs a streaming line-by-line scan across all history files and returns
+    /// `true` as soon as a matching ID is found, avoiding loading all messages into
+    /// memory. This is used for thread parent ID validation on the write path.
+    pub async fn contains_message_id_async(&self, target_id: &str) -> Result<bool> {
+        let history_files = self.list_all_history_files();
+
+        for path in &history_files {
+            if !path.exists() {
+                continue;
+            }
+            let file = File::open(path)?;
+            for attempt in 0..10 {
+                match file.try_lock_shared() {
+                    Ok(()) => break,
+                    Err(e) if attempt == 9 => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            format!(
+                                "Failed to acquire shared lock after {} attempts: {}",
+                                attempt + 1,
+                                e
+                            ),
+                        )
+                        .into());
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            }
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Ok(msg) = serde_json::from_str::<Message>(&line)
+                    && msg.id == target_id
+                {
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Read new messages starting from `position` without acquiring a file lock.
     ///
     /// Returns `(messages, new_position, last_message_id)`. Safe to call
