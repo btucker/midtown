@@ -1,35 +1,44 @@
 import { writable } from 'svelte/store'
 
+// ── Generic localStorage helpers ──────────────────────────────────────────────
+export function loadFromLocalStorage(key, fallback) {
+  if (typeof localStorage !== 'undefined') {
+    const stored = localStorage.getItem(key)
+    if (stored) {
+      try {
+        return JSON.parse(stored)
+      } catch (e) {
+        console.warn(`Failed to parse stored ${key}:`, e)
+      }
+    }
+  }
+  return fallback
+}
+
+export function saveToLocalStorage(key, value) {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(key, JSON.stringify(value))
+  }
+}
+
 // Channel messages - now keyed by channel name
 // Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
 export const messagesByChannel = writable({ midtown: [] })
 
 // Load unread counts from localStorage if available
 function loadUnreadCounts() {
-  if (typeof localStorage !== 'undefined') {
-    const stored = localStorage.getItem('midtown_unread_counts')
-    if (stored) {
-      try {
-        return JSON.parse(stored)
-      } catch (e) {
-        console.warn('Failed to parse stored unread counts:', e)
-      }
-    }
-  }
-  return {}
+  return loadFromLocalStorage('midtown_unread_counts', {})
 }
 
 // Save unread counts to localStorage
 function saveUnreadCounts(channelList) {
-  if (typeof localStorage !== 'undefined') {
-    const counts = {}
-    channelList.forEach((ch) => {
-      if (ch.unread > 0) {
-        counts[ch.name] = ch.unread
-      }
-    })
-    localStorage.setItem('midtown_unread_counts', JSON.stringify(counts))
-  }
+  const counts = {}
+  channelList.forEach((ch) => {
+    if (ch.unread > 0) {
+      counts[ch.name] = ch.unread
+    }
+  })
+  saveToLocalStorage('midtown_unread_counts', counts)
 }
 
 // List of available channels with metadata
@@ -149,3 +158,17 @@ export const threadToolItems = writable({})
 // Pending questions from coworkers waiting for user input
 // Format: [{ id, coworker_name, question, timestamp }, ...]
 export const pendingQuestions = writable([])
+
+// ── Tracked threads (sidebar display) ─────────────────────────────────────────
+// Format: { [threadParentId]: { channelName, subject, lastActivity, replyCount } }
+export const trackedThreads = writable(loadFromLocalStorage('midtown_tracked_threads', {}))
+trackedThreads.subscribe((v) => saveToLocalStorage('midtown_tracked_threads', v))
+
+// Per-thread unread counts: { [threadParentId]: number }
+export const threadUnreadCounts = writable(loadFromLocalStorage('midtown_thread_unread', {}))
+threadUnreadCounts.subscribe((v) => saveToLocalStorage('midtown_thread_unread', v))
+
+// Dismissed threads: user clicked X — prevents re-tracking. Stored as array, used as Set.
+const _dismissedArr = loadFromLocalStorage('midtown_dismissed_threads', [])
+export const dismissedThreads = writable(new Set(_dismissedArr))
+dismissedThreads.subscribe((s) => saveToLocalStorage('midtown_dismissed_threads', [...s]))

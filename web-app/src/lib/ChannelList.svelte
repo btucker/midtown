@@ -1,21 +1,28 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
-  import { channels, activeChannel, kanbanData, coworkers, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
+  import { channels, activeChannel, kanbanData, coworkers, activeProject, messagesByChannel, showArchivedChannels, trackedThreads, threadUnreadCounts, dismissedThreads, threadData } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread, pushNavState } from './api.js'
   import {
     getChannelTaskCount,
     getChannelTasks,
     getChannelCiStatus,
     getChannelHasActiveTasks,
+    getChannelHasTrackedThreads,
+    getTaskThreadIds,
+    getChannelThreads,
     computeExpandedAfterChannelNameClick,
     computeVisibleDmChannels,
   } from './channelUtils.js'
   import { getSenderColor } from './messageUtils.js'
   import TaskList from './TaskList.svelte'
+  import ThreadList from './ThreadList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
 
   // Build a map of coworker name → coworker object for quick lookup
   $: coworkerMap = new Map($coworkers.map(cw => [cw.name, cw]))
+
+  // Thread IDs that are already represented by tasks (for dedup)
+  $: taskThreadIds = getTaskThreadIds($kanbanData)
 
   let showCreateInput = false
   let newChannelName = ''
@@ -34,9 +41,17 @@
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
 
-  // Auto-expand the active channel when it gains tasks (e.g., task created while viewing)
-  $: if ($activeChannel && getChannelHasActiveTasks($activeChannel, $kanbanData) && !expandedChannels.has($activeChannel)) {
+  // Auto-expand the active channel when it gains tasks or tracked threads
+  $: if ($activeChannel && !expandedChannels.has($activeChannel) && (
+    getChannelHasActiveTasks($activeChannel, $kanbanData) ||
+    getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds)
+  )) {
     expandedChannels.add($activeChannel)
+  }
+
+  // Auto-expand the channel when a thread is opened (e.g. from the message area)
+  $: if ($threadData?.channelName && !expandedChannels.has($threadData.channelName)) {
+    expandedChannels.add($threadData.channelName)
   }
 
   // DM section: collapsed by default, shows unread + active + visited DMs when expanded
@@ -88,7 +103,8 @@
       channelName,
       expandedChannels,
       $activeChannel,
-      $kanbanData
+      $kanbanData,
+      { trackedThreads: $trackedThreads, taskThreadIds }
     )
     if (next.has(channelName)) {
       expandedChannels.add(channelName)
@@ -250,6 +266,7 @@
     {@const isActive = $activeChannel === channel.name}
     {@const isExpanded = expandedChannels.has(channel.name)}
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
+    {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds)}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
@@ -263,8 +280,10 @@
             {formatChannelName(channel.name)}
           </div>
           <div class="flex items-center gap-1.5">
-            {#if hasActiveTasks && !isExpanded}
-              {@const tasks = getChannelTasks(channel.name, $kanbanData)}
+            {#if !isExpanded && (hasActiveTasks || hasTrackedThreads)}
+              {@const tasks = hasActiveTasks ? getChannelTasks(channel.name, $kanbanData) : []}
+              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds) : []}
+              {@const unreadThreads = threads.filter(t => t.unread > 0)}
               <div class="flex items-center gap-[3px]">
                 {#each tasks as task}
                   {@const cw = task.owner ? coworkerMap.get(task.owner) : null}
@@ -274,6 +293,13 @@
                     class="task-pip {task.status === 'in_progress' ? 'task-pip-active' : 'task-pip-pending'}"
                     style={pipColor ? `background: ${pipColor}` : ''}
                     title={tipParts.join('\n')}
+                  ></span>
+                {/each}
+                {#each unreadThreads as thread}
+                  <span
+                    class="thread-pip"
+                    data-testid="sidebar-thread-pip"
+                    title={thread.subject}
                   ></span>
                 {/each}
               </div>
@@ -292,6 +318,11 @@
       {#if isExpanded && hasActiveTasks}
         <div class="px-3 py-1 pb-2">
           <TaskList channelName={channel.name} />
+        </div>
+      {/if}
+      {#if isExpanded && hasTrackedThreads}
+        <div class="px-3 py-0 pb-1">
+          <ThreadList channelName={channel.name} />
         </div>
       {/if}
     </div>
@@ -381,6 +412,15 @@
   .task-pip-pending {
     background: hsl(var(--muted-foreground) / 0.35);
     opacity: 0.6;
+  }
+
+  .thread-pip {
+    width: 4px;
+    height: 4px;
+    border-radius: 1px;
+    flex-shrink: 0;
+    background: hsl(var(--accent-teal));
+    opacity: 0.8;
   }
 
 </style>
