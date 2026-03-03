@@ -127,7 +127,7 @@ Both use `SessionMode::Resume` (`--continue`) so they resume an existing Claude 
 
 Some CLI subcommands bypass the daemon RPC entirely, communicating directly with the webhook HTTP API or performing local-only work:
 
-- `midtown coworker screenshot <url>` — runs Playwright locally to capture a screenshot, saves it to `~/.midtown/projects/<repo>/screenshots/{uuid}.png`, and prints an attachment reference. Screenshots are served via `GET /api/projects/<repo>/screenshots/<filename>` on the shared gateway (port 47022) and `GET /api/screenshots/<filename>` on the per-project daemon. No daemon RPC connection is needed for capture.
+- `midtown coworker screenshot <url>` — runs Playwright locally to capture a screenshot, saves it to `~/.midtown/projects/<repo>/screenshots/{uuid}.png`, and prints an `[Attached: /path]` reference for channel posts. With `--github`, outputs `![alt](URL)` markdown for embedding in GitHub PR descriptions; the URL scheme (http/https) is derived from `GlobalConfig` TLS settings. Screenshots are served via `GET /api/projects/<repo>/screenshots/<filename>` on the shared gateway (port 47022) and `GET /api/screenshots/<filename>` on the per-project daemon. No daemon RPC connection is needed for capture.
 
 These commands are intercepted in `main.rs` *before* the `DaemonClient::connect()` call and return early. Most bypass commands are listed in the consolidated `unreachable!()` catch-all at the end of the daemon-connected match. Screenshot is the exception — it has its own `unreachable!()` arm above the general `Coworker { Some(cmd) }` handler, because Rust's top-to-bottom match evaluation would otherwise route it to `handle_coworker`. Both locations have cross-referencing comments to keep the dispatch intent auditable.
 

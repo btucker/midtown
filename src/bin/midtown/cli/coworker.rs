@@ -125,11 +125,11 @@ impl Drop for TempFileGuard {
 }
 
 /// Take a screenshot of a URL using Playwright, save it locally, and return
-/// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
+/// the `[Attached: /path]` markdown ready for channel posts.
 ///
-/// When `github` is true, returns `![screenshot](URL)` markdown with an HTTP
-/// URL suitable for embedding in GitHub PR descriptions. The URL points to the
-/// standalone webserver's screenshot endpoint.
+/// When `github` is true, returns `![screenshot](URL)` markdown suitable for
+/// embedding in GitHub PR descriptions. The URL scheme (http/https) is derived
+/// from `GlobalConfig` TLS settings to match the running webserver.
 ///
 /// Does not require a daemon connection — runs Playwright locally and saves
 /// the screenshot to the project's screenshots directory with a UUID filename.

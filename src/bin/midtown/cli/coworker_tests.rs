@@ -225,3 +225,38 @@ fn save_screenshot_locally_github_before_uses_before_alt_text() {
         panic!("Expected Message response");
     }
 }
+
+#[test]
+fn save_screenshot_locally_github_after_uses_after_alt_text() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-after-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        true,
+        &screenshots_dir,
+        Some("http"),
+        "my-project",
+    );
+
+    assert!(result.is_ok());
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.starts_with("![after]("),
+            "After screenshot should use 'after' alt text, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
