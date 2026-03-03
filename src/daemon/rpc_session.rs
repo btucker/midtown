@@ -1238,9 +1238,10 @@ pub(super) fn build_fork_config(
 /// When `caller_name` is unknown: `fork-{slug}-{tid_prefix}`.
 /// When `None` or empty, falls back to `fork-{first-8-chars-of-thread-id}`.
 ///
-/// Returns `Ok((session_id, already_existed))` where `already_existed` is true when a
-/// fork was found in `topic_sessions` before this call. Returns `Err` if the slot holds
-/// "pending" (concurrent fork in progress) or spawn fails.
+/// Returns `Ok((session_id, already_existed, fork_channel))` where `already_existed` is
+/// true when a fork was found in `topic_sessions` before this call. The `fork_channel` is
+/// the resolved channel for the fork session (`None` only for pre-existing forks).
+/// Returns `Err` if the slot holds "pending" (concurrent fork in progress) or spawn fails.
 pub(super) async fn create_fork_session(
     thread_parent_id: &str,
     calling_session_id: &str,
@@ -1248,7 +1249,7 @@ pub(super) async fn create_fork_session(
     fork_name_hint: Option<&str>,
     caller: &str,
     state: &DaemonState,
-) -> Result<(String, bool), String> {
+) -> Result<(String, bool, Option<String>), String> {
     // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
     // acquisition. This prevents the race where two concurrent fork requests for
     // the same thread_parent_id both pass the guard and spawn duplicate forks.
@@ -1261,7 +1262,7 @@ pub(super) async fn create_fork_session(
                 // Another concurrent fork is in progress — bail rather than duplicate.
                 return Err("fork in progress for this thread".to_string());
             }
-            return Ok((existing_sid.clone(), true));
+            return Ok((existing_sid.clone(), true, None));
         }
         // Reserve the slot to prevent concurrent forks for the same thread.
         topic.insert(thread_parent_id.to_string(), "pending".to_string());
@@ -1310,11 +1311,13 @@ pub(super) async fn create_fork_session(
 
     // Determine channel for the fork — explicit hint takes priority (the web UI
     // fork path supplies the channel directly), then session record, then
-    // caller name (channel leads are named after their channel).
+    // default (main) channel. The old fallback used `caller_name` which works
+    // for channel leads (whose name == channel) but produces a ghost channel
+    // when the main lead or a coworker forks (their name isn't a channel).
     let fork_channel = channel_hint
         .map(String::from)
         .or(channel)
-        .or_else(|| caller_name.clone());
+        .or_else(|| Some(state.repo_name.clone()));
 
     let (fork_name, headless_config) = build_fork_config(
         thread_parent_id,
@@ -1447,7 +1450,7 @@ pub(super) async fn create_fork_session(
         fork_session_id
     );
 
-    Ok((fork_session_id, false))
+    Ok((fork_session_id, false, fork_channel))
 }
 
 /// Handle session.fork RPC method.
@@ -1484,20 +1487,33 @@ pub(super) async fn handle_session_fork(
     )
     .await
     {
-        Ok((sid, true)) => crate::rpc::Response::success(
+        Ok((sid, true, _)) => crate::rpc::Response::success(
             id,
             serde_json::json!({
                 "session_id": sid,
                 "already_exists": true,
             }),
         ),
-        Ok((sid, false)) => crate::rpc::Response::success(
-            id,
-            serde_json::json!({
-                "session_id": sid,
-                "thread_parent_id": thread_parent_id,
-            }),
-        ),
+        Ok((sid, false, fork_channel)) => {
+            // Send framing nudge to the fresh fork — same as the web-UI path
+            // in handle_session_fork_thread. Without this, the fork session
+            // sits idle forever with no initial message to act on.
+            if let Some(ref ch) = fork_channel {
+                let framing = super::rpc_channel::fork_initial_framing(ch);
+                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
+                    session_id: sid.clone(),
+                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
+                };
+                crate::daemon::effects::execute_effects(vec![framing_effect], state).await;
+            }
+            crate::rpc::Response::success(
+                id,
+                serde_json::json!({
+                    "session_id": sid,
+                    "thread_parent_id": thread_parent_id,
+                }),
+            )
+        }
         Err(ref e) if e.starts_with("fork in progress") => {
             // A concurrent fork request already reserved this slot.
             // Return a distinct pending response so the caller can
@@ -1573,7 +1589,7 @@ pub(super) async fn handle_session_fork_thread(
     )
     .await
     {
-        Ok((sid, is_existing)) => {
+        Ok((sid, is_existing, _)) => {
             // Send framing nudge to fresh forks
             if !is_existing {
                 let framing = super::rpc_channel::fork_initial_framing(channel);

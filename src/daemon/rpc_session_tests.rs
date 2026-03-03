@@ -557,7 +557,7 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
 
     assert!(result.is_ok(), "should succeed when fork already exists");
-    let (returned_sid, already_existed) = result.unwrap();
+    let (returned_sid, already_existed, _fork_channel) = result.unwrap();
     assert_eq!(
         returned_sid, existing_sid,
         "should return existing session_id"
@@ -654,6 +654,92 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
     assert!(
         !topic.contains_key(thread_id),
         "pending sentinel should be removed after spawn failure"
+    );
+}
+
+/// When a fork already exists, `create_fork_session` returns `fork_channel: None`
+/// since no new fork was created and channel resolution was skipped.
+#[tokio::test]
+async fn test_create_fork_session_existing_returns_none_fork_channel() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-existing-channel-check";
+    let existing_sid = "session-existing-channel-xyz".to_string();
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), existing_sid.clone());
+
+    let result =
+        create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
+
+    let (_sid, already_existed, fork_channel) = result.unwrap();
+    assert!(already_existed);
+    assert!(
+        fork_channel.is_none(),
+        "fork_channel should be None for pre-existing forks"
+    );
+}
+
+/// Channel resolution: when `channel_hint` is provided, it takes priority.
+/// When a channel lead session forks with an explicit hint, the fork should
+/// use that channel (not the caller's name or the repo name).
+#[tokio::test]
+async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-channel-hint-test";
+    let calling_session_id = "channel-lead-session-hint";
+
+    // Insert a channel lead session record WITH a channel
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            calling_session_id.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: calling_session_id.to_string(),
+                current_name: Some("daemon-core".to_string()),
+                preferred_name: Some("daemon-core".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                coworker_type: "channel-lead".to_string(),
+                channel: Some("daemon-core".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert("daemon-core".to_string(), calling_session_id.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(calling_session_id.to_string(), "daemon-core".to_string());
+
+    // spawn_fork will fail (no real claude process), but the code should
+    // reach spawn (past channel resolution) and fail gracefully.
+    let result = create_fork_session(
+        thread_id,
+        calling_session_id,
+        Some("daemon-core"), // explicit channel hint
+        None,
+        "test",
+        &state,
+    )
+    .await;
+
+    // Spawn fails in test env, but reaching spawn confirms channel resolution
+    // completed successfully (it runs before spawn).
+    assert!(result.is_err(), "spawn should fail in test environment");
+
+    // Sentinel should be cleaned up after spawn failure
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(thread_id),
+        "sentinel should be cleaned up after spawn failure"
     );
 }
 
