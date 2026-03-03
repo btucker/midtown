@@ -376,9 +376,23 @@ pub(super) async fn handle_coworker_report_state(
         // posted their review yet. If so, nudge them to post the review first instead of
         // going idle. This prevents the case where a reviewer calls `midtown state idle`
         // before completing their review (e.g., thinking they're done but forgot to post).
+        //
+        // Use `is_pr_reviewed()` instead of the snapshot's `reviewed_prs` cache so that
+        // a GitHub API check can be made when the persistent cache has no record yet.
+        // Without this, a reviewer who posts their review and immediately goes idle can
+        // get stuck in a nudge loop: the webhook marking the review as cached hasn't
+        // arrived yet, the poll tick hasn't run, so the snapshot says "not reviewed"
+        // even though the review exists on GitHub.
+        //
+        // Note: `is_pr_reviewed()` has a negative-result cache with a 2-minute TTL
+        // (`PR_REVIEW_NEGATIVE_CACHE_SECS`). If a recent poll tick confirmed no review,
+        // the API call is skipped within that window. This is acceptable: the negative
+        // cache only populates during poll ticks, and the common nudge-loop scenario
+        // (reviewer posts then immediately idles) happens before any poll tick runs,
+        // so the negative cache is empty. (Bug fix for !1990)
         let pre_snap = snapshot::collect_world_snapshot(state).await;
         if let Some(&pr_number) = pre_snap.reviewer.reviewer_pr_assignments.get(name)
-            && !pre_snap.reviewer.reviewed_prs.contains(&pr_number)
+            && !state.is_pr_reviewed(pr_number).await
         {
             warn!(
                 "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",
