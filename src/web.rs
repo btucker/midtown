@@ -879,7 +879,14 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 /// Coworker state comes from `coworkers.status` (live, no cache).
 /// Both fall back to cached gh CLI calls if the daemon is unreachable.
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+    // Load persistent state to get reviewer assignments, thread IDs, etc. (local file, cheap)
+    let persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
+            .unwrap_or_default();
+
     // Read tasks directly from Claude Code task storage (local file, cheap)
+    // Merge thread_id/message_id from daemon persistent state so the frontend
+    // can open the originating thread when a task is clicked.
     let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
         .into_iter()
         .map(|task| {
@@ -888,6 +895,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 crate::tasks::TaskStatus::InProgress => "in_progress",
                 crate::tasks::TaskStatus::Completed => "completed",
             };
+            let message_id = persistent_state.task_message_id.get(&task.id).cloned();
+            let thread_id = persistent_state.task_thread_id.get(&task.id).cloned();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
@@ -896,6 +905,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "owner": task.owner,
                 "channel": task.channel,
                 "blocked_by": task.blocked_by,
+                "message_id": message_id,
+                "thread_id": thread_id,
             })
         })
         .collect();
@@ -911,11 +922,6 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             Some((id, subject.to_string()))
         })
         .collect();
-
-    // Load persistent state to get reviewer assignments (local file, cheap)
-    let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
-            .unwrap_or_default();
     // Channel lead names for filtering (channel leads must not appear in coworker status)
     let channel_lead_names: std::collections::HashSet<String> = persistent_state
         .channel_lead_sessions

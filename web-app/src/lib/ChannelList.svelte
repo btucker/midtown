@@ -7,7 +7,6 @@
     getChannelTasks,
     getChannelCiStatus,
     getChannelHasActiveTasks,
-    computeExpandedAfterTriangleClick,
     computeExpandedAfterChannelNameClick,
     computeVisibleDmChannels,
   } from './channelUtils.js'
@@ -185,22 +184,6 @@
     }
   }
 
-  function handleTriangleClick(channelName) {
-    // Capture the desired toggle state before selectChannel potentially auto-expands.
-    const next = computeExpandedAfterTriangleClick(channelName, expandedChannels)
-    // Only call selectChannel when switching to a different channel.
-    // Calling it on the already-active channel would invoke closeThread() as a side
-    // effect, closing any open thread panel just because the user toggled the task list.
-    if (channelName !== $activeChannel) {
-      selectChannel(channelName)
-    }
-    // Apply the toggle result (overrides any auto-expand from selectChannel).
-    if (next.has(channelName)) {
-      expandedChannels.add(channelName)
-    } else {
-      expandedChannels.delete(channelName)
-    }
-  }
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
@@ -271,21 +254,8 @@
 
     <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-        <!-- Fixed-width gutter keeps channel names aligned whether or not a triangle is present -->
-        <div class="w-[28px] ml-1 shrink-0 flex items-center justify-center">
-          {#if hasActiveTasks}
-            <button
-              type="button"
-              class="w-[28px] h-[28px] p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground"
-              onclick={() => handleTriangleClick(channel.name)}
-              title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
-            >
-              {isExpanded ? '▼' : '▶'}
-            </button>
-          {/if}
-        </div>
         <button
-          class="flex items-center justify-between flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+          class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
           onclick={() => selectChannel(channel.name)}
         >
@@ -320,7 +290,7 @@
       </div>
 
       {#if isExpanded && hasActiveTasks}
-        <div class="ml-6 py-1 pb-2 pl-3">
+        <div class="px-3 py-1 pb-2">
           <TaskList channelName={channel.name} />
         </div>
       {/if}
@@ -347,10 +317,8 @@
         {@const hasUnread = channel.unread > 0}
         <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
           <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-            <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
-            <div class="w-[28px] ml-1 shrink-0"></div>
             <button
-              class="flex items-center flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+              class="flex items-center flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
               aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
               onclick={() => selectChannel(channel.name)}
             >
