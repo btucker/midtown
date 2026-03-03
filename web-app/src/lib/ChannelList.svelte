@@ -337,14 +337,14 @@
       {/each}
       {#if !showAllDms && dmChannels.length > visibleDmChannels.length}
         <button
-          class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
+          class="ml-2 px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
           onclick={() => showAllDms = true}
         >
           show all ({dmChannels.length})
         </button>
       {:else if showAllDms && dmChannels.length > baseDmVisibleCount}
         <button
-          class="ml-[40px] px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
+          class="ml-2 px-1 py-1 border-none bg-transparent text-xs text-muted-foreground cursor-pointer hover:text-sidebar-foreground transition-colors duration-150"
           onclick={() => showAllDms = false}
         >
           show less
