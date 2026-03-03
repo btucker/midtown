@@ -54,7 +54,7 @@ fn git_repo_root() -> Option<PathBuf> {
 
 /// Find the user's midtown config directory.
 fn user_agents_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".midtown").join("agents"))
+    Some(crate::paths::midtown_base_dir().join("agents"))
 }
 
 fn code_review_invocation_for_platform(

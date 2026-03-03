@@ -44,10 +44,7 @@ pub struct PushManager {
 impl PushManager {
     /// Create a new PushManager, ensuring the storage directory exists.
     pub fn new() -> std::io::Result<Self> {
-        let push_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("push");
+        let push_dir = crate::paths::midtown_base_dir().join("push");
         std::fs::create_dir_all(&push_dir)?;
         Ok(Self { push_dir })
     }
