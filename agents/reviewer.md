@@ -19,7 +19,8 @@ midtown state --progress 10
 POST INITIAL REVIEW COMMENT: Immediately after posting your /me status, post an initial "review in progress" comment to the PR. This provides visibility that a review is happening:
 
 ```bash
-COMMENT_URL=$(gh pr comment {pr_number} --body "## Review Status
+COMMENT_URL=$(gh pr comment {pr_number} --body "<!-- midtown-placeholder -->
+## Review Status
 
 🔍 Review in progress by {name}...
 
@@ -56,10 +57,10 @@ If `$LARGE_JSON_FILES` is non-empty:
 - Do NOT call `gh pr diff` without verifying first that the output will be manageable. If large JSON files exist, use `gh pr view --json files` for file-level analysis instead of reading the full diff.
 
 **WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
-1. Omits `<!-- midtown: {name} -->` frontmatter
+1. Uses `<!-- midtown-placeholder -->` instead of `<!-- midtown: {name} -->` frontmatter
 2. Uses "Review Status" instead of "Code Review" as the heading
 
-This prevents the daemon from marking the PR as "reviewed" before the review is actually complete. The frontmatter and correct heading will be added when you update the comment with the final review results.
+The `<!-- midtown-placeholder -->` tag tells the daemon to ignore this comment entirely — no PR activity is generated, so the PR owner won't get a false "review feedback" nudge. The tag naturally disappears when you update the comment with the final review (replaced by `<!-- midtown: {name} -->`). The different heading prevents the daemon from marking the PR as "reviewed" prematurely.
 
 CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`

@@ -650,8 +650,9 @@ fn test_issue_comment_non_review_no_review_comment_id() {
 
 #[test]
 fn test_handle_issue_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder, then edits it with the full review.
-    // The 'edited' event should be processed (non-review → review transition).
+    // Reviewer posts a placeholder (with <!-- midtown-placeholder --> tag),
+    // then edits it with the full review. The 'edited' event should be
+    // processed (non-review → review transition).
     let payload = serde_json::json!({
         "action": "edited",
         "issue": {
@@ -665,7 +666,7 @@ fn test_handle_issue_comment_edited_placeholder_to_review() {
         },
         "changes": {
             "body": {
-                "from": "## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
             }
         },
         "repository": {"full_name": "org/repo"}
@@ -1238,8 +1239,9 @@ fn test_pull_request_event_routes_to_ops_channel() {
 
 #[test]
 fn test_handle_review_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder inline comment, then edits it with a review.
-    // The 'edited' event should be processed (non-review → review transition).
+    // Reviewer posts a placeholder inline comment (with <!-- midtown-placeholder -->
+    // tag), then edits it with a review. The 'edited' event should be processed
+    // (non-review → review transition).
     let payload = serde_json::json!({
         "action": "edited",
         "pull_request": {
@@ -1254,7 +1256,7 @@ fn test_handle_review_comment_edited_placeholder_to_review() {
         },
         "changes": {
             "body": {
-                "from": "## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
             }
         },
         "repository": {"full_name": "org/repo"}
@@ -1442,5 +1444,59 @@ fn test_check_run_event_routes_to_ops_channel() {
         event.message.channel.as_deref(),
         Some("ops"),
         "Check run webhook messages must route to #ops channel"
+    );
+}
+
+#[test]
+fn test_handle_issue_comment_placeholder_suppresses_pr_activity() {
+    // When a reviewer posts the "review in progress" placeholder with
+    // <!-- midtown-placeholder --> tag, it should NOT generate pr_activity.
+    // Otherwise the PR owner gets a false "review feedback" nudge.
+    let payload = r#"{
+            "action": "created",
+            "issue": {
+                "number": 42,
+                "pull_request": {}
+            },
+            "comment": {
+                "id": 300,
+                "user": {"login": "btucker"},
+                "body": "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside...\n\n---\n> [!NOTE]\n> This comment will be updated with the review results when complete.\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let result = handle_issue_comment(payload.as_bytes()).unwrap();
+    assert!(
+        result.is_none(),
+        "placeholder comments should be completely ignored (no event, no pr_activity)"
+    );
+}
+
+#[test]
+fn test_handle_review_comment_placeholder_suppresses_pr_activity() {
+    // Defense-in-depth: placeholder tag should also suppress pr_activity
+    // in handle_review_comment (inline diff comments).
+    let payload = serde_json::json!({
+        "action": "created",
+        "pull_request": {
+            "number": 42,
+            "head": {"ref": "amsterdam/fix-thing"},
+            "body": "<!-- midtown: amsterdam -->"
+        },
+        "comment": {
+            "id": 301,
+            "user": {"login": "btucker"},
+            "body": "<!-- midtown-placeholder -->\nReview in progress...",
+            "diff_hunk": "@@ -1,3 +1,3 @@"
+        },
+        "repository": {"full_name": "org/repo"}
+    });
+    let payload = serde_json::to_vec(&payload).unwrap();
+
+    let result = handle_review_comment(&payload).unwrap();
+    assert!(
+        result.is_none(),
+        "placeholder review comments should be completely ignored"
     );
 }

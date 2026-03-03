@@ -903,13 +903,20 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
 fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: IssueCommentEvent = serde_json::from_slice(body)?;
 
-    // Process 'created' events always. Process 'edited' events only when
-    // the comment transitions from non-review to review — reviewers often
-    // post a placeholder then edit it with the full review. Edits to an
-    // already-posted review (e.g. typo fixes) are ignored to avoid
-    // re-nudging the PR owner.
+    // Three-stage filter for issue comments:
+    // 1. Only process 'created' and 'edited' actions.
+    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    //    entirely — no pr_activity, no nudge to PR owner.
+    // 3. For 'edited' events, only process non-review → review transitions
+    //    (placeholder edited with final review). Edits to an already-posted
+    //    review (typo fixes) are ignored to avoid re-nudging.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
+        return Ok(None);
+    }
+    // Ignore reviewer placeholder comments ("review in progress") — these
+    // should not generate pr_activity or nudge the PR owner.
+    if is_placeholder_comment(&event.comment.body) {
         return Ok(None);
     }
     if is_edited {
@@ -992,13 +999,18 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
 fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: ReviewCommentEvent = serde_json::from_slice(body)?;
 
-    // Process 'created' events always. Process 'edited' events only when
-    // the comment transitions from non-review to review — reviewers often
-    // post a placeholder then edit it with the full review. Edits to an
-    // already-posted review (e.g. typo fixes) are ignored to avoid
-    // re-nudging the PR owner.
+    // Three-stage filter (mirrors handle_issue_comment):
+    // 1. Only process 'created' and 'edited' actions.
+    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    //    (defense-in-depth — unlikely for inline diff comments).
+    // 3. For 'edited', only process non-review → review transitions.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
+        return Ok(None);
+    }
+    // Ignore reviewer placeholder comments (defense-in-depth — unlikely for
+    // inline diff comments, but prevents false nudges if it ever happens).
+    if is_placeholder_comment(&event.comment.body) {
         return Ok(None);
     }
     if is_edited {
@@ -1275,6 +1287,15 @@ fn compute_check_duration(
 /// `daemon/helpers.rs` to detect review comments from webhook payloads.
 fn is_review_comment(body: &str) -> bool {
     crate::daemon::helpers::text_contains_review_signature(body)
+}
+
+/// Check if a comment is a reviewer placeholder ("review in progress").
+///
+/// Placeholder comments contain `<!-- midtown-placeholder -->` and should be
+/// ignored entirely — no `pr_activity` is generated, preventing false nudges
+/// to the PR owner while the review is still in progress.
+fn is_placeholder_comment(body: &str) -> bool {
+    body.contains("<!-- midtown-placeholder -->")
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
