@@ -1035,10 +1035,12 @@ fn fork_parses_thread_id_flag() {
             thread_id,
             session_id,
             name,
+            initial_message,
         } => {
             assert_eq!(thread_id, "msg-123");
             assert!(session_id.is_none());
             assert!(name.is_none());
+            assert!(initial_message.is_none());
         }
         other => panic!("Expected Fork, got {:?}", other),
     }
@@ -1074,10 +1076,40 @@ fn fork_parses_all_flags() {
             thread_id,
             session_id,
             name,
+            initial_message,
         } => {
             assert_eq!(thread_id, "thread-abc");
             assert_eq!(session_id.as_deref(), Some("sess-456"));
             assert_eq!(name.as_deref(), Some("investigate auth bug"));
+            assert!(initial_message.is_none());
+        }
+        other => panic!("Expected Fork, got {:?}", other),
+    }
+}
+
+#[test]
+fn fork_parses_initial_message_flag() {
+    use clap::Parser;
+    let cli = TestSessionCli::try_parse_from([
+        "test",
+        "fork",
+        "--thread-id",
+        "thread-xyz",
+        "--initial-message",
+        "Investigate the auth bug in login.rs",
+    ])
+    .unwrap();
+    match cli.command {
+        SessionCommand::Fork {
+            thread_id,
+            initial_message,
+            ..
+        } => {
+            assert_eq!(thread_id, "thread-xyz");
+            assert_eq!(
+                initial_message.as_deref(),
+                Some("Investigate the auth bug in login.rs")
+            );
         }
         other => panic!("Expected Fork, got {:?}", other),
     }

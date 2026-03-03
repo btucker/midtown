@@ -757,8 +757,15 @@ async fn test_handle_session_fork_already_exists_response() {
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
 
-    let resp =
-        handle_session_fork(RequestId::Number(1), thread_id, "any-caller", None, &state).await;
+    let resp = handle_session_fork(
+        RequestId::Number(1),
+        thread_id,
+        "any-caller",
+        None,
+        None,
+        &state,
+    )
+    .await;
     let json = serde_json::to_value(&resp).unwrap();
 
     assert!(
@@ -787,8 +794,15 @@ async fn test_handle_session_fork_returns_pending_during_spawn_window() {
         .unwrap()
         .insert(thread_id.to_string(), "pending".to_string());
 
-    let resp =
-        handle_session_fork(RequestId::Number(2), thread_id, "any-caller", None, &state).await;
+    let resp = handle_session_fork(
+        RequestId::Number(2),
+        thread_id,
+        "any-caller",
+        None,
+        None,
+        &state,
+    )
+    .await;
     let json = serde_json::to_value(&resp).unwrap();
 
     assert!(

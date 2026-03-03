@@ -1470,11 +1470,15 @@ pub(super) async fn create_fork_session(
 ///   The caller must pass its own session ID (from the `MIDTOWN_SESSION_ID`
 ///   env var or the system init event).
 /// - `name_hint`: Optional descriptive name for the fork (e.g. "investigate auth bug").
+/// - `initial_message`: Optional initial message for the fork. When provided, this is
+///   sent as the nudge instead of the default `fork_initial_framing`. This lets callers
+///   combine fork + nudge into a single command.
 pub(super) async fn handle_session_fork(
     id: RequestId,
     thread_parent_id: &str,
     calling_session_id: &str,
     name_hint: Option<&str>,
+    initial_message: Option<&str>,
     state: &DaemonState,
 ) -> crate::rpc::Response {
     match create_fork_session(
@@ -1495,16 +1499,20 @@ pub(super) async fn handle_session_fork(
             }),
         ),
         Ok((sid, false, fork_channel)) => {
-            // Send framing nudge to the fresh fork — same as the web-UI path
-            // in handle_session_fork_thread. Without this, the fork session
-            // sits idle forever with no initial message to act on.
-            if let Some(ref ch) = fork_channel {
-                let framing = super::rpc_channel::fork_initial_framing(ch);
-                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
+            // Send nudge to the fresh fork. If the caller provided an initial
+            // message, use that; otherwise fall back to fork_initial_framing —
+            // same pattern as handle_session_fork_thread. Without a nudge the
+            // fork session sits idle forever with no initial message to act on.
+            if let Some(message) = initial_message.map(String::from).or_else(|| {
+                fork_channel
+                    .as_ref()
+                    .map(|ch| super::rpc_channel::fork_initial_framing(ch))
+            }) {
+                let nudge = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
-                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
+                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message },
                 };
-                crate::daemon::effects::execute_effects(vec![framing_effect], state).await;
+                crate::daemon::effects::execute_effects(vec![nudge], state).await;
             }
             crate::rpc::Response::success(
                 id,

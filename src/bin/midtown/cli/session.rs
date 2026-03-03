@@ -54,6 +54,10 @@ pub enum SessionCommand {
         /// Optional descriptive name for the fork (e.g. "investigate auth bug").
         #[arg(long)]
         name: Option<String>,
+        /// Optional initial message to send to the fork. If provided, the fork
+        /// receives this as its first nudge instead of the default framing.
+        #[arg(long = "initial-message")]
+        initial_message: Option<String>,
     },
 }
 
@@ -268,6 +272,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
             thread_id,
             session_id,
             name,
+            initial_message,
         } => {
             let sid = session_id
                 .clone()
@@ -275,7 +280,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
                 .ok_or_else(|| {
                     "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
                 })?;
-            client.session_fork(thread_id, &sid, name.as_deref())
+            client.session_fork(thread_id, &sid, name.as_deref(), initial_message.as_deref())
         }
     }
 }
