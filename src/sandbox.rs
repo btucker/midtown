@@ -91,7 +91,11 @@ pub fn writable_dirs(
     }
 
     // Midtown state and config directories
-    dirs.push(home.join(".midtown").to_string_lossy().to_string());
+    dirs.push(
+        crate::paths::midtown_base_dir()
+            .to_string_lossy()
+            .to_string(),
+    );
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
 
@@ -323,7 +327,10 @@ mod tests {
     #[test]
     fn test_writable_dirs_includes_config_dirs() {
         let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
-        let has_midtown = dirs.iter().any(|d| d.ends_with(".midtown"));
+        let midtown_dir = crate::paths::midtown_base_dir()
+            .to_string_lossy()
+            .to_string();
+        let has_midtown = dirs.contains(&midtown_dir);
         let has_claude = dirs.iter().any(|d| d.ends_with(".claude"));
         let has_codex = dirs.iter().any(|d| d.ends_with(".codex"));
         assert!(has_midtown, "Should include ~/.midtown");

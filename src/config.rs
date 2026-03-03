@@ -1253,10 +1253,7 @@ pub fn ensure_project_config(project_name: &str, workdir: &Path) -> std::io::Res
 
 /// Get the path to the global config file.
 pub fn global_config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("config.toml")
+    crate::paths::midtown_base_dir().join("config.toml")
 }
 
 /// Get the path to a project-specific config file.
@@ -3101,8 +3098,12 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
 
         // Verify standard paths are also included
         assert!(
-            dirs.iter().any(|d| d.ends_with(".midtown")),
-            "Should include ~/.midtown"
+            dirs.contains(
+                &crate::paths::midtown_base_dir()
+                    .to_string_lossy()
+                    .to_string()
+            ),
+            "Should include midtown base dir"
         );
         assert!(
             dirs.iter().any(|d| d.ends_with(".claude")),
