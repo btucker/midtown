@@ -431,8 +431,9 @@ impl WebhookEffectFixture {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("coworkers")
+            .join("projects")
             .join(&self.repo_name)
+            .join("coworkers")
     }
 
     /// Check if a worktree exists for a given coworker.

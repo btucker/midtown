@@ -3344,13 +3344,13 @@ fn test_daemon_accepts_valid_model_format_on_create() {
 // Lead worktree E2E tests
 //
 // These tests verify the daemon creates and manages the lead worktree
-// at ~/.midtown/worktrees/<repo>/lead/ during startup.
+// at ~/.midtown/projects/<repo>/worktrees/lead/ during startup.
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Test that the daemon creates a lead worktree on startup.
 ///
 /// The daemon should create a detached-HEAD worktree at
-/// ~/.midtown/worktrees/<repo>/lead/ pointing at the main repo.
+/// ~/.midtown/projects/<repo>/worktrees/lead/ pointing at the main repo.
 #[test]
 #[ignore] // Requires built binary
 fn test_daemon_creates_lead_worktree_on_startup() {

@@ -305,7 +305,11 @@ fn test_create_task_worktree_with_stale_branch_and_stale_worktree_ref() {
         .output()
         .expect("list worktrees");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let expected_suffix = format!(".midtown/worktrees/{}/{}", manager.repo_name(), worktree_id);
+    let expected_suffix = format!(
+        ".midtown/projects/{}/worktrees/{}",
+        manager.repo_name(),
+        worktree_id
+    );
     assert!(
         stdout
             .lines()

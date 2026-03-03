@@ -77,7 +77,7 @@ pub struct LaunchConfig {
     /// Optional working directory override for task-based worktrees.
     /// When set, the spawn path will use this directory instead of creating
     /// a coworker-named worktree. Used by the WorktreeRegistry system for
-    /// task-based worktrees at ~/.midtown/worktrees/<repo>/task-<id>-<slug>/.
+    /// task-based worktrees at ~/.midtown/projects/<repo>/worktrees/task-<id>-<slug>/.
     pub working_dir: Option<PathBuf>,
     /// The Claude model to use for this session (e.g., "sonnet", "opus", "haiku").
     /// Defaults to "sonnet" for standard coworkers, "opus" for the Lead, reviewers,

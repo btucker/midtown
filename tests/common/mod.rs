@@ -550,8 +550,9 @@ impl DaemonTestHarness {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("coworkers")
+            .join("projects")
             .join(&self.repo_name)
+            .join("coworkers")
     }
 
     /// Check if a worktree exists for a given coworker.
@@ -575,12 +576,13 @@ impl Drop for DaemonTestHarness {
         // Clean up project directory
         let _ = fs::remove_dir_all(&self.project_dir);
 
-        // Clean up worktrees directory
+        // Clean up worktrees directory (now nested under projects/)
         let worktrees_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("worktrees")
-            .join(&self.repo_name);
+            .join("projects")
+            .join(&self.repo_name)
+            .join("worktrees");
         let _ = fs::remove_dir_all(&worktrees_dir);
 
         // Clean up task directory

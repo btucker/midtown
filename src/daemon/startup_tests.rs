@@ -446,7 +446,7 @@ async fn test_recover_from_session_records_restores_working_dir() {
     {
         let mut state = persistent_state.lock().await;
         let mut record = test_session_record("sess-abc", "park", "dev");
-        record.working_dir = "/home/user/.midtown/worktrees/repo/park".to_string();
+        record.working_dir = "/home/user/.midtown/projects/repo/worktrees/park".to_string();
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
@@ -458,7 +458,7 @@ async fn test_recover_from_session_records_restores_working_dir() {
             assert_eq!(
                 config.working_dir,
                 Some(std::path::PathBuf::from(
-                    "/home/user/.midtown/worktrees/repo/park"
+                    "/home/user/.midtown/projects/repo/worktrees/park"
                 ))
             );
         }

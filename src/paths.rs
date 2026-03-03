@@ -11,17 +11,16 @@
 //! ~/.midtown/
 //! ├── config.toml           # Global configuration
 //! ├── agents/               # Custom agent prompts
-//! ├── coworkers/            # Legacy coworker worktrees (named by coworker)
-//! │   └── <repo>/
-//! │       └── <coworker>/   # Individual worktree
-//! ├── worktrees/            # Task-based worktrees (named by branch slug)
-//! │   └── <repo>/
-//! │       └── <branch-slug>/# Individual worktree
 //! ├── lead/                 # Lead session data by project
 //! │   └── <repo>/
 //! │       └── session-id    # Lead's Claude session ID
 //! └── projects/             # Project-specific runtime data
 //!     └── <repo>/
+//!         ├── worktrees/    # Task-based worktrees (named by branch slug)
+//!         │   ├── lead/     # Lead worktree
+//!         │   └── <slug>/   # e.g., task-42-add-auth-endpoint
+//!         ├── coworkers/    # Legacy coworker worktrees (named by coworker)
+//!         │   └── <name>/   # Individual worktree
 //!         ├── workflow.py             # Project-level default workflow script (local, optional)
 //!         ├── channels/     # Per-channel directories
 //!         │   └── <name>/   # e.g., "midtown", "features"
@@ -282,15 +281,18 @@ pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
 
 /// Get the coworkers directory for a specific repository.
 ///
-/// Returns `~/.midtown/coworkers/<repo>/`.
+/// Returns `~/.midtown/projects/<repo>/coworkers/`.
 ///
 /// This is the legacy location for coworker worktrees (named by coworker).
 /// New worktrees should use `worktrees_dir_for_repo()` instead.
 ///
 /// Automatically migrates from old directory structure on first access.
 pub fn coworkers_dir_for_repo(repo: &str) -> PathBuf {
-    auto_migrate(repo);
-    midtown_base_dir().join("coworkers").join(repo)
+    migrate_worktree_paths(repo);
+    midtown_base_dir()
+        .join("projects")
+        .join(repo)
+        .join("coworkers")
 }
 
 /// Get the headless session output log file for a coworker.
@@ -310,18 +312,24 @@ pub fn headless_output_file(repo: &str, coworker_name: &str) -> PathBuf {
 
 /// Get the task-based worktrees directory for a specific repository.
 ///
-/// Returns `~/.midtown/worktrees/<repo>/`.
+/// Returns `~/.midtown/projects/<repo>/worktrees/`.
 ///
 /// This is where task-based worktrees are created. Each worktree is named
 /// by its branch slug (e.g., `task-42-add-auth-endpoint/`), decoupled from
 /// coworker identity to enable build cache reuse across reassignment.
+///
+/// Automatically migrates from the old `~/.midtown/worktrees/<repo>/` layout on first access.
 pub fn worktrees_dir_for_repo(repo: &str) -> PathBuf {
-    midtown_base_dir().join("worktrees").join(repo)
+    migrate_worktree_paths(repo);
+    midtown_base_dir()
+        .join("projects")
+        .join(repo)
+        .join("worktrees")
 }
 
 /// Get the lead worktree path for a specific repository.
 ///
-/// Returns `~/.midtown/worktrees/<repo>/lead/`.
+/// Returns `~/.midtown/projects/<repo>/worktrees/lead/`.
 pub fn lead_worktree_path(repo: &str) -> PathBuf {
     worktrees_dir_for_repo(repo).join("lead")
 }
@@ -633,7 +641,7 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Migrate data from the old directory structure to the new one.
+/// Migrate data from the old directory structure to the new one (era 1).
 ///
 /// Old structure: `~/.midtown/<repo>/...`
 /// New structure: `~/.midtown/{projects,coworkers,lead}/<repo>/...`
@@ -646,6 +654,11 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
 /// - `worktrees/` -> `coworkers/<repo>/`
 /// - `lead-session-id` -> `lead/<repo>/session-id`
 /// - `lead-initialized` -> `lead/<repo>/lead-initialized`
+///
+/// Note: This is era 1 of the migration chain. The `coworkers/<repo>/` and
+/// `worktrees/<repo>/` paths produced here are further migrated by
+/// [`migrate_worktree_paths()`] (era 2) into `projects/<repo>/coworkers/`
+/// and `projects/<repo>/worktrees/` respectively.
 ///
 /// Returns Ok(true) if migration was performed, Ok(false) if already migrated or nothing to migrate.
 pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
@@ -725,6 +738,90 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
     let _ = std::fs::remove_dir(&old_repo_dir);
 
     Ok(true)
+}
+
+/// Migrate worktree paths from old layout to new project-grouped layout.
+///
+/// Old layout:
+/// - `~/.midtown/worktrees/<repo>/` → `~/.midtown/projects/<repo>/worktrees/`
+/// - `~/.midtown/coworkers/<repo>/` → `~/.midtown/projects/<repo>/coworkers/`
+///
+/// This is called internally by `worktrees_dir_for_repo()` and
+/// `coworkers_dir_for_repo()` to ensure seamless migration on first access.
+/// It's idempotent and only runs once per session per repo.
+pub fn migrate_worktree_paths(repo: &str) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static MIGRATED_WT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let migrated = MIGRATED_WT.get_or_init(|| Mutex::new(HashSet::new()));
+
+    {
+        let guard = migrated.lock().unwrap();
+        if guard.contains(repo) {
+            return;
+        }
+        // Don't mark as migrated yet — only mark after success so failed
+        // migrations can be retried on next access.
+    }
+
+    match do_migrate_worktree_paths(repo) {
+        Ok(_) => {
+            let mut guard = migrated.lock().unwrap();
+            guard.insert(repo.to_string());
+        }
+        Err(e) => {
+            tracing::warn!("Failed to migrate worktree paths for {}: {}", repo, e);
+        }
+    }
+}
+
+/// Perform the actual migration of worktree paths.
+///
+/// Returns `Ok(true)` if any migration was performed, `Ok(false)` if nothing to migrate.
+pub fn do_migrate_worktree_paths(repo: &str) -> std::io::Result<bool> {
+    let base = midtown_base_dir();
+    let projects_dir = base.join("projects").join(repo);
+    let mut migrated_any = false;
+
+    // Migrate ~/.midtown/worktrees/<repo>/ → ~/.midtown/projects/<repo>/worktrees/
+    let old_worktrees = base.join("worktrees").join(repo);
+    let new_worktrees = projects_dir.join("worktrees");
+    if old_worktrees.exists() && !new_worktrees.exists() {
+        fs::create_dir_all(&projects_dir)?;
+        fs::rename(&old_worktrees, &new_worktrees)?;
+        tracing::info!(
+            "Migrated worktrees: {} -> {}",
+            old_worktrees.display(),
+            new_worktrees.display()
+        );
+        migrated_any = true;
+
+        // Clean up empty parent ~/.midtown/worktrees/ if it's now empty
+        let old_worktrees_parent = base.join("worktrees");
+        let _ = fs::remove_dir(&old_worktrees_parent);
+    }
+
+    // Migrate ~/.midtown/coworkers/<repo>/ → ~/.midtown/projects/<repo>/coworkers/
+    let old_coworkers = base.join("coworkers").join(repo);
+    let new_coworkers = projects_dir.join("coworkers");
+    if old_coworkers.exists() && !new_coworkers.exists() {
+        fs::create_dir_all(&projects_dir)?;
+        fs::rename(&old_coworkers, &new_coworkers)?;
+        tracing::info!(
+            "Migrated coworkers: {} -> {}",
+            old_coworkers.display(),
+            new_coworkers.display()
+        );
+        migrated_any = true;
+
+        // Clean up empty parent ~/.midtown/coworkers/ if it's now empty
+        let old_coworkers_parent = base.join("coworkers");
+        let _ = fs::remove_dir(&old_coworkers_parent);
+    }
+
+    Ok(migrated_any)
 }
 
 /// Auto-migrate on first access.

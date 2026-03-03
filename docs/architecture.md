@@ -418,6 +418,13 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
 
+**Directory layout**: All worktrees live under `~/.midtown/projects/<repo>/`:
+- `worktrees/lead/` — the project lead's worktree
+- `worktrees/task-<id>-<slug>/` — task-based worktrees (current)
+- `coworkers/<name>/` — legacy name-based worktrees (deprecated)
+
+Old paths (`~/.midtown/worktrees/<repo>/` and `~/.midtown/coworkers/<repo>/`) are auto-migrated on first access via `migrate_worktree_paths()`.
+
 ## Task Completion
 
 Tasks complete through two paths depending on whether they produce a PR:

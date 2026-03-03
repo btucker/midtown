@@ -7,7 +7,7 @@
 //! ## Path layout
 //!
 //! ```text
-//! ~/.midtown/worktrees/<repo>/
+//! ~/.midtown/projects/<repo>/worktrees/
 //! └── task-42-add-auth-endpoint/   # branch slug = worktree_id
 //! ```
 //!
