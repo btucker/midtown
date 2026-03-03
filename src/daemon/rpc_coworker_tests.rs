@@ -905,3 +905,146 @@ fn test_is_pr_open_returns_false_with_no_repo_path() {
         "is_pr_open should return false when no repo path is given"
     );
 }
+
+// ============================================================================
+// Reviewer idle nudge loop fix (!1990)
+// ============================================================================
+
+/// Bug !1990: When a reviewer posts their review and immediately goes idle,
+/// the webhook marking the review as cached may not have arrived yet. The
+/// idle handler used to check only the snapshot's `reviewed_prs` (a cache
+/// clone), which missed the live state. This caused a nudge loop: the
+/// reviewer gets told to post a review that already exists on GitHub.
+///
+/// Fix: the idle handler now calls `is_pr_reviewed()` which checks persistent
+/// state first (fast path) and falls back to a GitHub API call if needed.
+///
+/// This test verifies the fast path: when the review IS cached in persistent
+/// state (e.g., webhook arrived before idle report), the reviewer should NOT
+/// be nudged and should be sent on break instead.
+#[tokio::test]
+async fn test_reviewer_idle_not_nudged_when_review_cached() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let reviewer_name = "vernon";
+    let pr_number = 42u64;
+
+    // Insert the reviewer as a running coworker
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: reviewer_name.to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "reviewer coworker should be inserted");
+
+    // Assign the reviewer to a PR in persistent state
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            reviewer_name,
+            crate::github_state::AssignmentSource::Webhook,
+        );
+        // Mark the review as completed (simulates webhook having arrived)
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Reviewer reports idle — should NOT be nudged since review is cached
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        reviewer_name,
+        "idle",
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "idle report should succeed");
+    let message = response
+        .result
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    // Should go on break, NOT be nudged to post review
+    assert!(
+        !message.contains("nudged to post review"),
+        "reviewer should NOT be nudged when review is already cached, got: {}",
+        message
+    );
+}
+
+/// Complement to the above: when the review has NOT been posted (neither cached
+/// nor on GitHub), the reviewer SHOULD be nudged. This verifies the nudge still
+/// fires for genuinely unposted reviews.
+#[tokio::test]
+async fn test_reviewer_idle_nudged_when_review_not_posted() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let reviewer_name = "park";
+    let pr_number = 43u64;
+
+    // Insert the reviewer as a running coworker
+    let inserted = state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: reviewer_name.to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+    assert!(inserted, "reviewer coworker should be inserted");
+
+    // Assign the reviewer to a PR but do NOT mark the review as completed
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.assign_reviewer(
+            pr_number,
+            reviewer_name,
+            crate::github_state::AssignmentSource::Webhook,
+        );
+        // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
+    }
+
+    // Reviewer reports idle — SHOULD be nudged since review isn't posted
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        reviewer_name,
+        "idle",
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "idle report should succeed");
+    let message = response
+        .result
+        .as_ref()
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("nudged to post review"),
+        "reviewer should be nudged when review is NOT posted, got: {}",
+        message
+    );
+}
