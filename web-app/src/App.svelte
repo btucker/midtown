@@ -17,7 +17,7 @@
   import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
   import SearchPalette from '$lib/SearchPalette.svelte'
   import InstallBanner from '$lib/InstallBanner.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen } from '$lib/store.js'
+  import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen, deepLinkMsgId } from '$lib/store.js'
   import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject, setupHistoryNavigation, replaceNavState, openThread } from '$lib/api.js'
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
@@ -96,10 +96,11 @@
     if (targetProject) {
       switchProject(targetProject.name, targetProject.webhook_port)
 
-      // Deep-link: read channel/thread from URL query params
+      // Deep-link: read channel/thread/msg from URL query params
       const params = new URLSearchParams(window.location.search)
       const urlChannel = params.get('channel')
       const urlThread = params.get('thread')
+      const urlMsg = params.get('msg')
 
       // Deep-link: restore channel and/or thread from URL.
       // Use the URL channel if present, else default to the project's main channel.
@@ -108,9 +109,13 @@
         activeChannel.set(urlChannel)
       }
       if (urlThread) {
+        // If a specific message is targeted, store it so ThreadPanel can scroll to it
+        if (urlMsg) {
+          deepLinkMsgId.set(urlMsg)
+        }
         openThread({ id: urlThread, from: '', content: '' }, deepLinkChannel, { pushState: false })
       }
-      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined })
+      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined, msg: urlMsg || undefined })
     }
     // Set up browser back/forward navigation
     const cleanupHistory = setupHistoryNavigation()

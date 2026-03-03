@@ -116,6 +116,10 @@ export const usageData = writable([])
 // parentMessage: null when the thread has no backing channel message (task without message_id)
 export const threadData = writable(null)
 
+// Deep-link target message ID: when set, ThreadPanel scrolls to and highlights this message.
+// Cleared after the scroll/highlight completes.
+export const deepLinkMsgId = writable(null)
+
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)
