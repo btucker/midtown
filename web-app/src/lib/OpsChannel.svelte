@@ -1,8 +1,8 @@
 <script>
-  import { messagesByChannel } from './store.js'
+  import { messagesByChannel, activeProject } from './store.js'
   import { tick } from 'svelte'
-  import { fetchHistory } from './api.js'
-  import { getSenderColor, formatTime } from './messageUtils.js'
+  import { fetchHistory, openThread } from './api.js'
+  import { getSenderColor, formatTime, getPermalinkUrl } from './messageUtils.js'
 
   const OPS_SENDER_OVERRIDES = {
     midtown: '#585858',
@@ -69,8 +69,13 @@
         <div class="text-muted-foreground text-center py-4">No ops messages</div>
       {:else}
         {#each opsMessages as msg}
+          {@const opsUrl = getPermalinkUrl($activeProject, 'ops', msg.thread_parent_id || msg.id)}
           <div class="flex gap-1 break-words min-w-0">
-            <span class="text-muted-foreground/60 flex-shrink-0 w-[5.2em] text-right">{formatTime(msg.timestamp)}</span>
+            {#if opsUrl}
+              <a href={opsUrl} class="text-muted-foreground/60 flex-shrink-0 w-[5.2em] text-right no-underline hover:underline" onclick={(e) => { if (!msg.thread_parent_id) { e.preventDefault(); e.stopPropagation(); openThread(msg, 'ops') } }}>{formatTime(msg.timestamp)}</a>
+            {:else}
+              <span class="text-muted-foreground/60 flex-shrink-0 w-[5.2em] text-right">{formatTime(msg.timestamp)}</span>
+            {/if}
             {#if msg.msg_type === 'action' || msg.content?.startsWith('/me ')}
               <!-- Action: "* name content" -->
               <span class="flex-shrink-0" style="color: {getSenderColor(msg.from, OPS_SENDER_OVERRIDES)}">*</span>
