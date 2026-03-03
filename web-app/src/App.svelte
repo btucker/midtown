@@ -115,7 +115,7 @@
         }
         openThread({ id: urlThread, from: '', content: '' }, deepLinkChannel, { pushState: false })
       }
-      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined })
+      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined, msg: urlMsg || undefined })
     }
     // Set up browser back/forward navigation
     const cleanupHistory = setupHistoryNavigation()
