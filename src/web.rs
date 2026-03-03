@@ -1975,13 +1975,10 @@ async fn api_get_screenshot(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
-    };
+    let content_type = crate::webserver::mime_type_for_path(&file_path);
+    if !content_type.starts_with("image/") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
 
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
 }

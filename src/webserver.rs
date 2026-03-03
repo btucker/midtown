@@ -366,6 +366,9 @@ async fn project_asset(
 async fn project_screenshot(
     Path((name, filename)): Path<(String, String)>,
 ) -> Result<Response<Body>, StatusCode> {
+    if !is_valid_path_segment(&name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -377,13 +380,10 @@ async fn project_screenshot(
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
-    };
+    let content_type = mime_type_for_path(&file_path);
+    if !content_type.starts_with("image/") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
 
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -393,7 +393,7 @@ async fn project_screenshot(
 }
 
 /// Return a best-effort MIME type for a file path based on its extension.
-fn mime_type_for_path(path: &std::path::Path) -> &'static str {
+pub(crate) fn mime_type_for_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
@@ -1005,6 +1005,13 @@ mod tests {
     }
 
     // --- project_screenshot tests ---
+
+    #[tokio::test]
+    async fn test_project_screenshot_rejects_traversal_in_project_name() {
+        let result =
+            project_screenshot(Path(("../../../etc".to_string(), "image.png".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
 
     #[tokio::test]
     async fn test_project_screenshot_rejects_path_traversal() {
