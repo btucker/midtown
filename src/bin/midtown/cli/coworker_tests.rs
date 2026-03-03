@@ -71,7 +71,7 @@ fn save_screenshot_locally_saves_and_cleans_up_temp() {
         false,
         false,
         &screenshots_dir,
-        false,
+        None,
         "test-repo",
     );
 
@@ -128,7 +128,7 @@ fn save_screenshot_locally_before_after_prefix() {
         true,
         false,
         &screenshots_dir,
-        false,
+        None,
         "test-repo",
     );
     assert!(result.is_ok());
@@ -164,7 +164,7 @@ fn save_screenshot_locally_github_flag_produces_markdown_image() {
         false,
         false,
         &screenshots_dir,
-        true,
+        Some("http"),
         "my-project",
     );
 
@@ -172,7 +172,7 @@ fn save_screenshot_locally_github_flag_produces_markdown_image() {
 
     if let super::super::Response::Message { message } = result.unwrap() {
         assert!(
-            message.starts_with("![screenshot](https://localhost:"),
+            message.starts_with("![screenshot](http://localhost:"),
             "GitHub output should be markdown image syntax, got: {}",
             message
         );
@@ -209,7 +209,7 @@ fn save_screenshot_locally_github_before_uses_before_alt_text() {
         true,
         false,
         &screenshots_dir,
-        true,
+        Some("http"),
         "my-project",
     );
 

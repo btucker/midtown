@@ -186,30 +186,44 @@ pub fn handle_screenshot(
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
+    let webserver_scheme = if github {
+        let config = midtown::config::GlobalConfig::load();
+        if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
+            Some("https")
+        } else {
+            Some("http")
+        }
+    } else {
+        None
+    };
+
     save_screenshot_locally(
         &tmp_path,
         &ext,
         before,
         after,
         &screenshots_dir,
-        github,
+        webserver_scheme,
         &repo,
     )
 }
 
 /// Save a screenshot to the given screenshots directory and return
-/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `github` is true).
+/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `webserver_scheme` is set).
 ///
 /// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
 /// exit paths (success, early error return, or panic). Generates a UUID-based
 /// filename and copies the screenshot to the provided directory.
+///
+/// When `webserver_scheme` is `Some("http")` or `Some("https")`, returns GitHub-compatible
+/// markdown image syntax using the webserver's screenshot endpoint.
 pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
     ext: &str,
     before: bool,
     after: bool,
     screenshots_dir: &std::path::Path,
-    github: bool,
+    webserver_scheme: Option<&str>,
     repo: &str,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
@@ -236,11 +250,11 @@ pub(crate) fn save_screenshot_locally(
 
     eprintln!("Screenshot saved: {}", dest_path.display());
 
-    if github {
+    if let Some(scheme) = webserver_scheme {
         let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
         let url = format!(
-            "https://localhost:{}/api/projects/{}/screenshots/{}",
-            port, repo, filename
+            "{}://localhost:{}/api/projects/{}/screenshots/{}",
+            scheme, port, repo, filename
         );
         let alt = if before {
             "before"
