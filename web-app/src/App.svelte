@@ -22,6 +22,9 @@
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
   import SearchIcon from '@lucide/svelte/icons/search'
+  import Bell from '@lucide/svelte/icons/bell'
+  import BellOff from '@lucide/svelte/icons/bell-off'
+  import { pushSupported, pushPermission, pushSubscribed, subscribePush, unsubscribePush, checkPushSubscription } from '$lib/push.js'
 
   $effect(() => {
     if ($theme === 'dark') {
@@ -65,7 +68,18 @@
     }
   })
 
+  async function togglePush() {
+    if ($pushSubscribed) {
+      await unsubscribePush()
+    } else {
+      await subscribePush()
+    }
+  }
+
   onMount(async () => {
+    // Initialize push notification support check
+    checkPushSubscription()
+
     // Always in multi-project mode — served from shared gateway on port 47022
     const projectList = await fetchProjects()
 
@@ -199,6 +213,25 @@
               <SearchIcon size={16} />
             </button>
             <button
+              class="theme-toggle"
+              class:push-subscribed={$pushSubscribed}
+              onclick={togglePush}
+              disabled={!$pushSupported || $pushPermission === 'denied'}
+              title={!$pushSupported
+                ? 'Push notifications not supported in this browser'
+                : $pushPermission === 'denied'
+                  ? 'Notifications blocked in browser settings'
+                  : $pushSubscribed
+                    ? 'Disable push notifications'
+                    : 'Enable push notifications'}
+            >
+              {#if $pushSubscribed}
+                <Bell size={16} />
+              {:else}
+                <BellOff size={16} />
+              {/if}
+            </button>
+            <button
               data-testid="theme-toggle"
               class="theme-toggle"
               onclick={toggleTheme}
@@ -248,6 +281,24 @@
           <MiniRepoStatus />
           <button
             class="mobile-search-btn ml-auto p-1.5 text-muted-foreground hover:text-foreground"
+            onclick={togglePush}
+            disabled={!$pushSupported || $pushPermission === 'denied'}
+            title={!$pushSupported
+              ? 'Push notifications not supported'
+              : $pushPermission === 'denied'
+                ? 'Notifications blocked'
+                : $pushSubscribed
+                  ? 'Disable push notifications'
+                  : 'Enable push notifications'}
+          >
+            {#if $pushSubscribed}
+              <Bell size={16} />
+            {:else}
+              <BellOff size={16} />
+            {/if}
+          </button>
+          <button
+            class="mobile-search-btn p-1.5 text-muted-foreground hover:text-foreground"
             onclick={() => searchOpen = true}
             title="Search messages"
           >
@@ -452,9 +503,18 @@
     transition: color 0.2s, background 0.2s;
   }
 
-  .theme-toggle:hover {
+  .theme-toggle:hover:not(:disabled) {
     color: hsl(var(--foreground));
     background: hsl(var(--accent));
+  }
+
+  .theme-toggle:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .theme-toggle.push-subscribed {
+    color: hsl(var(--primary));
   }
 
   /* Sidebar content */
