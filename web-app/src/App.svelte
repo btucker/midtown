@@ -182,7 +182,9 @@
             {#if $projects.length > 0}
               <div class="project-selector">
                 <button class="project-trigger" onclick={toggleProjectDropdown}>
-                  <span class="project-status-dot" class:running={$projects.find(p => p.name === $activeProject)?.status === 'running'}></span>
+                  {#if $projects.find(p => p.name === $activeProject)?.status !== 'running'}
+                    <span class="project-status-dot offline"></span>
+                  {/if}
                   <span class="project-name">{$activeProject || 'Select project'}</span>
                   <span class="dropdown-arrow">{projectDropdownOpen ? '\u25B4' : '\u25BE'}</span>
                 </button>
@@ -494,6 +496,10 @@
 
   .project-status-dot.running {
     background: hsl(var(--primary));
+  }
+
+  .project-status-dot.offline {
+    background: hsl(var(--destructive));
   }
 
   .theme-toggle {
