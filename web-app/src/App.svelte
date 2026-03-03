@@ -51,6 +51,9 @@
   let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
   let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
 
+  // Active project status for the status dot in the project selector
+  let activeStatus = $derived($projects.find(p => p.name === $activeProject)?.status)
+
   function toggleProjectDropdown() {
     projectDropdownOpen = !projectDropdownOpen
   }
@@ -182,7 +185,6 @@
             {#if $projects.length > 0}
               <div class="project-selector">
                 <button class="project-trigger" onclick={toggleProjectDropdown}>
-                  {@const activeStatus = $projects.find(p => p.name === $activeProject)?.status}
                   {#if activeStatus && activeStatus !== 'running'}
                     <span class="project-status-dot"></span>
                   {/if}
