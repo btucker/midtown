@@ -194,6 +194,49 @@ pub(super) async fn handle_channel_post(
     // Resolved thread_parent_id: explicit takes priority, then session-bound thread.
     let thread_parent_id = thread_parent_id.or(bound_thread.as_deref());
 
+    // Validate thread_parent_id: ensure it refers to an existing message in the channel.
+    // This prevents "black hole" messages — thread replies with dangling parent IDs
+    // that are invisible in the web UI (filtered from main view but unreachable via
+    // any thread panel).
+    if let Some(parent_id) = thread_parent_id {
+        let channel = match state.channel_router.get_channel(channel_name) {
+            Ok(ch) => ch,
+            Err(e) => {
+                error!(
+                    "Failed to open channel '{}' for thread validation: {}",
+                    channel_name, e
+                );
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        };
+        let parent_exists = match channel.contains_message_id_async(parent_id).await {
+            Ok(exists) => exists,
+            Err(e) => {
+                error!(
+                    "Failed to scan channel '{}' for thread validation: {}",
+                    channel_name, e
+                );
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        };
+        if !parent_exists {
+            warn!(
+                "channel.post: thread_parent_id '{}' does not match any message in channel '{}'",
+                parent_id, channel_name
+            );
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!(
+                        "thread_parent_id '{}' does not match any existing message in channel '{}'",
+                        parent_id, channel_name
+                    ),
+                ),
+            );
+        }
+    }
+
     let msg = if let Some(parent_id) = thread_parent_id {
         Message::thread_reply(
             channel_name,
@@ -318,6 +361,7 @@ pub(super) async fn handle_channel_post(
                 &content,
                 wake_msg_id.clone(),
                 topic_session_id,
+                thread_parent_id,
             );
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else {
@@ -364,6 +408,12 @@ pub(super) async fn handle_channel_post(
                 reason: crate::daemon::wake_reason::WakeReason::UserMessage {
                     content: content.clone(),
                     msg_id: wake_msg_id,
+                    thread_ctx: thread_parent_id.map(|s| {
+                        crate::daemon::wake_reason::ThreadContext {
+                            parent_id: s.to_string(),
+                            channel_name: channel_name.to_string(),
+                        }
+                    }),
                 },
             };
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
@@ -887,22 +937,25 @@ pub(crate) fn build_topic_thread_nudge_effect(
     content: &str,
     wake_msg_id: String,
     topic_session_id: Option<String>,
+    thread_parent_id: Option<&str>,
 ) -> crate::daemon::effects::Effect {
+    let reason = crate::daemon::wake_reason::WakeReason::UserMessage {
+        content: content.to_string(),
+        msg_id: wake_msg_id,
+        thread_ctx: thread_parent_id.map(|s| crate::daemon::wake_reason::ThreadContext {
+            parent_id: s.to_string(),
+            channel_name: channel_name.to_string(),
+        }),
+    };
     if let Some(fork_session_id) = topic_session_id {
         crate::daemon::effects::Effect::NudgeSession {
             session_id: fork_session_id,
-            reason: crate::daemon::wake_reason::WakeReason::UserMessage {
-                content: content.to_string(),
-                msg_id: wake_msg_id,
-            },
+            reason,
         }
     } else {
         crate::daemon::effects::Effect::NudgeChannelLead {
             channel_name: channel_name.to_string(),
-            reason: crate::daemon::wake_reason::WakeReason::UserMessage {
-                content: content.to_string(),
-                msg_id: wake_msg_id,
-            },
+            reason,
         }
     }
 }

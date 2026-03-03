@@ -1,4 +1,4 @@
-use super::WakeReason;
+use super::{ThreadContext, WakeReason};
 
 #[test]
 fn task_created_nudge_message() {
@@ -33,6 +33,7 @@ fn user_message_nudge_message() {
     let reason = WakeReason::UserMessage {
         content: "What's the status?".to_string(),
         msg_id: "msg-abc".to_string(),
+        thread_ctx: None,
     };
     let msg = reason.to_nudge_message();
     assert!(msg.contains("msg-abc"), "should contain msg_id");
@@ -44,6 +45,7 @@ fn user_message_initial_prompt() {
     let reason = WakeReason::UserMessage {
         content: "What's the status?".to_string(),
         msg_id: "msg-abc".to_string(),
+        thread_ctx: None,
     };
     let prompt = reason.to_initial_prompt("ops");
     assert!(prompt.contains("Channel lead for #ops"));
@@ -323,7 +325,8 @@ fn sender_returns_user_for_user_messages() {
     assert_eq!(
         WakeReason::UserMessage {
             content: "hi".into(),
-            msg_id: "m".into()
+            msg_id: "m".into(),
+            thread_ctx: None,
         }
         .sender(),
         "user"
@@ -371,5 +374,51 @@ fn already_in_dm_channel_only_for_dm_from_user() {
             message: "hi".into()
         }
         .already_in_dm_channel()
+    );
+}
+
+#[test]
+fn user_message_thread_reply_nudge_includes_instructions() {
+    let reason = WakeReason::UserMessage {
+        content: "Can you fix this?".to_string(),
+        msg_id: "msg-reply-001".to_string(),
+        thread_ctx: Some(ThreadContext {
+            parent_id: "parent-msg-uuid".to_string(),
+            channel_name: "auth-refactor".to_string(),
+        }),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("--thread parent-msg-uuid"),
+        "thread reply nudge should include --thread instruction"
+    );
+    assert!(
+        msg.contains("--channel auth-refactor"),
+        "thread reply nudge should include --channel instruction"
+    );
+    assert!(
+        msg.contains("This is a thread reply"),
+        "thread reply nudge should indicate it's a thread reply"
+    );
+}
+
+#[test]
+fn user_message_thread_reply_initial_prompt_includes_instructions() {
+    let reason = WakeReason::UserMessage {
+        content: "Can you fix this?".to_string(),
+        msg_id: "msg-reply-002".to_string(),
+        thread_ctx: Some(ThreadContext {
+            parent_id: "parent-msg-uuid".to_string(),
+            channel_name: "auth-refactor".to_string(),
+        }),
+    };
+    let prompt = reason.to_initial_prompt("auth-refactor");
+    assert!(
+        prompt.contains("--thread parent-msg-uuid"),
+        "thread reply initial prompt should include --thread instruction"
+    );
+    assert!(
+        prompt.contains("--channel auth-refactor"),
+        "thread reply initial prompt should include --channel instruction"
     );
 }

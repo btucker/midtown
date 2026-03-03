@@ -59,6 +59,27 @@ fn make_test_state(
     (state, temp_dir, _guard)
 }
 
+/// Post a parent message and return its ID for use in thread reply tests.
+async fn post_parent_message(state: &DaemonState, channel: Option<&str>) -> String {
+    let response = handle_channel_post(
+        999_i64.into(),
+        "setup",
+        "Parent message for thread tests",
+        channel,
+        None,
+        state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "parent message post should succeed"
+    );
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let ch = state.channel_router.get_channel(channel_name).unwrap();
+    let messages = ch.read_all().unwrap();
+    messages.last().unwrap().id.clone()
+}
+
 #[test]
 fn test_unescape_shell_artifacts_exclamation() {
     assert_eq!(
@@ -478,7 +499,7 @@ async fn test_channel_read_with_channel_parameter() {
 #[tokio::test]
 async fn test_channel_post_with_thread_parent_id() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-thread-parent-id");
-    let parent_id = "parent-msg-uuid-123";
+    let parent_id = post_parent_message(&state, None).await;
 
     // Post a thread reply
     let response = handle_channel_post(
@@ -486,7 +507,7 @@ async fn test_channel_post_with_thread_parent_id() {
         "york",
         "This is a reply in a thread",
         None,
-        Some(parent_id),
+        Some(&parent_id),
         &state,
     )
     .await;
@@ -495,9 +516,9 @@ async fn test_channel_post_with_thread_parent_id() {
     // Read back messages and verify thread_parent_id is set
     let channel = state.channel_router.default_channel().unwrap();
     let messages = channel.read_all().unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2); // parent + reply
     assert_eq!(
-        messages[0].thread_parent_id,
+        messages[1].thread_parent_id,
         Some(parent_id.to_string()),
         "Message should have thread_parent_id set"
     );
@@ -533,26 +554,17 @@ async fn test_channel_post_without_thread_parent_id() {
 #[tokio::test]
 async fn test_channel_read_includes_thread_parent_id() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-thread-parent-id");
-    let parent_id = "parent-uuid-abc";
 
-    // Post a top-level message
-    let _r = handle_channel_post(
-        1_i64.into(),
-        "park",
-        "Top-level message",
-        None,
-        None,
-        &state,
-    )
-    .await;
+    // Post a top-level message and get its ID for use as thread parent
+    let parent_id = post_parent_message(&state, None).await;
 
-    // Post a thread reply
+    // Post a thread reply referencing the real parent
     let _r = handle_channel_post(
         2_i64.into(),
         "york",
         "Thread reply",
         None,
-        Some(parent_id),
+        Some(&parent_id),
         &state,
     )
     .await;
@@ -573,7 +585,7 @@ async fn test_channel_read_includes_thread_parent_id() {
     // Thread reply should have thread_parent_id
     assert_eq!(
         messages[1].get("thread_parent_id").and_then(|v| v.as_str()),
-        Some(parent_id),
+        Some(parent_id.as_str()),
         "Thread reply should have thread_parent_id in RPC response"
     );
 }
@@ -806,7 +818,11 @@ async fn test_user_thread_reply_nudge_uses_parent_id() {
         .await
         .expect("register headed adapter");
 
-    let parent_id = "parent-message-uuid-456";
+    // Post a parent message to get a valid thread_parent_id
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Drain the headed queue of any nudges from the parent post
+    let _ = state.headed_poll(&state.repo_name, adapter_id, 0, 10).await;
 
     // Post a user thread reply (simulating the user sending a reply from the thread panel)
     let response = handle_channel_post(
@@ -814,7 +830,7 @@ async fn test_user_thread_reply_nudge_uses_parent_id() {
         "user",
         "this is my thread reply",
         None,
-        Some(parent_id),
+        Some(&parent_id),
         &state,
     )
     .await;
@@ -830,11 +846,21 @@ async fn test_user_thread_reply_nudge_uses_parent_id() {
     // The nudge MUST use the parent's ID so the lead replies with --thread parent_id,
     // creating a sibling reply in the correct thread. Using the reply's own UUID
     // would cause the lead to create a nested reply invisible to the user.
-    let expected = format!("user ({}): this is my thread reply", parent_id);
-    assert_eq!(
-        messages[0].text, expected,
-        "nudge for thread reply should use parent_id '{}', not the reply's own UUID",
-        parent_id
+    // The nudge also includes --thread/--channel instructions after the message preview.
+    assert!(
+        messages[0].text.contains(&format!("user ({})", parent_id)),
+        "nudge for thread reply should use parent_id, got: {}",
+        messages[0].text
+    );
+    assert!(
+        messages[0].text.contains("this is my thread reply"),
+        "nudge should contain the message content"
+    );
+    // Thread reply nudge should include thread instructions
+    assert!(
+        messages[0].text.contains("--thread"),
+        "thread reply nudge should include --thread instruction, got: {}",
+        messages[0].text
     );
 }
 
@@ -1191,15 +1217,17 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
 #[tokio::test]
 async fn test_output_binding_auto_tags_forked_session_posts() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-auto");
-    let thread_id = "thread-parent-uuid-xyz";
     let fork_name = "fork-abcdefgh";
+
+    // Post a parent message to get a valid thread_id
+    let thread_id = post_parent_message(&state, None).await;
 
     // Register the fork's bound thread in the in-memory cache
     state
         .fork_bound_threads
         .lock()
         .unwrap()
-        .insert(fork_name.to_string(), thread_id.to_string());
+        .insert(fork_name.to_string(), thread_id.clone());
 
     // Post a message from the forked session WITHOUT explicit thread_parent_id
     let response = handle_channel_post(
@@ -1216,9 +1244,9 @@ async fn test_output_binding_auto_tags_forked_session_posts() {
     // The message should have been auto-tagged with the bound thread_parent_id
     let channel = state.channel_router.default_channel().unwrap();
     let messages = channel.read_all().unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2); // parent + reply
     assert_eq!(
-        messages[0].thread_parent_id,
+        messages[1].thread_parent_id,
         Some(thread_id.to_string()),
         "Forked session post should be auto-tagged with bound_thread_id"
     );
@@ -1229,16 +1257,18 @@ async fn test_output_binding_auto_tags_forked_session_posts() {
 #[tokio::test]
 async fn test_output_binding_explicit_thread_takes_priority() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-priority");
-    let bound_thread = "bound-thread-id-111";
-    let explicit_thread = "explicit-thread-id-999";
     let fork_name = "fork-priority";
+
+    // Post two parent messages to get valid thread IDs
+    let bound_thread = post_parent_message(&state, None).await;
+    let explicit_thread = post_parent_message(&state, None).await;
 
     // Register the fork's bound thread in the in-memory cache
     state
         .fork_bound_threads
         .lock()
         .unwrap()
-        .insert(fork_name.to_string(), bound_thread.to_string());
+        .insert(fork_name.to_string(), bound_thread.clone());
 
     // Post with an EXPLICIT thread_parent_id (different from the bound one)
     let response = handle_channel_post(
@@ -1246,7 +1276,7 @@ async fn test_output_binding_explicit_thread_takes_priority() {
         fork_name,
         "Explicit thread reply",
         None,
-        Some(explicit_thread), // explicit wins
+        Some(&explicit_thread), // explicit wins
         &state,
     )
     .await;
@@ -1254,9 +1284,9 @@ async fn test_output_binding_explicit_thread_takes_priority() {
 
     let channel = state.channel_router.default_channel().unwrap();
     let messages = channel.read_all().unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 3); // 2 parents + reply
     assert_eq!(
-        messages[0].thread_parent_id,
+        messages[2].thread_parent_id,
         Some(explicit_thread.to_string()),
         "Explicit thread_parent_id should take priority over bound_thread_id"
     );
@@ -1312,15 +1342,19 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         .await
         .expect("register headed adapter");
 
-    let thread_id = "thread-uuid-for-fork-routing";
+    // Post a parent message in the topic channel to get a valid thread_id
+    let thread_id = post_parent_message(&state, Some("auth-refactor")).await;
     let fork_session_id = "fork-session-routing-xyz";
+
+    // Drain any headed queue items from parent post
+    let _ = state.headed_poll(&state.repo_name, adapter_id, 0, 10).await;
 
     // Register a topic session for this thread
     state
         .topic_sessions
         .lock()
         .unwrap()
-        .insert(thread_id.to_string(), fork_session_id.to_string());
+        .insert(thread_id.clone(), fork_session_id.to_string());
 
     // User posts a thread reply in the topic channel
     let response = handle_channel_post(
@@ -1328,7 +1362,7 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         "user",
         "Follow-up question in thread",
         Some("auth-refactor"), // topic channel
-        Some(thread_id),       // thread_parent_id with registered fork
+        Some(&thread_id),      // thread_parent_id with registered fork
         &state,
     )
     .await;
@@ -1349,8 +1383,9 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
     let effect = super::build_topic_thread_nudge_effect(
         "auth-refactor",
         "Follow-up question in thread",
-        thread_id.to_string(),
+        thread_id.clone(),
         Some(fork_session_id.to_string()),
+        Some(&thread_id),
     );
     match effect {
         crate::daemon::effects::Effect::NudgeSession { session_id, reason } => {
@@ -1822,14 +1857,16 @@ async fn test_user_message_to_topic_channel_with_lead_does_not_auto_fork() {
 async fn test_thread_reply_routes_to_existing_fork_session() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-thread-reply-routing");
 
-    // Pre-register a fork session for a specific thread
-    let thread_parent_id = "existing-thread-msg-id";
+    // Post a parent message in the topic channel to get a valid thread_parent_id
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
     let fork_session_id = "existing-fork-session-id";
+
+    // Pre-register a fork session for this thread
     state
         .topic_sessions
         .lock()
         .unwrap()
-        .insert(thread_parent_id.to_string(), fork_session_id.to_string());
+        .insert(thread_parent_id.clone(), fork_session_id.to_string());
 
     // User posts a thread reply to this thread
     let response = handle_channel_post(
@@ -1837,7 +1874,7 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
         "user",
         "follow-up question in thread",
         Some("web"),
-        Some(thread_parent_id),
+        Some(&thread_parent_id),
         &state,
     )
     .await;
@@ -1849,7 +1886,7 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
     // topic_sessions should still contain the same fork (no new fork created)
     let topic = state.topic_sessions.lock().unwrap();
     assert_eq!(
-        topic.get(thread_parent_id).map(String::as_str),
+        topic.get(&thread_parent_id).map(String::as_str),
         Some(fork_session_id),
         "existing fork session should remain unchanged"
     );
@@ -1897,13 +1934,15 @@ async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
 async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-pending-thread-reply");
 
-    let thread_parent_id = "top-level-msg-pending-fork";
+    // Post a parent message to get a valid thread_parent_id
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+
     // Simulate fork in progress: sentinel is "pending", not a real session
     state
         .topic_sessions
         .lock()
         .unwrap()
-        .insert(thread_parent_id.to_string(), "pending".to_string());
+        .insert(thread_parent_id.clone(), "pending".to_string());
 
     // Thread reply arrives during the spawn window
     let response = handle_channel_post(
@@ -1911,7 +1950,7 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
         "user",
         "follow-up reply while fork is spawning",
         Some("web"),
-        Some(thread_parent_id),
+        Some(&thread_parent_id),
         &state,
     )
     .await;
@@ -1924,7 +1963,7 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
     // the spawning fork, not this thread reply.
     let topic = state.topic_sessions.lock().unwrap();
     assert_eq!(
-        topic.get(thread_parent_id).map(String::as_str),
+        topic.get(&thread_parent_id).map(String::as_str),
         Some("pending"),
         "pending sentinel should be untouched by a thread reply"
     );
@@ -1980,4 +2019,88 @@ fn test_fork_initial_framing_mentions_task_creation() {
         framing.contains("midtown task create"),
         "Fork framing should mention task creation: {framing}"
     );
+}
+
+// ============================================================================
+// Thread ID validation tests
+// ============================================================================
+
+/// Posting a thread reply with a non-existent thread_parent_id should return
+/// an error (-32602), preventing "black hole" messages.
+#[tokio::test]
+async fn test_channel_post_rejects_invalid_thread_parent_id() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-invalid-thread-parent-id");
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "york",
+        "Reply to nonexistent thread",
+        None,
+        Some("nonexistent-parent-uuid"),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_some(),
+        "channel.post with invalid thread_parent_id should return an error"
+    );
+    let err = response.error.unwrap();
+    assert_eq!(err.code, -32602, "error code should be -32602");
+    assert!(
+        err.message.contains("nonexistent-parent-uuid"),
+        "error should mention the invalid thread_parent_id, got: {}",
+        err.message
+    );
+}
+
+/// Thread validation also works for topic channels.
+#[tokio::test]
+async fn test_channel_post_rejects_invalid_thread_parent_id_topic_channel() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-invalid-thread-topic");
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "york",
+        "Reply to nonexistent thread in topic channel",
+        Some("auth-refactor"),
+        Some("nonexistent-parent-uuid"),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_some(),
+        "channel.post with invalid thread_parent_id in topic channel should return an error"
+    );
+    let err = response.error.unwrap();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("nonexistent-parent-uuid"));
+}
+
+/// build_topic_thread_nudge_effect passes thread context to the WakeReason.
+#[test]
+fn test_build_topic_thread_nudge_effect_thread_context() {
+    let effect = super::build_topic_thread_nudge_effect(
+        "auth-refactor",
+        "user question",
+        "wake-msg-id".to_string(),
+        None,
+        Some("parent-id-123"),
+    );
+    match effect {
+        crate::daemon::effects::Effect::NudgeChannelLead { reason, .. } => match reason {
+            crate::daemon::wake_reason::WakeReason::UserMessage { thread_ctx, .. } => {
+                let ctx = thread_ctx.expect("thread_ctx should be Some when parent ID is provided");
+                assert_eq!(
+                    ctx.parent_id, "parent-id-123",
+                    "thread_ctx.parent_id should be passed through"
+                );
+                assert_eq!(
+                    ctx.channel_name, "auth-refactor",
+                    "thread_ctx.channel_name should be set from the channel"
+                );
+            }
+            other => panic!("Expected UserMessage reason, got {:?}", other),
+        },
+        other => panic!("Expected NudgeChannelLead effect, got {:?}", other),
+    }
 }
