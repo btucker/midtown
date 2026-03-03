@@ -988,12 +988,46 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
 /// Complement to the above: when the review has NOT been posted (neither cached
 /// nor on GitHub), the reviewer SHOULD be nudged. This verifies the nudge still
 /// fires for genuinely unposted reviews.
+///
+/// Uses PATH_LOCK + mock `gh` to control the subprocess call that
+/// `is_pr_reviewed()` makes when the persistent cache has no record.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_reviewer_idle_nudged_when_review_not_posted() {
+    use crate::daemon::PATH_LOCK;
+
     let (state, _tmp, _guard) = make_test_state();
 
     let reviewer_name = "park";
     let pr_number = 43u64;
+
+    // Acquire PATH_LOCK to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
 
     // Insert the reviewer as a running coworker
     let inserted = state
@@ -1034,6 +1068,11 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
         &state,
     )
     .await;
+
+    // Restore PATH before assertions (cleanup)
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
 
     assert!(!response.is_error(), "idle report should succeed");
     let message = response
