@@ -65,7 +65,15 @@ fn save_screenshot_locally_saves_and_cleans_up_temp() {
     std::fs::write(&tmp_path, b"fake png data").unwrap();
     assert!(tmp_path.exists());
 
-    let result = super::save_screenshot_locally(&tmp_path, "png", false, false, &screenshots_dir);
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        None,
+        "test-repo",
+    );
 
     // Should succeed
     assert!(
@@ -114,7 +122,15 @@ fn save_screenshot_locally_before_after_prefix() {
     ));
     std::fs::write(&tmp_path, b"fake data").unwrap();
 
-    let result = super::save_screenshot_locally(&tmp_path, "png", true, false, &screenshots_dir);
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        true,
+        false,
+        &screenshots_dir,
+        None,
+        "test-repo",
+    );
     assert!(result.is_ok());
 
     let entries: Vec<_> = std::fs::read_dir(&screenshots_dir)
@@ -128,4 +144,154 @@ fn save_screenshot_locally_before_after_prefix() {
         "Before screenshot should have before- prefix, got: {}",
         saved_name
     );
+}
+
+#[test]
+fn save_screenshot_locally_github_flag_produces_markdown_image() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake png data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        Some("http"),
+        "my-project",
+    );
+
+    assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.starts_with("![screenshot](http://localhost:"),
+            "GitHub output should be markdown image syntax, got: {}",
+            message
+        );
+        assert!(
+            message.contains("/api/projects/my-project/screenshots/"),
+            "URL should contain project and screenshots path, got: {}",
+            message
+        );
+        assert!(
+            message.ends_with(".png)"),
+            "URL should end with .png), got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_github_before_uses_before_alt_text() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-before-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        true,
+        false,
+        &screenshots_dir,
+        Some("http"),
+        "my-project",
+    );
+
+    assert!(result.is_ok());
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.starts_with("![before]("),
+            "Before screenshot should use 'before' alt text, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_github_url_encodes_repo_name() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-encode-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        Some("http"),
+        "my project#1",
+    );
+
+    assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.contains("/api/projects/my%20project%231/screenshots/"),
+            "Repo name with spaces/special chars should be URL-encoded, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_github_after_uses_after_alt_text() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-after-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        true,
+        &screenshots_dir,
+        Some("http"),
+        "my-project",
+    );
+
+    assert!(result.is_ok());
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.starts_with("![after]("),
+            "After screenshot should use 'after' alt text, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
 }

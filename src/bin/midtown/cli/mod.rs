@@ -232,8 +232,9 @@ pub fn handle_coworker_screenshot(
     output: Option<&str>,
     before: bool,
     after: bool,
+    github: bool,
 ) -> Result<Response, String> {
-    coworker::handle_screenshot(url, output, before, after)
+    coworker::handle_screenshot(url, output, before, after, github)
 }
 
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.

@@ -68,6 +68,9 @@ pub enum CoworkerCommand {
         /// Label as an "after" screenshot (auto-names file)
         #[arg(long, conflicts_with = "before")]
         after: bool,
+        /// Output GitHub-compatible markdown (![screenshot](URL)) instead of [Attached: /path]
+        #[arg(long)]
+        github: bool,
     },
 }
 
@@ -122,7 +125,11 @@ impl Drop for TempFileGuard {
 }
 
 /// Take a screenshot of a URL using Playwright, save it locally, and return
-/// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
+/// the `[Attached: /path]` markdown ready for channel posts.
+///
+/// When `github` is true, returns `![screenshot](URL)` markdown suitable for
+/// embedding in GitHub PR descriptions. The URL scheme (http/https) is derived
+/// from `GlobalConfig` TLS settings to match the running webserver.
 ///
 /// Does not require a daemon connection — runs Playwright locally and saves
 /// the screenshot to the project's screenshots directory with a UUID filename.
@@ -133,6 +140,7 @@ pub fn handle_screenshot(
     output: Option<&str>,
     before: bool,
     after: bool,
+    github: bool,
 ) -> Result<Response, String> {
     // Determine the desired extension from the output filename
     let ext = if let Some(name) = output {
@@ -178,21 +186,45 @@ pub fn handle_screenshot(
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
-    save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir)
+    let webserver_scheme = if github {
+        let config = midtown::config::GlobalConfig::load();
+        if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
+            Some("https")
+        } else {
+            Some("http")
+        }
+    } else {
+        None
+    };
+
+    save_screenshot_locally(
+        &tmp_path,
+        &ext,
+        before,
+        after,
+        &screenshots_dir,
+        webserver_scheme,
+        &repo,
+    )
 }
 
 /// Save a screenshot to the given screenshots directory and return
-/// the `[Attached: /path]` markdown.
+/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `webserver_scheme` is set).
 ///
 /// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
 /// exit paths (success, early error return, or panic). Generates a UUID-based
 /// filename and copies the screenshot to the provided directory.
+///
+/// When `webserver_scheme` is `Some("http")` or `Some("https")`, returns GitHub-compatible
+/// markdown image syntax using the webserver's screenshot endpoint.
 pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
     ext: &str,
     before: bool,
     after: bool,
     screenshots_dir: &std::path::Path,
+    webserver_scheme: Option<&str>,
+    repo: &str,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
@@ -216,9 +248,33 @@ pub(crate) fn save_screenshot_locally(
 
     std::fs::copy(tmp_path, &dest_path).map_err(|e| format!("Failed to save screenshot: {}", e))?;
 
-    let attached = format!("[Attached: {}]", dest_path.display());
     eprintln!("Screenshot saved: {}", dest_path.display());
-    Ok(Response::message(attached))
+
+    if let Some(scheme) = webserver_scheme {
+        let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
+        // Encode characters unsafe in URL path segments while preserving - . _ ~
+        const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+            .remove(b'-')
+            .remove(b'.')
+            .remove(b'_')
+            .remove(b'~');
+        let encoded_repo = percent_encoding::utf8_percent_encode(repo, PATH_SEGMENT);
+        let url = format!(
+            "{}://localhost:{}/api/projects/{}/screenshots/{}",
+            scheme, port, encoded_repo, filename
+        );
+        let alt = if before {
+            "before"
+        } else if after {
+            "after"
+        } else {
+            "screenshot"
+        };
+        Ok(Response::message(format!("![{}]({})", alt, url)))
+    } else {
+        let attached = format!("[Attached: {}]", dest_path.display());
+        Ok(Response::message(attached))
+    }
 }
 
 /// Boot a headed (interactive terminal) coworker session for a task.

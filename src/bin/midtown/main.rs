@@ -633,11 +633,13 @@ fn main() {
                 output,
                 before,
                 after,
+                github,
             }),
         ..
     } = &command
     {
-        let result = cli::handle_coworker_screenshot(url, output.as_deref(), *before, *after);
+        let result =
+            cli::handle_coworker_screenshot(url, output.as_deref(), *before, *after, *github);
         handle_result(format, result);
         return;
     }
