@@ -2259,8 +2259,8 @@ fn daemon_rpc_call(repo: &str, method: &str, params: serde_json::Value) -> Resul
     let socket = crate::paths::daemon_socket_for_repo(repo);
     let mut stream =
         UnixStream::connect(&socket).map_err(|e| format!("Failed to connect to daemon: {}", e))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(30))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -2271,7 +2271,20 @@ fn daemon_rpc_call(repo: &str, method: &str, params: serde_json::Value) -> Resul
     stream.flush().ok();
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).ok();
+    reader
+        .read_line(&mut line)
+        .map_err(|e| format!("Failed to read daemon response: {}", e))?;
+    // Parse JSON-RPC response and propagate errors
+    if !line.trim().is_empty()
+        && let Ok(resp) = serde_json::from_str::<serde_json::Value>(&line)
+        && let Some(err) = resp.get("error")
+    {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("Unknown RPC error");
+        return Err(msg.to_string());
+    }
     Ok(())
 }
 

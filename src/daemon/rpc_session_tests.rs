@@ -883,3 +883,161 @@ fn test_build_fork_config_uses_project_auth_profile() {
         "fork CLAUDE_CONFIG_DIR must NOT be the global profile dir"
     );
 }
+
+// ============================================================================
+// handle_session_fork_thread / unfork_thread / thread_ownership tests
+// ============================================================================
+
+/// When the channel lead session ID in `channel_lead_sessions` is stale (not in
+/// `persistent_state.sessions`), `handle_session_fork_thread` should return an
+/// error AND clean up the stale mapping so the next call returns "No channel lead"
+/// instead of repeating the "stale" error forever (self-healing).
+#[tokio::test]
+async fn test_fork_thread_stale_session_self_heals() {
+    let (state, _tmp, _guard) = make_test_state();
+    let channel = "web";
+    let stale_sid = "stale-session-id-123";
+
+    // Register a channel lead session that does NOT exist in persistent_state.sessions
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel.to_string(), stale_sid.to_string());
+        // Do NOT insert into ps.sessions — simulates a crashed lead
+    }
+
+    // First call: should detect stale session and clean up the mapping
+    let resp1 = handle_session_fork_thread(1_i64.into(), "thread-1", channel, &state).await;
+    let json1: serde_json::Value = serde_json::to_value(&resp1).unwrap();
+    assert!(
+        json1.get("error").is_some(),
+        "First call should return an error for stale session"
+    );
+    let msg1 = json1["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg1.contains("stale"),
+        "Error should mention 'stale', got: {}",
+        msg1
+    );
+
+    // Second call: should return "No channel lead session" (self-healed)
+    let resp2 = handle_session_fork_thread(2_i64.into(), "thread-1", channel, &state).await;
+    let json2: serde_json::Value = serde_json::to_value(&resp2).unwrap();
+    assert!(
+        json2.get("error").is_some(),
+        "Second call should also return an error"
+    );
+    let msg2 = json2["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg2.contains("No channel lead session"),
+        "Second call should say 'No channel lead session' (mapping was cleaned), got: {}",
+        msg2
+    );
+}
+
+/// `handle_session_fork_thread` should return an error when no channel lead
+/// session is registered for the channel.
+#[tokio::test]
+async fn test_fork_thread_no_channel_lead() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let resp = handle_session_fork_thread(1_i64.into(), "thread-1", "nonexistent", &state).await;
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert!(json.get("error").is_some());
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("No channel lead session"));
+}
+
+/// When `topic_sessions` has a fork session ID but `session_to_name` does not
+/// have the corresponding mapping, `handle_session_unfork_thread` should clean
+/// up the stale `topic_sessions` entry and return an error rather than leaving
+/// the process running and unreachable.
+#[tokio::test]
+async fn test_unfork_thread_stale_session_to_name_cleans_up() {
+    let (state, _tmp, _guard) = make_test_state();
+    let thread_id = "thread-stale-fork";
+    let fork_sid = "fork-session-no-name";
+
+    // Insert a fork session into topic_sessions without a session_to_name entry
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), fork_sid.to_string());
+    // Do NOT insert into session_to_name — simulates concurrent cleanup race
+
+    let resp = handle_session_unfork_thread(1_i64.into(), thread_id, "web", &state).await;
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should return error when session_to_name is missing"
+    );
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("stale"),
+        "Error should mention 'stale', got: {}",
+        msg
+    );
+
+    // Verify topic_sessions was cleaned up
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(thread_id),
+        "Stale topic_sessions entry should have been removed"
+    );
+}
+
+/// `handle_session_unfork_thread` should return an error when no fork session
+/// exists for the given thread.
+#[tokio::test]
+async fn test_unfork_thread_no_fork_exists() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let resp =
+        handle_session_unfork_thread(1_i64.into(), "nonexistent-thread", "web", &state).await;
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert!(json.get("error").is_some());
+    let msg = json["error"]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("No dedicated session"));
+}
+
+/// `handle_session_thread_ownership` should report `has_dedicated_session: true`
+/// when a real fork session is registered, and `false` otherwise.
+#[tokio::test]
+async fn test_thread_ownership_query() {
+    let (state, _tmp, _guard) = make_test_state();
+    let thread_id = "thread-ownership-test";
+
+    // No fork — should return has_dedicated_session=false
+    let resp1 = handle_session_thread_ownership(1_i64.into(), thread_id, "web", &state).await;
+    let json1: serde_json::Value = serde_json::to_value(&resp1).unwrap();
+    assert!(json1.get("result").is_some());
+    assert_eq!(json1["result"]["has_dedicated_session"], false);
+
+    // Register a fork session
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), "real-fork-session".to_string());
+
+    let resp2 = handle_session_thread_ownership(2_i64.into(), thread_id, "web", &state).await;
+    let json2: serde_json::Value = serde_json::to_value(&resp2).unwrap();
+    assert!(json2.get("result").is_some());
+    assert_eq!(json2["result"]["has_dedicated_session"], true);
+
+    // "pending" sentinel should report false
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), "pending".to_string());
+
+    let resp3 = handle_session_thread_ownership(3_i64.into(), thread_id, "web", &state).await;
+    let json3: serde_json::Value = serde_json::to_value(&resp3).unwrap();
+    assert!(json3.get("result").is_some());
+    assert_eq!(
+        json3["result"]["has_dedicated_session"], false,
+        "pending sentinel should report false"
+    );
+}

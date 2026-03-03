@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership } from './store.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, activeProject } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -105,7 +105,7 @@
   // Only applicable to topic channels (not main or DM channels).
   let isTopicChannel = $derived(
     $threadData?.channelName
-      && $threadData.channelName !== 'midtown'
+      && $threadData.channelName !== ($activeProject || 'midtown')
       && !$threadData.channelName.startsWith('dm-')
   )
   let hasDedicatedSession = $derived(
@@ -123,13 +123,22 @@
     }
   })
 
+  let forkError = $state(null)
+
   function handleForkToggle() {
     if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
     forkPending = true
+    forkError = null
+    const onError = (msg) => {
+      forkPending = false
+      forkError = msg
+      // Auto-clear error after 5 seconds
+      setTimeout(() => { forkError = null }, 5000)
+    }
     if (hasDedicatedSession) {
-      unforkThread($threadData.parentMessage.id, $threadData.channelName)
+      unforkThread($threadData.parentMessage.id, $threadData.channelName, onError)
     } else {
-      forkThread($threadData.parentMessage.id, $threadData.channelName)
+      forkThread($threadData.parentMessage.id, $threadData.channelName, onError)
     }
   }
 
@@ -443,6 +452,9 @@
         >&times;</button>
       </div>
     </div>
+    {#if forkError}
+      <div class="px-4 py-1.5 bg-destructive/10 text-destructive text-[0.72rem] border-b border-destructive/20 shrink-0">{forkError}</div>
+    {/if}
 
     <!-- Scrollable content: task cards + parent message + replies -->
     <div
@@ -656,6 +668,9 @@
         </button>
       {/if}
     </div>
+    {#if forkError}
+      <div class="px-3 py-1.5 bg-destructive/10 text-destructive text-[0.72rem] border-b border-destructive/20 shrink-0">{forkError}</div>
+    {/if}
 
     <!-- Mobile messages -->
     <div

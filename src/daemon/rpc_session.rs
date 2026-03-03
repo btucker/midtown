@@ -1308,8 +1308,8 @@ pub(super) async fn create_fork_session(
         }
     };
 
-    // Determine channel for the fork — explicit hint takes priority (the auto-fork
-    // path knows the channel from the incoming message), then session record, then
+    // Determine channel for the fork — explicit hint takes priority (the web UI
+    // fork path supplies the channel directly), then session record, then
     // caller name (channel leads are named after their channel).
     let fork_channel = channel_hint
         .map(String::from)
@@ -1499,8 +1499,8 @@ pub(super) async fn handle_session_fork(
             }),
         ),
         Err(ref e) if e.starts_with("fork in progress") => {
-            // The daemon's auto-fork path already reserved this slot.
-            // Return a distinct pending response so the channel lead can
+            // A concurrent fork request already reserved this slot.
+            // Return a distinct pending response so the caller can
             // distinguish "retry shortly" from a hard spawn failure.
             crate::rpc::Response::success(
                 id,
@@ -1546,10 +1546,13 @@ pub(super) async fn handle_session_fork_thread(
             ),
         );
     };
-    // Verify the session record still exists
+    // Verify the session record still exists. If the lead session has died,
+    // clean up the stale mapping so the next attempt returns "No channel lead"
+    // (self-healing) rather than repeating the "stale" error forever.
     {
-        let ps = state.persistent_state.lock().await;
+        let mut ps = state.persistent_state.lock().await;
         if !ps.sessions.contains_key(&lead_session_id) {
+            ps.channel_lead_sessions.remove(channel);
             return Response::error(
                 id,
                 RpcError::new(
@@ -1637,6 +1640,36 @@ pub(super) async fn handle_session_unfork_thread(
         );
     };
 
+    // Verify the fork session has a name mapping before attempting shutdown.
+    // If session_to_name is missing (concurrent cleanup race), ShutdownSession
+    // cannot call shutdown_coworker_impl, leaving the fork process running.
+    // Clean up the stale topic_sessions entry and report the condition.
+    let has_name = state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .contains_key(&fork_session_id);
+    if !has_name {
+        warn!(
+            "session.unfork_thread: fork session {} has no name mapping (stale), cleaning up topic_sessions",
+            fork_session_id
+        );
+        state
+            .topic_sessions
+            .lock()
+            .unwrap()
+            .remove(thread_parent_id);
+        state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
+            thread_parent_id: thread_parent_id.to_string(),
+            channel: channel.to_string(),
+            has_dedicated_session: false,
+        }));
+        return Response::error(
+            id,
+            RpcError::new(-32603, "Fork session is stale (missing name mapping)"),
+        );
+    }
+
     // ShutdownSession → shutdown_coworker_impl → cleanup_coworker_state
     // which cleans up topic_sessions, fork_bound_threads, fork_bound_channels.
     let effect = crate::daemon::effects::Effect::ShutdownSession {
@@ -1645,14 +1678,9 @@ pub(super) async fn handle_session_unfork_thread(
     };
     crate::daemon::effects::execute_effects(vec![effect], state).await;
 
-    // Broadcast ownership change to web clients
-    // (cleanup_coworker_state also broadcasts, but we send eagerly here
-    // for immediate UI feedback in case cleanup is deferred)
-    state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
-        thread_parent_id: thread_parent_id.to_string(),
-        channel: channel.to_string(),
-        has_dedicated_session: false,
-    }));
+    // Ownership broadcast is handled by cleanup_coworker_state (called from
+    // shutdown_coworker_impl inside ShutdownSession). No eager broadcast here
+    // to avoid a race window where topic_sessions still has the entry.
 
     debug!(
         "session.unfork_thread: {} (session {})",

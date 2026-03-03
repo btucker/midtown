@@ -152,6 +152,7 @@ export function switchProject(projectName, webhookPort) {
   agentToolItems.set({})
   threadToolItems.set({})
   threadData.set(null)
+  threadOwnership.set({})
   connected.set(false)
 
   // Set the new active project
@@ -751,9 +752,11 @@ export function sendAnswer(coworkerName, answer) {
   }
 }
 
-// Create a dedicated session for a thread (fork)
-export function forkThread(threadParentId, channelName) {
+// Create a dedicated session for a thread (fork).
+// If onError is provided, it will be called with the error message on failure.
+export function forkThread(threadParentId, channelName, onError) {
   if (ws && ws.readyState === WebSocket.OPEN) {
+    if (onError) onNextError(onError)
     ws.send(JSON.stringify({
       type: 'fork_thread',
       thread_parent_id: threadParentId,
@@ -762,9 +765,11 @@ export function forkThread(threadParentId, channelName) {
   }
 }
 
-// Return a thread to the channel lead (kill dedicated session)
-export function unforkThread(threadParentId, channelName) {
+// Return a thread to the channel lead (kill dedicated session).
+// If onError is provided, it will be called with the error message on failure.
+export function unforkThread(threadParentId, channelName, onError) {
   if (ws && ws.readyState === WebSocket.OPEN) {
+    if (onError) onNextError(onError)
     ws.send(JSON.stringify({
       type: 'unfork_thread',
       thread_parent_id: threadParentId,
