@@ -22,6 +22,15 @@
   import { theme, toggleTheme } from '$lib/theme.js'
   import { Sun, Moon } from 'lucide-svelte'
   import SearchIcon from '@lucide/svelte/icons/search'
+  import Bell from '@lucide/svelte/icons/bell'
+  import BellOff from '@lucide/svelte/icons/bell-off'
+  import {
+    pushSupported,
+    pushPermission,
+    pushSubscribed,
+    subscribePush,
+    unsubscribePush,
+  } from '$lib/push.js'
 
   $effect(() => {
     if ($theme === 'dark') {
@@ -41,6 +50,14 @@
     if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
       e.preventDefault()
       searchOpen = !searchOpen
+    }
+  }
+
+  async function togglePush() {
+    if ($pushSubscribed) {
+      await unsubscribePush()
+    } else {
+      await subscribePush()
     }
   }
 
@@ -198,6 +215,25 @@
             >
               <SearchIcon size={16} />
             </button>
+            {#if $pushSupported}
+              <button
+                class="theme-toggle {$pushSubscribed ? 'push-subscribed' : ''}"
+                onclick={togglePush}
+                disabled={$pushPermission === 'denied'}
+                class:push-denied={$pushPermission === 'denied'}
+                title={$pushPermission === 'denied'
+                  ? 'Notifications blocked in browser settings'
+                  : $pushSubscribed
+                    ? 'Disable push notifications'
+                    : 'Enable push notifications'}
+              >
+                {#if $pushSubscribed}
+                  <Bell size={16} />
+                {:else}
+                  <BellOff size={16} />
+                {/if}
+              </button>
+            {/if}
             <button
               data-testid="theme-toggle"
               class="theme-toggle"
@@ -455,6 +491,15 @@
   .theme-toggle:hover {
     color: hsl(var(--foreground));
     background: hsl(var(--accent));
+  }
+
+  .push-subscribed {
+    color: hsl(var(--primary));
+  }
+
+  .push-denied {
+    opacity: 0.25;
+    cursor: not-allowed;
   }
 
   /* Sidebar content */
