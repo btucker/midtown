@@ -110,6 +110,10 @@
       const deepLinkChannel = urlChannel || targetProject.name
       if (urlChannel) {
         activeChannel.set(urlChannel)
+        // Deep-linked channel may not be the main channel (e.g. DM channels,
+        // topic channels). switchProject's fetchHistory() only loads the main
+        // channel, so we must explicitly fetch the deep-linked channel's messages.
+        fetchHistory(urlChannel)
       }
       if (urlThread) {
         // If a specific message is targeted, store it so ThreadPanel can scroll to it
@@ -141,6 +145,11 @@
       if (!document.hidden && $activeProject) {
         // Page became visible and we have an active project - refresh history
         fetchHistory()
+        // Also refresh the active channel if it's not the main one (e.g. DM or topic channel)
+        const currentChannel = $activeChannel
+        if (currentChannel && currentChannel !== $activeProject) {
+          fetchHistory(currentChannel)
+        }
       }
     }
 
