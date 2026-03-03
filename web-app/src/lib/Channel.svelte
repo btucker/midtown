@@ -786,6 +786,7 @@
           {#if dayLabel}
             <DayDivider label={dayLabel} />
           {/if}
+          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div
             data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
