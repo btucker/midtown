@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData, threadUnreadCounts } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
   import { tick, onMount, untrack } from 'svelte'
@@ -869,16 +869,25 @@
 
           <!-- Reply indicator for messages with thread replies -->
           {#if !msg.thread_parent_id && msg.reply_count}
+            {@const threadUnread = $threadUnreadCounts[msg.id] || 0}
             <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
               <button
                 data-testid="thread-summary"
                 class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
-                <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
                 {#if msg.last_reply}
-                  <span class="text-muted-foreground/60">&middot;</span>
-                  <span class="text-muted-foreground">{msg.last_reply.from}</span>
+                  <span
+                    class="inline-flex items-center justify-center w-[16px] h-[16px] rounded-[3px] text-[0.5rem] font-bold text-white leading-none flex-shrink-0"
+                    style="background-color: {getSenderColor(msg.last_reply.from)}"
+                    title={msg.last_reply.from}
+                  >{msg.last_reply.from[0].toUpperCase()}</span>
+                {/if}
+                <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
+                {#if threadUnread > 0}
+                  <span class="thread-unread-pill">{threadUnread} new</span>
+                {/if}
+                {#if msg.last_reply}
                   <span class="text-muted-foreground/60">&middot;</span>
                   <span class="text-muted-foreground">{formatTime(msg.last_reply.timestamp)}</span>
                 {/if}
@@ -1184,5 +1193,15 @@
     .mobile-thread-tappable {
       cursor: pointer;
     }
+  }
+
+  .thread-unread-pill {
+    padding: 1px 5px;
+    border-radius: 8px;
+    background: hsl(var(--accent-teal));
+    color: white;
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1.2;
   }
 </style>
