@@ -258,8 +258,8 @@
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
-    <div class="mb-0.5">
-      <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+    <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
+      <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         <!-- Fixed-width gutter keeps channel names aligned whether or not a triangle is present -->
         <div class="w-[28px] ml-1 shrink-0 flex items-center justify-center">
           {#if hasActiveTasks}
@@ -319,8 +319,8 @@
       {#each visibleDmChannels as channel}
         {@const isActive = $activeChannel === channel.name}
         {@const hasUnread = channel.unread > 0}
-        <div class="mb-0.5">
-          <div class="flex items-center rounded-md {isActive ? 'bg-accent text-primary' : 'text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+        <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
+          <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
             <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
             <div class="w-[28px] ml-1 shrink-0"></div>
             <button
@@ -353,3 +353,21 @@
     {/if}
   {/if}
 </div>
+
+<style>
+  /* Tab effect: the active channel extends flush to the sidebar's right edge,
+     with its bg-background covering the sidebar's inset shadow.
+     Subtle shadows on the top and bottom edges simulate the sidebar's
+     depth shadow wrapping around the tab. */
+  :global(.channel-tab-active) {
+    box-shadow:
+      0 -4px 6px -4px rgba(0, 0, 0, 0.1),
+      0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  }
+
+  :global(.dark .channel-tab-active) {
+    box-shadow:
+      0 -4px 6px -4px rgba(0, 0, 0, 0.3),
+      0 4px 6px -4px rgba(0, 0, 0, 0.3);
+  }
+</style>
