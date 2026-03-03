@@ -365,11 +365,18 @@
     })
   })
 
-  // Focus textarea when thread opens
+  // Focus textarea only when a *new* thread opens — not on every message append.
+  // Uses currentThreadId (stable thread identity) instead of $threadData to avoid
+  // re-firing when the message array grows.
+  let lastFocusedThreadId = $state(null)
   $effect(() => {
-    if ($threadData && textareaEl) {
+    const threadId = currentThreadId
+    const lastId = untrack(() => lastFocusedThreadId)
+    if (threadId && threadId !== lastId && textareaEl) {
+      lastFocusedThreadId = threadId
       tick().then(() => textareaEl.focus())
     }
+    if (!threadId) lastFocusedThreadId = null
   })
 
   function resizeTextarea() {
