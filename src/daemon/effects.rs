@@ -307,11 +307,6 @@ pub enum Effect {
         pr_number: u64,
         repo_name: String,
     },
-    /// Force-delete orphaned worktrees whose PRs were merged (squash-merge).
-    ///
-    /// These worktrees appear to have "unmerged commits" because the squash-merge
-    /// changed commit SHAs, but the work is already in main. Safe to force-remove.
-    ForceCleanupWorktrees { names: Vec<String> },
     /// Send a push notification to the mobile PWA.
     ///
     /// Fire-and-forget: the push manager runs in a background task.
@@ -320,7 +315,7 @@ pub enum Effect {
         body: String,
         tag: String,
     },
-    /// Clean up stale local branches that match coworker naming patterns
+    /// Clean up stale local branches that match task/review naming patterns
     /// and are already merged into the default branch.
     ///
     /// Catches branches left behind after worktree removal.
@@ -331,9 +326,7 @@ pub enum Effect {
     /// (target/ dir) to free up 4-7GB per coworker. They'll rebuild when
     /// recalled. This prevents disk exhaustion from idle coworker builds.
     ///
-    /// `working_dir` is the coworker's actual working directory (resolved
-    /// from the coworker record at decision time), not the legacy
-    /// `worktree_path()` which only covers coworker-named worktrees.
+    /// `working_dir` is the coworker's actual working directory.
     CleanWorktreeTarget { name: String, working_dir: PathBuf },
     /// Clean up a task-based worktree after its PR is merged.
     ///
@@ -1653,68 +1646,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::ForceCleanupWorktrees { names } => {
-                if names.is_empty() {
-                    continue;
-                }
-                let coworkers = state.coworkers.clone();
-
-                // Filter out names where headless sessions are still alive.
-                // Check session_manager before entering spawn_blocking since is_alive is async.
-                let mut to_cleanup = Vec::new();
-                for name in names {
-                    // Guard: check SessionManager directly to avoid a race where
-                    // the headless session exists but hasn't yet registered in
-                    // the daemon's coworkers map.
-                    if state.session_manager.is_alive(&name).await {
-                        warn!(
-                            "Skipping cleanup of worktree for {} — headless session still running",
-                            name
-                        );
-                        continue;
-                    }
-                    // Double-check: skip if coworker is registered in the manager
-                    if coworkers.get(&name).is_some() {
-                        warn!(
-                            "Skipping cleanup of worktree for {} — coworker still registered",
-                            name
-                        );
-                        continue;
-                    }
-                    to_cleanup.push(name);
-                }
-
-                if to_cleanup.is_empty() {
-                    continue;
-                }
-
-                tokio::task::spawn_blocking(move || {
-                    for name in to_cleanup {
-                        match coworkers.force_cleanup_worktree(&name) {
-                            Ok(()) => {
-                                info!("Cleaned up orphaned worktree for {} (PR was merged)", name);
-                            }
-                            Err(e) => {
-                                warn!("Failed to cleanup merged-PR worktree for {}: {}", name, e);
-                            }
-                        }
-                    }
-                })
-                .await
-                .ok();
-            }
             Effect::SendPushNotification { title, body, tag } => {
                 state.send_push_notification(&title, &body, &tag);
             }
             Effect::CleanStaleBranches => {
-                let coworkers = state.coworkers.clone();
+                let wt_manager = state.coworkers.worktree_manager().clone();
                 let cleaned =
-                    tokio::task::spawn_blocking(move || coworkers.clean_stale_coworker_branches())
+                    tokio::task::spawn_blocking(move || wt_manager.clean_stale_task_branches())
                         .await
                         .unwrap_or_default();
                 if !cleaned.is_empty() {
                     info!(
-                        "Cleaned up {} stale coworker branch(es): {}",
+                        "Cleaned up {} stale task branch(es): {}",
                         cleaned.len(),
                         cleaned.join(", ")
                     );

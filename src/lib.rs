@@ -175,7 +175,7 @@ pub use cursor::Cursor;
 pub use message::{Message, MessageType};
 pub use session_key::SessionKey;
 pub use usage::{UsageData, fetch_usage_for_profile};
-pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
+pub use worktree::{WorktreeError, WorktreeManager};
 
 /// Resolve the `web-app/dist/` directory containing built static assets.
 ///

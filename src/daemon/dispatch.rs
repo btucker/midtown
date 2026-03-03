@@ -1487,320 +1487,38 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
 // Pending task auto-spawn
 // ============================================================================
 
-/// Decide whether to skip orphan flagging based on PR poll initialization state.
-///
-/// During startup, orphan checks run every 10s but PR poll runs every 30s.
-/// If we flag orphans before we have PR data, we'd incorrectly warn about
-/// worktrees that have open PRs (because open_pr_owners is still empty).
-///
-/// Pure function for testability.
-fn should_skip_orphan_flagging(pr_poll_initialized: bool) -> bool {
-    !pr_poll_initialized
-}
-
-/// Compute which orphaned coworkers should have their reviewer assignments cleared.
-///
-/// Returns `None` if we should skip clearing (PR poll not yet initialized).
-/// Returns `Some(vec)` with the filtered list of orphans (excluding those with
-/// open PRs and those with active reviewer assignments).
-///
-/// During startup, we don't have accurate PR data, so we can't safely clear
-/// reviewer assignments without risking clearing assignments for coworkers who
-/// legitimately have open PRs and are just "on break".
-///
-/// `active_reviewer_names`: coworkers that currently have a PR review assignment.
-/// These are excluded from clearing even when their worktree appears orphaned —
-/// the reviewer may have died mid-review and should be respawned, not cleared.
-///
-/// Pure function for testability.
-fn compute_orphans_for_reviewer_clearing(
-    pr_poll_initialized: bool,
-    all_orphaned: Vec<String>,
-    open_pr_owners: &HashSet<String>,
-    active_reviewer_names: &HashSet<String>,
-) -> Option<Vec<String>> {
-    if !pr_poll_initialized {
-        return None;
-    }
-    let filtered = filter_orphans_with_open_prs(all_orphaned, open_pr_owners)
-        .into_iter()
-        .filter(|name| !active_reviewer_names.contains(name))
-        .collect::<Vec<_>>();
-    if filtered.is_empty() {
-        None
-    } else {
-        Some(filtered)
-    }
-}
-
-/// Filter out worktrees that have open PRs.
-///
-/// A worktree with an open PR is not orphaned — it's just waiting for review/merge.
-/// Pure function for testability.
-fn filter_orphans_with_open_prs(
-    flagged: Vec<String>,
-    open_pr_owners: &HashSet<String>,
-) -> Vec<String> {
-    flagged
-        .into_iter()
-        .filter(|name| !open_pr_owners.contains(name))
-        .collect()
-}
-
-/// Filter out worktrees whose exact branch matches a recently merged PR.
-///
-/// Unlike open PR filtering (by coworker name), merged PR filtering must be
-/// done by exact branch name to avoid hiding genuinely orphaned worktrees.
-/// If a coworker has branch A merged and branch B orphaned, only A should
-/// be filtered out, not B.
-///
-/// Returns (coworker_name, should_filter) pairs.
-/// Partition orphaned worktrees by whether their PR was merged.
-///
-/// Returns (merged_prs, unmerged) where:
-/// - merged_prs: worktrees whose exact branch was merged (safe to clean up)
-/// - unmerged: worktrees with no matching merged PR (need investigation)
-fn partition_orphans_by_merged_status(
-    flagged: Vec<String>,
-    merged_pr_branches: &HashSet<String>,
-    get_branch_for_coworker: impl Fn(&str) -> Option<String>,
-) -> (Vec<String>, Vec<String>) {
-    let mut merged = Vec::new();
-    let mut unmerged = Vec::new();
-
-    for name in flagged {
-        if let Some(branch) = get_branch_for_coworker(&name) {
-            if merged_pr_branches.contains(&branch) {
-                merged.push(name);
-            } else {
-                unmerged.push(name);
-            }
-        } else {
-            // Detached HEAD - no branch name to check against merged PRs.
-            // Worktrees only reach this function if safe_cleanup() returned false,
-            // which for detached HEAD means has_uncommitted_changes() was true.
-            // Force-deleting would lose that uncommitted work.
-            // Treat as unmerged so the Lead gets a warning and can investigate.
-            unmerged.push(name);
-        }
-    }
-
-    (merged, unmerged)
-}
-
-/// Data gathered from blocking worktree operations and PR cache for orphan cleanup.
+/// Data gathered for periodic cleanup decisions (stale branches).
 ///
 /// Collected once in the async wrapper, then passed to the pure decision function.
 pub(super) struct OrphanCleanupData {
-    /// All orphaned worktree names (before any filtering).
-    pub all_orphaned: Vec<String>,
-    /// Worktrees whose PRs were merged (safe to force-delete).
-    pub merged_worktrees_to_cleanup: Vec<String>,
-    /// Whether the first PR poll has completed.
-    pub pr_poll_initialized: bool,
-    /// Coworkers who have open PRs (excluded from cleanup/clearing).
-    pub open_pr_owners: HashSet<String>,
-    /// Coworkers with an active PR review assignment (excluded from clearing).
-    ///
-    /// A reviewer whose worktree is orphaned (session died) must NOT have their
-    /// assignment cleared — they should be respawned instead. Populated from
-    /// `pr_reviewers` regardless of timeout so dead reviewers remain protected.
-    pub active_reviewer_names: HashSet<String>,
-    /// Worktrees auto-cleaned via gh CLI fallback (squash-merged PRs not in cache).
-    pub gh_cleaned: Vec<String>,
-    /// Worktrees due for a warning (orphan tracker determined they need alerting).
-    pub due_for_warning: Vec<String>,
     /// Whether the stale branch cleanup cooldown has expired.
     pub stale_branch_cleanup_due: bool,
 }
 
-/// Gather data needed for orphan worktree cleanup decisions.
+/// Gather data needed for periodic cleanup decisions.
 ///
-/// Runs blocking git operations in a separate thread pool and reads PR cache
-/// state. Also consults the orphan tracker to determine which worktrees need
-/// warnings (the tracker is in-memory state management, not I/O).
+/// Legacy coworker-named worktree cleanup has been removed. Task-based worktrees
+/// are cleaned up via CleanupMergedWorktree / CleanupStaleWorktree effects.
 ///
 /// Returns `None` if the PR poll hasn't initialized yet (too early to decide).
-///
-/// `in_progress_task_owners`: Names of coworkers with assigned in_progress tasks.
-/// Used to suppress warnings for worktrees with no corresponding active work.
 pub(super) async fn gather_orphan_cleanup_data(
     state: &DaemonState,
-    in_progress_task_owners: &[String],
+    _in_progress_task_owners: &[String],
 ) -> Option<OrphanCleanupData> {
-    // Clone the coworker manager for use in the blocking task.
-    // CoworkerManager is Clone and contains Arc<> internally.
-    let coworkers = state.coworkers.clone();
-
-    // Run the blocking worktree operations (git commands only - no gh CLI) in a
-    // separate thread pool. Process at most 2 worktrees per tick to avoid
-    // saturating the blocking thread pool and causing RPC timeouts.
-    // Also get the full list of orphaned worktrees for state cleanup.
-    let (all_orphaned, flagged, branch_map) = tokio::task::spawn_blocking(move || {
-        // First get all orphaned worktrees (before cleanup modifies the list)
-        let all_orphaned = coworkers.find_orphaned_worktree_names();
-        let flagged = coworkers.cleanup_orphaned_worktrees(Some(2));
-        // Pre-fetch branch names for all flagged worktrees (avoids blocking git
-        // calls later in the async context)
-        let branch_map: HashMap<String, Option<String>> = flagged
-            .iter()
-            .map(|name| (name.clone(), coworkers.get_worktree_branch(name)))
-            .collect();
-        (all_orphaned, flagged, branch_map)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        warn!("Worktree cleanup task panicked: {}", e);
-        (vec![], vec![], HashMap::new())
-    });
-
-    // Skip orphan flagging and reviewer assignment clearing until the first PR poll completes.
-    let (pr_poll_initialized, open_pr_owners, merged_pr_branches) = {
+    let pr_poll_initialized = {
         let cache = state.pr_coworker_cache.read().unwrap();
-        (
-            cache.pr_poll_initialized,
-            cache.open_pr_owners.clone(),
-            cache.merged_pr_branches.clone(),
-        )
+        cache.pr_poll_initialized
     };
 
-    // Collect all names that have a reviewer assignment (timeout-independent).
-    // Used to protect active reviewers from having their assignments cleared when
-    // their worktree appears orphaned (session died mid-review).
-    let active_reviewer_names: HashSet<String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.github
-            .pr_reviewers
-            .values()
-            .map(|a| a.reviewer.clone())
-            .collect()
-    };
-    if should_skip_orphan_flagging(pr_poll_initialized) {
-        debug!("Skipping orphan flagging - PR poll not yet initialized");
+    if !pr_poll_initialized {
+        debug!("Skipping cleanup - PR poll not yet initialized");
         return None;
-    }
-
-    // Filter and partition using pure helper functions.
-    let filtered = filter_orphans_with_open_prs(flagged, &open_pr_owners);
-    let (merged_pr_worktrees, unmerged) =
-        partition_orphans_by_merged_status(filtered, &merged_pr_branches, |name| {
-            branch_map.get(name).cloned().flatten()
-        });
-
-    for name in &unmerged {
-        debug!("Orphan worktree flagged (no open or merged PR): {}", name);
-    }
-
-    // Collect worktrees due for warning using the tracker (scoped to drop before awaits)
-    let due_for_warning = {
-        let mut tracker = state.orphan_tracker.write().unwrap();
-        // Prune using the FULL orphan list, not the filtered `unmerged` subset.
-        // Using `unmerged` (which is capped at 2 per tick, then filtered by open PRs
-        // and merged status) would drop tracker entries for orphans not in the current
-        // batch, losing their warned_at timestamps and causing repeat warnings.
-        tracker.prune(&all_orphaned);
-        unmerged
-            .into_iter()
-            .filter(|name| {
-                // Suppress warnings for worktrees with no corresponding in_progress task.
-                // When a coworker is idle with no assigned work, their orphaned worktree
-                // represents abandoned/completed work, not an interrupted task needing recovery.
-                if !in_progress_task_owners.contains(name) {
-                    debug!(
-                        "Suppressing orphan warning for {} (no in_progress task)",
-                        name
-                    );
-                    return false;
-                }
-                // Only track worktrees that pass the filter (have an in_progress task).
-                // This ensures first_detected is set when the task is actually assigned,
-                // preserving the 60s grace period.
-                tracker.track(name.clone());
-                tracker.should_warn(name)
-            })
-            .collect::<Vec<_>>()
-    };
-
-    // Before warning the Lead, do a final gh CLI check for worktrees that might
-    // have squash-merged PRs not in the cache. This only runs when we're about
-    // to warn (after the 60s grace period), not every tick.
-    let (gh_cleaned, due_for_warning) = if due_for_warning.is_empty() {
-        (vec![], due_for_warning)
-    } else {
-        let coworkers = state.coworkers.clone();
-        let to_check = due_for_warning.clone();
-        let (cleaned, remaining) = tokio::task::spawn_blocking(move || {
-            let mut cleaned = Vec::new();
-            let mut remaining = Vec::new();
-            for name in to_check {
-                // Guard against race: coworker may be actively running but
-                // not yet reflected in the orphan detection path.
-                if coworkers.get(&name).is_some() {
-                    remaining.push(name);
-                    continue;
-                }
-                let should_cleanup = coworkers.is_branch_pr_merged(&name)
-                    || coworkers.is_worktree_head_on_main(&name);
-
-                if should_cleanup {
-                    let reason = if coworkers.is_branch_pr_merged(&name) {
-                        "PR merged"
-                    } else {
-                        "HEAD on main"
-                    };
-                    match coworkers.force_cleanup_worktree(&name) {
-                        Ok(()) => {
-                            info!("Auto-cleaned orphaned worktree for {} ({})", name, reason);
-                            cleaned.push(name);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to cleanup worktree for {} ({}): {}",
-                                name, reason, e
-                            );
-                            remaining.push(name);
-                        }
-                    }
-                } else {
-                    remaining.push(name);
-                }
-            }
-            (cleaned, remaining)
-        })
-        .await
-        .unwrap_or_else(|e| {
-            warn!("gh PR merged check panicked: {}", e);
-            (vec![], due_for_warning.clone())
-        });
-
-        // Prune using the FULL orphan list to preserve warned_at timestamps for
-        // orphans not in the `remaining` subset (same rationale as line 802).
-        if !cleaned.is_empty() {
-            let mut tracker = state.orphan_tracker.write().unwrap();
-            tracker.prune(&all_orphaned);
-        }
-
-        (cleaned, remaining)
-    };
-
-    // Record warnings for worktrees that are genuinely due
-    if !due_for_warning.is_empty() {
-        let mut tracker = state.orphan_tracker.write().unwrap();
-        for name in &due_for_warning {
-            warn!(
-                "Orphaned worktree for {} has unmerged commits not on any PR - flagging to lead",
-                name
-            );
-            tracker.record_warn(name);
-        }
     }
 
     // Check stale branch cleanup cooldown (in-memory state, not I/O)
     let stale_branch_cleanup_due = {
         let mut cooldowns = state.cooldowns.lock().unwrap();
         if cooldowns.check("stale_branch_cleanup", "global", Duration::from_secs(300)) {
-            // Record immediately to prevent TOCTTOU races where concurrent ticks
-            // pass the check before any records the cooldown.
             cooldowns.record("stale_branch_cleanup", "global");
             true
         } else {
@@ -1809,13 +1527,6 @@ pub(super) async fn gather_orphan_cleanup_data(
     };
 
     Some(OrphanCleanupData {
-        all_orphaned,
-        merged_worktrees_to_cleanup: merged_pr_worktrees,
-        pr_poll_initialized,
-        open_pr_owners,
-        active_reviewer_names,
-        gh_cleaned,
-        due_for_warning,
         stale_branch_cleanup_due,
     })
 }
@@ -1827,51 +1538,10 @@ pub(super) async fn gather_orphan_cleanup_data(
 pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Clear reviewer assignments for orphaned coworkers.
-    if let Some(orphans) = compute_orphans_for_reviewer_clearing(
-        data.pr_poll_initialized,
-        data.all_orphaned.clone(),
-        &data.open_pr_owners,
-        &data.active_reviewer_names,
-    ) {
-        effects.push(Effect::ClearOrphanedReviewerAssignments {
-            orphaned_coworkers: orphans,
-        });
-    }
-
-    // Force-delete worktrees whose PRs were merged (squash-merge case).
-    if !data.merged_worktrees_to_cleanup.is_empty() {
-        effects.push(Effect::ForceCleanupWorktrees {
-            names: data.merged_worktrees_to_cleanup.clone(),
-        });
-    }
-
-    // Post channel messages for worktrees auto-cleaned via gh CLI fallback.
-    for name in &data.gh_cleaned {
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🧹 Auto-cleaned orphaned worktree for {} (PR was merged)",
-                name
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-        });
-    }
-
-    // Warn about orphaned worktrees with genuinely unmerged commits.
-    if !data.due_for_warning.is_empty() {
-        let names_list = data.due_for_warning.join(", ");
-        let nudge_text = format!(
-            "⚠️ @ops Orphaned worktrees with unmerged commits (not on any PR): {}. \
-             Please investigate and decide whether to merge or delete these branches.",
-            names_list
-        );
-
-        effects.push(Effect::PostSystemMessage {
-            message: nudge_text,
-            channel: Some(OPS_CHANNEL.to_string()),
-        });
-    }
+    // Note: Legacy coworker-name-based orphan detection has been removed.
+    // Reviewer assignment clearing was driven by that detection and is no longer
+    // triggered here. Task-based worktrees handle cleanup via
+    // CleanupMergedWorktree / CleanupStaleWorktree effects.
 
     // Clean stale branches if cooldown expired.
     if data.stale_branch_cleanup_due {

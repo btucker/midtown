@@ -231,10 +231,6 @@ impl StuckConditionTracker {
 }
 
 // ---------------------------------------------------------------------------
-// OrphanTracker
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // CommentTracker
 // ---------------------------------------------------------------------------
 
@@ -276,81 +272,6 @@ impl CommentTracker {
     pub fn cleanup(&mut self, open_pr_numbers: &[u64]) {
         let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
         self.comment_counts.retain(|pr, _| open_set.contains(pr));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OrphanTracker
-// ---------------------------------------------------------------------------
-
-/// Grace period before first orphan warning. Allows PR poll (30s interval)
-/// to update open_pr_owners cache before we flag a worktree as orphaned.
-/// Without this, orphan checks (10s interval) can fire before the cache
-/// is updated, causing false positive warnings for worktrees with open PRs.
-pub(super) const ORPHAN_INITIAL_GRACE_PERIOD: Duration = Duration::from_secs(60);
-
-/// How long before re-warning about the same orphaned worktree (1 hour).
-const ORPHAN_WARN_COOLDOWN: Duration = Duration::from_secs(3600);
-
-/// Tracks orphaned worktrees with detection time and warning cooldown.
-///
-/// Unlike a plain `HashSet<String>`, this allows re-warning after a cooldown
-/// period and automatically prunes entries for worktrees that no longer exist.
-#[derive(Debug, Default)]
-pub struct OrphanTracker {
-    entries: HashMap<String, OrphanEntry>,
-}
-
-#[derive(Debug)]
-struct OrphanEntry {
-    first_detected: Instant,
-    warned_at: Option<Instant>,
-}
-
-impl OrphanTracker {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Track an orphaned worktree. No-op if already tracked.
-    pub fn track(&mut self, name: String) {
-        self.entries.entry(name).or_insert(OrphanEntry {
-            first_detected: Instant::now(),
-            warned_at: None,
-        });
-    }
-
-    /// Check if we should warn about this orphan.
-    ///
-    /// Returns false during the initial grace period after first detection,
-    /// giving the PR poll time to update the open_pr_owners cache. After the
-    /// grace period, allows the first warning and then rate-limits re-warnings.
-    pub fn should_warn(&self, name: &str) -> bool {
-        match self.entries.get(name) {
-            Some(entry) => {
-                // Don't warn during grace period — PR poll may not have run yet
-                if entry.first_detected.elapsed() < ORPHAN_INITIAL_GRACE_PERIOD {
-                    return false;
-                }
-                match entry.warned_at {
-                    None => true,
-                    Some(warned) => warned.elapsed() >= ORPHAN_WARN_COOLDOWN,
-                }
-            }
-            None => false,
-        }
-    }
-
-    /// Record that we warned about this orphan.
-    pub fn record_warn(&mut self, name: &str) {
-        if let Some(entry) = self.entries.get_mut(name) {
-            entry.warned_at = Some(Instant::now());
-        }
-    }
-
-    /// Remove entries for worktrees that are no longer in the flagged set.
-    pub fn prune(&mut self, still_flagged: &[String]) {
-        self.entries.retain(|name, _| still_flagged.contains(name));
     }
 }
 

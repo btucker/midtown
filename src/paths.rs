@@ -279,15 +279,13 @@ pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("assets")
 }
 
-/// Get the coworkers directory for a specific repository.
+/// Get the legacy coworkers directory for a specific repository.
 ///
 /// Returns `~/.midtown/projects/<repo>/coworkers/`.
 ///
-/// This is the legacy location for coworker worktrees (named by coworker).
-/// New worktrees should use `worktrees_dir_for_repo()` instead.
-///
-/// Automatically migrates from old directory structure on first access.
-pub fn coworkers_dir_for_repo(repo: &str) -> PathBuf {
+/// This path is only used during migration to clean up legacy worktrees.
+/// All new worktrees use `worktrees_dir_for_repo()` instead.
+pub(crate) fn legacy_coworkers_dir_for_repo(repo: &str) -> PathBuf {
     migrate_worktree_paths(repo);
     midtown_base_dir()
         .join("projects")
@@ -678,7 +676,7 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
 
     // Create new directories
     std::fs::create_dir_all(&new_projects_dir)?;
-    std::fs::create_dir_all(coworkers_dir_for_repo(repo))?;
+    std::fs::create_dir_all(worktrees_dir_for_repo(repo))?;
     std::fs::create_dir_all(lead_dir_for_repo(repo))?;
 
     // Migrate project files
@@ -698,9 +696,9 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
         }
     }
 
-    // Migrate worktrees directory
+    // Migrate worktrees directory (era-1 → task-based worktrees)
     let old_worktrees = old_repo_dir.join("worktrees");
-    let new_coworkers = coworkers_dir_for_repo(repo);
+    let new_worktrees = worktrees_dir_for_repo(repo);
     if old_worktrees.exists() {
         // Move each worktree directory
         if let Ok(entries) = std::fs::read_dir(&old_worktrees) {
@@ -709,7 +707,7 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
                 if old_path.is_dir()
                     && let Some(name) = old_path.file_name()
                 {
-                    let new_path = new_coworkers.join(name);
+                    let new_path = new_worktrees.join(name);
                     if !new_path.exists() {
                         std::fs::rename(&old_path, &new_path)?;
                     }
@@ -843,8 +841,51 @@ pub fn auto_migrate(repo: &str) {
     guard.insert(repo.to_string());
     drop(guard);
 
-    // Attempt migration silently
+    // Attempt migrations silently
     let _ = migrate_directory_structure(repo);
+    let _ = migrate_legacy_coworker_worktrees(repo);
+}
+
+/// Migrate coworker-named worktrees from the legacy `~/.midtown/coworkers/<repo>/`
+/// layout to the unified `~/.midtown/worktrees/<repo>/` layout.
+///
+/// This handles the second migration era: the `coworkers/` directory was an
+/// intermediate layout that predates task-based worktrees. Each coworker had
+/// a worktree at `~/.midtown/coworkers/<repo>/<coworker-name>/`. These are
+/// moved to `~/.midtown/worktrees/<repo>/<coworker-name>/`.
+///
+/// Empty `coworkers/<repo>/` and `coworkers/` directories are cleaned up.
+fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
+    let old_coworkers_dir = legacy_coworkers_dir_for_repo(repo);
+
+    if !old_coworkers_dir.exists() {
+        return Ok(false);
+    }
+
+    let new_worktrees_dir = worktrees_dir_for_repo(repo);
+    std::fs::create_dir_all(&new_worktrees_dir)?;
+
+    let mut migrated_any = false;
+    if let Ok(entries) = std::fs::read_dir(&old_coworkers_dir) {
+        for entry in entries.flatten() {
+            let old_path = entry.path();
+            if old_path.is_dir()
+                && let Some(name) = old_path.file_name()
+            {
+                let new_path = new_worktrees_dir.join(name);
+                if !new_path.exists() && std::fs::rename(&old_path, &new_path).is_ok() {
+                    migrated_any = true;
+                }
+            }
+        }
+    }
+
+    // Clean up empty directories
+    let _ = std::fs::remove_dir(&old_coworkers_dir);
+    let coworkers_parent = midtown_base_dir().join("coworkers");
+    let _ = std::fs::remove_dir(&coworkers_parent);
+
+    Ok(migrated_any)
 }
 
 #[path = "paths_tests.rs"]

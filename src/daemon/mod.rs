@@ -44,8 +44,7 @@ pub use constants::{
 };
 pub use state::DaemonPersistentState;
 pub use trackers::{
-    CommentTracker, OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker,
-    StuckConditionType,
+    CommentTracker, PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType,
 };
 
 // Test helper for orphan recovery tests
@@ -457,8 +456,6 @@ pub(crate) struct DaemonState {
     all_repo_paths: Vec<PathBuf>,
     /// Unified cooldown tracker for orphan spawning and task nudge rate limiting.
     cooldowns: std::sync::Mutex<crate::rules::CooldownTracker>,
-    /// Tracks orphaned worktrees — detection time, warning cooldown, and auto-pruning
-    orphan_tracker: std::sync::RwLock<OrphanTracker>,
     /// Unified persistent state (GitHub + reminders), saved to daemon-state.json.
     persistent_state: Mutex<state::DaemonPersistentState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
@@ -1367,7 +1364,6 @@ impl DaemonState {
             default_branch,
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
-            orphan_tracker: std::sync::RwLock::new(OrphanTracker::new()),
             persistent_state: Mutex::new(persistent_state),
             web_updates_tx,
             max_coworkers,
