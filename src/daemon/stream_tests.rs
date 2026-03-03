@@ -513,6 +513,7 @@ fn test_process_universal_events_no_events() {
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert!(effects.is_empty());
 }
@@ -536,6 +537,7 @@ fn test_process_universal_events_text_only_no_effects() {
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert!(effects.is_empty());
 }
@@ -559,6 +561,7 @@ fn test_process_universal_events_lead_tool_use_produces_effect() {
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -581,7 +584,7 @@ fn test_process_universal_events_lead_tool_use_produces_effect() {
 }
 
 #[test]
-fn test_process_universal_events_coworker_tool_use_ignored() {
+fn test_process_universal_events_coworker_tool_use_broadcast_to_dm() {
     let mut events = HashMap::new();
     events.insert(
         "lexington".to_string(),
@@ -593,19 +596,41 @@ fn test_process_universal_events_coworker_tool_use_ignored() {
             extra: json!(null),
         }],
     );
-    // Coworker tool calls are not shown to the user — only lead and channel lead tool calls are.
+    let coworker_names = HashSet::from(["lexington".to_string()]);
     let effects = process_universal_events(
         &events,
         &HashMap::new(),
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &coworker_names,
     );
-    assert!(effects.is_empty());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::BroadcastUniversalItems {
+            agent_name,
+            channel,
+            thread_parent_id,
+            items,
+        } => {
+            assert_eq!(agent_name, "lexington");
+            assert_eq!(
+                channel.as_deref(),
+                Some("dm-lexington"),
+                "Coworker tool calls should be scoped to dm-<name>"
+            );
+            assert!(
+                thread_parent_id.is_none(),
+                "Coworker should have no thread_parent_id"
+            );
+            assert_eq!(items.len(), 1);
+        }
+        _ => panic!("Expected BroadcastUniversalItems effect"),
+    }
 }
 
 #[test]
-fn test_process_universal_events_only_lead_when_multiple_agents() {
+fn test_process_universal_events_lead_and_coworker_both_produce_effects() {
     let mut events = HashMap::new();
     events.insert(
         "lead".to_string(),
@@ -627,25 +652,36 @@ fn test_process_universal_events_only_lead_when_multiple_agents() {
             extra: json!(null),
         }],
     );
-    // Only the lead's tool calls produce an effect; coworker events are ignored.
+    let coworker_names = HashSet::from(["park".to_string()]);
+    // Both lead and coworker produce effects — lead in main channel, coworker in DM.
     let effects = process_universal_events(
         &events,
         &HashMap::new(),
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &coworker_names,
     );
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::BroadcastUniversalItems {
-            agent_name,
-            channel,
-            ..
-        } => {
-            assert_eq!(agent_name, "lead");
-            assert!(channel.is_none());
-        }
-        _ => panic!("Expected BroadcastUniversalItems effect"),
+    assert_eq!(effects.len(), 2);
+
+    let lead_effect = effects.iter().find(|e| {
+        matches!(e,
+            Effect::BroadcastUniversalItems { agent_name, .. } if agent_name == "lead"
+        )
+    });
+    assert!(lead_effect.is_some());
+    if let Some(Effect::BroadcastUniversalItems { channel, .. }) = lead_effect {
+        assert!(channel.is_none(), "Lead should be in main channel");
+    }
+
+    let cw_effect = effects.iter().find(|e| {
+        matches!(e,
+            Effect::BroadcastUniversalItems { agent_name, .. } if agent_name == "park"
+        )
+    });
+    assert!(cw_effect.is_some());
+    if let Some(Effect::BroadcastUniversalItems { channel, .. }) = cw_effect {
+        assert_eq!(channel.as_deref(), Some("dm-park"));
     }
 }
 
@@ -671,6 +707,7 @@ fn test_process_universal_events_channel_lead_tool_use_produces_channel_scoped_e
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -697,8 +734,9 @@ fn test_process_universal_events_channel_lead_tool_use_produces_channel_scoped_e
 }
 
 #[test]
-fn test_process_universal_events_channel_lead_not_in_sessions_is_ignored() {
-    // If a session named "web" is in events but NOT in channel_lead_sessions, it's a coworker.
+fn test_process_universal_events_unknown_session_not_broadcast() {
+    // A session in events but NOT in any named set (lead, channel leads, forks, coworkers)
+    // produces no broadcast effect.
     let mut events = HashMap::new();
     events.insert(
         "web".to_string(),
@@ -710,15 +748,18 @@ fn test_process_universal_events_channel_lead_not_in_sessions_is_ignored() {
             extra: json!(null),
         }],
     );
-    // No channel leads registered → "web" session is treated as a regular coworker.
     let effects = process_universal_events(
         &events,
         &HashMap::new(),
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
-    assert!(effects.is_empty());
+    assert!(
+        effects.is_empty(),
+        "Sessions not in any named set should not produce broadcast effects"
+    );
 }
 
 #[test]
@@ -753,6 +794,7 @@ fn test_process_universal_events_lead_and_channel_lead_produce_separate_effects(
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert_eq!(effects.len(), 2);
 
@@ -791,6 +833,7 @@ fn test_process_universal_events_channel_lead_registered_but_no_events_produces_
         "lead",
         &HashMap::new(),
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert!(
         effects.is_empty(),
@@ -820,6 +863,7 @@ fn test_process_universal_events_forked_session_tool_use_is_scoped_to_channel() 
         "lead",
         &fork_bound_channels,
         &HashMap::new(),
+        &HashSet::new(),
     );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -865,6 +909,7 @@ fn test_process_universal_events_forked_session_with_thread_binding_includes_thr
         "lead",
         &fork_bound_channels,
         &fork_bound_threads,
+        &HashSet::new(),
     );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -885,6 +930,91 @@ fn test_process_universal_events_forked_session_with_thread_binding_includes_thr
         }
         _ => panic!("Expected BroadcastUniversalItems effect"),
     }
+}
+
+#[test]
+fn test_process_universal_events_multiple_coworkers_produce_separate_dm_effects() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Edit", "input": {}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    events.insert(
+        "madison".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "tool_use", "id": "tc_2", "name": "Bash", "input": {}}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string(), "madison".to_string()]);
+
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+        &coworker_names,
+    );
+    assert_eq!(effects.len(), 2);
+
+    let park_effect = effects.iter().find(|e| {
+        matches!(e,
+            Effect::BroadcastUniversalItems { agent_name, .. } if agent_name == "park"
+        )
+    });
+    assert!(park_effect.is_some());
+    if let Some(Effect::BroadcastUniversalItems { channel, .. }) = park_effect {
+        assert_eq!(channel.as_deref(), Some("dm-park"));
+    }
+
+    let madison_effect = effects.iter().find(|e| {
+        matches!(e,
+            Effect::BroadcastUniversalItems { agent_name, .. } if agent_name == "madison"
+        )
+    });
+    assert!(madison_effect.is_some());
+    if let Some(Effect::BroadcastUniversalItems { channel, .. }) = madison_effect {
+        assert_eq!(channel.as_deref(), Some("dm-madison"));
+    }
+}
+
+#[test]
+fn test_process_universal_events_coworker_text_only_no_tool_effect() {
+    // Coworker with only text content (no tool_use) should not produce a universal items effect.
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Working on it"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+    let effects = process_universal_events(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashMap::new(),
+        &coworker_names,
+    );
+    assert!(
+        effects.is_empty(),
+        "Text-only coworker events should not produce universal items"
+    );
 }
 
 // ── process_coworker_output tests ────────────────────────────────────

@@ -159,13 +159,14 @@ pub fn process_coworker_output(
 /// Forked leads (thread-bound sessions) include `thread_parent_id` so the frontend
 /// routes their tool calls to the thread panel instead of the main channel activity strip.
 ///
-/// Coworker tool calls are never shown.
+/// Coworker tool calls are shown in their DM channels (`dm-<name>`).
 pub fn process_universal_events(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
     fork_bound_channels: &HashMap<String, String>,
     fork_bound_threads: &HashMap<String, String>,
+    coworker_names: &HashSet<String>,
 ) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
@@ -212,6 +213,21 @@ pub fn process_universal_events(
                     agent_name: fork_name.clone(),
                     channel: Some(channel_name.clone()),
                     thread_parent_id,
+                    items,
+                });
+            }
+        }
+    }
+
+    // Coworkers → shown in their DM channels (dm-<name>).
+    for name in coworker_names {
+        if let Some(cw_events) = events.get(name.as_str()) {
+            let items = crate::universal_events::claude::extract_tool_events(cw_events, timestamp);
+            if !items.is_empty() {
+                effects.push(Effect::BroadcastUniversalItems {
+                    agent_name: name.clone(),
+                    channel: Some(format!("dm-{}", name)),
+                    thread_parent_id: None,
                     items,
                 });
             }
