@@ -166,7 +166,7 @@
 
 <svelte:head>
   <title>Midtown</title>
-  <meta name="theme-color" content={$theme === 'dark' ? '#1A222C' : '#F0E8D5'} />
+  <meta name="theme-color" content={$theme === 'dark' ? '#1A232D' : '#F0E8D6'} />
 </svelte:head>
 
 <div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">

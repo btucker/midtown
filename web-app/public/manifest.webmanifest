@@ -3,6 +3,6 @@
   "short_name": "Midtown",
   "start_url": "/",
   "display": "standalone",
-  "theme_color": "#1A222C",
-  "background_color": "#1A222C"
+  "theme_color": "#1A232D",
+  "background_color": "#1A232D"
 }
