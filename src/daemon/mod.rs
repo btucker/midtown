@@ -3674,6 +3674,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         &state.repo_name,
                         &fork_bound_channels,
                         &fork_bound_threads,
+                        &coworker_names,
                     );
                     (lead_effects, coworker_effects, universal_effects)
                 };
