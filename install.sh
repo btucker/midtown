@@ -72,14 +72,19 @@ mkdir -p "$INSTALL_DIR"
 mv "${TMP_DIR}/midtown" "${INSTALL_DIR}/midtown"
 chmod +x "${INSTALL_DIR}/midtown"
 
-# Install bundled web-app if present in the tarball (atomic swap)
+# Clean up legacy web-app from install dir (pre-v0.7 placed it next to the binary)
+rm -rf "${INSTALL_DIR}/web-app"
+
+# Install bundled web-app to XDG data directory (atomic swap)
+MIDTOWN_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/midtown"
 if [ -d "${TMP_DIR}/web-app" ]; then
-    if [ -d "${INSTALL_DIR}/web-app" ]; then
-        mv "${INSTALL_DIR}/web-app" "${INSTALL_DIR}/web-app.old"
+    mkdir -p "$MIDTOWN_DATA_DIR"
+    if [ -d "${MIDTOWN_DATA_DIR}/web-app" ]; then
+        mv "${MIDTOWN_DATA_DIR}/web-app" "${MIDTOWN_DATA_DIR}/web-app.old"
     fi
-    mv "${TMP_DIR}/web-app" "${INSTALL_DIR}/web-app"
-    rm -rf "${INSTALL_DIR}/web-app.old"
-    echo "Installed web UI to ${INSTALL_DIR}/web-app/"
+    mv "${TMP_DIR}/web-app" "${MIDTOWN_DATA_DIR}/web-app"
+    rm -rf "${MIDTOWN_DATA_DIR}/web-app.old"
+    echo "Installed web UI to ${MIDTOWN_DATA_DIR}/web-app/"
 fi
 
 echo ""

@@ -165,6 +165,10 @@ pub mod search;
 // so there's no harm in including it in production builds.
 pub mod test_utils;
 
+#[path = "lib_tests.rs"]
+#[cfg(test)]
+mod lib_tests;
+
 pub use channel::{Channel, ChannelInfo, ChannelRouter, load_channel_notes};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
@@ -176,13 +180,18 @@ pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 /// Resolve the `web-app/dist/` directory containing built static assets.
 ///
 /// Checks candidates in order and returns the first that exists:
-/// 1. Next to the running executable (`exe_dir/web-app/dist`)
-/// 2. In the source tree where the binary was compiled (`CARGO_MANIFEST_DIR/web-app/dist`)
+/// 1. Next to the running executable (`exe_dir/web-app/dist`) — source builds
+///    where the binary lives in the source tree
+/// 2. In the source tree where the binary was compiled
+///    (`CARGO_MANIFEST_DIR/web-app/dist`) — `cargo run` dev builds where the
+///    binary is in `target/debug/`
+/// 3. In the XDG data directory (`~/.local/share/midtown/web-app/dist`) —
+///    binary installs via `install.sh` or `midtown update`
 ///
-/// Falls back to the source-tree path even if it doesn't exist, so callers
+/// Falls back to the XDG data-dir path even if it doesn't exist, so callers
 /// get a meaningful path for error messages.
 pub fn resolve_web_dir() -> std::path::PathBuf {
-    // Candidate 1: next to the executable (works for bundled installs)
+    // Candidate 1: next to the executable (source builds in the source tree)
     if let Some(exe_dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
@@ -193,10 +202,18 @@ pub fn resolve_web_dir() -> std::path::PathBuf {
         }
     }
 
-    // Candidate 2: source tree where `cargo build` ran (baked in at compile time)
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    // Candidate 2: source tree where `cargo build` ran (baked in at compile time).
+    // Checked before the data dir so `cargo run` always serves locally built
+    // assets rather than stale binary-install assets.
+    let source_candidate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("web-app")
-        .join("dist")
+        .join("dist");
+    if source_candidate.exists() {
+        return source_candidate;
+    }
+
+    // Candidate 3: ~/.local/share/midtown/web-app/dist (binary installs)
+    paths::midtown_data_dir().join("web-app").join("dist")
 }
 
 use thiserror::Error;

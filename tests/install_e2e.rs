@@ -147,6 +147,9 @@ fn test_install_script_curl_bash() {
     // ── Run `curl | sh` ─────────────────────────────────────────────
     let install_dir = tmp.path().join("install_target");
     fs::create_dir_all(&install_dir).unwrap();
+    // Set HOME so install.sh writes web-app to a predictable XDG data dir
+    let fake_home = tmp.path().join("home");
+    fs::create_dir_all(&fake_home).unwrap();
 
     let output = Command::new("sh")
         .arg("-c")
@@ -154,6 +157,7 @@ fn test_install_script_curl_bash() {
             "curl -fsSL http://127.0.0.1:{port}/install.sh | MIDTOWN_INSTALL_DIR='{}' sh",
             install_dir.display()
         ))
+        .env("HOME", &fake_home)
         .output()
         .expect("failed to run curl | sh");
 
@@ -186,12 +190,21 @@ fn test_install_script_curl_bash() {
         "Unexpected version output: {version_str}"
     );
 
-    // ── Assert: web-app/ installed ───────────────────────────────────
-    let web_app = install_dir.join("web-app");
-    assert!(web_app.exists(), "web-app/ directory not installed");
+    // ── Assert: web-app/ installed in XDG data dir ────────────────────
+    let web_app = fake_home
+        .join(".local")
+        .join("share")
+        .join("midtown")
+        .join("web-app");
+    assert!(web_app.exists(), "web-app/ not found in XDG data dir");
     assert!(
         web_app.join("index.html").exists(),
-        "web-app/index.html not found"
+        "web-app/index.html not found in XDG data dir"
+    );
+    // Legacy location should not exist
+    assert!(
+        !install_dir.join("web-app").exists(),
+        "web-app/ should not be in install dir"
     );
 
     // ── Assert: PATH warning shown ───────────────────────────────────
@@ -246,10 +259,16 @@ fn test_install_script_replaces_existing_web_app() {
 
     let tarball_bytes = fs::read(&tarball_path).unwrap();
 
-    // Pre-populate install dir with an existing web-app/.
+    // Pre-populate XDG data dir with an existing web-app/.
     let install_dir = tmp.path().join("install_target");
-    fs::create_dir_all(install_dir.join("web-app")).unwrap();
-    fs::write(install_dir.join("web-app").join("old.html"), "<h1>old</h1>").unwrap();
+    let fake_home = tmp.path().join("home");
+    let data_web_app = fake_home
+        .join(".local")
+        .join("share")
+        .join("midtown")
+        .join("web-app");
+    fs::create_dir_all(&data_web_app).unwrap();
+    fs::write(data_web_app.join("old.html"), "<h1>old</h1>").unwrap();
 
     // Start mock server.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -310,6 +329,7 @@ fn test_install_script_replaces_existing_web_app() {
             "curl -fsSL http://127.0.0.1:{port}/install.sh | MIDTOWN_INSTALL_DIR='{}' sh",
             install_dir.display()
         ))
+        .env("HOME", &fake_home)
         .output()
         .unwrap();
 
@@ -321,17 +341,18 @@ fn test_install_script_replaces_existing_web_app() {
 
     // Old file should be gone (replaced by new web-app/).
     assert!(
-        !install_dir.join("web-app").join("old.html").exists(),
+        !data_web_app.join("old.html").exists(),
         "Old web-app files should have been replaced"
     );
     // New file should be present.
     assert!(
-        install_dir.join("web-app").join("index.html").exists(),
+        data_web_app.join("index.html").exists(),
         "New web-app/index.html should be installed"
     );
     // .old directory should be cleaned up.
+    let data_dir = fake_home.join(".local").join("share").join("midtown");
     assert!(
-        !install_dir.join("web-app.old").exists(),
+        !data_dir.join("web-app.old").exists(),
         "web-app.old should have been cleaned up"
     );
 

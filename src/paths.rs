@@ -55,11 +55,18 @@ use std::path::{Path, PathBuf};
 thread_local! {
     static TEST_MIDTOWN_BASE_DIR: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
+    static TEST_MIDTOWN_DATA_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
 fn test_midtown_base_dir_override() -> Option<PathBuf> {
     TEST_MIDTOWN_BASE_DIR.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(test)]
+fn test_midtown_data_dir_override() -> Option<PathBuf> {
+    TEST_MIDTOWN_DATA_DIR.with(|slot| slot.borrow().clone())
 }
 
 #[cfg(test)]
@@ -80,6 +87,26 @@ impl Drop for TestMidtownBaseDirGuard {
 pub fn set_test_midtown_base_dir(path: PathBuf) -> TestMidtownBaseDirGuard {
     let previous = TEST_MIDTOWN_BASE_DIR.with(|slot| slot.replace(Some(path)));
     TestMidtownBaseDirGuard { previous }
+}
+
+#[cfg(test)]
+pub struct TestMidtownDataDirGuard {
+    previous: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for TestMidtownDataDirGuard {
+    fn drop(&mut self) {
+        TEST_MIDTOWN_DATA_DIR.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
+#[cfg(test)]
+pub fn set_test_midtown_data_dir(path: PathBuf) -> TestMidtownDataDirGuard {
+    let previous = TEST_MIDTOWN_DATA_DIR.with(|slot| slot.replace(Some(path)));
+    TestMidtownDataDirGuard { previous }
 }
 
 /// Detect the current git repository name.
@@ -187,6 +214,29 @@ fn state_dir() -> PathBuf {
                 .join(".local")
                 .join("state")
         })
+}
+
+/// Get the data directory for midtown.
+///
+/// Returns `~/.local/share/midtown/`. Used for static application data
+/// like bundled web-app assets that are separate from the config in `~/.midtown/`.
+///
+/// Uses `XDG_DATA_HOME` if set, otherwise `~/.local/share`.
+pub fn midtown_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(override_path) = test_midtown_data_dir_override() {
+        return override_path;
+    }
+
+    let data_home = std::env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        });
+    data_home.join("midtown")
 }
 
 /// Get the base midtown directory.
