@@ -243,7 +243,7 @@ enum Commands {
     #[command(hide = true)]
     Webserver {
         #[command(subcommand)]
-        command: WebserverCommand,
+        command: Option<WebserverCommand>,
     },
     /// Run Claude Code using the current midtown auth profile
     #[command(hide = true)]
@@ -288,8 +288,9 @@ enum Commands {
 
 #[derive(Subcommand, Clone)]
 enum WebserverCommand {
-    /// Run the webserver (default)
-    Run {
+    /// Start the webserver (default)
+    #[command(alias = "run")]
+    Start {
         /// Port to listen on (default: 47022)
         #[arg(long)]
         port: Option<u16>,
@@ -764,7 +765,14 @@ fn main() {
 
     // Webserver commands (standalone, no daemon required)
     if let Commands::Webserver { command: ws_cmd } = &command {
-        match ws_cmd {
+        let ws_cmd = ws_cmd.clone().unwrap_or(WebserverCommand::Start {
+            port: None,
+            static_dir: None,
+            tls_cert: None,
+            tls_key: None,
+            foreground: false,
+        });
+        match &ws_cmd {
             WebserverCommand::Stop => {
                 let result = cli::handle_webserver_stop();
                 handle_result(format, result);
@@ -775,7 +783,7 @@ fn main() {
                 handle_result(format, result);
                 return;
             }
-            WebserverCommand::Run {
+            WebserverCommand::Start {
                 port,
                 static_dir,
                 tls_cert,
