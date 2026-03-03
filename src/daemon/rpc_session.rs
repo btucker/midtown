@@ -1514,6 +1514,18 @@ pub(super) async fn handle_session_fork(
             // only when the fork is for a channel lead (the framing text says
             // "channel lead for #..."). Without a nudge the fork session sits
             // idle forever with no initial message to act on.
+            //
+            // Check channel-lead status up front so we don't need try_lock()
+            // inside a sync closure — .lock().await is correct in async context
+            // and avoids non-deterministic framing on lock contention.
+            let is_channel_lead = {
+                let ps_guard = state.persistent_state.lock().await;
+                ps_guard
+                    .sessions
+                    .get(calling_session_id)
+                    .map(|r| r.coworker_type == "channel-lead")
+                    .unwrap_or(false)
+            };
             let nudge_message = initial_message.map(String::from).or_else(|| {
                 fork_channel.as_ref().and_then(|ch| {
                     // Only use channel-lead framing when the caller IS a channel
@@ -1521,14 +1533,6 @@ pub(super) async fn handle_session_fork(
                     // channel — sending "You are a channel lead for #midtown" is
                     // misleading. In that case we skip the framing; the fork
                     // still starts (it just has no initial nudge text).
-                    let is_channel_lead = {
-                        let ps_guard = state.persistent_state.try_lock().ok()?;
-                        ps_guard
-                            .sessions
-                            .get(calling_session_id)
-                            .map(|r| r.coworker_type == "channel-lead")
-                            .unwrap_or(false)
-                    };
                     if is_channel_lead {
                         Some(super::rpc_channel::fork_initial_framing(ch))
                     } else {
