@@ -256,15 +256,41 @@ midtown channel post "After: $AFTER" --task 42
 midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
 ```
 
-The command runs Playwright, uploads the image, and prints the `[Attached: /path]` markdown ready for channel posts or PR bodies. Post screenshots to the channel for lead review before opening the PR.
+The command runs Playwright, captures the page, and prints `[Attached: /path]` markdown ready for **channel posts**. Post screenshots to the channel for lead review before opening the PR.
 
-Example PR creation:
+### Screenshots in GitHub PR Descriptions
+
+The `[Attached: /path]` format works in midtown channels but renders as literal text on GitHub. For PR descriptions, use `--github` to get standard markdown image syntax:
+
 ```bash
-gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<'EOF'
+# Capture a screenshot with GitHub-compatible markdown output:
+SCREENSHOT=$(midtown coworker screenshot http://localhost:5173 --github)
+# Output: ![screenshot](https://localhost:47022/api/projects/<repo>/screenshots/<uuid>.png)
+
+# Before/after with --github:
+BEFORE=$(midtown coworker screenshot http://localhost:5173 --before --github)
+# ... make your changes ...
+AFTER=$(midtown coworker screenshot http://localhost:5173 --after --github)
+```
+
+The `--github` flag outputs `![alt](URL)` pointing to the standalone webserver's screenshot endpoint. These URLs render as inline images on GitHub when the webserver is accessible.
+
+Example PR creation with screenshots:
+```bash
+BEFORE=$(midtown coworker screenshot http://localhost:5173 --before --github)
+# ... make changes ...
+AFTER=$(midtown coworker screenshot http://localhost:5173 --after --github)
+
+gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<EOF
 <!-- midtown: {name} -->
 
 ## Summary
 - Added authentication endpoint
+
+## Screenshots
+| Before | After |
+|--------|-------|
+| $BEFORE | $AFTER |
 
 ## Test plan
 - [x] Unit tests pass
@@ -565,5 +591,6 @@ midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
 
 - Screenshots go stale — take a new one after each significant change
 - Use `--output` with descriptive filenames when capturing multiple views
+- Use `--github` when you need the screenshot URL for a GitHub PR description (outputs `![alt](URL)` instead of `[Attached: /path]`)
 - The dev server is usually at `http://localhost:5173` (Vite default); check `web-app/package.json` scripts if it differs
 - The command uses `npx playwright@latest` — no setup step needed, works for any project
