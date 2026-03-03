@@ -418,13 +418,6 @@ pub(super) async fn handle_channel_post(
                 state.repo_name, from
             );
             state.nudge_lead(&nudge_msg).await;
-
-            // Send push notification to mobile PWA
-            state.send_push_notification(
-                &format!("@{} from {}", state.repo_name, from),
-                &summary,
-                "mention",
-            );
         }
     }
 

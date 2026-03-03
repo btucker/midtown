@@ -82,11 +82,6 @@ pub(super) async fn chat_monitor_loop(
                                                 state.repo_name,
                                                 msg.from
                                             );
-                                            state.send_push_notification(
-                                                &format!("@{} from {}", state.repo_name, msg.from),
-                                                &msg.content,
-                                                "mention",
-                                            );
                                         }
                                         if msg_lower.contains("@ops") {
                                             let effect = super::effects::Effect::NudgeChannelLead {
