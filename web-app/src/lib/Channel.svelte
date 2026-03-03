@@ -870,22 +870,28 @@
           <!-- Reply indicator for messages with thread replies -->
           {#if !msg.thread_parent_id && msg.reply_count}
             {@const threadUnread = $threadUnreadCounts[msg.id] || 0}
+            {@const participants = msg.reply_participants || (msg.last_reply ? [msg.last_reply.from] : [])}
             <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
               <button
                 data-testid="thread-summary"
                 class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
-                {#if msg.last_reply}
-                  <span
-                    class="inline-flex items-center justify-center w-[16px] h-[16px] rounded-[3px] text-[0.5rem] font-bold text-white leading-none flex-shrink-0"
-                    style="background-color: {getSenderColor(msg.last_reply.from)}"
-                    title={msg.last_reply.from}
-                  >{msg.last_reply.from[0].toUpperCase()}</span>
+                {#if participants.length > 0}
+                  <span class="thread-avatars">
+                    {#each participants as p}
+                      <span
+                        class="thread-avatar-chip"
+                        style="background-color: {getSenderColor(p)}"
+                        title={p}
+                      >{p[0].toUpperCase()}</span>
+                    {/each}
+                  </span>
                 {/if}
-                <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
                 {#if threadUnread > 0}
                   <span class="thread-unread-pill">{threadUnread} new</span>
+                {:else}
+                  <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
                 {/if}
                 {#if msg.last_reply}
                   <span class="text-muted-foreground/60">&middot;</span>
@@ -1203,5 +1209,30 @@
     font-size: 0.6rem;
     font-weight: 700;
     line-height: 1.2;
+  }
+
+  .thread-avatars {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .thread-avatar-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    color: white;
+    line-height: 1;
+    flex-shrink: 0;
+    margin-right: -3px;
+    outline: 1.5px solid hsl(var(--background));
+  }
+
+  .thread-avatar-chip:last-child {
+    margin-right: 0;
   }
 </style>

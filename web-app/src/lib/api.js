@@ -274,17 +274,27 @@ export function getApiBase() {
 function annotateThreadReplyCounts(msgs) {
   const replyCountMap = {}
   const lastReplyMap = {}
+  const participantsMap = {}
   for (const m of msgs) {
     if (m.thread_parent_id) {
       replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1
       lastReplyMap[m.thread_parent_id] = m
+      if (!participantsMap[m.thread_parent_id]) participantsMap[m.thread_parent_id] = []
+      if (!participantsMap[m.thread_parent_id].includes(m.from)) {
+        participantsMap[m.thread_parent_id].push(m.from)
+      }
     }
   }
   return msgs
     .filter((m) => !m.thread_parent_id)
     .map((m) =>
       replyCountMap[m.id]
-        ? { ...m, reply_count: replyCountMap[m.id], last_reply: lastReplyMap[m.id] }
+        ? {
+            ...m,
+            reply_count: replyCountMap[m.id],
+            last_reply: lastReplyMap[m.id],
+            reply_participants: participantsMap[m.id],
+          }
         : m
     )
 }
@@ -614,10 +624,14 @@ export function handleUpdate(update) {
             ...byChannel,
             [channelName]: channelMsgs.map((m) => {
               if (m.id === msg.thread_parent_id) {
+                const participants = m.reply_participants || []
                 return {
                   ...m,
                   reply_count: (m.reply_count || 0) + 1,
                   last_reply: msg,
+                  reply_participants: participants.includes(msg.from)
+                    ? participants
+                    : [...participants, msg.from],
                 }
               }
               return m

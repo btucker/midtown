@@ -266,6 +266,9 @@ pub struct ChannelMessageData {
     /// Last reply metadata for this message's thread (top-level history only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reply: Option<ThreadReplySummary>,
+    /// Unique participants who replied in this thread (top-level history only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_participants: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -626,6 +629,7 @@ async fn api_channel_history(
                         thread_parent_id: m.thread_parent_id,
                         reply_count: None,
                         last_reply: None,
+                        reply_participants: None,
                     }
                 })
                 .collect()
@@ -643,8 +647,10 @@ async fn api_channel_history(
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
 
-            let mut reply_meta: std::collections::HashMap<String, (usize, ThreadReplySummary)> =
-                std::collections::HashMap::new();
+            let mut reply_meta: std::collections::HashMap<
+                String,
+                (usize, ThreadReplySummary, Vec<String>),
+            > = std::collections::HashMap::new();
             for msg in &messages {
                 if let Some(parent_id) = msg.thread_parent_id.as_ref() {
                     let entry = reply_meta.entry(parent_id.clone()).or_insert((
@@ -653,12 +659,16 @@ async fn api_channel_history(
                             from: msg.from.clone(),
                             timestamp: msg.timestamp.to_rfc3339(),
                         },
+                        Vec::new(),
                     ));
                     entry.0 += 1;
                     entry.1 = ThreadReplySummary {
                         from: msg.from.clone(),
                         timestamp: msg.timestamp.to_rfc3339(),
                     };
+                    if !entry.2.contains(&msg.from) {
+                        entry.2.push(msg.from.clone());
+                    }
                 }
             }
 
@@ -667,10 +677,13 @@ async fn api_channel_history(
                 .filter(|m| m.thread_parent_id.is_none())
                 .map(|m| {
                     let channel = m.channel_name().to_string();
-                    let (reply_count, last_reply) = match reply_meta.get(&m.id) {
-                        Some((count, last)) => (Some(*count), Some(last.clone())),
-                        None => (None, None),
-                    };
+                    let (reply_count, last_reply, reply_participants) =
+                        match reply_meta.remove(&m.id) {
+                            Some((count, last, participants)) => {
+                                (Some(count), Some(last), Some(participants))
+                            }
+                            None => (None, None, None),
+                        };
                     ChannelMessageData {
                         id: m.id.clone(),
                         from: m.from,
@@ -681,6 +694,7 @@ async fn api_channel_history(
                         thread_parent_id: m.thread_parent_id,
                         reply_count,
                         last_reply,
+                        reply_participants,
                     }
                 })
                 .collect()
@@ -2413,6 +2427,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         thread_parent_id: message.thread_parent_id.clone(),
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     })
 }
 

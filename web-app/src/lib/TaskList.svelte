@@ -138,7 +138,6 @@
   }
 
   .task-row.active .status-bar {
-    box-shadow: 0 0 4px currentColor;
   }
 
   .task-content {

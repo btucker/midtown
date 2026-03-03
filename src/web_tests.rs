@@ -81,6 +81,7 @@ fn test_web_update_serialization() {
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -395,6 +396,7 @@ fn test_task_1191_channel_switching_requirements() {
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     };
     assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -414,6 +416,7 @@ fn test_task_1191_channel_switching_requirements() {
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     };
     assert_eq!(msg_default.channel, "myproject");
 
@@ -700,6 +703,7 @@ fn test_channel_message_data_with_thread_parent_id() {
         thread_parent_id: Some("parent-uuid-123".to_string()),
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("thread_parent_id"));
@@ -720,6 +724,7 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("thread_parent_id"));
@@ -741,11 +746,13 @@ fn test_channel_message_data_includes_reply_metadata_when_present() {
             from: "york".to_string(),
             timestamp: "2024-01-01T00:02:00Z".to_string(),
         }),
+        reply_participants: Some(vec!["park".to_string(), "york".to_string()]),
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("\"reply_count\":3"));
     assert!(json.contains("\"last_reply\""));
     assert!(json.contains("\"from\":\"york\""));
+    assert!(json.contains("\"reply_participants\""));
 }
 
 #[test]
@@ -761,6 +768,7 @@ fn test_channel_message_data_reply_metadata_omitted_when_none() {
         thread_parent_id: None,
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("reply_count"));
