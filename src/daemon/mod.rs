@@ -3345,7 +3345,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.nudge_lead(&nudge_text).await;
                     info!("Nudged lead about PR #{} merge", pr_number);
 
-                    // Auto-complete task when PR title contains [Midtown #XX]
+                    // Auto-complete task when PR title contains [Midtown !XX].
+                    // Task completion sends its own push notification, so skip
+                    // the generic "PR merged" push for task-linked PRs.
+                    let mut task_handled = false;
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
                         // Look up the task's channel for workflow event routing.
                         let task_channel = if let Some(task_id) =
@@ -3363,8 +3366,24 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             task_channel,
                         );
                         if !completion_effects.is_empty() {
+                            task_handled = true;
                             effects::execute_effects(completion_effects, &state).await;
                         }
+                    }
+
+                    // Push notification for non-Midtown PR merges only.
+                    // Task-linked PRs get a "Task !XX completed" notification
+                    // from task_completed_effects instead.
+                    if !task_handled {
+                        let push_body = format!(
+                            "PR #{} merged into {}",
+                            pr_number, state.default_branch
+                        );
+                        state.send_push_notification(
+                            &format!("PR #{} merged", pr_number),
+                            &push_body,
+                            &format!("pr_merged_{}", pr_number),
+                        );
                     }
                 }
 
@@ -3372,11 +3391,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 if let Some(nudge_msg) = webhook_event.ci_failed_on_default_branch {
                     state.nudge_lead(&nudge_msg).await;
                     info!("Nudged lead about CI failure on default branch");
-                    state.send_push_notification(
-                        "CI failed on default branch",
-                        &nudge_msg,
-                        "ci_failure",
-                    );
                 }
 
                 // Capture whether this is a strong formal review (APPROVED/CHANGES_REQUESTED)

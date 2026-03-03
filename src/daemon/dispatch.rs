@@ -1868,13 +1868,8 @@ pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
         );
 
         effects.push(Effect::PostSystemMessage {
-            message: nudge_text.clone(),
+            message: nudge_text,
             channel: Some(OPS_CHANNEL.to_string()),
-        });
-        effects.push(Effect::SendPushNotification {
-            title: "Orphaned worktrees need attention".to_string(),
-            body: nudge_text,
-            tag: "orphan_warning".to_string(),
         });
     }
 

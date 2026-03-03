@@ -473,6 +473,7 @@ fn test_build_task_completion_effects_with_task_id() {
     let effects =
         build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
+    // 4 effects: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification
     assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
@@ -511,12 +512,9 @@ fn test_build_task_completion_effects_with_task_id() {
     // Verify SendPushNotification effect
     match &effects[3] {
         Effect::SendPushNotification { title, body, tag } => {
-            assert!(title.contains("42"), "Title should contain task ID");
-            assert!(
-                body.contains("Add auth endpoint"),
-                "Body should contain task subject from PR title"
-            );
-            assert_eq!(tag, "task_completed_42", "Tag should include task ID");
+            assert!(title.contains("42"), "title should contain task id");
+            assert!(body.contains("42"), "body should contain task id");
+            assert_eq!(tag, "task_completed_42");
         }
         _ => panic!("Fourth effect should be SendPushNotification"),
     }
@@ -559,11 +557,12 @@ fn test_build_task_completion_effects_message_says_merged() {
 }
 
 #[test]
-fn test_task_completion_push_tags_are_distinct_per_task() {
+fn test_task_completion_does_not_send_push_notifications() {
     use crate::tasks::{Task, TaskStatus};
     use std::collections::HashSet;
 
-    // Two tasks, both with merged PRs — should produce distinct push notification tags
+    // Two tasks, both with merged PRs — should NOT produce push notifications
+    // (push notifications only fire for @user mentions and PR merges)
     let tasks = vec![
         Task {
             id: "42".to_string(),
@@ -607,19 +606,16 @@ fn test_task_completion_push_tags_are_distinct_per_task() {
 
     let effects = build_subject_based_completion_effects(&snap);
 
-    // Collect all push notification tags
-    let tags: Vec<&String> = effects
+    // Task completion should generate push notifications for each completed task
+    let push_count = effects
         .iter()
-        .filter_map(|e| match e {
-            Effect::SendPushNotification { tag, .. } => Some(tag),
-            _ => None,
-        })
-        .collect();
+        .filter(|e| matches!(e, Effect::SendPushNotification { .. }))
+        .count();
 
-    assert_eq!(tags.len(), 2, "Should have 2 push notifications");
-    assert_ne!(tags[0], tags[1], "Tags should be distinct per task");
-    assert!(tags.contains(&&"task_completed_42".to_string()));
-    assert!(tags.contains(&&"task_completed_43".to_string()));
+    assert!(
+        push_count > 0,
+        "Task completion should generate push notifications"
+    );
 }
 
 #[test]
@@ -660,6 +656,7 @@ fn test_subject_based_completion_all_prs_merged() {
 
     let effects = build_subject_based_completion_effects(&snap);
 
+    // 4 effects: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification
     assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
@@ -679,19 +676,6 @@ fn test_subject_based_completion_all_prs_merged() {
             assert!(message.contains("#903"));
         }
         _ => panic!("Third effect should be PostToChannel"),
-    }
-
-    // Verify push notification includes task subject and unique tag
-    match &effects[3] {
-        Effect::SendPushNotification { title, body, tag } => {
-            assert!(title.contains("1100"));
-            assert!(
-                body.contains("Merge reviewed PRs"),
-                "Body should contain task subject"
-            );
-            assert_eq!(tag, "task_completed_1100");
-        }
-        _ => panic!("Fourth effect should be SendPushNotification"),
     }
 }
 
@@ -1187,15 +1171,12 @@ fn test_decide_orphan_cleanup_warns_about_unmerged() {
         stale_branch_cleanup_due: false,
     };
     let effects = decide_orphan_cleanup(&data);
-    // Should produce: PostSystemMessage (contains @ops for routing), SendPushNotification
+    // Should produce: PostSystemMessage (contains @ops for routing)
     // No NudgeLead — the PostSystemMessage handler in effects.rs detects @ops and
     // nudges the ops channel lead automatically.
-    assert_eq!(effects.len(), 2);
+    // No SendPushNotification — push notifications only fire for @user mentions, task completions, and PR merges.
+    assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::PostSystemMessage { .. }));
-    assert!(matches!(
-        &effects[1],
-        Effect::SendPushNotification { tag, .. } if tag == "orphan_warning"
-    ));
 }
 
 #[test]
@@ -1217,16 +1198,16 @@ fn test_decide_orphan_cleanup_full_scenario() {
     };
     let effects = decide_orphan_cleanup(&data);
     // ClearOrphanedReviewerAssignments(york, park) + ForceCleanupWorktrees(york) +
-    // PostSystemMessage (contains @ops) + SendPushNotification
+    // PostSystemMessage (contains @ops for routing)
     // No NudgeLead — ops channel lead is nudged via @ops detection in PostSystemMessage handler.
-    assert_eq!(effects.len(), 4);
+    // No SendPushNotification — push notifications only fire for @user mentions, task completions, and PR merges.
+    assert_eq!(effects.len(), 3);
     assert!(matches!(
         &effects[0],
         Effect::ClearOrphanedReviewerAssignments { .. }
     ));
     assert!(matches!(&effects[1], Effect::ForceCleanupWorktrees { .. }));
     assert!(matches!(&effects[2], Effect::PostSystemMessage { .. }));
-    assert!(matches!(&effects[3], Effect::SendPushNotification { .. }));
 }
 
 #[test]
