@@ -11,6 +11,7 @@
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
 //! - `GET /api/projects/:name/zellij-web-url` - Get Zellij web client URL for project
 //! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
+//! - `GET /api/projects/:name/screenshots/:filename` - Serve per-project screenshot images for PR embedding
 //! - `GET /api/projects/:name/channels/:channel_name/notes` - List channel notes (markdown files)
 //! - `GET /api/projects/:name/proxy/api/ws` - WebSocket proxy to per-project daemon
 //! - `ANY /api/projects/:name/proxy/*` - HTTP reverse proxy to per-project daemon
@@ -355,6 +356,42 @@ async fn project_asset(
         .unwrap())
 }
 
+/// Serve a screenshot file from the per-project screenshots directory.
+///
+/// Path: `/api/projects/:name/screenshots/:filename`
+///
+/// Serves files from `~/.midtown/projects/<name>/screenshots/<filename>`.
+/// Only image content types are served. The filename must not contain
+/// path separators or `..` to prevent traversal.
+async fn project_screenshot(
+    Path((name, filename)): Path<(String, String)>,
+) -> Result<Response<Body>, StatusCode> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let screenshots_dir = crate::paths::screenshots_dir_for_repo(&name);
+    let file_path = screenshots_dir.join(&filename);
+
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
+    };
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+        .body(Body::from(data))
+        .unwrap())
+}
+
 /// Return a best-effort MIME type for a file path based on its extension.
 fn mime_type_for_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
@@ -654,6 +691,10 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
             get(project_zellij_web_url),
         )
         .route("/projects/{name}/assets/{*path}", get(project_asset))
+        .route(
+            "/projects/{name}/screenshots/{filename}",
+            get(project_screenshot),
+        )
         .route(
             "/projects/{name}/channels/{channel_name}/notes",
             get(project_channel_notes),
@@ -960,6 +1001,107 @@ mod tests {
         assert_eq!(
             result.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/png"
+        );
+    }
+
+    // --- project_screenshot tests ---
+
+    #[tokio::test]
+    async fn test_project_screenshot_rejects_path_traversal() {
+        let result =
+            project_screenshot(Path(("myproject".to_string(), "../etc/passwd".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_rejects_slash_in_filename() {
+        let result = project_screenshot(Path((
+            "myproject".to_string(),
+            "subdir/image.png".to_string(),
+        )))
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_rejects_backslash_in_filename() {
+        let result = project_screenshot(Path((
+            "myproject".to_string(),
+            "subdir\\image.png".to_string(),
+        )))
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_not_found_for_missing_file() {
+        let result = project_screenshot(Path((
+            "nonexistent-repo-xyz-test-123".to_string(),
+            "image.png".to_string(),
+        )))
+        .await;
+        assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_rejects_non_image_extension() {
+        use crate::paths::{screenshots_dir_for_repo, set_test_midtown_base_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let screenshots_dir = screenshots_dir_for_repo("test-proj");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+        std::fs::write(screenshots_dir.join("script.js"), b"alert(1)").unwrap();
+
+        let result =
+            project_screenshot(Path(("test-proj".to_string(), "script.js".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_serves_existing_png() {
+        use crate::paths::{screenshots_dir_for_repo, set_test_midtown_base_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let screenshots_dir = screenshots_dir_for_repo("test-proj");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+
+        let content = b"\x89PNG\r\n\x1a\n";
+        std::fs::write(screenshots_dir.join("abc-123.png"), content).unwrap();
+
+        let result = project_screenshot(Path(("test-proj".to_string(), "abc-123.png".to_string())))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status(), StatusCode::OK);
+        assert_eq!(
+            result.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_serves_jpeg() {
+        use crate::paths::{screenshots_dir_for_repo, set_test_midtown_base_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let screenshots_dir = screenshots_dir_for_repo("test-proj");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+        std::fs::write(screenshots_dir.join("photo.jpg"), b"\xff\xd8\xff").unwrap();
+
+        let result = project_screenshot(Path(("test-proj".to_string(), "photo.jpg".to_string())))
+            .await
+            .unwrap();
+
+        assert_eq!(result.status(), StatusCode::OK);
+        assert_eq!(
+            result.headers().get(header::CONTENT_TYPE).unwrap(),
+            "image/jpeg"
         );
     }
 

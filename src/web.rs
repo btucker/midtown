@@ -413,6 +413,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/search", get(api_search))
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
+        .route("/api/screenshots/{filename}", get(api_get_screenshot))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -1950,6 +1951,36 @@ async fn api_get_upload(
         Some("webp") => "image/webp",
         Some("pdf") => "application/pdf",
         _ => "application/octet-stream",
+    };
+
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
+}
+
+/// Serve a screenshot file by filename.
+///
+/// Files are served from `~/.midtown/projects/<repo>/screenshots/<filename>`.
+/// The filename must not contain path separators or `..` to prevent traversal.
+/// Only image content types are served.
+async fn api_get_screenshot(
+    State(state): State<Arc<WebState>>,
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let file_path = crate::paths::screenshots_dir_for_repo(&state.config.repo).join(&filename);
+
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE),
     };
 
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
