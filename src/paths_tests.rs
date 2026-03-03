@@ -40,8 +40,8 @@ fn test_projects_dir_for_repo() {
 }
 
 #[test]
-fn test_coworkers_dir_for_repo() {
-    let path = coworkers_dir_for_repo("myproject");
+fn test_legacy_coworkers_dir_for_repo() {
+    let path = legacy_coworkers_dir_for_repo("myproject");
     let s = path.to_string_lossy();
     assert!(s.contains(".midtown"), "should be under .midtown: {s}");
     assert!(

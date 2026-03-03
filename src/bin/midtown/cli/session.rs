@@ -348,7 +348,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 
         // Ensure worktree is set up before launching.
         // For the lead, this updates the worktree to the current HEAD.
-        // For coworkers, this ensures the worktree directory exists.
+        // For coworkers, this validates the daemon-provided worktree path.
         let cwd = ensure_attach_worktree(name, cwd, coworker_type.as_deref() == Some("lead"))?;
 
         let shell_command = build_attach_shell_command(
@@ -396,12 +396,13 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 /// For the lead session, this updates the worktree to the main repo's current
 /// HEAD so the lead always works against the latest code.
 ///
-/// For coworkers, this ensures the worktree directory exists (creating it if
-/// needed via the daemon's existing worktree manager).
+/// For coworkers, this validates that the daemon-provided worktree path exists.
+/// The daemon creates task-based worktrees via Effect::EnsureWorktree before
+/// spawning; this function simply validates and returns the CWD.
 ///
 /// Returns the (possibly updated) worktree path to use as the CWD.
 pub(crate) fn ensure_attach_worktree(
-    name: &str,
+    _name: &str,
     daemon_cwd: &str,
     is_lead: bool,
 ) -> Result<String, String> {
@@ -429,7 +430,7 @@ pub(crate) fn ensure_attach_worktree(
         })
         .unwrap_or_else(|| std::path::PathBuf::from(daemon_cwd));
 
-    let manager = match midtown::worktree::WorktreeManager::new(repo_root) {
+    let manager = match midtown::worktree::WorktreeManager::new(repo_root.clone()) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Warning: Could not init worktree manager: {}", e);
@@ -445,17 +446,21 @@ pub(crate) fn ensure_attach_worktree(
             }
         }
     } else {
-        // For coworkers, ensure their worktree exists
-        let wt_path = manager.worktree_path(name);
-        if !wt_path.exists() {
-            #[allow(deprecated)] // Legacy worktree layout for CLI session
-            match manager.create(name) {
-                Ok(path) => return Ok(path.to_string_lossy().to_string()),
-                Err(e) => {
-                    eprintln!("Warning: Failed to create worktree for {}: {}", name, e);
-                }
-            }
+        // For coworkers, the daemon provides the working_dir (task-based worktree)
+        // when spawning. If the provided CWD exists, use it directly.
+        // No need to create worktrees here — the daemon handles that via
+        // Effect::EnsureWorktree during spawn.
+        let cwd_path = std::path::Path::new(daemon_cwd);
+        if cwd_path.exists() {
+            return Ok(daemon_cwd.to_string());
         }
+        // CWD doesn't exist — the worktree may have been cleaned up.
+        // Fall back to the repo root rather than using the non-existent path.
+        eprintln!(
+            "Warning: Coworker worktree {} does not exist, falling back to repo root",
+            daemon_cwd
+        );
+        return Ok(repo_root.to_string_lossy().to_string());
     }
 
     Ok(daemon_cwd.to_string())

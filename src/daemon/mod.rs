@@ -44,8 +44,7 @@ pub use constants::{
 };
 pub use state::DaemonPersistentState;
 pub use trackers::{
-    CommentTracker, OrphanTracker, PrIssueTracker, PrIssueType, StuckConditionTracker,
-    StuckConditionType,
+    CommentTracker, PrIssueTracker, PrIssueType, StuckConditionTracker, StuckConditionType,
 };
 
 // Test helper for orphan recovery tests
@@ -457,8 +456,6 @@ pub(crate) struct DaemonState {
     all_repo_paths: Vec<PathBuf>,
     /// Unified cooldown tracker for orphan spawning and task nudge rate limiting.
     cooldowns: std::sync::Mutex<crate::rules::CooldownTracker>,
-    /// Tracks orphaned worktrees — detection time, warning cooldown, and auto-pruning
-    orphan_tracker: std::sync::RwLock<OrphanTracker>,
     /// Unified persistent state (GitHub + reminders), saved to daemon-state.json.
     persistent_state: Mutex<state::DaemonPersistentState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
@@ -1367,7 +1364,6 @@ impl DaemonState {
             default_branch,
             all_repo_paths,
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
-            orphan_tracker: std::sync::RwLock::new(OrphanTracker::new()),
             persistent_state: Mutex::new(persistent_state),
             web_updates_tx,
             max_coworkers,
@@ -3834,9 +3830,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let task_owners: Vec<String> = snap.in_progress_tasks.iter()
                     .map(|(_, _, owner)| owner.clone())
                     .collect();
-                if let Some(orphan_data) = dispatch::gather_orphan_cleanup_data(&state, &task_owners).await {
-                    let orphan_effects = dispatch::decide_orphan_cleanup(&orphan_data);
-                    effects::execute_effects(orphan_effects, &state).await;
+                if let Some(cleanup_data) = dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await {
+                    let cleanup_effects = dispatch::decide_stale_branch_cleanup(&cleanup_data);
+                    effects::execute_effects(cleanup_effects, &state).await;
                 }
                 // Process any pending webhook review spawns whose delay has expired
                 let review_snap = snapshot::collect_world_snapshot(&state).await;

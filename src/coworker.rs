@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthProvider;
 use crate::session_key::SessionKey;
-use crate::worktree::{WorktreeError, WorktreeManager};
+use crate::worktree::WorktreeManager;
 
 /// Primary Manhattan avenue names used for coworker naming.
 ///
@@ -244,39 +244,15 @@ impl CoworkerManager {
     ///
     /// Returns the list of additional worktree paths to pass as --add-dir to Claude.
     /// Failures in additional repos are logged but don't prevent coworker spawn.
-    #[allow(deprecated)] // Legacy worktree layout for additional repos
+    ///
+    /// Uses detached HEAD (not branch-based) to avoid collisions between coworker
+    /// names (e.g., "park", "madison") and real branches in additional repos.
     fn create_additional_worktrees(&self, coworker_name: &str) -> Vec<std::path::PathBuf> {
         let mut additional_dirs = Vec::new();
         for mgr in &self.additional_worktree_managers {
-            match mgr.create(coworker_name) {
+            match mgr.create_detached_worktree(coworker_name) {
                 Ok(path) => {
                     additional_dirs.push(path);
-                }
-                Err(WorktreeError::AlreadyExists(_)) => {
-                    // Reuse existing worktree path
-                    let path = mgr.worktree_path(coworker_name);
-                    if is_valid_git_worktree(&path) {
-                        additional_dirs.push(path);
-                    } else {
-                        // Corrupted - try cleanup + recreate
-                        tracing::warn!(
-                            "Additional worktree for {} in {} is corrupted, recreating",
-                            coworker_name,
-                            mgr.repo_name()
-                        );
-                        let _ = mgr.force_cleanup(coworker_name);
-                        match mgr.create(coworker_name) {
-                            Ok(path) => additional_dirs.push(path),
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to recreate additional worktree for {} in {}: {}",
-                                    coworker_name,
-                                    mgr.repo_name(),
-                                    e
-                                );
-                            }
-                        }
-                    }
                 }
                 Err(e) => {
                     tracing::error!(
@@ -294,7 +270,7 @@ impl CoworkerManager {
     /// Clean up worktrees for a coworker in all additional repos.
     fn cleanup_additional_worktrees(&self, coworker_name: &str) {
         for mgr in &self.additional_worktree_managers {
-            if let Err(e) = mgr.force_cleanup(coworker_name) {
+            if let Err(e) = mgr.force_cleanup_task_worktree(coworker_name) {
                 tracing::warn!(
                     "Failed to cleanup additional worktree for {} in {}: {}",
                     coworker_name,
@@ -334,79 +310,6 @@ impl CoworkerManager {
         let mut coworkers = self.coworkers.write().unwrap();
         coworkers.clear();
         Ok(())
-    }
-
-    /// Find all orphaned worktree names — worktrees with no active coworker.
-    ///
-    /// This is useful for clearing state (like reviewer assignments) for coworkers
-    /// whose sessions have ended unexpectedly.
-    pub fn find_orphaned_worktree_names(&self) -> Vec<String> {
-        let active_names: Vec<String> = {
-            let coworkers = self.coworkers.read().unwrap();
-            coworkers.values().map(|cw| cw.name.clone()).collect()
-        };
-        self.worktree_manager.find_orphaned_worktrees(&active_names)
-    }
-
-    /// Clean up orphaned worktrees that have no active coworker.
-    ///
-    /// For each orphaned worktree:
-    /// - If the branch has no commits beyond the base, delete it safely
-    /// - If the branch has commits, flag it (returned in the result)
-    ///
-    /// Returns a list of coworker names whose worktrees have unmerged commits
-    /// and should be flagged to the Lead.
-    /// Clean up orphaned worktrees that have no active coworker.
-    ///
-    /// To avoid saturating the blocking thread pool with expensive git and gh CLI
-    /// operations, this processes at most `max_per_tick` worktrees per call.
-    /// Pass `None` or a large number to process all orphaned worktrees at once.
-    pub fn cleanup_orphaned_worktrees(&self, max_per_tick: Option<usize>) -> Vec<String> {
-        let active_names: Vec<String> = {
-            let coworkers = self.coworkers.read().unwrap();
-            coworkers.values().map(|cw| cw.name.clone()).collect()
-        };
-
-        let orphaned = self.worktree_manager.find_orphaned_worktrees(&active_names);
-        let mut flagged = Vec::new();
-
-        // Limit how many worktrees we process per tick to avoid blocking the
-        // thread pool for too long. Each cleanup involves multiple git/gh calls.
-        let limit = max_per_tick.unwrap_or(usize::MAX);
-        let to_process = orphaned.into_iter().take(limit);
-
-        for name in to_process {
-            match self.worktree_manager.safe_cleanup(&name) {
-                Ok(true) => {
-                    tracing::info!("Cleaned up empty orphaned worktree for {}", name);
-                }
-                Ok(false) => {
-                    // Log at debug level - the actual rate-limited warning happens
-                    // in dispatch::cleanup_orphaned_worktrees() via OrphanTracker.
-                    tracing::debug!(
-                        "Orphaned worktree for {} has unmerged commits - will check filters",
-                        name
-                    );
-                    flagged.push(name);
-                }
-                Err(e) => {
-                    tracing::error!("Failed to cleanup orphaned worktree for {}: {}", name, e);
-                }
-            }
-        }
-
-        flagged
-    }
-
-    /// Force cleanup a worktree by name.
-    ///
-    /// This removes the worktree and its associated branch, regardless of whether
-    /// it has commits. Use only when you know it's safe (e.g., PR was merged).
-    pub fn force_cleanup_worktree(
-        &self,
-        coworker_name: &str,
-    ) -> Result<(), crate::worktree::WorktreeError> {
-        self.worktree_manager.force_cleanup(coworker_name)
     }
 
     /// List all coworkers.
@@ -496,50 +399,15 @@ impl CoworkerManager {
             .and_then(|cw| cw.session_id.clone())
     }
 
-    /// Get the branch name checked out in a coworker's worktree.
-    ///
-    /// Returns None if the worktree doesn't exist or is in detached HEAD state.
-    pub fn get_worktree_branch(&self, name: &str) -> Option<String> {
-        self.worktree_manager.get_branch(name)
-    }
-
-    /// Check if a coworker's branch has a merged PR on GitHub.
-    ///
-    /// Uses `gh pr list` to check if the branch's PR was merged. This is
-    /// an expensive operation (calls gh CLI), so should only be used as a
-    /// fallback when cached data doesn't cover the branch.
-    pub fn is_branch_pr_merged(&self, name: &str) -> bool {
-        self.worktree_manager.is_branch_pr_merged(name)
-    }
-
-    /// Check if a worktree's HEAD is reachable from the default branch (main).
-    ///
-    /// Returns `true` if all commits in the worktree are already on main,
-    /// indicating the worktree can be safely cleaned up.
-    pub fn is_worktree_head_on_main(&self, name: &str) -> bool {
-        self.worktree_manager
-            .is_head_reachable_from_default_branch(name)
-    }
-
-    /// Clean up stale local branches that match coworker naming patterns
-    /// and are already fully merged into the default branch.
-    ///
-    /// Returns the list of deleted branch names.
-    pub fn clean_stale_coworker_branches(&self) -> Vec<String> {
-        self.worktree_manager.clean_stale_coworker_branches()
-    }
-
     /// Prepare a coworker's worktree and return the working directory and augmented config.
     ///
     /// This handles all worktree lifecycle management:
-    /// - Creates a new worktree if one doesn't exist
-    /// - Reuses valid existing worktrees (for orphan recovery, break-resume)
-    /// - Detects and recreates corrupted worktrees
+    /// - Validates the task-based worktree provided via config.working_dir
     /// - Creates worktrees in additional repos (multi-repo)
-    /// - Ensures the worktree is not on the default branch
     ///
-    /// Returns `(working_dir, augmented_config)` on success.
-    #[allow(deprecated)] // Legacy worktree layout when no working_dir override
+    /// The daemon must provide a `working_dir` (task-based worktree) via
+    /// `Effect::EnsureWorktree` before spawning. This method validates that
+    /// path and returns `(working_dir, augmented_config)` on success.
     pub fn prepare_spawn(
         &self,
         config: &crate::launch::LaunchConfig,
@@ -557,7 +425,7 @@ impl CoworkerManager {
             }
         }
 
-        // If a working_dir override is provided (task-based worktree), validate and use it
+        // Task-based worktree must be provided by the dispatch layer
         let worktree_path = if let Some(ref working_dir) = config.working_dir {
             // Validate the path exists and is a valid git worktree
             if !working_dir.exists() {
@@ -585,75 +453,15 @@ impl CoworkerManager {
             );
             working_dir.clone()
         } else {
-            // Legacy path: create or reuse coworker-named worktree
-            match self.worktree_manager.create(name) {
-                Ok(path) => path,
-                Err(WorktreeError::AlreadyExists(_)) => {
-                    // Worktree exists but no active session - validate it
-                    let worktree_path = self.worktree_manager.worktree_path(name);
-                    if !is_valid_git_worktree(&worktree_path) {
-                        tracing::warn!(
-                            "Worktree for {} is corrupted (git metadata missing), recreating",
-                            name
-                        );
-                        self.worktree_manager.force_cleanup(name).map_err(|e| {
-                            crate::Error::Rpc {
-                                code: -32603,
-                                message: format!(
-                                    "Failed to cleanup corrupted worktree for {}: {}",
-                                    name, e
-                                ),
-                            }
-                        })?;
-
-                        self.worktree_manager
-                            .create(name)
-                            .map_err(|e| crate::Error::Rpc {
-                                code: -32603,
-                                message: format!(
-                                    "Failed to recreate worktree for {} after cleanup: {}",
-                                    name, e
-                                ),
-                            })?
-                    } else {
-                        tracing::info!("Reusing existing valid worktree for {}", name);
-
-                        // Safety check: ensure the worktree is not on the default branch.
-                        if self.worktree_manager.is_on_default_branch(name) {
-                            tracing::warn!(
-                                "Coworker {} worktree is on default branch - creating recovery branch",
-                                name
-                            );
-                            match self.worktree_manager.checkout_new_branch(name, "recovery") {
-                                Ok(branch) => {
-                                    tracing::info!(
-                                        "Created recovery branch {} for coworker {}",
-                                        branch,
-                                        name
-                                    );
-                                }
-                                Err(e) => {
-                                    return Err(crate::Error::Rpc {
-                                        code: -32603,
-                                        message: format!(
-                                            "Coworker {} is on default branch and recovery failed: {}",
-                                            name, e
-                                        ),
-                                    });
-                                }
-                            }
-                        }
-
-                        worktree_path
-                    }
-                }
-                Err(e) => {
-                    return Err(crate::Error::Rpc {
-                        code: -32603,
-                        message: format!("Failed to create worktree for {}: {}", name, e),
-                    });
-                }
-            }
+            return Err(crate::Error::Rpc {
+                code: -32603,
+                message: format!(
+                    "No working_dir provided for coworker {}. \
+                     The dispatch layer must create a task-based worktree via \
+                     Effect::EnsureWorktree before spawning.",
+                    name
+                ),
+            });
         };
 
         let working_dir = worktree_path
@@ -805,7 +613,6 @@ fn is_valid_git_worktree(path: &std::path::Path) -> bool {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::process::Command;
@@ -1112,13 +919,15 @@ mod tests {
     fn test_corrupted_worktree_detection() {
         let (manager, temp_dir) = test_manager();
 
-        // Create a worktree
-        let worktree_path = manager.worktree_manager.create("testworker").unwrap();
+        // Create a task-based worktree
+        let worktree_path = manager
+            .worktree_manager
+            .create_task_worktree("task-42-test")
+            .unwrap();
         assert!(worktree_path.exists());
         assert!(is_valid_git_worktree(&worktree_path));
 
         // Simulate corruption by removing the git worktree metadata
-        // The metadata lives in .git/worktrees/<name>/
         let git_worktrees_dir = temp_dir.path().join(".git").join("worktrees");
         if git_worktrees_dir.exists() {
             std::fs::remove_dir_all(&git_worktrees_dir)
@@ -1135,8 +944,11 @@ mod tests {
         // Test the full recovery flow: detect corrupted → cleanup → recreate
         let (manager, temp_dir) = test_manager();
 
-        // Create a worktree
-        let worktree_path = manager.worktree_manager.create("testworker").unwrap();
+        // Create a task-based worktree
+        let worktree_path = manager
+            .worktree_manager
+            .create_task_worktree("task-42-test")
+            .unwrap();
         assert!(worktree_path.exists());
         assert!(is_valid_git_worktree(&worktree_path));
 
@@ -1151,11 +963,11 @@ mod tests {
         assert!(worktree_path.exists());
         assert!(!is_valid_git_worktree(&worktree_path));
 
-        // Now test recovery: force_cleanup should remove the directory
+        // Now test recovery: force_cleanup_task_worktree should remove the directory
         manager
             .worktree_manager
-            .force_cleanup("testworker")
-            .expect("force_cleanup should succeed");
+            .force_cleanup_task_worktree("task-42-test")
+            .expect("force_cleanup_task_worktree should succeed");
 
         // Worktree directory should be gone
         assert!(!worktree_path.exists());
@@ -1163,7 +975,7 @@ mod tests {
         // Recreate should now succeed
         let new_path = manager
             .worktree_manager
-            .create("testworker")
+            .create_task_worktree("task-42-test")
             .expect("create should succeed after cleanup");
 
         // New worktree should be valid
@@ -1279,7 +1091,7 @@ mod tests {
             WorktreeManager::new(primary_dir.path().to_path_buf()).expect("primary wt manager");
         let extra_wt =
             WorktreeManager::new(extra_dir.path().to_path_buf()).expect("extra wt manager");
-        let extra_wt_path = extra_wt.worktree_path("testworker");
+        let extra_wt_path = extra_wt.task_worktree_path("testworker");
 
         let manager = CoworkerManager::with_additional_repos(primary_wt, vec![extra_wt]);
 
