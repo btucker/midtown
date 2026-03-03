@@ -1,25 +1,25 @@
 use crate::paths;
 
 #[test]
-fn resolve_web_dir_prefers_midtown_base_dir_when_exe_relative_absent() {
+fn resolve_web_dir_prefers_data_dir_when_exe_relative_absent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let _guard = paths::set_test_midtown_base_dir(tmp.path().to_path_buf());
+    let _guard = paths::set_test_midtown_data_dir(tmp.path().to_path_buf());
 
-    // Create web-app/dist under the fake midtown base dir
+    // Create web-app/dist under the fake XDG data dir
     let web_dist = tmp.path().join("web-app").join("dist");
     std::fs::create_dir_all(&web_dist).unwrap();
 
     let resolved = crate::resolve_web_dir();
 
-    // Should resolve to the midtown base dir candidate (candidate 2),
+    // Should resolve to the data dir candidate (candidate 2),
     // since the exe-relative candidate (candidate 1) doesn't exist in test env
     assert_eq!(resolved, web_dist);
 }
 
 #[test]
-fn resolve_web_dir_falls_back_to_cargo_manifest_dir_when_midtown_absent() {
+fn resolve_web_dir_falls_back_to_cargo_manifest_dir_when_data_dir_absent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let _guard = paths::set_test_midtown_base_dir(tmp.path().to_path_buf());
+    let _guard = paths::set_test_midtown_data_dir(tmp.path().to_path_buf());
 
     // Don't create web-app/dist — both candidates 1 and 2 are absent
     let resolved = crate::resolve_web_dir();

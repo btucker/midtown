@@ -181,7 +181,7 @@ pub use worktree::{WorktreeError, WorktreeInfo, WorktreeManager};
 ///
 /// Checks candidates in order and returns the first that exists:
 /// 1. Next to the running executable (`exe_dir/web-app/dist`) — source/dev builds
-/// 2. In the midtown base directory (`~/.midtown/web-app/dist`) — binary installs
+/// 2. In the XDG data directory (`~/.local/share/midtown/web-app/dist`) — binary installs
 /// 3. In the source tree where the binary was compiled (`CARGO_MANIFEST_DIR/web-app/dist`)
 ///
 /// Falls back to the source-tree path even if it doesn't exist, so callers
@@ -198,10 +198,10 @@ pub fn resolve_web_dir() -> std::path::PathBuf {
         }
     }
 
-    // Candidate 2: ~/.midtown/web-app/dist (binary installs via install.sh)
-    let midtown_candidate = paths::midtown_base_dir().join("web-app").join("dist");
-    if midtown_candidate.exists() {
-        return midtown_candidate;
+    // Candidate 2: ~/.local/share/midtown/web-app/dist (binary installs via install.sh)
+    let data_candidate = paths::midtown_data_dir().join("web-app").join("dist");
+    if data_candidate.exists() {
+        return data_candidate;
     }
 
     // Candidate 3: source tree where `cargo build` ran (baked in at compile time)

@@ -72,18 +72,18 @@ mkdir -p "$INSTALL_DIR"
 mv "${TMP_DIR}/midtown" "${INSTALL_DIR}/midtown"
 chmod +x "${INSTALL_DIR}/midtown"
 
-# Install bundled web-app to ~/.midtown/web-app/ (atomic swap)
-MIDTOWN_DIR="${HOME}/.midtown"
+# Install bundled web-app to XDG data directory (atomic swap)
+MIDTOWN_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/midtown"
 if [ -d "${TMP_DIR}/web-app" ]; then
-    mkdir -p "$MIDTOWN_DIR"
-    if [ -d "${MIDTOWN_DIR}/web-app" ]; then
-        mv "${MIDTOWN_DIR}/web-app" "${MIDTOWN_DIR}/web-app.old"
+    mkdir -p "$MIDTOWN_DATA_DIR"
+    if [ -d "${MIDTOWN_DATA_DIR}/web-app" ]; then
+        mv "${MIDTOWN_DATA_DIR}/web-app" "${MIDTOWN_DATA_DIR}/web-app.old"
     fi
-    mv "${TMP_DIR}/web-app" "${MIDTOWN_DIR}/web-app"
-    rm -rf "${MIDTOWN_DIR}/web-app.old"
+    mv "${TMP_DIR}/web-app" "${MIDTOWN_DATA_DIR}/web-app"
+    rm -rf "${MIDTOWN_DATA_DIR}/web-app.old"
     # Clean up legacy web-app from install dir if present
     rm -rf "${INSTALL_DIR}/web-app"
-    echo "Installed web UI to ${MIDTOWN_DIR}/web-app/"
+    echo "Installed web UI to ${MIDTOWN_DATA_DIR}/web-app/"
 fi
 
 echo ""
