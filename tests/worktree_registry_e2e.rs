@@ -47,7 +47,7 @@ struct WorktreeTestFixture {
     temp_dir: PathBuf,
     /// Project directory under ~/.midtown/projects/<name>/
     project_dir: PathBuf,
-    /// Worktree directory under ~/.midtown/worktrees/<name>/
+    /// Worktree directory under ~/.midtown/projects/<name>/worktrees/
     worktree_dir: PathBuf,
     /// Repository name (used for socket path derivation and tmux session)
     repo_name: String,
@@ -137,8 +137,9 @@ impl WorktreeTestFixture {
         let worktree_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("worktrees")
-            .join(&repo_name);
+            .join("projects")
+            .join(&repo_name)
+            .join("worktrees");
 
         // Ensure parent directories exist
         if let Some(parent) = socket_path.parent() {

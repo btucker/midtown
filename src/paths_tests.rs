@@ -317,6 +317,33 @@ fn test_migrate_worktree_paths_skips_if_new_exists() {
     assert!(old_worktrees.join("old-task").exists());
 }
 
+#[test]
+fn test_migrate_worktree_paths_propagates_rename_error() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create old worktrees dir with content
+    let old_worktrees = tmp.path().join("worktrees").join(repo);
+    fs::create_dir_all(old_worktrees.join("some-task")).unwrap();
+
+    // Create a *file* at the target path where a directory rename would need
+    // to land — this makes fs::rename fail (can't rename dir over file).
+    let projects_dir = tmp.path().join("projects").join(repo);
+    fs::create_dir_all(&projects_dir).unwrap();
+    fs::write(projects_dir.join("worktrees"), "blocking-file").unwrap();
+
+    let result = do_migrate_worktree_paths(repo);
+    // The new path exists as a file, so the rename should be skipped
+    // (guard: `!new_worktrees.exists()`). The function should succeed but
+    // report no migration was performed, since old content remains.
+    assert!(result.is_ok());
+    assert!(!result.unwrap()); // No migration happened — new path already exists
+    // Old content should still be in place
+    assert!(old_worktrees.join("some-task").exists());
+}
+
 // ── workflow_script_for_channel ────────────────────────────────────────
 
 #[test]

@@ -51,7 +51,7 @@ impl From<WorktreeError> for Error {
 pub struct WorktreeManager {
     /// Root repository path (the main checkout)
     repo_root: PathBuf,
-    /// Repository name (for ~/.midtown/coworkers/<repo>/)
+    /// Repository name (for ~/.midtown/projects/<repo>/coworkers/)
     repo_name: String,
     /// Base path for legacy coworker-named worktrees (~/.midtown/projects/<repo>/coworkers/)
     worktrees_base: PathBuf,
@@ -96,7 +96,7 @@ impl WorktreeManager {
 
     /// Create a worktree for a coworker.
     ///
-    /// Creates a new worktree at `~/.midtown/coworkers/<repo>/<name>/`
+    /// Creates a new worktree at `~/.midtown/projects/<repo>/coworkers/<name>/`
     /// detached at the default branch. The coworker should immediately create
     /// a feature branch for their task.
     ///

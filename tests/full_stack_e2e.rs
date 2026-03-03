@@ -387,8 +387,9 @@ impl Drop for FullStackFixture {
         let coworkers_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("coworkers")
-            .join(&self.repo_name);
+            .join("projects")
+            .join(&self.repo_name)
+            .join("coworkers");
         let _ = fs::remove_dir_all(&coworkers_dir);
     }
 }
@@ -709,7 +710,7 @@ fn test_web_ui_connects() {
 /// Spawn coworker, verify worktree exists as a valid git worktree.
 ///
 /// When the daemon spawns a coworker, it creates an isolated git worktree
-/// at ~/.midtown/coworkers/<repo>/<name>/. This test verifies the worktree
+/// at ~/.midtown/projects/<repo>/coworkers/<name>/. This test verifies the worktree
 /// is properly created and recognized by git as a valid worktree.
 #[test]
 #[ignore]
@@ -775,8 +776,9 @@ fn test_worktree_isolation() {
     let worktree_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
-        .join("coworkers")
+        .join("projects")
         .join(&fixture.repo_name)
+        .join("coworkers")
         .join(coworker_name);
 
     eprintln!("Waiting for worktree at: {:?}", worktree_path);
@@ -803,13 +805,15 @@ fn test_worktree_isolation() {
         let coworkers_base = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
+            .join("projects")
+            .join(&fixture.repo_name)
             .join("coworkers");
 
         eprintln!("Coworkers base exists: {}", coworkers_base.exists());
 
         if let Ok(entries) = fs::read_dir(&coworkers_base) {
             for entry in entries.flatten() {
-                eprintln!("  Found repo dir: {:?}", entry.file_name());
+                eprintln!("  Found coworker dir: {:?}", entry.file_name());
             }
         }
 

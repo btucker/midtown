@@ -480,8 +480,9 @@ impl Drop for MailboxFixture {
         let coworkers_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
-            .join("coworkers")
-            .join(&self.repo_name);
+            .join("projects")
+            .join(&self.repo_name)
+            .join("coworkers");
         let _ = fs::remove_dir_all(&coworkers_dir);
     }
 }

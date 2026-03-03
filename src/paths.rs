@@ -591,7 +591,7 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Migrate data from the old directory structure to the new one.
+/// Migrate data from the old directory structure to the new one (era 1).
 ///
 /// Old structure: `~/.midtown/<repo>/...`
 /// New structure: `~/.midtown/{projects,coworkers,lead}/<repo>/...`
@@ -604,6 +604,11 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
 /// - `worktrees/` -> `coworkers/<repo>/`
 /// - `lead-session-id` -> `lead/<repo>/session-id`
 /// - `lead-initialized` -> `lead/<repo>/lead-initialized`
+///
+/// Note: This is era 1 of the migration chain. The `coworkers/<repo>/` and
+/// `worktrees/<repo>/` paths produced here are further migrated by
+/// [`migrate_worktree_paths()`] (era 2) into `projects/<repo>/coworkers/`
+/// and `projects/<repo>/worktrees/` respectively.
 ///
 /// Returns Ok(true) if migration was performed, Ok(false) if already migrated or nothing to migrate.
 pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
@@ -702,14 +707,24 @@ pub fn migrate_worktree_paths(repo: &str) {
     static MIGRATED_WT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let migrated = MIGRATED_WT.get_or_init(|| Mutex::new(HashSet::new()));
 
-    let mut guard = migrated.lock().unwrap();
-    if guard.contains(repo) {
-        return;
+    {
+        let guard = migrated.lock().unwrap();
+        if guard.contains(repo) {
+            return;
+        }
+        // Don't mark as migrated yet — only mark after success so failed
+        // migrations can be retried on next access.
     }
-    guard.insert(repo.to_string());
-    drop(guard);
 
-    let _ = do_migrate_worktree_paths(repo);
+    match do_migrate_worktree_paths(repo) {
+        Ok(_) => {
+            let mut guard = migrated.lock().unwrap();
+            guard.insert(repo.to_string());
+        }
+        Err(e) => {
+            tracing::warn!("Failed to migrate worktree paths for {}: {}", repo, e);
+        }
+    }
 }
 
 /// Perform the actual migration of worktree paths.
