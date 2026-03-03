@@ -91,6 +91,143 @@ describe('fetchHistory', () => {
     expect(store['web'].find((m) => m.id === 'pending-ghost')).toBeUndefined()
   })
 
+  it('retains existing channel messages when single-channel fetch returns empty', async () => {
+    // Regression (!1968): fetchHistory('channel-a') called on channel switch would
+    // replace channel-a's messages with an empty array if the backend returned [].
+    // This wipes the channel display — only new WS messages appear until the next
+    // successful fetch. Fix: skip the store update when the response is empty but
+    // the store already has messages (same "retain last-known-good" pattern as the
+    // catch block).
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    // channel-a must NOT have been wiped
+    expect(store['channel-a']).toHaveLength(1)
+    expect(store['channel-a'][0].content).toBe('existing message')
+  })
+
+  it('populates a new channel with messages from single-channel fetch', async () => {
+    // Normal population: a channel with no existing messages gets populated
+    // by the fetch response. The empty-response guard does not interfere
+    // because there is no existing data to retain.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 5, content: 'new msg', channel: 'new-channel', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory('new-channel')
+
+    const store = get(messagesByChannel)
+    expect(store['new-channel']).toHaveLength(1)
+    expect(store['new-channel'][0].content).toBe('new msg')
+  })
+
+  it('allows empty response to pass through when channel has no existing messages', async () => {
+    // When a channel has no cached messages, an empty response should set the
+    // channel to [] without being blocked by the guard. The guard only retains
+    // data when there IS existing data to protect.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    })
+
+    await fetchHistory('brand-new-channel')
+
+    const store = get(messagesByChannel)
+    expect(store['brand-new-channel']).toEqual([])
+  })
+
+  it('updates store when response contains only thread replies (post-filter empty)', async () => {
+    // If the backend returns messages that are all thread replies,
+    // annotateThreadReplyCounts filters them out, producing channelMsgs=[].
+    // This is real data (data.length > 0), not a transient empty response,
+    // so the guard must NOT retain stale cached data.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 20, content: 'thread reply', channel: 'channel-a', thread_parent_id: 'parent-1', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    // channel-a should be updated (not retained) — the response was non-empty
+    // even though all messages were thread replies filtered by annotateThreadReplyCounts
+    expect(store['channel-a']).toEqual([])
+  })
+
+  it('strips pending messages from retained data on empty response', async () => {
+    // When the guard retains existing data, pending (optimistic) messages must
+    // be stripped to avoid ghost messages lingering indefinitely (matching the
+    // bulk-fetch path's cleanup behavior).
+    messagesByChannel.set({
+      midtown: [],
+      'channel-a': [
+        { id: 1, content: 'confirmed msg', channel: 'channel-a', from: 'coworker' },
+        { id: 'pending-xyz', content: 'my unsent msg', channel: 'channel-a', from: 'user', pending: true },
+      ],
+    })
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    // Confirmed message retained, pending message stripped
+    expect(store['channel-a']).toHaveLength(1)
+    expect(store['channel-a'][0].id).toBe(1)
+    expect(store['channel-a'].some((m) => m.pending)).toBe(false)
+  })
+
+  it('does not retain when all existing messages are pending and response is empty', async () => {
+    // If the channel only has pending messages and the backend returns empty,
+    // there's no confirmed data to retain — allow the empty response through.
+    messagesByChannel.set({
+      midtown: [],
+      'channel-a': [
+        { id: 'pending-1', content: 'unsent', channel: 'channel-a', from: 'user', pending: true },
+      ],
+    })
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    expect(store['channel-a']).toEqual([])
+  })
+
+  it('replaces existing channel messages when single-channel fetch returns non-empty data', async () => {
+    // Normal case: when the backend returns fresh (non-empty) data, it should
+    // replace the existing messages — this is the expected "refresh" behavior.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 10, content: 'refreshed message', channel: 'channel-a', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    expect(store['channel-a']).toHaveLength(1)
+    expect(store['channel-a'][0].content).toBe('refreshed message')
+  })
+
   it('does not leave pending messages when the channel is included in the history response', async () => {
     // When a channel IS in the bulk response, its data replaces existing entirely.
     // Pending messages in existing are discarded because the whole channel array

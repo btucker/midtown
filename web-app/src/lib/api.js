@@ -230,6 +230,33 @@ export async function fetchHistory(channelName = null) {
       if (channelName) {
         // Fetching a specific channel - update only that channel's messages
         const channelMsgs = annotateThreadReplyCounts(data)
+
+        // Guard: don't replace non-empty channel data with an empty response.
+        // The backend can transiently return [] when the channel file is briefly
+        // missing (rotation, archiving race). Same "retain last-known-good"
+        // pattern used in the catch block below.
+        //
+        // Check data.length (raw response), not channelMsgs.length: a response
+        // containing only thread replies is non-empty but annotateThreadReplyCounts
+        // filters them all out, producing channelMsgs=[]. That's real data and
+        // must not be treated as a transient empty response.
+        if (data.length === 0) {
+          const existing = get(messagesByChannel)[channelName]
+          if (existing && existing.length > 0) {
+            // Strip pending (optimistic) messages from retained data so they
+            // don't linger as ghosts (mirroring the bulk-fetch path's cleanup).
+            const confirmed = existing.filter((m) => !m.pending)
+            if (confirmed.length > 0) {
+              console.warn(`fetchHistory('${channelName}'): backend returned empty — retaining ${confirmed.length} cached messages`)
+              messagesByChannel.update((byChannel) => ({
+                ...byChannel,
+                [channelName]: confirmed,
+              }))
+              return
+            }
+          }
+        }
+
         messagesByChannel.update((byChannel) => ({
           ...byChannel,
           [channelName]: channelMsgs,
