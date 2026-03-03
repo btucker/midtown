@@ -1141,56 +1141,123 @@ fn handle_switch(
     global: bool,
     provider: midtown::auth::AuthProvider,
 ) -> Result<Response, String> {
-    // If the daemon is running, use RPC to switch profile and re-launch all claudes.
-    // This ensures running coworkers and the lead pick up the new credentials.
-    if let Ok(client) = crate::client::DaemonClient::connect() {
-        let response = client.auth_switch(profile, global, provider)?;
-        if should_apply_global_already_on_fallback(global, &response) {
-            // Compatibility fallback for older daemons that short-circuit before
-            // clearing project overrides on global switches.
-            let cleared = midtown::config::clear_all_project_auth_profiles_for(provider);
-            if cleared > 0 {
-                let msg = match &response {
-                    Response::Message { message } => message.as_str(),
-                    _ => "Already on selected profile.",
-                };
-                return Ok(Response::Message {
-                    message: format!(
-                        "{} Cleared {} project override(s) for {} so global profile '{}' now applies.",
-                        msg, cleared, provider, profile
-                    ),
-                });
-            }
+    if global {
+        handle_switch_global(profile, provider)
+    } else {
+        handle_switch_project(profile, provider)
+    }
+}
+
+/// Global auth switch: broadcast to ALL running daemons.
+///
+/// Enumerates every daemon socket on this machine and sends `auth.switch` to each.
+/// This ensures all projects pick up the new credentials — not just the current one.
+fn handle_switch_global(
+    profile: &str,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
+    let all_sockets = midtown::paths::enumerate_daemon_sockets();
+
+    if all_sockets.is_empty() {
+        // No daemons running — just update config on disk.
+        midtown::auth::set_current_profile_for(provider, profile).map_err(|e| e.to_string())?;
+        midtown::config::clear_all_project_auth_profiles_for(provider);
+        return Ok(Response::Message {
+            message: format!(
+                "Switched all projects to {} profile '{}'. No daemons running, new sessions will use this profile.",
+                provider, profile
+            ),
+        });
+    }
+
+    let mut restarted = Vec::new();
+    let mut already_on = Vec::new();
+    let mut failures = Vec::new();
+    let mut needs_override_clear = false;
+
+    for (repo_name, socket_path) in &all_sockets {
+        match crate::client::DaemonClient::connect_to_fast(socket_path.clone()) {
+            Ok(client) => match client.auth_switch_opts(profile, true, true, provider) {
+                Ok(response) => {
+                    if should_apply_global_already_on_fallback(true, &response) {
+                        needs_override_clear = true;
+                        already_on.push(repo_name.clone());
+                    } else {
+                        restarted.push(repo_name.clone());
+                    }
+                }
+                Err(e) => failures.push((repo_name.clone(), e)),
+            },
+            Err(e) => failures.push((repo_name.clone(), e)),
         }
+    }
+
+    // Clear project overrides once (not per-daemon) if any daemon reported "already on".
+    if needs_override_clear {
+        midtown::config::clear_all_project_auth_profiles_for(provider);
+    }
+
+    // If no daemon handled the switch (all sockets were stale), update config
+    // on disk directly so the profile change still takes effect.
+    if restarted.is_empty() && already_on.is_empty() {
+        midtown::auth::set_current_profile_for(provider, profile).map_err(|e| e.to_string())?;
+        midtown::config::clear_all_project_auth_profiles_for(provider);
+    }
+
+    let mut parts = Vec::new();
+    parts.push(format!("Switched to {} profile '{}'.", provider, profile));
+    if !restarted.is_empty() {
+        parts.push(format!(
+            "Restarted sessions in {} daemon(s): {}",
+            restarted.len(),
+            restarted.join(", ")
+        ));
+    }
+    if !already_on.is_empty() {
+        parts.push(format!(
+            "Already active in {} daemon(s): {}",
+            already_on.len(),
+            already_on.join(", ")
+        ));
+    }
+    if !failures.is_empty() {
+        let fail_details: Vec<String> = failures
+            .iter()
+            .map(|(repo, err)| format!("{} ({})", repo, err))
+            .collect();
+        parts.push(format!(
+            "Failed for {} daemon(s): {}",
+            failures.len(),
+            fail_details.join(", ")
+        ));
+    }
+
+    Ok(Response::Message {
+        message: parts.join(" "),
+    })
+}
+
+/// Per-project auth switch: only the current project's daemon.
+fn handle_switch_project(
+    profile: &str,
+    provider: midtown::auth::AuthProvider,
+) -> Result<Response, String> {
+    if let Ok(client) = crate::client::DaemonClient::connect() {
+        let response = client.auth_switch(profile, false, provider)?;
         return Ok(response);
     }
 
-    if global {
-        // Global switch: update the global current profile and clear per-project overrides
-        midtown::auth::set_current_profile_for(provider, profile).map_err(|e| e.to_string())?;
-        midtown::config::clear_all_project_auth_profiles_for(provider);
+    let project_name = midtown::paths::detect_repo_name()
+        .ok_or_else(|| "Not in a git repository. Omit --project to switch globally.".to_string())?;
 
-        Ok(Response::Message {
-            message: format!(
-                "Switched all projects to {} profile '{}'. No daemon running, new sessions will use this profile.",
-                provider, profile
-            ),
-        })
-    } else {
-        // Per-project switch: update current project's config
-        let project_name = midtown::paths::detect_repo_name().ok_or_else(|| {
-            "Not in a git repository. Omit --project to switch globally.".to_string()
-        })?;
+    set_project_auth_profile(&project_name, profile, provider)?;
 
-        set_project_auth_profile(&project_name, profile, provider)?;
-
-        Ok(Response::Message {
-            message: format!(
-                "Switched project '{}' to {} profile '{}'. No daemon running, new sessions will use this profile.",
-                project_name, provider, profile
-            ),
-        })
-    }
+    Ok(Response::Message {
+        message: format!(
+            "Switched project '{}' to {} profile '{}'. No daemon running, new sessions will use this profile.",
+            project_name, provider, profile
+        ),
+    })
 }
 
 /// Set the auth_profile in a project's config.toml.

@@ -84,6 +84,20 @@ impl DaemonClient {
         Self::connect_with_timeout(std::time::Duration::from_secs(5))
     }
 
+    /// Connect to a daemon at an explicit socket path with a short timeout (3s).
+    ///
+    /// Used by the global auth switch fan-out where we iterate over multiple
+    /// daemons sequentially. The reduced timeout bounds total CLI wait time
+    /// (e.g., 5 daemons × 3s = 15s worst case instead of 5 × 15s = 75s).
+    /// Callers enumerate sockets via `enumerate_daemon_sockets()`, which already
+    /// filters for existing files, so no redundant `exists()` check is needed here.
+    pub fn connect_to_fast(socket_path: PathBuf) -> Result<Self, String> {
+        Ok(DaemonClient {
+            socket_path,
+            timeout: std::time::Duration::from_secs(3),
+        })
+    }
+
     /// Connect to the daemon with a custom timeout.
     fn connect_with_timeout(timeout: std::time::Duration) -> Result<Self, String> {
         let socket_path = Self::socket_path();
@@ -688,11 +702,26 @@ impl DaemonClient {
         all: bool,
         provider: midtown::auth::AuthProvider,
     ) -> Result<Response, String> {
+        self.auth_switch_opts(profile, all, false, provider)
+    }
+
+    /// Like [`auth_switch`] but with a `force` flag that tells the daemon to
+    /// restart sessions even when the profile already matches on disk.
+    /// Used by the global fan-out to ensure every daemon restarts, not just
+    /// the first one that writes the config.
+    pub fn auth_switch_opts(
+        &self,
+        profile: &str,
+        all: bool,
+        force: bool,
+        provider: midtown::auth::AuthProvider,
+    ) -> Result<Response, String> {
         self.send(
             "auth.switch",
             Some(serde_json::json!({
                 "profile": profile,
                 "all": all,
+                "force": force,
                 "provider": provider.as_str()
             })),
         )

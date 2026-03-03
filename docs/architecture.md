@@ -528,6 +528,9 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - `web-app/src/lib/CoworkerStatus.svelte` filters inactive rows only when phase explicitly indicates idle/done (or status indicates stopped/idle), and keeps rows whose phase is null/empty if `status` indicates active work.
   - This is a defensive fix for mixed payloads where `/status` may omit `phase` but includes `status`.
 - Auth profile switching
+  - **Per-project**: CLI sends `auth.switch` to the current project's daemon via its Unix socket. The daemon writes the project config and restarts affected sessions.
+  - **Global (`--global`)**: CLI enumerates all daemon sockets in `~/.local/state/midtown/` via `enumerate_daemon_sockets()` and sends `auth.switch(all=true, force=true)` to each. The `force` flag ensures every daemon restarts its sessions even if another daemon already wrote the global config. Uses a reduced 3s per-daemon timeout to bound total CLI wait time.
+  - **No-daemon fallback**: If no daemon sockets are found (or all are stale), the CLI writes the profile config directly to disk.
 - Push notifications (W3C Push API with VAPID)
   - **Backend**: `src/push.rs` — VAPID key generation/storage, subscription management, encrypted push delivery via `web-push-native`. Keys stored in `~/.midtown/push/`.
   - **Frontend**: `web-app/src/lib/push.js` — subscribe/unsubscribe flow, VAPID key fetch. `web-app/src/sw.js` — service worker handles incoming push events with foreground suppression (skips OS notification when the app window is focused).
