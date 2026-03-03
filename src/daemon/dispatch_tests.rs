@@ -846,24 +846,24 @@ fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
 }
 
 // ======================================================================
-// decide_orphan_cleanup tests
+// decide_stale_branch_cleanup tests
 // ======================================================================
 
 #[test]
-fn test_decide_orphan_cleanup_empty_data() {
-    let data = OrphanCleanupData {
+fn test_decide_stale_branch_cleanup_empty_data() {
+    let data = StaleBranchCleanupData {
         stale_branch_cleanup_due: false,
     };
-    let effects = decide_orphan_cleanup(&data);
+    let effects = decide_stale_branch_cleanup(&data);
     assert!(effects.is_empty());
 }
 
 #[test]
-fn test_decide_orphan_cleanup_stale_branch_cleanup() {
-    let data = OrphanCleanupData {
+fn test_decide_stale_branch_cleanup_stale_branch_cleanup() {
+    let data = StaleBranchCleanupData {
         stale_branch_cleanup_due: true,
     };
-    let effects = decide_orphan_cleanup(&data);
+    let effects = decide_stale_branch_cleanup(&data);
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::CleanStaleBranches));
 }

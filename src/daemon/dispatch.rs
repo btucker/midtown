@@ -1490,7 +1490,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
 /// Data gathered for periodic cleanup decisions (stale branches).
 ///
 /// Collected once in the async wrapper, then passed to the pure decision function.
-pub(super) struct OrphanCleanupData {
+pub(super) struct StaleBranchCleanupData {
     /// Whether the stale branch cleanup cooldown has expired.
     pub stale_branch_cleanup_due: bool,
 }
@@ -1501,10 +1501,10 @@ pub(super) struct OrphanCleanupData {
 /// are cleaned up via CleanupMergedWorktree / CleanupStaleWorktree effects.
 ///
 /// Returns `None` if the PR poll hasn't initialized yet (too early to decide).
-pub(super) async fn gather_orphan_cleanup_data(
+pub(super) async fn gather_stale_branch_cleanup_data(
     state: &DaemonState,
     _in_progress_task_owners: &[String],
-) -> Option<OrphanCleanupData> {
+) -> Option<StaleBranchCleanupData> {
     let pr_poll_initialized = {
         let cache = state.pr_coworker_cache.read().unwrap();
         cache.pr_poll_initialized
@@ -1526,16 +1526,16 @@ pub(super) async fn gather_orphan_cleanup_data(
         }
     };
 
-    Some(OrphanCleanupData {
+    Some(StaleBranchCleanupData {
         stale_branch_cleanup_due,
     })
 }
 
-/// Build effects for orphan worktree cleanup based on gathered data.
+/// Build effects for stale branch cleanup based on gathered data.
 ///
 /// Pure function: takes immutable data, returns effects. All I/O flows through
 /// Effect variants executed by `effects::execute_effects`.
-pub fn decide_orphan_cleanup(data: &OrphanCleanupData) -> Vec<Effect> {
+pub fn decide_stale_branch_cleanup(data: &StaleBranchCleanupData) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Note: Legacy coworker-name-based orphan detection has been removed.

@@ -3830,9 +3830,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 let task_owners: Vec<String> = snap.in_progress_tasks.iter()
                     .map(|(_, _, owner)| owner.clone())
                     .collect();
-                if let Some(orphan_data) = dispatch::gather_orphan_cleanup_data(&state, &task_owners).await {
-                    let orphan_effects = dispatch::decide_orphan_cleanup(&orphan_data);
-                    effects::execute_effects(orphan_effects, &state).await;
+                if let Some(cleanup_data) = dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await {
+                    let cleanup_effects = dispatch::decide_stale_branch_cleanup(&cleanup_data);
+                    effects::execute_effects(cleanup_effects, &state).await;
                 }
                 // Process any pending webhook review spawns whose delay has expired
                 let review_snap = snapshot::collect_world_snapshot(&state).await;

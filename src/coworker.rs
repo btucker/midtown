@@ -613,7 +613,6 @@ fn is_valid_git_worktree(path: &std::path::Path) -> bool {
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use std::process::Command;
