@@ -2,8 +2,8 @@
 //!
 //! Supports two worktree layouts:
 //!
-//! **Legacy (coworker-named):** `~/.midtown/coworkers/<repo>/<coworker-name>/`
-//! **Task-based:** `~/.midtown/worktrees/<repo>/<branch-slug>/`
+//! **Legacy (coworker-named):** `~/.midtown/projects/<repo>/coworkers/<coworker-name>/`
+//! **Task-based:** `~/.midtown/projects/<repo>/worktrees/<branch-slug>/`
 //!
 //! New task assignments use the task-based layout. Legacy worktrees are still
 //! recognized during migration.
@@ -53,9 +53,9 @@ pub struct WorktreeManager {
     repo_root: PathBuf,
     /// Repository name (for ~/.midtown/coworkers/<repo>/)
     repo_name: String,
-    /// Base path for legacy coworker-named worktrees (~/.midtown/coworkers/<repo>/)
+    /// Base path for legacy coworker-named worktrees (~/.midtown/projects/<repo>/coworkers/)
     worktrees_base: PathBuf,
-    /// Base path for task-based worktrees (~/.midtown/worktrees/<repo>/)
+    /// Base path for task-based worktrees (~/.midtown/projects/<repo>/worktrees/)
     task_worktrees_base: PathBuf,
 }
 
@@ -176,7 +176,7 @@ impl WorktreeManager {
 
     /// Create or update the lead's persistent worktree.
     ///
-    /// The lead worktree lives at `~/.midtown/worktrees/<repo>/lead/` and uses
+    /// The lead worktree lives at `~/.midtown/projects/<repo>/worktrees/lead/` and uses
     /// detached HEAD (same as coworkers). Unlike task worktrees, this does NOT
     /// create a branch — the lead creates branches as needed for work.
     ///
@@ -959,12 +959,12 @@ impl WorktreeManager {
 
     /// Get the path for a task-based worktree.
     ///
-    /// Returns `~/.midtown/worktrees/<repo>/<worktree_id>/`.
+    /// Returns `~/.midtown/projects/<repo>/worktrees/<worktree_id>/`.
     pub fn task_worktree_path(&self, worktree_id: &str) -> PathBuf {
         self.task_worktrees_base.join(worktree_id)
     }
 
-    /// Create a task-based worktree at `~/.midtown/worktrees/<repo>/<worktree_id>/`.
+    /// Create a task-based worktree at `~/.midtown/projects/<repo>/worktrees/<worktree_id>/`.
     ///
     /// The worktree is created on a branch matching the worktree_id, starting
     /// from the default branch (not HEAD). This prevents cross-PR contamination
@@ -1561,13 +1561,13 @@ mod tests {
         let manager = WorktreeManager {
             repo_root: PathBuf::from("/tmp/repo"),
             repo_name: "myrepo".to_string(),
-            worktrees_base: PathBuf::from("/home/user/.midtown/coworkers/myrepo"),
-            task_worktrees_base: PathBuf::from("/home/user/.midtown/worktrees/myrepo"),
+            worktrees_base: PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers"),
+            task_worktrees_base: PathBuf::from("/home/user/.midtown/projects/myrepo/worktrees"),
         };
 
         assert_eq!(
             manager.worktree_path("alice"),
-            PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice")
+            PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers/alice")
         );
     }
 
@@ -1577,16 +1577,16 @@ mod tests {
 HEAD abc123
 branch refs/heads/main
 
-worktree /home/user/.midtown/coworkers/myrepo/alice
+worktree /home/user/.midtown/projects/myrepo/coworkers/alice
 HEAD def456
 branch refs/heads/alice/work
 
-worktree /home/user/.midtown/coworkers/myrepo/bob
+worktree /home/user/.midtown/projects/myrepo/coworkers/bob
 HEAD 789xyz
 branch refs/heads/bob/work
 "#;
 
-        let base = PathBuf::from("/home/user/.midtown/coworkers/myrepo");
+        let base = PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers");
         let worktrees = parse_worktree_list(output, &base);
 
         assert_eq!(worktrees.len(), 3);
@@ -1600,7 +1600,7 @@ branch refs/heads/bob/work
         // Alice's worktree
         assert_eq!(
             worktrees[1].path,
-            PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice")
+            PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers/alice")
         );
         assert_eq!(worktrees[1].branch, Some("alice/work".to_string()));
         assert!(worktrees[1].is_coworker);
@@ -1613,10 +1613,10 @@ branch refs/heads/bob/work
 
     #[test]
     fn test_check_coworker_worktree() {
-        let base = PathBuf::from("/home/user/.midtown/coworkers/myrepo");
+        let base = PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers");
 
         let (is_coworker, name) = check_coworker_worktree(
-            &PathBuf::from("/home/user/.midtown/coworkers/myrepo/alice"),
+            &PathBuf::from("/home/user/.midtown/projects/myrepo/coworkers/alice"),
             &base,
         );
         assert!(is_coworker);

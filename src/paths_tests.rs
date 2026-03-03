@@ -42,9 +42,13 @@ fn test_projects_dir_for_repo() {
 #[test]
 fn test_coworkers_dir_for_repo() {
     let path = coworkers_dir_for_repo("myproject");
-    assert!(path.to_string_lossy().contains(".midtown"));
-    assert!(path.to_string_lossy().contains("coworkers"));
-    assert!(path.to_string_lossy().ends_with("myproject"));
+    let s = path.to_string_lossy();
+    assert!(s.contains(".midtown"), "should be under .midtown: {s}");
+    assert!(
+        s.contains("projects/myproject"),
+        "should be under projects/<repo>: {s}"
+    );
+    assert!(s.ends_with("coworkers"), "should end with coworkers: {s}");
 }
 
 #[test]
@@ -175,8 +179,24 @@ fn test_atomic_rename_leaks_tmp_when_cleanup_fails() {
 #[test]
 fn test_lead_worktree_path() {
     let path = lead_worktree_path("myrepo");
-    assert!(path.ends_with("worktrees/myrepo/lead"));
+    let s = path.to_string_lossy();
+    assert!(
+        s.ends_with("projects/myrepo/worktrees/lead"),
+        "expected projects/<repo>/worktrees/lead, got: {s}"
+    );
     assert_eq!(path, worktrees_dir_for_repo("myrepo").join("lead"));
+}
+
+#[test]
+fn test_worktrees_dir_for_repo_new_path() {
+    let path = worktrees_dir_for_repo("myproject");
+    let s = path.to_string_lossy();
+    assert!(s.contains(".midtown"), "should be under .midtown: {s}");
+    assert!(
+        s.contains("projects/myproject/worktrees"),
+        "should be under projects/<repo>/worktrees: {s}"
+    );
+    assert!(s.ends_with("worktrees"), "should end with worktrees: {s}");
 }
 
 #[test]
@@ -185,6 +205,116 @@ fn test_migrate_returns_false_when_nothing_to_migrate() {
     let result = migrate_directory_structure("nonexistent-test-repo-xyz123");
     assert!(result.is_ok());
     assert!(!result.unwrap());
+}
+
+#[test]
+fn test_migrate_worktree_paths_moves_worktrees_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create old-style worktrees directory
+    let old_worktrees = tmp.path().join("worktrees").join(repo);
+    fs::create_dir_all(old_worktrees.join("task-42")).unwrap();
+    fs::write(old_worktrees.join("task-42").join("README"), "test").unwrap();
+
+    // Run migration
+    let result = do_migrate_worktree_paths(repo);
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "should have migrated");
+
+    // Verify new path exists
+    let new_worktrees = tmp.path().join("projects").join(repo).join("worktrees");
+    assert!(new_worktrees.exists(), "new worktrees dir should exist");
+    assert!(
+        new_worktrees.join("task-42").join("README").exists(),
+        "migrated content should exist"
+    );
+
+    // Verify old path is gone
+    assert!(
+        !old_worktrees.exists(),
+        "old worktrees dir should be removed"
+    );
+}
+
+#[test]
+fn test_migrate_worktree_paths_moves_coworkers_dir() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create old-style coworkers directory
+    let old_coworkers = tmp.path().join("coworkers").join(repo);
+    fs::create_dir_all(old_coworkers.join("alice")).unwrap();
+    fs::write(old_coworkers.join("alice").join("Cargo.toml"), "test").unwrap();
+
+    // Run migration
+    let result = do_migrate_worktree_paths(repo);
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "should have migrated");
+
+    // Verify new path exists
+    let new_coworkers = tmp.path().join("projects").join(repo).join("coworkers");
+    assert!(new_coworkers.exists(), "new coworkers dir should exist");
+    assert!(
+        new_coworkers.join("alice").join("Cargo.toml").exists(),
+        "migrated content should exist"
+    );
+
+    // Verify old path is gone
+    assert!(
+        !old_coworkers.exists(),
+        "old coworkers dir should be removed"
+    );
+}
+
+#[test]
+fn test_migrate_worktree_paths_idempotent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create new-style directory already in place (no old dir)
+    let new_worktrees = tmp.path().join("projects").join(repo).join("worktrees");
+    fs::create_dir_all(new_worktrees.join("task-99")).unwrap();
+
+    // Migration should return false (nothing to migrate)
+    let result = do_migrate_worktree_paths(repo);
+    assert!(result.is_ok());
+    assert!(
+        !result.unwrap(),
+        "should not migrate when new path already exists"
+    );
+
+    // Content should still be there
+    assert!(new_worktrees.join("task-99").exists());
+}
+
+#[test]
+fn test_migrate_worktree_paths_skips_if_new_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create both old and new worktrees dirs
+    let old_worktrees = tmp.path().join("worktrees").join(repo);
+    fs::create_dir_all(old_worktrees.join("old-task")).unwrap();
+    let new_worktrees = tmp.path().join("projects").join(repo).join("worktrees");
+    fs::create_dir_all(new_worktrees.join("new-task")).unwrap();
+
+    // Migration should not overwrite existing new dir
+    let result = do_migrate_worktree_paths(repo);
+    assert!(result.is_ok());
+
+    // New content preserved
+    assert!(new_worktrees.join("new-task").exists());
+    // Old content still there (rename was skipped because new exists)
+    assert!(old_worktrees.join("old-task").exists());
 }
 
 // ── workflow_script_for_channel ────────────────────────────────────────

@@ -8,7 +8,7 @@ fn test_lead_worktree_path_helper() {
     let repo_name = "test-repo";
     let lead_worktree = midtown::paths::lead_worktree_path(repo_name);
 
-    // Should return ~/.midtown/worktrees/<repo>/lead/
+    // Should return ~/.midtown/projects/<repo>/worktrees/lead/
     assert!(
         lead_worktree.to_string_lossy().contains("worktrees"),
         "Lead worktree path should be in worktrees directory"
