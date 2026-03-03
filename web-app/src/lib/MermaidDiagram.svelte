@@ -90,13 +90,13 @@
     <pre class="text-muted-foreground m-0 whitespace-pre-wrap break-words">{error}</pre>
   </div>
 {:else}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="group bg-accent rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-link-default [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block"
+  <button
+    type="button"
+    class="group bg-accent rounded-md p-3 my-1.5 overflow-x-auto leading-none cursor-pointer relative hover:outline hover:outline-1 hover:outline-link-default [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:block w-full text-left border-none font-inherit text-inherit"
     onclick={handleExpand}
     title="Click to expand"
   >
     {@html svgHtml}
     <div class="absolute top-1.5 right-2 text-[0.7rem] text-muted-foreground opacity-0 transition-opacity duration-150 pointer-events-none font-['SF_Mono',Menlo,Consolas,monospace] group-hover:opacity-100">Click to expand</div>
-  </div>
+  </button>
 {/if}

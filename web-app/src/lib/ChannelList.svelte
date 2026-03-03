@@ -218,6 +218,7 @@
 
   {#if showCreateInput}
     <div class="px-3 py-2 mb-2 bg-sidebar-accent rounded-md">
+      <!-- svelte-ignore a11y_autofocus -->
       <input
         type="text"
         class="w-full px-2 py-1.5 border border-sidebar-border rounded bg-sidebar text-sidebar-foreground text-sm font-mono outline-none focus:border-primary disabled:opacity-50"
