@@ -414,7 +414,7 @@
 {#if $threadData}
   <!-- Desktop: side panel with resize handle -->
   <div
-    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border shrink-0 relative"
+    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border shrink-0 relative shadow-[inset_8px_0_8px_-8px_rgba(0,0,0,0.15)] dark:shadow-[inset_8px_0_8px_-8px_rgba(0,0,0,0.4)]"
     style="width: {panelWidth}px"
     data-testid="thread-panel"
   >
