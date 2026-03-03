@@ -112,15 +112,21 @@
   // in collapsed mode), so users can always click to expand and see past tool calls.
   let isVisible = $derived(merged.length > 0 || thinking)
 
-  // Auto-scroll to bottom when new items arrive in expanded mode
+  // Auto-scroll to bottom when new items arrive in expanded mode,
+  // but only if the user hasn't manually scrolled up to read history.
+  const SCROLL_THRESHOLD = 50 // px from bottom to consider "at bottom"
   $effect(() => {
     if (expanded && scrollContainer && displayItems.length) {
-      // Tick: wait for DOM update before scrolling
-      requestAnimationFrame(() => {
-        if (scrollContainer) {
-          scrollContainer.scrollTop = scrollContainer.scrollHeight
-        }
-      })
+      // Check if user is near the bottom before the DOM update
+      const { scrollTop, scrollHeight, clientHeight } = scrollContainer
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD
+      if (isNearBottom) {
+        requestAnimationFrame(() => {
+          if (scrollContainer) {
+            scrollContainer.scrollTop = scrollContainer.scrollHeight
+          }
+        })
+      }
     }
   })
 
@@ -145,8 +151,9 @@
 
   function handleKeydown(e) {
     if (e.key === 'Escape' && expanded) {
+      // Collapse the drawer; do NOT stopPropagation so a second Escape
+      // naturally bubbles to parent handlers (e.g. close thread panel).
       toggleExpanded()
-      e.stopPropagation()
     } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
       toggleExpanded()
@@ -202,30 +209,29 @@
       class:pb-1.5={!expanded || displayItems.length === 0}
       style={expanded ? 'max-height: 50vh;' : ''}
     >
-      {#if displayItems.length === 0 && thinking}
-        <!-- Optimistic waiting state: blinking dots -->
+      {#each displayItems as entry (entry.item.item_id)}
+        {@const dimmed = expanded && completedAt.has(entry.item.item_id)}
+        <div class="flex items-center gap-[0.4em] py-[1px]" class:opacity-45={dimmed}>
+          <span class="flex-shrink-0 select-none text-[0.78rem] leading-[1.35]">
+            {#if entry.status === 'error'}
+              <span class="text-red-400">✗</span>
+            {:else if entry.status === 'ok'}
+              <span class="text-[#5faf5f]">✓</span>
+            {:else}
+              <span class="text-[#4a8a4a]">›</span>
+            {/if}
+          </span>
+          <span
+            class="font-mono text-[0.78rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-red-400' : entry.status === 'ok' ? 'text-[#8fbf8f]' : 'text-[#5faf5f]'}"
+          >{describeItem(entry.item)}</span>
+        </div>
+      {/each}
+      {#if thinking}
+        <!-- Thinking indicator: shown alongside history when waiting for new tool calls -->
         <div class="flex items-center gap-[0.4em] py-[1px]">
           <span class="text-[#4a6a4a] select-none flex-shrink-0 text-[0.78rem]">›</span>
           <span class="font-mono text-[0.78rem] leading-[1.35] text-[#4a6a4a] thinking-blink">...</span>
         </div>
-      {:else}
-        {#each displayItems as entry (entry.item.item_id)}
-          {@const dimmed = expanded && completedAt.has(entry.item.item_id)}
-          <div class="flex items-center gap-[0.4em] py-[1px]" class:opacity-45={dimmed}>
-            <span class="flex-shrink-0 select-none text-[0.78rem] leading-[1.35]">
-              {#if entry.status === 'error'}
-                <span class="text-red-400">✗</span>
-              {:else if entry.status === 'ok'}
-                <span class="text-[#5faf5f]">✓</span>
-              {:else}
-                <span class="text-[#4a8a4a]">›</span>
-              {/if}
-            </span>
-            <span
-              class="font-mono text-[0.78rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-red-400' : entry.status === 'ok' ? 'text-[#8fbf8f]' : 'text-[#5faf5f]'}"
-            >{describeItem(entry.item)}</span>
-          </div>
-        {/each}
       {/if}
     </div>
   </div>
