@@ -96,7 +96,6 @@ use tracing::{debug, error, info, warn};
 use crate::config;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
-use crate::rpc::RequestId;
 use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
@@ -3157,6 +3156,29 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         });
     }
 
+    // Spawn dedicated task for web/mobile channel posts so they aren't delayed
+    // by heavier branches in the main select! loop (e.g., session drain, PR polling).
+    if let Some(mut mob_rx) = mobile_rx.take() {
+        let post_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            while let Some(mobile_post) = mob_rx.recv().await {
+                let content = &mobile_post.content;
+                let channel = mobile_post.channel.as_deref();
+                let thread_parent_id = mobile_post.thread_parent_id.as_deref();
+                let sender = post_state.user_display_name.as_deref().unwrap_or("user");
+                rpc_channel::handle_channel_post(
+                    crate::rpc::RequestId::Null,
+                    sender,
+                    content,
+                    channel,
+                    thread_parent_id,
+                    &post_state,
+                )
+                .await;
+            }
+        });
+    }
+
     // Main event loop
     loop {
         let state = Arc::clone(&state);
@@ -3459,27 +3481,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 if !is_ci_check_passed {
                     chat::route_mentions(&state, &webhook_event.message).await;
                 }
-            }
-
-            // Process user channel posts through the daemon (handles nudge, etc.)
-            Some(mobile_post) = async {
-                match mobile_rx.as_mut() {
-                    Some(rx) => rx.recv().await,
-                    None => std::future::pending().await,
-                }
-            } => {
-                let content = &mobile_post.content;
-                let channel = mobile_post.channel.as_deref();
-                let thread_parent_id = mobile_post.thread_parent_id.as_deref();
-                let sender = state.user_display_name.as_deref().unwrap_or("user");
-                rpc_channel::handle_channel_post(
-                    RequestId::Null,
-                    sender,
-                    content,
-                    channel,
-                    thread_parent_id,
-                    &state,
-                ).await;
             }
 
             // Drain events from headless sessions to prevent stdout buffer filling up.
