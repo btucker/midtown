@@ -32,6 +32,7 @@
 //!         │       └── workflow-state.json    # Persistent workflow state between invocations
 //!         ├── logs/         # Daemon logs
 //!         ├── daemon.pid    # Daemon PID file
+//!         ├── screenshots/  # Screenshots for PR embedding (UUID-named)
 //!         └── assets/       # Coworker-generated screenshots and videos
 //! ```
 //!
@@ -277,6 +278,19 @@ pub fn projects_dir_for_repo(repo: &str) -> PathBuf {
 /// `/api/projects/<repo>/assets/<path>`.
 pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("assets")
+}
+
+/// Get the screenshots directory for a specific repository.
+///
+/// Returns `~/.midtown/projects/<repo>/screenshots/`.
+///
+/// This is where coworker-generated screenshots are saved for embedding
+/// in PR descriptions. Unlike the uploads directory (which stores files
+/// uploaded via multipart POST), screenshots are saved directly by the
+/// `midtown coworker screenshot` command and served at
+/// `/api/screenshots/<filename>` by the per-project daemon.
+pub fn screenshots_dir_for_repo(repo: &str) -> PathBuf {
+    projects_dir_for_repo(repo).join("screenshots")
 }
 
 /// Get the legacy coworkers directory for a specific repository.

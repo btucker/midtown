@@ -511,4 +511,15 @@ describe('renderContent - image attachments', () => {
     expect(result).not.toContain('"name')
     expect(result).toContain('&quot;')
   })
+
+  it('renders screenshot attachments via /screenshots/ endpoint', () => {
+    const result = renderContent('[Attached: /home/user/.midtown/projects/mid/screenshots/abc-123.png]', API)
+    expect(result).toContain('<img')
+    expect(result).toContain('src="http://localhost:47023/api/screenshots/abc-123.png"')
+  })
+
+  it('renders uploads attachments via /uploads/ endpoint', () => {
+    const result = renderContent('[Attached: /home/user/.midtown/projects/mid/uploads/20260101-shot.png]', API)
+    expect(result).toContain('src="http://localhost:47023/api/uploads/20260101-shot.png"')
+  })
 })

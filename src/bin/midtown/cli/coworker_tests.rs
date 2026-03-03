@@ -52,59 +52,80 @@ fn temp_file_guard_handles_already_deleted_file() {
 }
 
 #[test]
-fn upload_and_cleanup_removes_temp_file_on_server_error() {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-
-    // Start a local TCP server that returns HTTP 500
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    let server_thread = std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            // Read the request (drain it so the client doesn't get a broken pipe)
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            // Respond with HTTP 500
-            let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\n\r\nInternal Server Error";
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-        }
-    });
+fn save_screenshot_locally_saves_and_cleans_up_temp() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
 
     // Create a temp file simulating Playwright output
     let dir = std::env::temp_dir();
     let tmp_path = dir.join(format!(
-        "midtown-test-upload-cleanup-{}",
+        "midtown-test-screenshot-save-{}",
         std::process::id()
     ));
     std::fs::write(&tmp_path, b"fake png data").unwrap();
     assert!(tmp_path.exists());
 
-    // Point upload_and_cleanup at our mock server.
-    // SAFETY: This test runs single-threaded (no parallel test reads this env var).
-    unsafe { std::env::set_var("MIDTOWN_WEBHOOK_PORT", port.to_string()) };
+    let result = super::save_screenshot_locally(&tmp_path, "png", false, false, &screenshots_dir);
 
-    let result = super::upload_and_cleanup(&tmp_path, "test.png");
-
-    // Clean up env var
-    // SAFETY: Same single-threaded test context.
-    unsafe { std::env::remove_var("MIDTOWN_WEBHOOK_PORT") };
-
-    // Upload should have failed with HTTP 500
-    assert!(result.is_err(), "Expected upload to fail with HTTP 500");
-    let err = result.unwrap_err();
+    // Should succeed
     assert!(
-        err.contains("500"),
-        "Error should mention HTTP 500, got: {}",
-        err
+        result.is_ok(),
+        "Expected save to succeed, got: {:?}",
+        result
     );
 
     // The temp file should have been cleaned up by TempFileGuard
     assert!(
         !tmp_path.exists(),
-        "TempFileGuard should remove temp file even when upload fails"
+        "TempFileGuard should remove temp file after save"
     );
 
-    server_thread.join().unwrap();
+    // Verify a file was saved to the screenshots directory
+    let entries: Vec<_> = std::fs::read_dir(&screenshots_dir)
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(entries.len(), 1, "Expected one screenshot file");
+    let saved_name = entries[0].file_name().to_string_lossy().to_string();
+    assert!(saved_name.ends_with(".png"), "Should have .png extension");
+
+    // Verify the response contains [Attached: ...]
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.contains("[Attached:"),
+            "Response should contain [Attached:], got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_before_after_prefix() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    // Test "before" prefix
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-before-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(&tmp_path, "png", true, false, &screenshots_dir);
+    assert!(result.is_ok());
+
+    let entries: Vec<_> = std::fs::read_dir(&screenshots_dir)
+        .unwrap()
+        .flatten()
+        .collect();
+    assert_eq!(entries.len(), 1);
+    let saved_name = entries[0].file_name().to_string_lossy().to_string();
+    assert!(
+        saved_name.starts_with("before-"),
+        "Before screenshot should have before- prefix, got: {}",
+        saved_name
+    );
 }

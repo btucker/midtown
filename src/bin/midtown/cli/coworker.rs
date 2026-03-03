@@ -121,35 +121,33 @@ impl Drop for TempFileGuard {
     }
 }
 
-/// Take a screenshot of a URL using Playwright, upload it, and return
+/// Take a screenshot of a URL using Playwright, save it locally, and return
 /// the `[Attached: /path]` markdown ready for channel posts or PR bodies.
 ///
-/// Does not require a daemon connection — runs Playwright locally and
-/// uploads via HTTP to the webhook port.
+/// Does not require a daemon connection — runs Playwright locally and saves
+/// the screenshot to the project's screenshots directory with a UUID filename.
+/// The file is then served by the daemon at `/api/screenshots/<uuid>.<ext>`.
 pub fn handle_screenshot(
     url: &str,
     output: Option<&str>,
     before: bool,
     after: bool,
 ) -> Result<Response, String> {
-    // Determine output filename
-    let filename = if let Some(name) = output {
-        name.to_string()
-    } else if before {
-        "before.png".to_string()
-    } else if after {
-        "after.png".to_string()
+    // Determine the desired extension from the output filename
+    let ext = if let Some(name) = output {
+        std::path::Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+            .to_string()
     } else {
-        "screenshot.png".to_string()
+        "png".to_string()
     };
 
     // Write to a unique temp file (PID-scoped to avoid clobbering from concurrent coworkers)
     let tmp_dir = std::env::temp_dir();
-    let tmp_path = tmp_dir.join(format!(
-        "midtown-screenshot-{}-{}",
-        std::process::id(),
-        filename
-    ));
+    let tmp_filename = format!("midtown-screenshot-{}.{}", std::process::id(), ext);
+    let tmp_path = tmp_dir.join(&tmp_filename);
 
     // Run Playwright to capture the screenshot
     eprintln!("Capturing screenshot of {}...", url);
@@ -175,75 +173,50 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
-    upload_and_cleanup(&tmp_path, &filename)
+    let repo = midtown::paths::detect_repo_name()
+        .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
+    let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
+
+    save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir)
 }
 
-/// Upload a screenshot file and clean up the temp file afterward.
+/// Save a screenshot to the given screenshots directory and return
+/// the `[Attached: /path]` markdown.
 ///
-/// Creates a `TempFileGuard` over `tmp_path` so the file is removed on all exit
-/// paths (success, early error return, or panic). Resolves the webhook port from
-/// env/config, uploads via multipart POST, and returns `[Attached: /path]` markdown.
-pub(crate) fn upload_and_cleanup(
+/// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
+/// exit paths (success, early error return, or panic). Generates a UUID-based
+/// filename and copies the screenshot to the provided directory.
+pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
-    filename: &str,
+    ext: &str,
+    before: bool,
+    after: bool,
+    screenshots_dir: &std::path::Path,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
         path: tmp_path.to_path_buf(),
     };
 
-    // Resolve the daemon's webhook port:
-    //   1. MIDTOWN_WEBHOOK_PORT env var (set by daemon for coworker sessions)
-    //   2. Project config daemon.webhook_port (persisted by assign_webhook_port)
-    //   3. Default (47023)
-    let webhook_port = std::env::var("MIDTOWN_WEBHOOK_PORT")
-        .ok()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or_else(|| {
-            midtown::paths::detect_repo_name()
-                .map(|repo| midtown::config::get_project_daemon_config(&repo))
-                .and_then(|cfg| cfg.webhook_port)
-                .unwrap_or(midtown::daemon::DEFAULT_WEBHOOK_PORT)
-        });
-    let upload_url = format!("http://127.0.0.1:{}/api/upload", webhook_port);
+    std::fs::create_dir_all(screenshots_dir)
+        .map_err(|e| format!("Failed to create screenshots directory: {}", e))?;
 
-    let file_bytes =
-        std::fs::read(tmp_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+    // Generate a UUID-based filename, with optional before/after prefix
+    let uuid = uuid::Uuid::new_v4();
+    let filename = if before {
+        format!("before-{}.{}", uuid, ext)
+    } else if after {
+        format!("after-{}.{}", uuid, ext)
+    } else {
+        format!("{}.{}", uuid, ext)
+    };
 
-    let form = reqwest::blocking::multipart::Form::new().part(
-        "file",
-        reqwest::blocking::multipart::Part::bytes(file_bytes)
-            .file_name(filename.to_string())
-            .mime_str("image/png")
-            .map_err(|e| format!("Failed to set MIME type: {}", e))?,
-    );
+    let dest_path = screenshots_dir.join(&filename);
 
-    let client = reqwest::blocking::Client::new();
-    let response = client
-        .post(&upload_url)
-        .multipart(form)
-        .send()
-        .map_err(|e| format!("Failed to upload screenshot: {}. Is the daemon running?", e))?;
+    std::fs::copy(tmp_path, &dest_path).map_err(|e| format!("Failed to save screenshot: {}", e))?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().unwrap_or_default();
-        return Err(format!("Upload failed (HTTP {}): {}", status, body));
-    }
-
-    let upload_result: serde_json::Value = response
-        .json()
-        .map_err(|e| format!("Failed to parse upload response: {}", e))?;
-
-    let path = upload_result
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or("Upload response missing 'path' field")?;
-
-    // Return the [Attached: /path] markdown
-    // (temp file cleanup happens automatically via TempFileGuard drop)
-    let attached = format!("[Attached: {}]", path);
-    eprintln!("Screenshot uploaded: {}", path);
+    let attached = format!("[Attached: {}]", dest_path.display());
+    eprintln!("Screenshot saved: {}", dest_path.display());
     Ok(Response::message(attached))
 }
 
