@@ -47,6 +47,13 @@
   let copiedTooltip = $state(false)
   let tooltipTimeout = null
 
+  // Clean up tooltip timeout when component is destroyed
+  $effect(() => {
+    return () => {
+      if (tooltipTimeout) clearTimeout(tooltipTimeout)
+    }
+  })
+
   function handleTimestampClick(e) {
     if (!permalinkUrl) return
     e.preventDefault()

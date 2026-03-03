@@ -300,7 +300,8 @@
     if ((mergedTimeline.length > 0) && scrollArea) {
       // Skip auto-scroll-to-bottom when a deep-link target is pending —
       // the deep-link effect below will handle scrolling to the right message.
-      if ($deepLinkMsgId) return
+      // Read via untrack() so clearing the deep-link store doesn't re-trigger this effect.
+      if (untrack(() => $deepLinkMsgId)) return
       tick().then(() => {
         scrollArea.scrollTop = scrollArea.scrollHeight
       })
@@ -318,8 +319,8 @@
         el.scrollIntoView({ behavior: 'smooth', block: 'center' })
         el.classList.add('deep-link-highlight')
         setTimeout(() => el.classList.remove('deep-link-highlight'), 2000)
+        deepLinkMsgId.set(null)
       }
-      deepLinkMsgId.set(null)
     })
   })
 
