@@ -278,6 +278,8 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 - `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
 - `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since fork sessions (--resume --fork-session) never emit `system/init` and the session ID is pre-assigned via `--session-id`.
 
+**Auth profile resolution:** Fork sessions must use `active_profile_dir_for_project_with_provider(repo_name, provider)` (project-aware) to resolve credentials — never `current_profile_dir_for(provider)` (global-only). The project-aware path checks the project config's per-provider profile mapping first, then falls back to the global marker. After a per-project `auth switch`, only the project config is updated; the global marker is unchanged. Using the global-only path would give forks stale pre-switch credentials. This is handled by `build_fork_config()` in `rpc_session.rs`, which matches the coworker relaunch path in `rpc_auth.rs`.
+
 **Architectural invariants:**
 - Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
 - The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread. On spawn failure, the sentinel is removed so the slot is available for retry.

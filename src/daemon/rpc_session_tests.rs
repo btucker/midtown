@@ -819,50 +819,67 @@ fn test_slugify_consecutive_punctuation_collapsed() {
 // Fork auth profile resolution tests
 // ============================================================================
 
-/// After a per-project `auth switch`, fork sessions must use the project-aware
-/// profile resolution (`active_profile_dir_for_project_with_provider`), not the
-/// global one (`current_profile_dir_for`). The global marker doesn't change on a
-/// per-project switch, so using it would give forks stale credentials.
+/// After a per-project `auth switch`, `build_fork_config` must set
+/// `CLAUDE_CONFIG_DIR` to the project-specific profile directory, not the
+/// global one. The global marker doesn't change on a per-project switch, so
+/// using it would give forks stale credentials ("Not logged in").
 ///
 /// Regression test for !1960.
 #[test]
-fn test_fork_auth_uses_project_profile_not_global() {
+fn test_build_fork_config_uses_project_auth_profile() {
     let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
     let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
-    let project = "test-repo";
+    let repo_name = "test-repo";
     let provider = crate::auth::AuthProvider::Claude;
 
     // Set up a per-project auth profile override (simulates `midtown auth switch alice`)
-    let project_config_path = crate::config::project_config_path(project);
+    let project_config_path = crate::config::project_config_path(repo_name);
     let mut config = crate::config::FullProjectConfig::default();
     crate::auth::set_project_profile_override(&mut config.project, provider, "alice".to_string());
     config
         .save_to(&project_config_path)
         .expect("save project config");
 
-    // Project-aware resolution should return the project override
-    let project_profile = crate::auth::active_profile_for_project_with_provider(project, provider);
-    assert_eq!(
-        project_profile, "alice",
-        "project-aware resolution should return the per-project override"
-    );
-
-    // Global resolution should return the default (no global switch was done)
-    let global_profile = crate::auth::current_profile_for(provider);
-    assert_ne!(
-        global_profile, "alice",
-        "global resolution should NOT return the per-project override"
-    );
-
-    // The profile directories should differ — this is the core invariant the fix relies on.
-    // If they were the same, using the wrong resolution function wouldn't matter.
-    let project_dir = crate::auth::active_profile_dir_for_project_with_provider(project, provider);
+    // Precondition: global and project profiles differ (otherwise the test is vacuous)
     let global_dir = crate::auth::current_profile_dir_for(provider);
+    let project_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(repo_name, provider);
     assert_ne!(
-        project_dir, global_dir,
-        "project-aware and global profile dirs must differ after per-project auth switch \
-         (project={:?}, global={:?})",
-        project_dir, global_dir
+        global_dir, project_dir,
+        "precondition: global and project profile dirs must differ"
+    );
+
+    // Call the production code path that builds the fork's HeadlessConfig.
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-abc123",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        provider,
+        true,
+        repo_name,
+    );
+
+    // The CLAUDE_CONFIG_DIR env var in the fork config must point to the
+    // project-aware profile directory, not the global one.
+    let config_dir = headless_config
+        .env
+        .get("CLAUDE_CONFIG_DIR")
+        .expect("CLAUDE_CONFIG_DIR should be set in fork env");
+    assert_eq!(
+        config_dir,
+        &project_dir.to_string_lossy().to_string(),
+        "fork CLAUDE_CONFIG_DIR should use project-aware profile dir, not global \
+         (got {:?}, expected {:?})",
+        config_dir,
+        project_dir
+    );
+    assert_ne!(
+        config_dir,
+        &global_dir.to_string_lossy().to_string(),
+        "fork CLAUDE_CONFIG_DIR must NOT be the global profile dir"
     );
 }

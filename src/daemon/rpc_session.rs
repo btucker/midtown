@@ -1129,6 +1129,94 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
     }
 }
 
+/// Build the `HeadlessConfig` and fork name for a fork session.
+///
+/// Extracted from `create_fork_session` so tests can verify the config
+/// (especially auth profile resolution) without spawning a real process.
+///
+/// Uses the **project-aware** auth profile resolution
+/// (`active_profile_dir_for_project_with_provider`) so that per-project
+/// `auth switch` overrides are picked up by forked sessions.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_fork_config(
+    thread_parent_id: &str,
+    calling_session_id: &str,
+    caller_name: Option<&str>,
+    fork_name_hint: Option<&str>,
+    fork_channel: Option<&str>,
+    working_dir: Option<&str>,
+    auth_provider: crate::auth::AuthProvider,
+    is_channel_lead: bool,
+    repo_name: &str,
+) -> (String, crate::headless::HeadlessConfig) {
+    let config_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider);
+    let team = crate::mailbox::team_name_for_repo(repo_name);
+
+    // Build a human-readable fork name from the caller name and the hint.
+    let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
+    let fork_name = if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
+        let slug = slugify_fork_hint(hint, thread_parent_id);
+        match caller_name {
+            Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
+            None => format!("fork-{}-{}", slug, tid_suffix),
+        }
+    } else {
+        format!(
+            "fork-{}",
+            thread_parent_id.get(..8).unwrap_or(thread_parent_id),
+        )
+    };
+
+    let mut env = crate::launch::build_agent_env_vars(
+        &fork_name,
+        &crate::launch::CoworkerRole::ChannelLead {
+            channel_name: fork_channel.unwrap_or_default().to_string(),
+            domain_context: String::new(),
+        },
+        &Some(team.clone()),
+        &fork_channel.map(String::from),
+        auth_provider,
+        &config_dir,
+    );
+    env.insert(
+        "MIDTOWN_BOUND_THREAD_ID".to_string(),
+        thread_parent_id.to_string(),
+    );
+
+    let headless_config = crate::headless::HeadlessConfig {
+        model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
+        system_prompt: String::new(),
+        json_schema: None,
+        cwd: working_dir.map(String::from),
+        project_name: Some(repo_name.to_string()),
+        max_budget_usd: None,
+        allow_tools: true,
+        persist_session: true,
+        resume_session_id: Some(calling_session_id.to_string()),
+        inactivity_timeout: None,
+        team_name: Some(team.clone()),
+        agent_id: Some(crate::mailbox::agent_id(&fork_name, &team)),
+        agent_name: Some(fork_name.clone()),
+        settings_path: None,
+        setting_sources: None,
+        auth_provider,
+        env,
+        session_id: match auth_provider {
+            crate::auth::AuthProvider::Codex => None,
+            _ => Some(uuid::Uuid::new_v4().to_string()),
+        },
+        fork_session: true,
+        disallowed_tools: if is_channel_lead {
+            crate::launch::channel_lead_disallowed_tools()
+        } else {
+            vec![]
+        },
+    };
+
+    (fork_name, headless_config)
+}
+
 /// Create a fork session bound to a thread, or return an existing one.
 ///
 /// This is the shared implementation used by both `handle_session_fork` (explicit fork
@@ -1228,88 +1316,17 @@ pub(super) async fn create_fork_session(
         .or(channel)
         .or_else(|| caller_name.clone());
 
-    // Build the HeadlessConfig for the fork.
-    // Platform-specific launch paths translate this into a true fork:
-    // - Claude/z.ai: --resume <parent-id> --fork-session
-    // - Codex: thread/fork RPC on the parent thread
-    let config_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
-    let repo_name = &state.repo_name;
-    let team = crate::mailbox::team_name_for_repo(repo_name);
-
-    // Build a human-readable fork name from the caller name and the hint.
-    // e.g. "web-push-notifications-a1b2" or "ops-tls-config-c3d4".
-    // Always includes a short thread ID suffix to guarantee uniqueness per thread
-    // (two forks from the same caller with similar messages must not collide in
-    // name_to_session / fork_bound_threads).
-    let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
-    let fork_name = if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
-        let slug = slugify_fork_hint(hint, thread_parent_id);
-        match &caller_name {
-            Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
-            None => format!("fork-{}-{}", slug, tid_suffix),
-        }
-    } else {
-        format!(
-            "fork-{}",
-            thread_parent_id.get(..8).unwrap_or(thread_parent_id),
-        )
-    };
-
-    let mut env = crate::launch::build_agent_env_vars(
-        &fork_name,
-        &crate::launch::CoworkerRole::ChannelLead {
-            channel_name: fork_channel.clone().unwrap_or_default(),
-            domain_context: String::new(),
-        },
-        &Some(team.clone()),
-        &fork_channel,
+    let (fork_name, headless_config) = build_fork_config(
+        thread_parent_id,
+        calling_session_id,
+        caller_name.as_deref(),
+        fork_name_hint,
+        fork_channel.as_deref(),
+        working_dir.as_deref(),
         auth_provider,
-        &config_dir,
+        is_channel_lead,
+        &state.repo_name,
     );
-    // Tell the fork its bound thread so it can pass --thread in channel posts
-    env.insert(
-        "MIDTOWN_BOUND_THREAD_ID".to_string(),
-        thread_parent_id.to_string(),
-    );
-
-    let headless_config = crate::headless::HeadlessConfig {
-        model: fork_channel_lead_model(repo_name, auth_provider, fork_channel.as_deref()),
-        system_prompt: String::new(),
-        json_schema: None,
-        cwd: working_dir.clone(),
-        project_name: Some(repo_name.clone()),
-        max_budget_usd: None,
-        allow_tools: true,
-        persist_session: true,
-        resume_session_id: Some(calling_session_id.to_string()),
-        inactivity_timeout: None,
-        team_name: Some(team.clone()),
-        agent_id: Some(crate::mailbox::agent_id(&fork_name, &team)),
-        agent_name: Some(fork_name.clone()),
-        settings_path: None,
-        setting_sources: None,
-        auth_provider,
-        env,
-        // Pre-assign session_id for Claude/Zai fork sessions so the daemon
-        // controls the fork's ID immediately at spawn time. Forked sessions
-        // (--resume --fork-session) don't emit system/init, so the daemon
-        // cannot discover the ID from the event stream.
-        // Codex forks don't support --session-id, so leave it None for them.
-        session_id: match auth_provider {
-            crate::auth::AuthProvider::Codex => None,
-            _ => Some(uuid::Uuid::new_v4().to_string()),
-        },
-        fork_session: true,
-        // Only apply tool restrictions when forking a channel lead session.
-        // Non-channel-lead forks (e.g. explicit `midtown session fork` from a
-        // coworker) should inherit the parent's full tool access.
-        disallowed_tools: if is_channel_lead {
-            crate::launch::channel_lead_disallowed_tools()
-        } else {
-            vec![]
-        },
-    };
 
     // Spawn the forked session.
     let fork_session_id = match state
@@ -1389,7 +1406,7 @@ pub(super) async fn create_fork_session(
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
             },
         );
-        if let Err(e) = ps.save_for_repo(repo_name) {
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
             warn!("{}: failed to persist session record: {}", caller, e);
         }
     }
