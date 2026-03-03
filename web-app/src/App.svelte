@@ -30,6 +30,7 @@
     pushSubscribed,
     subscribePush,
     unsubscribePush,
+    checkPushSubscription,
   } from '$lib/push.js'
 
   $effect(() => {
@@ -83,6 +84,9 @@
   })
 
   onMount(async () => {
+    // Initialize push notification state (checks browser support + existing subscription)
+    checkPushSubscription()
+
     // Always in multi-project mode — served from shared gateway on port 47022
     const projectList = await fetchProjects()
 
