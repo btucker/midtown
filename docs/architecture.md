@@ -60,6 +60,8 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Hybrid process model**: The Project Lead runs in a terminal pane managed by a launcher; coworkers run as headless Claude Code sessions. Project Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
 
+**Centralized path resolution**: All `~/.midtown/` paths derive from `midtown_base_dir()` and its helpers in `src/paths.rs`. In tests, `let _guard = set_test_midtown_base_dir(tmp)` redirects resolution to a temp directory — the guard must be held for the override to remain active.
+
 ---
 
 # How It Works
