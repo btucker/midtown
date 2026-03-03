@@ -981,6 +981,9 @@ impl DaemonState {
             let mut tool_map = self.recent_tool_items.write().unwrap();
             tool_map.remove(name);
         }
+        // Capture fork bindings before cleanup for web UI notification.
+        let bound_thread_id = self.fork_bound_threads.lock().unwrap().get(name).cloned();
+        let bound_channel = self.fork_bound_channels.lock().unwrap().get(name).cloned();
         // Clear fork thread binding (prevents stale thread routing on name reuse)
         {
             self.fork_bound_threads.lock().unwrap().remove(name);
@@ -1049,6 +1052,16 @@ impl DaemonState {
         {
             let mut questions = self.pending_questions.lock().unwrap();
             questions.retain(|q| q.coworker_name != name);
+        }
+        // Notify web clients that the thread is no longer fork-owned.
+        if let (Some(thread_id), Some(channel)) = (bound_thread_id, bound_channel) {
+            self.broadcast_web_update(crate::web::WebUpdate::ThreadOwnership(
+                crate::web::ThreadOwnershipData {
+                    thread_parent_id: thread_id,
+                    channel,
+                    has_dedicated_session: false,
+                },
+            ));
         }
     }
 

@@ -18,6 +18,7 @@
     currentTask = undefined,
     channelName = undefined,
     threadParentId = undefined,
+    isDedicatedSession = false,
     class: extraClass = '',
     children = undefined,
   } = $props()
@@ -77,10 +78,18 @@
 {:else if senderChanged(msgs, index)}
   <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" data-msg-id={msg.id} style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
-    <div
-      class="flex-shrink-0 rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
-      style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides, channelName)}"
-    >{avatarLetter(msg.from)}</div>
+    <div class="relative flex-shrink-0" style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}">
+      <div
+        class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
+        style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides, channelName)}"
+      >{avatarLetter(msg.from)}</div>
+      {#if isDedicatedSession}
+        <div
+          class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-primary border-2 border-background"
+          title="Running in a dedicated thread session"
+        ></div>
+      {/if}
+    </div>
     <!-- Header + content -->
     <div class="flex-1 min-w-0">
       <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-baseline gap-3">

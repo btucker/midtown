@@ -672,6 +672,42 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             .await
         }
 
+        "session.fork_thread" => {
+            let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_session::handle_session_fork_thread(
+                request.id,
+                thread_parent_id,
+                channel,
+                state,
+            )
+            .await
+        }
+
+        "session.unfork_thread" => {
+            let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_session::handle_session_unfork_thread(
+                request.id,
+                thread_parent_id,
+                channel,
+                state,
+            )
+            .await
+        }
+
+        "session.thread_ownership" => {
+            let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_session::handle_session_thread_ownership(
+                request.id,
+                thread_parent_id,
+                channel,
+                state,
+            )
+            .await
+        }
+
         // ---- Headed wrapper intercom ----
         "headed.register" => {
             let session = require_str!(params, "session", request.id);

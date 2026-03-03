@@ -77,7 +77,7 @@ fn parse_duration(s: &str) -> Option<Duration> {
 /// This message establishes the fork's thread-scoped role before the user's
 /// message arrives. It reinforces that the fork is a coordinator — it investigates,
 /// scopes work, and creates tasks, but never implements code.
-fn fork_initial_framing(channel_name: &str) -> String {
+pub(crate) fn fork_initial_framing(channel_name: &str) -> String {
     format!(
         "You are a thread-scoped fork of the channel lead for #{channel_name}. \
          Your job is to investigate the user's request, scope the work, and create a task. \
@@ -97,11 +97,10 @@ fn fork_initial_framing(channel_name: &str) -> String {
 /// For coworkers, the action text is also reflected in the web UI status.
 ///
 /// Also detects feedback requests from coworkers and nudges the Lead.
-/// For topic channels, auto-forks the channel lead session when a new top-level
-/// user message arrives — the fork is bound to the message thread so replies
-/// stay in context. Thread replies route to the existing fork session (if any).
-/// Falls back to nudging the channel lead directly when no lead session is
-/// registered. @mentions are not routed in topic channels since the channel
+/// For topic channels, thread replies route to the existing dedicated session
+/// (if any) or fall back to nudging the channel lead. New top-level messages
+/// always go to the channel lead — users can manually dedicate a session via
+/// the web UI. @mentions are not routed in topic channels since the channel
 /// lead owns all routing in its domain.
 ///
 /// Accepts an optional `channel` parameter to post to topic channels.
@@ -289,14 +288,12 @@ pub(super) async fn handle_channel_post(
             }
         } else if is_topic_channel {
             // Resolve the fork session for this message:
-            // - For thread replies: route to the existing fork session bound to that thread.
-            // - For new top-level messages: auto-fork the channel lead so every user
-            //   message immediately gets its own thread-scoped session. This ensures the
-            //   fork exists before the nudge arrives, making per-thread tool-call display
-            //   and context isolation reliable without relying on the lead to fork manually.
+            // - For thread replies: route to the existing dedicated session bound to that thread.
+            // - For new top-level messages: no auto-fork. The channel lead handles directly.
+            //   Users can manually dedicate a session via the web UI.
             let topic_session_id = if let Some(parent_id) = thread_parent_id {
                 // Thread reply: route to existing fork session (if any).
-                // Filter out "pending" — a concurrent auto-fork is in progress but not yet
+                // Filter out "pending" — a concurrent fork is in progress but not yet
                 // ready. Treating "pending" as None falls back to NudgeChannelLead rather
                 // than producing a NudgeSession with an invalid "pending" session_id.
                 state
@@ -307,80 +304,8 @@ pub(super) async fn handle_channel_post(
                     .filter(|s| s.as_str() != "pending")
                     .cloned()
             } else {
-                // New top-level message: auto-fork from the channel lead session.
-                // Look up the channel lead's session ID from persistent state.
-                // Use try_lock to avoid blocking the channel post path — if persistent_state
-                // is momentarily held, fall through to NudgeChannelLead rather than queuing.
-                let lead_session_id = state.persistent_state.try_lock().ok().and_then(
-                    |mut ps| {
-                        let sid = ps
-                            .channel_lead_sessions
-                            .get(channel_name)
-                            .filter(|s| !s.is_empty())
-                            .cloned()?;
-                        if ps.sessions.contains_key(&sid) {
-                            Some(sid)
-                        } else {
-                            // Stale mapping — session no longer exists. Clear it
-                            // so we don't keep trying to fork from a dead session.
-                            debug!(
-                                "channel.post: clearing stale channel lead mapping for {} (session {} not found)",
-                                channel_name, sid
-                            );
-                            ps.channel_lead_sessions.remove(channel_name);
-                            None
-                        }
-                    },
-                );
-                if let Some(lead_sid) = lead_session_id {
-                    match super::rpc_session::create_fork_session(
-                        &wake_msg_id,
-                        &lead_sid,
-                        Some(channel_name),
-                        Some(&content),
-                        "channel.post",
-                        state,
-                    )
-                    .await
-                    {
-                        Ok((fork_sid, is_existing)) => {
-                            debug!(
-                                "channel.post: auto-forked for message {} → fork session {} (existing={})",
-                                wake_msg_id, fork_sid, is_existing
-                            );
-                            // Fresh forks get a framing nudge that establishes their
-                            // thread-scoped role before the user message arrives.
-                            // Note: if this nudge fails (e.g., session not yet ready),
-                            // the fork still has hard tool restrictions via --disallowedTools
-                            // and inherits the parent's system prompt context.
-                            if !is_existing {
-                                let framing = fork_initial_framing(channel_name);
-                                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
-                                    session_id: fork_sid.clone(),
-                                    reason: crate::daemon::wake_reason::WakeReason::Nudge {
-                                        message: framing,
-                                    },
-                                };
-                                crate::daemon::effects::execute_effects(
-                                    vec![framing_effect],
-                                    state,
-                                )
-                                .await;
-                            }
-                            Some(fork_sid)
-                        }
-                        Err(e) => {
-                            debug!(
-                                "channel.post: auto-fork skipped ({}), nudging channel lead",
-                                e
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    // No channel lead running yet — NudgeChannelLead will spawn one.
-                    None
-                }
+                // New top-level message: channel lead handles directly.
+                None
             };
             if let Some(fork_session_id) = topic_session_id.as_deref() {
                 debug!(
