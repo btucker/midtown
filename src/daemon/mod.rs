@@ -3323,21 +3323,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.nudge_lead(&nudge_text).await;
                     info!("Nudged lead about PR #{} merge", pr_number);
 
-                    // Push notification to mobile PWA for PR merges
-                    let pr_title = webhook_event
-                        .pr_merged_info
-                        .as_ref()
-                        .map(|info| info.title.as_str());
-                    let push_body = match pr_title {
-                        Some(title) => format!("PR #{} merged — {}", pr_number, title),
-                        None => format!("PR #{} merged into {}", pr_number, state.default_branch),
-                    };
-                    state.send_push_notification(
-                        &format!("PR #{} merged", pr_number),
-                        &push_body,
-                        "pr_merged",
-                    );
-
                     // Auto-complete task when PR title contains [Midtown #XX]
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
                         // Look up the task's channel for workflow event routing.

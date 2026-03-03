@@ -137,15 +137,11 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 // Task completion helpers
 // ============================================================================
 
-/// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel.
-///
-/// Push notifications are intentionally omitted here — task completions triggered by PR merges
-/// already have a dedicated "PR merged" push notification in the webhook handler, and the user
-/// only wants push notifications for @user mentions and PR merges.
+/// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification.
 fn task_completed_effects(
     task_id: &str,
     repo_name: &str,
-    _task_subject: &str,
+    task_subject: &str,
     channel_message: String,
     channel: Option<String>,
     coworker: Option<String>,
@@ -163,6 +159,15 @@ fn task_completed_effects(
             sender: "midtown".to_string(),
             message: channel_message,
             channel: None,
+        },
+        Effect::SendPushNotification {
+            title: format!("Task !{} completed", task_id),
+            body: if task_subject.is_empty() {
+                format!("Task !{} has been completed", task_id)
+            } else {
+                format!("Task !{}: {}", task_id, task_subject)
+            },
+            tag: format!("task_completed_{}", task_id),
         },
     ];
     // Emit workflow event when the task's channel is known.
