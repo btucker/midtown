@@ -348,7 +348,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 
         // Ensure worktree is set up before launching.
         // For the lead, this updates the worktree to the current HEAD.
-        // For coworkers, this ensures the worktree directory exists.
+        // For coworkers, this validates the daemon-provided worktree path.
         let cwd = ensure_attach_worktree(name, cwd, coworker_type.as_deref() == Some("lead"))?;
 
         let shell_command = build_attach_shell_command(
@@ -396,8 +396,9 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
 /// For the lead session, this updates the worktree to the main repo's current
 /// HEAD so the lead always works against the latest code.
 ///
-/// For coworkers, this ensures the worktree directory exists (creating it if
-/// needed via the daemon's existing worktree manager).
+/// For coworkers, this validates that the daemon-provided worktree path exists.
+/// The daemon creates task-based worktrees via Effect::EnsureWorktree before
+/// spawning; this function simply validates and returns the CWD.
 ///
 /// Returns the (possibly updated) worktree path to use as the CWD.
 pub(crate) fn ensure_attach_worktree(

@@ -843,16 +843,28 @@ pub fn auto_migrate(repo: &str) {
     static MIGRATED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let migrated = MIGRATED.get_or_init(|| Mutex::new(HashSet::new()));
 
-    let mut guard = migrated.lock().unwrap();
-    if guard.contains(repo) {
-        return;
+    {
+        let guard = migrated.lock().unwrap();
+        if guard.contains(repo) {
+            return;
+        }
+        // Don't mark as migrated yet — only mark after success so failed
+        // migrations can be retried on next access.
     }
-    guard.insert(repo.to_string());
-    drop(guard);
 
     // Attempt migrations silently
     let _ = migrate_directory_structure(repo);
-    let _ = migrate_legacy_coworker_worktrees(repo);
+    if let Err(e) = migrate_legacy_coworker_worktrees(repo) {
+        tracing::warn!(
+            "Failed to migrate legacy coworker worktrees for {}: {}",
+            repo,
+            e
+        );
+        return; // Don't mark as migrated — allow retry
+    }
+
+    let mut guard = migrated.lock().unwrap();
+    guard.insert(repo.to_string());
 }
 
 /// Migrate coworker-named worktrees from `~/.midtown/projects/<repo>/coworkers/`
@@ -882,8 +894,15 @@ fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
                 && let Some(name) = old_path.file_name()
             {
                 let new_path = new_worktrees_dir.join(name);
-                if !new_path.exists() && std::fs::rename(&old_path, &new_path).is_ok() {
-                    migrated_paths.push(new_path);
+                if !new_path.exists() {
+                    match std::fs::rename(&old_path, &new_path) {
+                        Ok(()) => migrated_paths.push(new_path),
+                        Err(e) => tracing::warn!(
+                            "Failed to migrate coworker worktree {}: {}",
+                            old_path.display(),
+                            e
+                        ),
+                    }
                 }
             }
         }

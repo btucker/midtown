@@ -285,7 +285,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 **Auth profile resolution:** Fork sessions must use `active_profile_dir_for_project_with_provider(repo_name, provider)` (project-aware) to resolve credentials — never `current_profile_dir_for(provider)` (global-only). The project-aware path checks the project config's per-provider profile mapping first, then falls back to the global marker. After a per-project `auth switch`, only the project config is updated; the global marker is unchanged. Using the global-only path would give forks stale pre-switch credentials. This is handled by `build_fork_config()` in `rpc_session.rs`, which matches the coworker relaunch path in `rpc_auth.rs`.
 
 **Architectural invariants:**
-- Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation, orphan recovery, and coworker status tracking.
+- Fork sessions are NOT registered in `CoworkerManager`. They bypass `spawn_coworker()` entirely, which means they are excluded from idle-shutdown evaluation and coworker status tracking.
 - The `topic_sessions` guard uses an atomic check-and-reserve pattern (inserting a "pending" sentinel) to prevent duplicate forks for the same thread. On spawn failure, the sentinel is removed so the slot is available for retry.
 - `topic_sessions` is cleared on daemon restart, so fork sessions themselves do not survive across daemon lifetimes.
 - `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `create_fork_session` remain ephemeral.
@@ -416,7 +416,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 ## Worktree Lifecycle
 
-When a coworker is called in, midtown creates a detached git worktree at the current HEAD. The coworker creates a feature branch and works independently. When the coworker shuts down, worktrees with no commits and no uncommitted changes are automatically cleaned up along with their branches. Worktrees with work in progress are preserved.
+When a coworker is called in, the daemon creates a task-based worktree at `~/.midtown/projects/<repo>/worktrees/<branch-slug>/` via `Effect::EnsureWorktree`. The worktree is created on a named branch matching the branch slug, starting from the default branch (not HEAD). This prevents cross-PR contamination when the lead's HEAD is on an unrelated feature branch. Worktree names are decoupled from coworker identity, enabling build cache reuse across task reassignment. When worktrees for merged PRs are detected, they are cleaned up via `CleanupMergedWorktree` effects. Stale worktrees (those with no corresponding in-progress task) are cleaned up via `CleanupStaleWorktree`.
 
 **Directory layout**: All worktrees live under `~/.midtown/projects/<repo>/`:
 - `worktrees/lead/` — the project lead's worktree
@@ -603,7 +603,7 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
 
 - **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
-- **Task separator**: A `PostSystemMessage` separator (e.g., "─── Task !42: Fix auth bug ───") is posted to `dm-<name>` to visually delineate task boundaries. This happens in three paths: (1) `SpawnSession` for non-reviewer session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. `SpawnCoworkerWithCallbacks` (orphan recovery) intentionally omits the separator since one was already posted on initial assignment. Reviewer sessions skip DM separators since they are ephemeral PR-scoped sessions.
+- **Task separator**: A `PostSystemMessage` separator (e.g., "─── Task !42: Fix auth bug ───") is posted to `dm-<name>` to visually delineate task boundaries. This happens in three paths: (1) `SpawnSession` for non-reviewer session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions skip DM separators since they are ephemeral PR-scoped sessions.
 - **Reviewer exclusion**: Reviewer sessions do not stream output to DM channels and do not receive DM separators, keeping the DM channel system focused on persistent dev coworkers.
 
 ## Workflow Script System
