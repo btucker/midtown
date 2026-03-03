@@ -37,6 +37,17 @@
   // Map coworker name → coworker object for progress/phase lookup
   const cwMap = $derived(new Map($coworkers.map(cw => [cw.name, cw])))
 
+  // Map task_id → PR reviewer for showing reviewer avatar
+  const taskReviewerMap = $derived.by(() => {
+    const map = new Map()
+    for (const pr of $kanbanData.review) {
+      if (pr.task_id != null && pr.reviewer) {
+        map.set(String(pr.task_id), pr.reviewer)
+      }
+    }
+    return map
+  })
+
   function statusBarColor(task, cw) {
     if (task.status !== 'in_progress') return 'hsl(var(--muted-foreground) / 0.3)'
     // Use the owner's avatar color for the status bar when in-progress
@@ -55,6 +66,7 @@
     {@const isBlocked = task.blocked_by?.length > 0}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const hasProgress = cw?.progress != null}
+    {@const reviewer = taskReviewerMap.get(String(task.id))}
     <button
       class="task-row"
       class:active={isActive}
@@ -76,6 +88,14 @@
               title="{task.owner}{cw?.phase ? ` · ${cw.phase}` : ''}"
               onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             >{task.owner[0].toUpperCase()}</button>
+          {/if}
+          {#if reviewer}
+            <button
+              class="reviewer-chip"
+              style="border-color: {getSenderColor(reviewer)}"
+              title="{reviewer} · reviewing"
+              onclick={(e) => { e.stopPropagation(); selectDm(reviewer) }}
+            >{reviewer[0].toUpperCase()}</button>
           {/if}
         </div>
         {#if isActive && hasProgress}
@@ -203,6 +223,30 @@
   }
 
   .owner-chip:hover {
+    opacity: 0.85;
+  }
+
+  .reviewer-chip {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1.5px solid;
+    padding: 0;
+    margin-left: -4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.55rem;
+    font-weight: 700;
+    font-family: var(--font-sans);
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--sidebar-background));
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .reviewer-chip:hover {
     opacity: 0.85;
   }
 

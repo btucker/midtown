@@ -52,6 +52,14 @@
             rel="noopener"
             class="text-[hsl(var(--link-default))] text-[0.75rem] no-underline hover:underline"
           >PR #{relatedPr.number}</a>
+          {#if relatedPr.reviewer}
+            <span class="text-muted-foreground/60 text-[0.72rem]">·</span>
+            <button
+              class="text-muted-foreground text-[0.75rem] bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
+              onclick={() => selectDm(relatedPr.reviewer)}
+              title="Open DM with {relatedPr.reviewer}"
+            >{relatedPr.reviewer} {relatedPr.review_posted ? 'reviewed' : 'reviewing'}</button>
+          {/if}
         {/if}
         {#if task.blocked_by?.length > 0}
           <span class="text-[0.75rem] text-destructive">
