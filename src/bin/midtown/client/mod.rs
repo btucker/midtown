@@ -625,6 +625,7 @@ impl DaemonClient {
         thread_parent_id: &str,
         calling_session_id: &str,
         name: Option<&str>,
+        initial_message: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "thread_parent_id": thread_parent_id,
@@ -632,6 +633,9 @@ impl DaemonClient {
         });
         if let Some(name) = name {
             params["name"] = serde_json::json!(name);
+        }
+        if let Some(msg) = initial_message {
+            params["initial_message"] = serde_json::json!(msg);
         }
         self.send("session.fork", Some(params))
     }

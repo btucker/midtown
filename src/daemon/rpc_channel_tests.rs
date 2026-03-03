@@ -1431,6 +1431,7 @@ async fn test_topic_sessions_dedup_returns_existing() {
         thread_id,
         "calling-session-id-xyz",
         None,
+        None,
         &state,
     )
     .await;
