@@ -1463,6 +1463,16 @@ pub(super) async fn create_fork_session(
 /// Thread replies in the channel are routed to the forked session (by
 /// `handle_channel_post`) rather than the root channel lead.
 ///
+/// **Side effects for fresh forks:**
+/// - Sends a `NudgeSession` so the fork has an initial message to act on.
+///   Uses `initial_message` if provided; otherwise uses `fork_initial_framing`
+///   when the caller is a channel lead. Non-channel-lead callers (e.g. the
+///   project lead) get no automatic framing — the framing text assumes a
+///   channel-lead role which would be misleading.
+/// - Broadcasts `ThreadOwnership` to web clients so the "Dedicated session"
+///   indicator appears in the UI regardless of whether the fork was created
+///   via CLI or web UI.
+///
 /// Parameters:
 ///
 /// - `thread_parent_id`: The message ID of the thread root. Required.
@@ -1500,20 +1510,53 @@ pub(super) async fn handle_session_fork(
         ),
         Ok((sid, false, fork_channel)) => {
             // Send nudge to the fresh fork. If the caller provided an initial
-            // message, use that; otherwise fall back to fork_initial_framing —
-            // same pattern as handle_session_fork_thread. Without a nudge the
-            // fork session sits idle forever with no initial message to act on.
-            if let Some(message) = initial_message.map(String::from).or_else(|| {
-                fork_channel
-                    .as_ref()
-                    .map(|ch| super::rpc_channel::fork_initial_framing(ch))
-            }) {
+            // message, use that; otherwise fall back to fork_initial_framing
+            // only when the fork is for a channel lead (the framing text says
+            // "channel lead for #..."). Without a nudge the fork session sits
+            // idle forever with no initial message to act on.
+            let nudge_message = initial_message.map(String::from).or_else(|| {
+                fork_channel.as_ref().and_then(|ch| {
+                    // Only use channel-lead framing when the caller IS a channel
+                    // lead. When the main lead forks, repo_name is the fallback
+                    // channel — sending "You are a channel lead for #midtown" is
+                    // misleading. In that case we skip the framing; the fork
+                    // still starts (it just has no initial nudge text).
+                    let is_channel_lead = {
+                        let ps_guard = state.persistent_state.try_lock().ok()?;
+                        ps_guard
+                            .sessions
+                            .get(calling_session_id)
+                            .map(|r| r.coworker_type == "channel-lead")
+                            .unwrap_or(false)
+                    };
+                    if is_channel_lead {
+                        Some(super::rpc_channel::fork_initial_framing(ch))
+                    } else {
+                        None
+                    }
+                })
+            });
+            if let Some(message) = nudge_message {
                 let nudge = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
                     reason: crate::daemon::wake_reason::WakeReason::Nudge { message },
                 };
                 crate::daemon::effects::execute_effects(vec![nudge], state).await;
             }
+
+            // Broadcast thread ownership to web clients — matches the web-UI
+            // fork path so the "Dedicated session" indicator appears regardless
+            // of how the fork was created.
+            if let Some(ref ch) = fork_channel {
+                state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
+                    web::ThreadOwnershipData {
+                        thread_parent_id: thread_parent_id.to_string(),
+                        channel: ch.clone(),
+                        has_dedicated_session: true,
+                    },
+                ));
+            }
+
             crate::rpc::Response::success(
                 id,
                 serde_json::json!({
