@@ -538,8 +538,8 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Push notifications (W3C Push API with VAPID)
   - **Backend**: `src/push.rs` — VAPID key generation/storage, subscription management, encrypted push delivery via `web-push-native`. Keys stored in `~/.midtown/push/`.
   - **Frontend**: `web-app/src/lib/push.js` — subscribe/unsubscribe flow, VAPID key fetch. `web-app/src/sw.js` — service worker handles incoming push events with foreground suppression (skips OS notification when the app window is focused).
-  - **Triggers**: @mentions (`chat.rs`, `rpc_channel.rs`), CI failures on default branch (`mod.rs`), orphaned worktree warnings (`dispatch.rs`), and task completion (`dispatch.rs` via `task_completed_effects()`). All use the `Effect::SendPushNotification` pattern.
-  - **Tags**: Each notification uses a unique tag (e.g., `task_completed_{id}`, `mention`, `ci_failure`) to prevent the Web Notifications API from silently replacing unread notifications.
+  - **Triggers**: Only two event types fire push notifications: (1) `@user`/`@{display_name}` mentions in channel posts (`rpc_channel.rs`), and (2) PR merges (`mod.rs` webhook handler). All use the `Effect::SendPushNotification` pattern.
+  - **Tags**: Each notification uses a unique tag (e.g., `pr_merged`, `mention`) to prevent the Web Notifications API from silently replacing unread notifications.
   - **HTTPS requirement**: Mobile browsers require a secure context for `PushManager`. Desktop `localhost` is exempt, but LAN access (`http://192.168.x.x`) will not have push available.
 - Responsive layout with three breakpoints:
   - **Mobile (≤768px)**: Tab navigation, hamburger menu with slide-out sidebar, modal popups for task/PR details
