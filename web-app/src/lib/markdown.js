@@ -104,7 +104,8 @@ const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp)$/i
 function renderAttachmentHtml(path, apiBase) {
   const filename = path.split('/').pop()
   if (IMAGE_EXTENSIONS.test(filename) && apiBase) {
-    const url = `${apiBase}/uploads/${encodeURIComponent(filename)}`
+    const subdir = path.includes('/screenshots/') ? 'screenshots' : 'uploads'
+    const url = `${apiBase}/${subdir}/${encodeURIComponent(filename)}`
     const safeAlt = filename.replace(/"/g, '&quot;')
     return `<a href="${url}" target="_blank" rel="noopener" class="attachment-link"><img src="${url}" alt="${safeAlt}" class="message-image" loading="lazy" /></a>`
   }
