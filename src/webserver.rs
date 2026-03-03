@@ -361,14 +361,16 @@ async fn project_asset(
 /// Path: `/api/projects/:name/screenshots/:filename`
 ///
 /// Serves files from `~/.midtown/projects/<name>/screenshots/<filename>`.
-/// Only image content types are served. The filename must not contain
-/// path separators or `..` to prevent traversal.
+/// Only image content types are served. Includes path traversal protection:
+/// the resolved file path must remain within the screenshots directory
+/// (validated via `canonicalize` containment, matching `project_asset`).
 async fn project_screenshot(
     Path((name, filename)): Path<(String, String)>,
 ) -> Result<Response<Body>, StatusCode> {
     if !is_valid_path_segment(&name) {
         return Err(StatusCode::BAD_REQUEST);
     }
+
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -376,7 +378,23 @@ async fn project_screenshot(
     let screenshots_dir = crate::paths::screenshots_dir_for_repo(&name);
     let file_path = screenshots_dir.join(&filename);
 
-    let data = tokio::fs::read(&file_path)
+    // Canonicalize containment check (defense-in-depth, matching project_asset)
+    let canonical_dir = match std::fs::canonicalize(&screenshots_dir) {
+        Ok(p) => p,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    if !file_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let canonical_file = std::fs::canonicalize(&file_path).map_err(|_| StatusCode::NOT_FOUND)?;
+
+    if !canonical_file.starts_with(&canonical_dir) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let content = tokio::fs::read(&canonical_file)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
@@ -388,7 +406,7 @@ async fn project_screenshot(
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
-        .body(Body::from(data))
+        .body(Body::from(content))
         .unwrap())
 }
 
@@ -1041,6 +1059,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_project_screenshot_rejects_invalid_project_name() {
+        let result =
+            project_screenshot(Path(("../etc".to_string(), "image.png".to_string()))).await;
+        assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_project_screenshot_not_found_for_missing_file() {
         let result = project_screenshot(Path((
             "nonexistent-repo-xyz-test-123".to_string(),
@@ -1110,6 +1135,37 @@ mod tests {
             result.headers().get(header::CONTENT_TYPE).unwrap(),
             "image/jpeg"
         );
+    }
+
+    #[tokio::test]
+    async fn test_project_screenshot_canonicalize_containment() {
+        use crate::paths::{screenshots_dir_for_repo, set_test_midtown_base_dir};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+        let screenshots_dir = screenshots_dir_for_repo("test-proj");
+        std::fs::create_dir_all(&screenshots_dir).unwrap();
+
+        // Create a file outside the screenshots directory
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("secret.png"), b"secret data").unwrap();
+
+        // Create a symlink inside screenshots dir pointing outside
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside_dir.join("secret.png"),
+                screenshots_dir.join("escape.png"),
+            )
+            .unwrap();
+
+            // The symlink should be rejected by canonicalize containment check
+            let result =
+                project_screenshot(Path(("test-proj".to_string(), "escape.png".to_string()))).await;
+            assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+        }
     }
 
     // --- extract_note_title tests ---
