@@ -1956,6 +1956,7 @@ dependencies = [
  "ntest",
  "once_cell",
  "p256",
+ "percent-encoding",
  "portable-pty",
  "proptest",
  "ratatui",
