@@ -321,9 +321,11 @@ mod tests {
 
     #[test]
     fn test_push_manager_creation() {
-        // PushManager::new() should succeed (creates ~/.midtown/push/)
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let _guard = crate::paths::set_test_midtown_base_dir(temp_dir.path().to_path_buf());
         let mgr = PushManager::new().unwrap();
         assert!(mgr.push_dir.ends_with("push"));
+        assert!(mgr.push_dir.starts_with(temp_dir.path()));
     }
 
     #[test]

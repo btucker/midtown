@@ -1253,10 +1253,7 @@ pub fn ensure_project_config(project_name: &str, workdir: &Path) -> std::io::Res
 
 /// Get the path to the global config file.
 pub fn global_config_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("config.toml")
+    crate::paths::midtown_base_dir().join("config.toml")
 }
 
 /// Get the path to a project-specific config file.
