@@ -216,7 +216,7 @@
               <h1>Midtown</h1>
             {/if}
             <button
-              class="theme-toggle"
+              class="theme-toggle ml-auto"
               onclick={() => searchOpen = true}
               title="Search messages (⌘K)"
             >
