@@ -193,7 +193,8 @@
         </div>
       {:else}
         {#each displayItems as entry (entry.item.item_id)}
-          <div class="flex items-center gap-[0.4em] py-[1px]">
+          {@const dimmed = expanded && completedAt.has(entry.item.item_id)}
+          <div class="flex items-center gap-[0.4em] py-[1px]" class:opacity-45={dimmed}>
             <span class="flex-shrink-0 select-none text-[0.78rem] leading-[1.35]">
               {#if entry.status === 'error'}
                 <span class="text-red-400">✗</span>
