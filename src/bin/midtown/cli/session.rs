@@ -429,7 +429,7 @@ pub(crate) fn ensure_attach_worktree(
         })
         .unwrap_or_else(|| std::path::PathBuf::from(daemon_cwd));
 
-    let manager = match midtown::worktree::WorktreeManager::new(repo_root) {
+    let manager = match midtown::worktree::WorktreeManager::new(repo_root.clone()) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Warning: Could not init worktree manager: {}", e);
@@ -454,11 +454,12 @@ pub(crate) fn ensure_attach_worktree(
             return Ok(daemon_cwd.to_string());
         }
         // CWD doesn't exist — the worktree may have been cleaned up.
-        // Fall back to daemon_cwd (the repo root) rather than creating a legacy worktree.
+        // Fall back to the repo root rather than using the non-existent path.
         eprintln!(
             "Warning: Coworker worktree {} does not exist, falling back to repo root",
             daemon_cwd
         );
+        return Ok(repo_root.to_string_lossy().to_string());
     }
 
     Ok(daemon_cwd.to_string())

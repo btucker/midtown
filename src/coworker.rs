@@ -244,12 +244,13 @@ impl CoworkerManager {
     ///
     /// Returns the list of additional worktree paths to pass as --add-dir to Claude.
     /// Failures in additional repos are logged but don't prevent coworker spawn.
+    ///
+    /// Uses detached HEAD (not branch-based) to avoid collisions between coworker
+    /// names (e.g., "park", "madison") and real branches in additional repos.
     fn create_additional_worktrees(&self, coworker_name: &str) -> Vec<std::path::PathBuf> {
         let mut additional_dirs = Vec::new();
         for mgr in &self.additional_worktree_managers {
-            // Use coworker name as the worktree_id for additional repos
-            // (these are not task-linked, so coworker name is the best identifier)
-            match mgr.create_task_worktree(coworker_name) {
+            match mgr.create_detached_worktree(coworker_name) {
                 Ok(path) => {
                     additional_dirs.push(path);
                 }

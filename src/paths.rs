@@ -286,7 +286,6 @@ pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
 /// This path is only used during migration to clean up legacy worktrees.
 /// All new worktrees use `worktrees_dir_for_repo()` instead.
 pub(crate) fn legacy_coworkers_dir_for_repo(repo: &str) -> PathBuf {
-    migrate_worktree_paths(repo);
     midtown_base_dir()
         .join("projects")
         .join(repo)
@@ -700,7 +699,8 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
     let old_worktrees = old_repo_dir.join("worktrees");
     let new_worktrees = worktrees_dir_for_repo(repo);
     if old_worktrees.exists() {
-        // Move each worktree directory
+        // Move each worktree directory, then repair git metadata
+        let mut moved_paths = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&old_worktrees) {
             for entry in entries.flatten() {
                 let old_path = entry.path();
@@ -710,9 +710,18 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
                     let new_path = new_worktrees.join(name);
                     if !new_path.exists() {
                         std::fs::rename(&old_path, &new_path)?;
+                        moved_paths.push(new_path);
                     }
                 }
             }
+        }
+        // Repair git worktree metadata — fs::rename doesn't update git's
+        // internal pointers, so worktrees would become stale without this.
+        for path in &moved_paths {
+            let _ = std::process::Command::new("git")
+                .current_dir(path)
+                .args(["worktree", "repair"])
+                .output();
         }
         // Remove empty old worktrees directory
         let _ = std::fs::remove_dir(&old_worktrees);
@@ -846,15 +855,15 @@ pub fn auto_migrate(repo: &str) {
     let _ = migrate_legacy_coworker_worktrees(repo);
 }
 
-/// Migrate coworker-named worktrees from the legacy `~/.midtown/coworkers/<repo>/`
-/// layout to the unified `~/.midtown/worktrees/<repo>/` layout.
+/// Migrate coworker-named worktrees from `~/.midtown/projects/<repo>/coworkers/`
+/// to the unified `~/.midtown/projects/<repo>/worktrees/` layout.
 ///
 /// This handles the second migration era: the `coworkers/` directory was an
 /// intermediate layout that predates task-based worktrees. Each coworker had
-/// a worktree at `~/.midtown/coworkers/<repo>/<coworker-name>/`. These are
-/// moved to `~/.midtown/worktrees/<repo>/<coworker-name>/`.
+/// a worktree at `projects/<repo>/coworkers/<coworker-name>/`. These are
+/// moved to `projects/<repo>/worktrees/<coworker-name>/`.
 ///
-/// Empty `coworkers/<repo>/` and `coworkers/` directories are cleaned up.
+/// Empty `coworkers/` directories are cleaned up after migration.
 fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
     let old_coworkers_dir = legacy_coworkers_dir_for_repo(repo);
 
@@ -865,7 +874,7 @@ fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
     let new_worktrees_dir = worktrees_dir_for_repo(repo);
     std::fs::create_dir_all(&new_worktrees_dir)?;
 
-    let mut migrated_any = false;
+    let mut migrated_paths = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&old_coworkers_dir) {
         for entry in entries.flatten() {
             let old_path = entry.path();
@@ -874,10 +883,23 @@ fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
             {
                 let new_path = new_worktrees_dir.join(name);
                 if !new_path.exists() && std::fs::rename(&old_path, &new_path).is_ok() {
-                    migrated_any = true;
+                    migrated_paths.push(new_path);
                 }
             }
         }
+    }
+
+    let migrated_any = !migrated_paths.is_empty();
+
+    // Repair git worktree metadata after moving directories.
+    // fs::rename doesn't update git's internal pointers, so without this,
+    // `git worktree prune` could remove the worktree metadata and make
+    // the moved worktrees unusable.
+    for path in &migrated_paths {
+        let _ = std::process::Command::new("git")
+            .current_dir(path)
+            .args(["worktree", "repair"])
+            .output();
     }
 
     // Clean up empty directories

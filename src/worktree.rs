@@ -317,6 +317,78 @@ impl WorktreeManager {
         self.task_worktrees_base.join(worktree_id)
     }
 
+    /// Create a detached-HEAD worktree at `~/.midtown/projects/<repo>/worktrees/<worktree_id>/`.
+    ///
+    /// Unlike `create_task_worktree`, this does NOT create or delete any branches.
+    /// Use this for additional repos in multi-repo projects where the worktree_id
+    /// (typically a coworker name) could collide with real branch names.
+    pub fn create_detached_worktree(&self, worktree_id: &str) -> WorktreeResult<PathBuf> {
+        let worktree_path = self.task_worktree_path(worktree_id);
+
+        // Check if worktree already exists and is valid (idempotent)
+        if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            return Ok(worktree_path);
+        }
+
+        // Path exists but not registered with git - remove it first
+        if worktree_path.exists() {
+            let _ = std::fs::remove_dir_all(&worktree_path);
+        }
+
+        if let Some(parent) = worktree_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let start_point = self.resolve_default_start_point();
+        let output = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args([
+                "worktree",
+                "add",
+                "--detach",
+                worktree_path.to_str().unwrap(),
+                &start_point,
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            // Stale reference — prune and retry once
+            if !worktree_path.exists() {
+                tracing::warn!(
+                    "git worktree add --detach for {} failed ({}), pruning and retrying",
+                    worktree_id,
+                    stderr.trim()
+                );
+                let _ = self.prune();
+
+                let retry = Command::new("git")
+                    .current_dir(&self.repo_root)
+                    .args([
+                        "worktree",
+                        "add",
+                        "--detach",
+                        worktree_path.to_str().unwrap(),
+                        &start_point,
+                    ])
+                    .output()?;
+
+                if !retry.status.success() {
+                    return Err(WorktreeError::GitError(
+                        String::from_utf8_lossy(&retry.stderr).to_string(),
+                    ));
+                }
+
+                return Ok(worktree_path);
+            }
+
+            return Err(WorktreeError::GitError(stderr));
+        }
+
+        Ok(worktree_path)
+    }
+
     /// Create a task-based worktree at `~/.midtown/projects/<repo>/worktrees/<worktree_id>/`.
     ///
     /// The worktree is created on a branch matching the worktree_id, starting
