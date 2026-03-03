@@ -151,6 +151,27 @@ jobs:
           files: "*.info"
           fail_ci_if_error: false
 
+  web:
+    name: Web Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
+
+      - name: Install dependencies
+        run: cd web-app && npm ci
+
+      - name: Run tests
+        run: cd web-app && npm test
+
+      - name: Build
+        run: cd web-app && npm run build
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
