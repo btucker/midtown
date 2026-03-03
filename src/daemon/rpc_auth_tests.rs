@@ -755,3 +755,63 @@ fn test_execution_role_for_coworker() {
         crate::config::ExecutionRole::Coworker
     );
 }
+
+// ============================================================================
+// handle_auth_switch — global fan-out force flag
+// ============================================================================
+
+/// Regression: when the CLI fan-out sends `auth.switch(all=true, force=true)` to
+/// multiple daemons sequentially, the first daemon writes the global profile.
+/// Subsequent daemons see `current == profile && cleared == 0` — without force,
+/// they early-return WITHOUT restarting sessions, leaving stale credentials.
+///
+/// With `force=true`, the handler must bypass the early-return and restart.
+#[tokio::test]
+async fn test_auth_switch_global_force_bypasses_early_return() {
+    let (state, _repo, midtown_dir, _guard) = make_pool_toggle_test_state("test-repo");
+
+    let profile_name = "alice@example.com";
+    create_profile_dir(&midtown_dir, AuthProvider::Claude, profile_name);
+
+    // Pre-set the global profile to alice (simulating Daemon A already wrote it).
+    crate::auth::set_current_profile_for(AuthProvider::Claude, profile_name)
+        .expect("pre-set profile");
+
+    assert_eq!(
+        crate::auth::current_profile_for(AuthProvider::Claude),
+        profile_name,
+        "precondition: profile should already be set"
+    );
+
+    // Call without force — should early-return with switched=false.
+    let resp_no_force = handle_auth_switch(
+        crate::rpc::RequestId::Number(100),
+        profile_name,
+        true,  // all=true (global switch)
+        false, // force=false
+        AuthProvider::Claude,
+        &state,
+    )
+    .await;
+    let result_no_force = resp_no_force.result.expect("expected success");
+    assert_eq!(
+        result_no_force["switched"], false,
+        "without force, handler should early-return when profile already matches"
+    );
+
+    // Call with force — should restart sessions (switched=true).
+    let resp_force = handle_auth_switch(
+        crate::rpc::RequestId::Number(101),
+        profile_name,
+        true, // all=true (global switch)
+        true, // force=true
+        AuthProvider::Claude,
+        &state,
+    )
+    .await;
+    let result_force = resp_force.result.expect("expected success");
+    assert_eq!(
+        result_force["switched"], true,
+        "with force=true, handler must restart sessions even when profile already matches"
+    );
+}
