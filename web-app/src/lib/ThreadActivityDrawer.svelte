@@ -108,7 +108,9 @@
   // Items to display: when expanded, show everything; when collapsed, show filtered list
   let displayItems = $derived(expanded ? merged : visibleItems)
 
-  let isVisible = $derived(visibleItems.length > 0 || thinking || (expanded && merged.length > 0))
+  // Drawer stays visible whenever there's history to show (even if all items have aged out
+  // in collapsed mode), so users can always click to expand and see past tool calls.
+  let isVisible = $derived(merged.length > 0 || thinking)
 
   // Auto-scroll to bottom when new items arrive in expanded mode
   $effect(() => {
@@ -123,12 +125,27 @@
   })
 
   function toggleExpanded() {
+    if (expanded) {
+      // Collapsing: reset completion timestamps to now so items that completed
+      // during expansion get a fresh AGE_OUT_MS grace period instead of expiring
+      // immediately (since the original timestamps may be older than AGE_OUT_MS).
+      const now = Date.now()
+      const refreshed = new Map(completedAt)
+      let changed = false
+      for (const [id, ts] of refreshed) {
+        if (now - ts >= AGE_OUT_MS && !expired.has(id)) {
+          refreshed.set(id, now)
+          changed = true
+        }
+      }
+      if (changed) completedAt = refreshed
+    }
     expanded = !expanded
   }
 
   function handleKeydown(e) {
     if (e.key === 'Escape' && expanded) {
-      expanded = false
+      toggleExpanded()
       e.stopPropagation()
     } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
