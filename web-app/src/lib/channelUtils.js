@@ -99,6 +99,23 @@ export function getChannelCiStatus(channelName, kanban) {
 }
 
 /**
+ * Get the actual task objects for a channel, tagged with status.
+ * Returns in-progress tasks first, then pending.
+ */
+export function getChannelTasks(channelName, kanban) {
+  const filterTasks = (list) => {
+    if (channelName === 'midtown') {
+      return list.filter((task) => !task.channel || task.channel === 'midtown')
+    }
+    return list.filter((task) => task.channel === channelName)
+  }
+  return [
+    ...filterTasks(kanban.inProgress).map(t => ({ ...t, status: 'in_progress' })),
+    ...filterTasks(kanban.backlog).map(t => ({ ...t, status: 'pending' })),
+  ]
+}
+
+/**
  * Returns true if a channel has any active tasks (in-progress or pending).
  * Used to determine whether to auto-expand the task list on channel select.
  */

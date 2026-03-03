@@ -1,8 +1,8 @@
 <script>
   import { getSenderColor, isDimSender, formatTime, formatTimeCompact, senderChanged, timeChanged, getPermalinkUrl } from './messageUtils.js'
   import { renderContent } from './markdown.js'
-  import { getApiBase } from './api.js'
-  import { activeProject } from './store.js'
+  import { getApiBase, selectDm } from './api.js'
+  import { activeProject, coworkers } from './store.js'
 
   const AVATAR_SIZE = '2.4rem'
   const AVATAR_GAP = '0.5rem'
@@ -37,6 +37,12 @@
 
   function avatarLetter(name) {
     return (name || '?')[0].toUpperCase()
+  }
+
+  const coworkerNames = $derived(new Set($coworkers.map(cw => cw.name)))
+
+  function handleSenderClick(name) {
+    if (coworkerNames.has(name)) selectDm(name)
   }
 
   let permalinkUrl = $derived(
@@ -78,7 +84,13 @@
 {:else if senderChanged(msgs, index)}
   <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" data-msg-id={msg.id} style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
-    <div class="relative flex-shrink-0" style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}">
+    <div
+      class="relative flex-shrink-0 {coworkerNames.has(msg.from) ? 'cursor-pointer' : ''}"
+      style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}"
+      onclick={() => handleSenderClick(msg.from)}
+      role={coworkerNames.has(msg.from) ? 'button' : undefined}
+      title={coworkerNames.has(msg.from) ? `Open DM with ${msg.from}` : undefined}
+    >
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
         style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides, channelName)}"
@@ -93,10 +105,19 @@
     <!-- Header + content -->
     <div class="flex-1 min-w-0">
       <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-baseline gap-3">
-        <span
-          class="font-mono font-semibold text-[1rem] text-foreground"
-          data-testid="message-sender"
-        >{msg.from}</span>
+        {#if coworkerNames.has(msg.from)}
+          <button
+            class="font-mono font-semibold text-[1rem] text-foreground bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
+            data-testid="message-sender"
+            onclick={() => selectDm(msg.from)}
+            title="Open DM with {msg.from}"
+          >{msg.from}</button>
+        {:else}
+          <span
+            class="font-mono font-semibold text-[1rem] text-foreground"
+            data-testid="message-sender"
+          >{msg.from}</span>
+        {/if}
         {#if permalinkUrl}
           <a
             href={permalinkUrl}

@@ -1,17 +1,22 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
-  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
+  import { channels, activeChannel, kanbanData, coworkers, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread, pushNavState } from './api.js'
   import {
     getChannelTaskCount,
+    getChannelTasks,
     getChannelCiStatus,
     getChannelHasActiveTasks,
     computeExpandedAfterTriangleClick,
     computeExpandedAfterChannelNameClick,
     computeVisibleDmChannels,
   } from './channelUtils.js'
+  import { getSenderColor } from './messageUtils.js'
   import TaskList from './TaskList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
+
+  // Build a map of coworker name → coworker object for quick lookup
+  $: coworkerMap = new Map($coworkers.map(cw => [cw.name, cw]))
 
   let showCreateInput = false
   let newChannelName = ''
@@ -288,6 +293,21 @@
             {formatChannelName(channel.name)}
           </div>
           <div class="flex items-center gap-1.5">
+            {#if hasActiveTasks && !isExpanded}
+              {@const tasks = getChannelTasks(channel.name, $kanbanData)}
+              <div class="flex items-center gap-[3px]">
+                {#each tasks as task}
+                  {@const cw = task.owner ? coworkerMap.get(task.owner) : null}
+                  {@const pipColor = task.owner ? getSenderColor(task.owner) : null}
+                  {@const tipParts = [`!${task.id} ${task.subject}`, task.owner ? `${task.owner}${cw?.phase ? ` · ${cw.phase}` : ''}` : null, cw?.progress != null ? `${cw.progress}% done` : null].filter(Boolean)}
+                  <span
+                    class="task-pip {task.status === 'in_progress' ? 'task-pip-active' : 'task-pip-pending'}"
+                    style={pipColor ? `background: ${pipColor}` : ''}
+                    title={tipParts.join('\n')}
+                  ></span>
+                {/each}
+              </div>
+            {/if}
             {#if ciStatus === 'passed'}
               <span class="text-[0.7rem]" title="CI passing">🟢</span>
             {:else if ciStatus === 'failed'}
@@ -376,4 +396,23 @@
       0 -4px 6px -4px rgba(0, 0, 0, 0.3),
       0 4px 6px -4px rgba(0, 0, 0, 0.3);
   }
+
+  .task-pip {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .task-pip-active {
+    background: hsl(var(--accent-teal));
+    box-shadow: 0 0 4px currentColor;
+    opacity: 0.9;
+  }
+
+  .task-pip-pending {
+    background: hsl(var(--muted-foreground) / 0.35);
+    opacity: 0.6;
+  }
+
 </style>

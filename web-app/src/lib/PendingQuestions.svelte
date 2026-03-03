@@ -1,6 +1,6 @@
 <script>
   import { pendingQuestions } from './store.js'
-  import { sendAnswer } from './api.js'
+  import { sendAnswer, selectDm } from './api.js'
 
   let answers = {}
 
@@ -25,7 +25,7 @@
     {#each $pendingQuestions as q (q.id)}
       <div class="question-card">
         <div class="question-header">
-          <span class="coworker-name">{q.coworker_name}</span>
+          <button class="coworker-name" onclick={() => selectDm(q.coworker_name)} title="Open DM with {q.coworker_name}">{q.coworker_name}</button>
           <span class="question-label"> is asking:</span>
         </div>
         <div class="question-text">{q.question}</div>
@@ -76,6 +76,17 @@
   .coworker-name {
     font-weight: 600;
     color: var(--color-accent, #7aa2f7);
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    font-size: inherit;
+    font-family: inherit;
+  }
+
+  .coworker-name:hover {
+    text-decoration: underline;
   }
 
   .question-label {

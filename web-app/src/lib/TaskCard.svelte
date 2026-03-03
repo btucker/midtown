@@ -1,5 +1,6 @@
 <script>
   import { kanbanData, repoStatus } from './store.js'
+  import { selectDm } from './api.js'
 
   let { task } = $props()
 
@@ -38,7 +39,11 @@
           >{task.status.replace('_', ' ')}</span>
         {/if}
         {#if task.owner}
-          <span class="text-muted-foreground text-[0.75rem]">{task.owner}</span>
+          <button
+            class="text-muted-foreground text-[0.75rem] bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
+            onclick={() => selectDm(task.owner)}
+            title="Open DM with {task.owner}"
+          >{task.owner}</button>
         {/if}
         {#if relatedPr && prUrl}
           <a

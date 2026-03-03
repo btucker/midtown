@@ -46,9 +46,12 @@
   })
 
   // Show coworkers that are active, OR went idle within the last 10 minutes.
+  // Coworkers with a task_id are shown inline in the channel task list instead,
+  // so we only show idle/unassigned ones here.
   let activeCoworkers = $derived(
     $coworkers.filter((cw) => {
-      if (!isIdleOrStopped(cw)) return true
+      if (!isIdleOrStopped(cw) && !cw.task_id) return true
+      if (!isIdleOrStopped(cw) && cw.task_id) return false // shown in TaskList
       // `now` is a $state tick — ensures this re-evaluates on the 30-second interval.
       const seen = lastSeenActive.get(cw.name)
       return seen !== undefined && now - seen < OFFLINE_GRACE_MS

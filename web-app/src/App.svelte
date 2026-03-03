@@ -10,7 +10,7 @@
   import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
   import Tmux from '$lib/Tmux.svelte'
-  import CoworkerStatus from '$lib/CoworkerStatus.svelte'
+
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
@@ -239,7 +239,6 @@
 
         <SidebarFooter class="p-2 pb-1">
           {#if activeView === 'board'}
-            <CoworkerStatus />
             <AccountPanel>
               {#snippet footerLeft()}
                 <button

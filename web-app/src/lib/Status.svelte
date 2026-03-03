@@ -1,6 +1,6 @@
 <script>
   import { coworkers, daemonStatus } from './store.js'
-  import { fetchStatus } from './api.js'
+  import { fetchStatus, selectDm } from './api.js'
   import { onMount, onDestroy } from 'svelte'
 
   // Braille spinner animation
@@ -99,7 +99,12 @@
           <div class="flex flex-col gap-1 p-2 bg-card rounded-lg font-mono text-sm">
             <div class="flex items-center gap-2">
               <span class="text-base text-status-amber">{getSpinner()}</span>
-              <span class="font-medium lowercase" style="color: {getHealthColor(cw.health)}">{cw.name}</span>
+              <button
+                class="font-medium lowercase bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
+                style="color: {getHealthColor(cw.health)}"
+                onclick={() => selectDm(cw.name)}
+                title="Open DM with {cw.name}"
+              >{cw.name}</button>
               {#if cw.phase}
                 <span class="text-[0.75rem] text-muted-foreground">{cw.phase}</span>
               {/if}
