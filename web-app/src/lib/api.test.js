@@ -91,6 +91,60 @@ describe('fetchHistory', () => {
     expect(store['web'].find((m) => m.id === 'pending-ghost')).toBeUndefined()
   })
 
+  it('retains existing channel messages when single-channel fetch returns empty', async () => {
+    // Regression (!1968): fetchHistory('channel-a') called on channel switch would
+    // replace channel-a's messages with an empty array if the backend returned [].
+    // This wipes the channel display — only new WS messages appear until the next
+    // successful fetch. Fix: skip the store update when the response is empty but
+    // the store already has messages (same "retain last-known-good" pattern as the
+    // catch block).
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    // channel-a must NOT have been wiped
+    expect(store['channel-a']).toHaveLength(1)
+    expect(store['channel-a'][0].content).toBe('existing message')
+  })
+
+  it('allows single-channel fetch to populate an empty channel', async () => {
+    // When a channel has no messages yet, fetchHistory should populate it normally
+    // even if the response is empty (this is the initial state, not a wipe).
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 5, content: 'new msg', channel: 'new-channel', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory('new-channel')
+
+    const store = get(messagesByChannel)
+    expect(store['new-channel']).toHaveLength(1)
+    expect(store['new-channel'][0].content).toBe('new msg')
+  })
+
+  it('replaces existing channel messages when single-channel fetch returns non-empty data', async () => {
+    // Normal case: when the backend returns fresh (non-empty) data, it should
+    // replace the existing messages — this is the expected "refresh" behavior.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: 10, content: 'refreshed message', channel: 'channel-a', timestamp: '2026-01-01T00:00:00Z' },
+      ],
+    })
+
+    await fetchHistory('channel-a')
+
+    const store = get(messagesByChannel)
+    expect(store['channel-a']).toHaveLength(1)
+    expect(store['channel-a'][0].content).toBe('refreshed message')
+  })
+
   it('does not leave pending messages when the channel is included in the history response', async () => {
     // When a channel IS in the bulk response, its data replaces existing entirely.
     // Pending messages in existing are discarded because the whole channel array
