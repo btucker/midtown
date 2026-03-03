@@ -224,6 +224,20 @@ pub enum WebUpdate {
     /// Channel list changed (create, archive, unarchive, rename)
     #[serde(rename = "channel_list_changed")]
     ChannelListChanged(ChannelListChangedData),
+    /// Thread ownership changed (dedicated session created or destroyed)
+    #[serde(rename = "thread_ownership")]
+    ThreadOwnership(ThreadOwnershipData),
+}
+
+/// Thread ownership state sent to web clients when a fork is created/destroyed.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadOwnershipData {
+    /// The thread parent message ID
+    pub thread_parent_id: String,
+    /// The channel this thread belongs to
+    pub channel: String,
+    /// Whether the thread now has a dedicated (forked) session
+    pub has_dedicated_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -353,6 +367,24 @@ pub enum ClientMessage {
     AnswerQuestion {
         coworker_name: String,
         answer: String,
+    },
+    /// Create a dedicated session for a thread (fork)
+    #[serde(rename = "fork_thread")]
+    ForkThread {
+        thread_parent_id: String,
+        channel: String,
+    },
+    /// Return a thread to the channel lead (kill dedicated session)
+    #[serde(rename = "unfork_thread")]
+    UnforkThread {
+        thread_parent_id: String,
+        channel: String,
+    },
+    /// Query whether a thread has a dedicated session
+    #[serde(rename = "get_thread_ownership")]
+    GetThreadOwnership {
+        thread_parent_id: String,
+        channel: String,
     },
 }
 
@@ -2143,8 +2175,103 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
             .map_err(|e: String| e)?;
             info!("Answered question from {}: {}", coworker_name, answer);
         }
+        ClientMessage::ForkThread {
+            thread_parent_id,
+            channel,
+        } => {
+            let repo = state.config.repo.clone();
+            let tid = thread_parent_id.clone();
+            let ch = channel.clone();
+            tokio::task::spawn_blocking(move || {
+                daemon_rpc_call(
+                    &repo,
+                    "session.fork_thread",
+                    serde_json::json!({
+                        "thread_parent_id": tid,
+                        "channel": ch,
+                    }),
+                )
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking panic in fork_thread: {}", e))?
+            .map_err(|e: String| e)?;
+            info!(
+                "Fork thread requested: {} in #{}",
+                thread_parent_id, channel
+            );
+        }
+        ClientMessage::UnforkThread {
+            thread_parent_id,
+            channel,
+        } => {
+            let repo = state.config.repo.clone();
+            let tid = thread_parent_id.clone();
+            let ch = channel.clone();
+            tokio::task::spawn_blocking(move || {
+                daemon_rpc_call(
+                    &repo,
+                    "session.unfork_thread",
+                    serde_json::json!({
+                        "thread_parent_id": tid,
+                        "channel": ch,
+                    }),
+                )
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking panic in unfork_thread: {}", e))?
+            .map_err(|e: String| e)?;
+            info!(
+                "Unfork thread requested: {} in #{}",
+                thread_parent_id, channel
+            );
+        }
+        ClientMessage::GetThreadOwnership {
+            thread_parent_id,
+            channel,
+        } => {
+            let repo = state.config.repo.clone();
+            let tid = thread_parent_id.clone();
+            let ch = channel.clone();
+            tokio::task::spawn_blocking(move || {
+                daemon_rpc_call(
+                    &repo,
+                    "session.thread_ownership",
+                    serde_json::json!({
+                        "thread_parent_id": tid,
+                        "channel": ch,
+                    }),
+                )
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking panic in get_thread_ownership: {}", e))?
+            .map_err(|e: String| e)?;
+        }
     }
 
+    Ok(())
+}
+
+/// Issue a JSON-RPC call to the daemon via Unix socket.
+/// Used by WebSocket client message handlers that need to forward commands to the daemon.
+fn daemon_rpc_call(repo: &str, method: &str, params: serde_json::Value) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    let socket = crate::paths::daemon_socket_for_repo(repo);
+    let mut stream =
+        UnixStream::connect(&socket).map_err(|e| format!("Failed to connect to daemon: {}", e))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": 1
+    });
+    writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {}", e))?;
+    stream.flush().ok();
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader.read_line(&mut line).ok();
     Ok(())
 }
 

@@ -7,10 +7,11 @@
 
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::message::Message;
 use crate::rpc::{RequestId, Response, RpcError};
+use crate::web;
 
 use super::DaemonState;
 use super::constants::OPS_CHANNEL;
@@ -1219,17 +1220,16 @@ pub(super) fn build_fork_config(
 
 /// Create a fork session bound to a thread, or return an existing one.
 ///
-/// This is the shared implementation used by both `handle_session_fork` (explicit fork
-/// via `midtown session fork`) and the daemon's auto-fork path in `handle_channel_post`
-/// (automatic fork on new top-level user messages to topic channels).
+/// This is the shared implementation used by `handle_session_fork` (explicit fork via
+/// `midtown session fork`), `handle_session_fork_thread` (web-UI-triggered fork), and
+/// potentially other fork paths.
 ///
 /// Uses an atomic check-and-reserve on `topic_sessions` to prevent duplicate forks for
 /// the same thread: inserts a "pending" sentinel, then replaces it with the real
 /// session_id on success (or removes it on failure).
 ///
 /// `channel_hint` lets callers provide a known channel name that takes priority over the
-/// session record's channel field. The auto-fork path uses this since `handle_channel_post`
-/// already knows the channel from the incoming message.
+/// session record's channel field.
 ///
 /// `fork_name_hint` provides a human-readable description for the fork session name.
 /// When provided, the hint is slugified (non-alphanumeric chars replaced with hyphens,
@@ -1513,6 +1513,189 @@ pub(super) async fn handle_session_fork(
         }
         Err(e) => crate::rpc::Response::error(id, crate::rpc::RpcError::new(-32603, e)),
     }
+}
+
+// ============================================================================
+// Web-UI thread forking
+// ============================================================================
+
+/// Handle `session.fork_thread` RPC — web-UI-friendly fork.
+///
+/// Takes `thread_parent_id` + `channel` (no session ID needed). Resolves the
+/// channel lead session ID server-side and delegates to `create_fork_session()`.
+pub(super) async fn handle_session_fork_thread(
+    id: RequestId,
+    thread_parent_id: &str,
+    channel: &str,
+    state: &DaemonState,
+) -> Response {
+    // Resolve channel lead session ID from persistent state
+    let lead_session_id = {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .get(channel)
+            .filter(|s| !s.is_empty())
+            .cloned()
+    };
+    let Some(lead_session_id) = lead_session_id else {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!("No channel lead session for channel '{}'", channel),
+            ),
+        );
+    };
+    // Verify the session record still exists
+    {
+        let ps = state.persistent_state.lock().await;
+        if !ps.sessions.contains_key(&lead_session_id) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!("Channel lead session for '{}' is stale", channel),
+                ),
+            );
+        }
+    }
+
+    match create_fork_session(
+        thread_parent_id,
+        &lead_session_id,
+        Some(channel),
+        None, // no name hint from web UI
+        "session.fork_thread",
+        state,
+    )
+    .await
+    {
+        Ok((sid, is_existing)) => {
+            // Send framing nudge to fresh forks
+            if !is_existing {
+                let framing = super::rpc_channel::fork_initial_framing(channel);
+                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
+                    session_id: sid.clone(),
+                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
+                };
+                crate::daemon::effects::execute_effects(vec![framing_effect], state).await;
+            }
+
+            // Broadcast ownership change to web clients
+            state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
+                thread_parent_id: thread_parent_id.to_string(),
+                channel: channel.to_string(),
+                has_dedicated_session: true,
+            }));
+
+            debug!(
+                "session.fork_thread: {} → fork {} (existing={})",
+                thread_parent_id, sid, is_existing
+            );
+            Response::success(
+                id,
+                serde_json::json!({
+                    "session_id": sid,
+                    "already_exists": is_existing,
+                }),
+            )
+        }
+        Err(ref e) if e.starts_with("fork in progress") => Response::success(
+            id,
+            serde_json::json!({
+                "pending": true,
+                "thread_parent_id": thread_parent_id,
+            }),
+        ),
+        Err(e) => Response::error(id, RpcError::new(-32603, e)),
+    }
+}
+
+/// Handle `session.unfork_thread` RPC — kill the dedicated session for a thread.
+///
+/// Looks up the fork session from `topic_sessions`, triggers `ShutdownSession`
+/// (cleanup is automatic via `cleanup_coworker_state`), and broadcasts
+/// `ThreadOwnership(false)`.
+pub(super) async fn handle_session_unfork_thread(
+    id: RequestId,
+    thread_parent_id: &str,
+    channel: &str,
+    state: &DaemonState,
+) -> Response {
+    let fork_session_id = state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .get(thread_parent_id)
+        .filter(|s| s.as_str() != "pending")
+        .cloned();
+
+    let Some(fork_session_id) = fork_session_id else {
+        return Response::error(
+            id,
+            RpcError::new(-32602, "No dedicated session for this thread"),
+        );
+    };
+
+    // ShutdownSession → shutdown_coworker_impl → cleanup_coworker_state
+    // which cleans up topic_sessions, fork_bound_threads, fork_bound_channels.
+    let effect = crate::daemon::effects::Effect::ShutdownSession {
+        session_id: fork_session_id.clone(),
+        reason: "User returned thread to channel lead".to_string(),
+    };
+    crate::daemon::effects::execute_effects(vec![effect], state).await;
+
+    // Broadcast ownership change to web clients
+    // (cleanup_coworker_state also broadcasts, but we send eagerly here
+    // for immediate UI feedback in case cleanup is deferred)
+    state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
+        thread_parent_id: thread_parent_id.to_string(),
+        channel: channel.to_string(),
+        has_dedicated_session: false,
+    }));
+
+    debug!(
+        "session.unfork_thread: {} (session {})",
+        thread_parent_id, fork_session_id
+    );
+    Response::success(
+        id,
+        serde_json::json!({
+            "success": true,
+        }),
+    )
+}
+
+/// Handle `session.thread_ownership` RPC — query whether a thread has a dedicated session.
+///
+/// Broadcasts `ThreadOwnership` to all web clients so the requesting client
+/// (and any others) learn the current state.
+pub(super) async fn handle_session_thread_ownership(
+    id: RequestId,
+    thread_parent_id: &str,
+    channel: &str,
+    state: &DaemonState,
+) -> Response {
+    let has_dedicated = state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .get(thread_parent_id)
+        .filter(|s| s.as_str() != "pending")
+        .is_some();
+
+    state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
+        thread_parent_id: thread_parent_id.to_string(),
+        channel: channel.to_string(),
+        has_dedicated_session: has_dedicated,
+    }));
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "has_dedicated_session": has_dedicated,
+        }),
+    )
 }
 
 // ============================================================================

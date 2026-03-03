@@ -1780,12 +1780,11 @@ async fn test_dm_post_from_coworker_is_not_blocked() {
 // ============================================================================
 
 /// When a user posts a new top-level message to a topic channel that has a known
-/// channel lead session, an auto-fork is attempted. In tests the spawn fails
-/// (no real claude process), but the sentinel should be cleaned up and the
-/// overall channel.post should still succeed.
+/// channel lead session, no auto-fork is attempted. The channel lead handles
+/// the message directly. Users dedicate sessions manually via the web UI.
 #[tokio::test]
-async fn test_user_message_to_topic_channel_with_lead_cleans_up_sentinel_on_failed_fork() {
-    let (state, _tmp, _guard) = make_test_state("midtown-test-autofork-sentinel-cleanup");
+async fn test_user_message_to_topic_channel_with_lead_does_not_auto_fork() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-no-autofork");
 
     // Register a fake channel lead session for the "web" topic channel
     {
@@ -1805,15 +1804,14 @@ async fn test_user_message_to_topic_channel_with_lead_cleans_up_sentinel_on_fail
     .await;
     assert!(
         response.error.is_none(),
-        "channel.post should succeed even when auto-fork spawn fails"
+        "channel.post should succeed without auto-fork"
     );
 
-    // The auto-fork attempt fails (no real claude process), so the pending sentinel
-    // must be removed. topic_sessions should have no "pending" entries.
+    // No fork should have been created — topic_sessions stays empty.
     let topic = state.topic_sessions.lock().unwrap();
     assert!(
-        !topic.values().any(|v| v == "pending"),
-        "no pending sentinels should remain after failed auto-fork"
+        topic.is_empty(),
+        "topic_sessions should be empty — no auto-fork for new top-level messages"
     );
 }
 
@@ -1862,8 +1860,8 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
     );
 }
 
-/// When no channel lead session is registered for a topic channel, auto-fork
-/// is skipped gracefully and channel.post succeeds.
+/// When no channel lead session is registered for a topic channel, channel.post
+/// succeeds and no fork is attempted (channel lead handles directly).
 #[tokio::test]
 async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-autofork-no-lead");
@@ -1891,7 +1889,7 @@ async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
     );
 }
 
-/// When a thread reply arrives while the auto-fork is still spawning ("pending"
+/// When a thread reply arrives while a fork is still spawning ("pending"
 /// sentinel in topic_sessions), the reply must NOT produce a NudgeSession with
 /// session_id="pending" — that would silently drop the message. The handler
 /// should filter out "pending" and fall back to NudgeChannelLead instead.

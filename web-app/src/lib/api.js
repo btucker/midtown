@@ -23,6 +23,7 @@ import {
   pendingQuestions,
   threadData,
   deepLinkMsgId,
+  threadOwnership,
   showArchivedChannels,
 } from './store.js'
 
@@ -670,6 +671,14 @@ export function handleUpdate(update) {
       // Re-fetch full channel list from server to get accurate state
       fetchChannels(get(showArchivedChannels))
       break
+    case 'thread_ownership': {
+      const { thread_parent_id, has_dedicated_session } = update.data
+      threadOwnership.update((map) => ({
+        ...map,
+        [thread_parent_id]: has_dedicated_session,
+      }))
+      break
+    }
     case 'error':
       // Invoke all registered error callbacks and then clear them
       errorCallbacks.forEach((callback) => callback(update.data.message))
@@ -739,6 +748,39 @@ export function sendAnswer(coworkerName, answer) {
     pendingQuestions.update((qs) => qs.filter((q) => q.coworker_name !== coworkerName))
   } else {
     console.error('WebSocket not connected')
+  }
+}
+
+// Create a dedicated session for a thread (fork)
+export function forkThread(threadParentId, channelName) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'fork_thread',
+      thread_parent_id: threadParentId,
+      channel: channelName,
+    }))
+  }
+}
+
+// Return a thread to the channel lead (kill dedicated session)
+export function unforkThread(threadParentId, channelName) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'unfork_thread',
+      thread_parent_id: threadParentId,
+      channel: channelName,
+    }))
+  }
+}
+
+// Query whether a thread has a dedicated session
+export function queryThreadOwnership(threadParentId, channelName) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({
+      type: 'get_thread_ownership',
+      thread_parent_id: threadParentId,
+      channel: channelName,
+    }))
   }
 }
 
@@ -917,6 +959,8 @@ export function openThread(parentMessage, channelName, { pushState = true } = {}
   )
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
+  // Query thread ownership so the UI knows whether a dedicated session exists
+  queryThreadOwnership(parentMessage.id, channelName)
   if (pushState) {
     pushNavState({ channel: channelName, thread: parentMessage.id })
   }

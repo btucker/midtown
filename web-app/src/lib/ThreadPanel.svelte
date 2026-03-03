@@ -7,8 +7,8 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId } from './store.js'
-  import { sendMessage, closeThread, getApiBase } from './api.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership } from './store.js'
+  import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -100,6 +100,38 @@
   // real InProgress tool items arrive (or 30s timeout).
   let thinking = $state(false)
   let thinkingTimeout = null
+
+  // Whether this thread has a dedicated (forked) session.
+  // Only applicable to topic channels (not main or DM channels).
+  let isTopicChannel = $derived(
+    $threadData?.channelName
+      && $threadData.channelName !== 'midtown'
+      && !$threadData.channelName.startsWith('dm-')
+  )
+  let hasDedicatedSession = $derived(
+    $threadData?.parentMessage?.id
+      ? ($threadOwnership[$threadData.parentMessage.id] ?? false)
+      : false
+  )
+  let forkPending = $state(false)
+
+  // Clear forkPending when ownership state updates
+  $effect(() => {
+    if ($threadData?.parentMessage?.id) {
+      const _ownership = $threadOwnership[$threadData.parentMessage.id]
+      forkPending = false
+    }
+  })
+
+  function handleForkToggle() {
+    if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
+    forkPending = true
+    if (hasDedicatedSession) {
+      unforkThread($threadData.parentMessage.id, $threadData.channelName)
+    } else {
+      forkThread($threadData.parentMessage.id, $threadData.channelName)
+    }
+  }
 
   // Stable thread identity: changes only when a different thread is opened or closed.
   // Using $derived ensures the clearing effect below re-runs only on actual thread switches,
@@ -386,12 +418,30 @@
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-2 bg-card border-b-2 border-border shrink-0">
       <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
-      <button
-        class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0"
-        onclick={handleClose}
-        aria-label="Close thread"
-        data-testid="thread-close-button"
-      >&times;</button>
+      <div class="flex items-center gap-1">
+        {#if isTopicChannel && $threadData?.parentMessage?.id}
+          <button
+            class="px-2 py-1 text-[0.72rem] rounded-md border transition-all duration-150 {hasDedicatedSession ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
+            onclick={handleForkToggle}
+            disabled={forkPending}
+            title={hasDedicatedSession ? 'Return this thread to the channel lead' : 'Create a dedicated session for this thread'}
+          >
+            {#if forkPending}
+              ...
+            {:else if hasDedicatedSession}
+              Return to main
+            {:else}
+              Dedicate session
+            {/if}
+          </button>
+        {/if}
+        <button
+          class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-1 shrink-0"
+          onclick={handleClose}
+          aria-label="Close thread"
+          data-testid="thread-close-button"
+        >&times;</button>
+      </div>
     </div>
 
     <!-- Scrollable content: task cards + parent message + replies -->
@@ -495,6 +545,7 @@
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
+            isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
@@ -587,7 +638,23 @@
         aria-label="Back to channel"
         data-testid="thread-back-button"
       >&larr;</button>
-      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+      <h2 class="text-[0.85rem] font-bold text-foreground m-0 flex-1">Thread</h2>
+      {#if isTopicChannel && $threadData?.parentMessage?.id}
+        <button
+          class="px-2 py-1 text-[0.72rem] rounded-md border transition-all duration-150 {hasDedicatedSession ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
+          onclick={handleForkToggle}
+          disabled={forkPending}
+          title={hasDedicatedSession ? 'Return this thread to the channel lead' : 'Create a dedicated session for this thread'}
+        >
+          {#if forkPending}
+            ...
+          {:else if hasDedicatedSession}
+            Return to main
+          {:else}
+            Dedicate session
+          {/if}
+        </button>
+      {/if}
     </div>
 
     <!-- Mobile messages -->
@@ -691,6 +758,7 @@
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
+            isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}

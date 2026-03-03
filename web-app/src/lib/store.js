@@ -120,6 +120,10 @@ export const threadData = writable(null)
 // Cleared after the scroll/highlight completes.
 export const deepLinkMsgId = writable(null)
 
+// Thread ownership: { [threadParentId]: boolean }
+// true = dedicated session (fork active), false/missing = channel lead handles
+export const threadOwnership = writable({})
+
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)
