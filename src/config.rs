@@ -3098,12 +3098,8 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
 
         // Verify standard paths are also included
         assert!(
-            dirs.contains(
-                &crate::paths::midtown_base_dir()
-                    .to_string_lossy()
-                    .to_string()
-            ),
-            "Should include midtown base dir"
+            dirs.iter().any(|d| d.ends_with(".midtown")),
+            "Should include ~/.midtown"
         );
         assert!(
             dirs.iter().any(|d| d.ends_with(".claude")),

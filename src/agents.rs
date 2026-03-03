@@ -53,8 +53,8 @@ fn git_repo_root() -> Option<PathBuf> {
 }
 
 /// Find the user's midtown config directory.
-fn user_agents_dir() -> Option<PathBuf> {
-    Some(crate::paths::midtown_base_dir().join("agents"))
+fn user_agents_dir() -> PathBuf {
+    crate::paths::midtown_base_dir().join("agents")
 }
 
 fn code_review_invocation_for_platform(
@@ -94,11 +94,9 @@ fn load_prompt_file(filename: &str) -> Option<String> {
     }
 
     // Try user config directory
-    if let Some(user_dir) = user_agents_dir() {
-        let path = user_dir.join(filename);
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return Some(content);
-        }
+    let path = user_agents_dir().join(filename);
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        return Some(content);
     }
 
     None
