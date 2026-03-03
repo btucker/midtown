@@ -1232,7 +1232,8 @@ pub(super) async fn create_fork_session(
     // Platform-specific launch paths translate this into a true fork:
     // - Claude/z.ai: --resume <parent-id> --fork-session
     // - Codex: thread/fork RPC on the parent thread
-    let config_dir = crate::auth::current_profile_dir_for(auth_provider);
+    let config_dir =
+        crate::auth::active_profile_dir_for_project_with_provider(&state.repo_name, auth_provider);
     let repo_name = &state.repo_name;
     let team = crate::mailbox::team_name_for_repo(repo_name);
 
