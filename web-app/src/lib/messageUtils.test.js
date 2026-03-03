@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getSenderColor, AVENUE_COLORS, dateChanged } from './messageUtils.js'
+import { getSenderColor, AVENUE_COLORS, dateChanged, getPermalinkUrl } from './messageUtils.js'
 
 describe('getSenderColor', () => {
   it('returns gold for sender matching channel name (channel lead rule)', () => {
@@ -118,5 +118,39 @@ describe('dateChanged', () => {
       msg('2026-03-02T10:00:00Z'),
     ]
     expect(dateChanged(msgs, 1)).toBe(null)
+  })
+})
+
+describe('getPermalinkUrl', () => {
+  it('generates thread-level URL for channel messages (no threadParentId)', () => {
+    expect(getPermalinkUrl('myproject', 'web', 'msg-123')).toBe(
+      '/myproject?channel=web&thread=msg-123'
+    )
+  })
+
+  it('generates message-level URL for thread replies (with threadParentId)', () => {
+    expect(getPermalinkUrl('myproject', 'web', 'reply-456', 'parent-123')).toBe(
+      '/myproject?channel=web&thread=parent-123&msg=reply-456'
+    )
+  })
+
+  it('encodes special characters in URL components', () => {
+    const url = getPermalinkUrl('my project', 'web channel', 'msg&id', 'parent=id')
+    expect(url).toBe('/my%20project?channel=web%20channel&thread=parent%3Did&msg=msg%26id')
+  })
+
+  it('returns empty string when projectName is missing', () => {
+    expect(getPermalinkUrl(null, 'web', 'msg-123')).toBe('')
+    expect(getPermalinkUrl('', 'web', 'msg-123')).toBe('')
+  })
+
+  it('returns empty string when channelName is missing', () => {
+    expect(getPermalinkUrl('myproject', null, 'msg-123')).toBe('')
+    expect(getPermalinkUrl('myproject', '', 'msg-123')).toBe('')
+  })
+
+  it('returns empty string when msgId is missing', () => {
+    expect(getPermalinkUrl('myproject', 'web', null)).toBe('')
+    expect(getPermalinkUrl('myproject', 'web', '')).toBe('')
   })
 })

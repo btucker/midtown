@@ -22,6 +22,7 @@ import {
   threadToolItems,
   pendingQuestions,
   threadData,
+  deepLinkMsgId,
   showArchivedChannels,
 } from './store.js'
 
@@ -1015,6 +1016,9 @@ function buildNavUrl(state) {
   if (state.thread) {
     url += (url.includes('?') ? '&' : '?') + 'thread=' + encodeURIComponent(state.thread)
   }
+  if (state.msg) {
+    url += (url.includes('?') ? '&' : '?') + 'msg=' + encodeURIComponent(state.msg)
+  }
   return url
 }
 
@@ -1053,6 +1057,9 @@ export function setupHistoryNavigation() {
 
       // Thread navigation
       if (state.thread) {
+        if (state.msg) {
+          deepLinkMsgId.set(state.msg)
+        }
         const channel = state.channel || get(activeChannel)
         const channelMsgs = get(messagesByChannel)[channel] || []
         const parentMsg = channelMsgs.find((m) => m.id === state.thread)

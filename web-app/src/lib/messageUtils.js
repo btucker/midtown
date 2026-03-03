@@ -172,6 +172,28 @@ export function timeChanged(msgs, index) {
   return formatTimeCompact(msgs[index].timestamp) !== formatTimeCompact(msgs[index - 1].timestamp)
 }
 
+/**
+ * Build a permalink URL path for a specific message or thread.
+ *
+ * For channel-level messages (no threadParentId), generates a thread URL:
+ *   /<project>?channel=<channel>&thread=<msgId>
+ *
+ * For thread replies (with threadParentId), generates a message-level permalink:
+ *   /<project>?channel=<channel>&thread=<threadParentId>&msg=<msgId>
+ */
+export function getPermalinkUrl(projectName, channelName, msgId, threadParentId) {
+  if (!projectName || !channelName || !msgId) return ''
+  let url = '/' + encodeURIComponent(projectName)
+  url += '?channel=' + encodeURIComponent(channelName)
+  if (threadParentId) {
+    url += '&thread=' + encodeURIComponent(threadParentId)
+    url += '&msg=' + encodeURIComponent(msgId)
+  } else {
+    url += '&thread=' + encodeURIComponent(msgId)
+  }
+  return url
+}
+
 const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000
 
 /**

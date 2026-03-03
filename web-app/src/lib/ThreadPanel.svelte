@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems } from './store.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId } from './store.js'
   import { sendMessage, closeThread, getApiBase } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -298,10 +298,29 @@
   // Auto-scroll when new messages or edit diffs arrive
   $effect(() => {
     if ((mergedTimeline.length > 0) && scrollArea) {
+      // Skip auto-scroll-to-bottom when a deep-link target is pending —
+      // the deep-link effect below will handle scrolling to the right message.
+      if ($deepLinkMsgId) return
       tick().then(() => {
         scrollArea.scrollTop = scrollArea.scrollHeight
       })
     }
+  })
+
+  // Deep-link: scroll to and highlight a specific message when deepLinkMsgId is set.
+  // Waits until thread messages are loaded, then finds the target element.
+  $effect(() => {
+    const targetId = $deepLinkMsgId
+    if (!targetId || !scrollArea || mergedTimeline.length === 0) return
+    tick().then(() => {
+      const el = scrollArea.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        el.classList.add('deep-link-highlight')
+        setTimeout(() => el.classList.remove('deep-link-highlight'), 2000)
+      }
+      deepLinkMsgId.set(null)
+    })
   })
 
   // Focus textarea when thread opens
@@ -474,6 +493,7 @@
             index={entry.msgIndex}
             senderClass="mt-1"
             channelName={$threadData?.channelName}
+            threadParentId={$threadData?.parentMessage?.id}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
@@ -669,6 +689,7 @@
             index={entry.msgIndex}
             senderClass="mt-1"
             channelName={$threadData?.channelName}
+            threadParentId={$threadData?.parentMessage?.id}
             class={msg.pending ? 'opacity-60' : ''}
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
@@ -762,5 +783,15 @@
     to {
       transform: translateX(0);
     }
+  }
+
+  :global(.deep-link-highlight) {
+    animation: deep-link-flash 2s ease-out;
+  }
+
+  @keyframes deep-link-flash {
+    0% { background-color: hsl(var(--primary) / 0.2); }
+    70% { background-color: hsl(var(--primary) / 0.2); }
+    100% { background-color: transparent; }
   }
 </style>
