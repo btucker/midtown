@@ -66,10 +66,16 @@ pub fn handle_update(check_only: bool) -> Result<Response, String> {
     }
     replace_binary(&new_binary, &current_exe)?;
 
-    // Replace web-app/ directory if present in the tarball (atomic rename, matching install.sh)
+    // Replace web-app/ in XDG data dir if present in the tarball (matching install.sh)
     let new_web_app = tmp_dir.path().join("web-app");
     if new_web_app.is_dir() {
-        replace_web_app(&new_web_app, install_dir)?;
+        let data_dir = midtown::paths::midtown_data_dir();
+        replace_web_app(&new_web_app, &data_dir)?;
+        // Clean up legacy web-app from exe dir if present
+        let legacy_web_app = install_dir.join("web-app");
+        if legacy_web_app.is_dir() {
+            let _ = fs::remove_dir_all(&legacy_web_app);
+        }
     }
 
     Ok(Response::Message {
@@ -276,10 +282,16 @@ fn replace_binary(new_binary: &Path, current_exe: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn replace_web_app(new_web_app: &Path, install_dir: &Path) -> Result<(), String> {
-    let target = install_dir.join("web-app");
-    let old = install_dir.join("web-app.old");
-    let staging = install_dir.join("web-app.new");
+fn replace_web_app(new_web_app: &Path, data_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(data_dir).map_err(|e| {
+        format!(
+            "Failed to create data directory {}: {e}",
+            data_dir.display()
+        )
+    })?;
+    let target = data_dir.join("web-app");
+    let old = data_dir.join("web-app.old");
+    let staging = data_dir.join("web-app.new");
 
     // Stage the new web-app on the target filesystem so rename() never crosses
     // device boundaries (EXDEV). The staging copy doesn't need to be atomic —
