@@ -473,9 +473,8 @@ fn test_build_task_completion_effects_with_task_id() {
     let effects =
         build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
-    // 3 effects: CompleteTask + ClearBlockedBy + PostToChannel
-    // (no SendPushNotification — push notifications only fire for @user mentions and PR merges)
-    assert_eq!(effects.len(), 3, "Should return 3 effects");
+    // 4 effects: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification
+    assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
     match &effects[0] {
@@ -508,6 +507,16 @@ fn test_build_task_completion_effects_with_task_id() {
             assert!(message.contains("123"));
         }
         _ => panic!("Third effect should be PostToChannel"),
+    }
+
+    // Verify SendPushNotification effect
+    match &effects[3] {
+        Effect::SendPushNotification { title, body, tag } => {
+            assert!(title.contains("42"), "title should contain task id");
+            assert!(body.contains("42"), "body should contain task id");
+            assert_eq!(tag, "task_completed_42");
+        }
+        _ => panic!("Fourth effect should be SendPushNotification"),
     }
 }
 
@@ -597,15 +606,15 @@ fn test_task_completion_does_not_send_push_notifications() {
 
     let effects = build_subject_based_completion_effects(&snap);
 
-    // No push notifications should be generated from task completion
+    // Task completion should generate push notifications for each completed task
     let push_count = effects
         .iter()
         .filter(|e| matches!(e, Effect::SendPushNotification { .. }))
         .count();
 
-    assert_eq!(
-        push_count, 0,
-        "Task completion should not generate push notifications"
+    assert!(
+        push_count > 0,
+        "Task completion should generate push notifications"
     );
 }
 
@@ -647,8 +656,8 @@ fn test_subject_based_completion_all_prs_merged() {
 
     let effects = build_subject_based_completion_effects(&snap);
 
-    // 3 effects: CompleteTask + ClearBlockedBy + PostToChannel (no push notification)
-    assert_eq!(effects.len(), 3, "Should return 3 effects");
+    // 4 effects: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification
+    assert_eq!(effects.len(), 4, "Should return 4 effects");
 
     // Verify CompleteTask effect
     match &effects[0] {
@@ -1165,7 +1174,7 @@ fn test_decide_orphan_cleanup_warns_about_unmerged() {
     // Should produce: PostSystemMessage (contains @ops for routing)
     // No NudgeLead — the PostSystemMessage handler in effects.rs detects @ops and
     // nudges the ops channel lead automatically.
-    // No SendPushNotification — push notifications only fire for @user mentions and PR merges.
+    // No SendPushNotification — push notifications only fire for @user mentions, task completions, and PR merges.
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::PostSystemMessage { .. }));
 }
@@ -1191,7 +1200,7 @@ fn test_decide_orphan_cleanup_full_scenario() {
     // ClearOrphanedReviewerAssignments(york, park) + ForceCleanupWorktrees(york) +
     // PostSystemMessage (contains @ops for routing)
     // No NudgeLead — ops channel lead is nudged via @ops detection in PostSystemMessage handler.
-    // No SendPushNotification — push notifications only fire for @user mentions and PR merges.
+    // No SendPushNotification — push notifications only fire for @user mentions, task completions, and PR merges.
     assert_eq!(effects.len(), 3);
     assert!(matches!(
         &effects[0],
@@ -4796,8 +4805,8 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
         Some("proj-auth".to_string()),
     );
 
-    // 3 base effects (CompleteTask + ClearBlockedBy + PostToChannel) + 1 TaskCompleted + 1 PrMerged
-    assert_eq!(effects.len(), 5);
+    // 4 base effects (CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification) + 1 TaskCompleted + 1 PrMerged
+    assert_eq!(effects.len(), 6);
 
     let workflow_events: Vec<_> = effects
         .iter()
@@ -4844,8 +4853,8 @@ fn test_build_task_completion_effects_no_workflow_event_without_channel() {
     let effects =
         build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
 
-    // Only the 3 base effects — no workflow events without a channel
-    assert_eq!(effects.len(), 3);
+    // Only the 4 base effects — no workflow events without a channel
+    assert_eq!(effects.len(), 4);
     assert!(
         effects
             .iter()
