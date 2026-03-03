@@ -154,6 +154,7 @@ pub(super) async fn handle_auth_switch(
     id: RequestId,
     profile: &str,
     all: bool,
+    force: bool,
     provider: crate::auth::AuthProvider,
     state: &DaemonState,
 ) -> Response {
@@ -214,7 +215,7 @@ pub(super) async fn handle_auth_switch(
                 RpcError::new(-32603, format!("Failed to switch profile: {}", e)),
             );
         }
-        if current == profile && cleared == 0 {
+        if !force && current == profile && cleared == 0 {
             return Response::success(
                 id,
                 serde_json::json!({
