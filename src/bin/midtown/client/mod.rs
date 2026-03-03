@@ -84,6 +84,23 @@ impl DaemonClient {
         Self::connect_with_timeout(std::time::Duration::from_secs(5))
     }
 
+    /// Connect to a daemon at an explicit socket path.
+    ///
+    /// Used by `auth switch --global` to send RPCs to daemons in other projects.
+    pub fn connect_to(socket_path: PathBuf) -> Result<Self, String> {
+        if !socket_path.exists() {
+            return Err(format!(
+                "Daemon socket not found at {}",
+                socket_path.display()
+            ));
+        }
+
+        Ok(DaemonClient {
+            socket_path,
+            timeout: std::time::Duration::from_secs(15),
+        })
+    }
+
     /// Connect to the daemon with a custom timeout.
     fn connect_with_timeout(timeout: std::time::Duration) -> Result<Self, String> {
         let socket_path = Self::socket_path();

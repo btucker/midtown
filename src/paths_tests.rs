@@ -397,6 +397,74 @@ fn test_assets_dir_different_repos_differ() {
     assert_ne!(path_a, path_b);
 }
 
+// ── enumerate_daemon_sockets ───────────────────────────────────────────
+
+#[test]
+fn test_enumerate_daemon_sockets_empty_when_dir_missing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let nonexistent = tmp.path().join("nonexistent");
+    let result = enumerate_daemon_sockets_in(&nonexistent);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_enumerate_daemon_sockets_finds_sockets() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = tmp.path();
+
+    // Create two project dirs with daemon.sock files
+    let proj_a = state.join("project-a");
+    let proj_b = state.join("project-b");
+    fs::create_dir_all(&proj_a).unwrap();
+    fs::create_dir_all(&proj_b).unwrap();
+    fs::write(proj_a.join("daemon.sock"), "").unwrap();
+    fs::write(proj_b.join("daemon.sock"), "").unwrap();
+
+    let mut result = enumerate_daemon_sockets_in(state);
+    result.sort_by(|a, b| a.0.cmp(&b.0));
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].0, "project-a");
+    assert_eq!(result[0].1, proj_a.join("daemon.sock"));
+    assert_eq!(result[1].0, "project-b");
+    assert_eq!(result[1].1, proj_b.join("daemon.sock"));
+}
+
+#[test]
+fn test_enumerate_daemon_sockets_skips_dirs_without_socket() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = tmp.path();
+
+    // One dir with socket, one without
+    let proj_a = state.join("has-daemon");
+    let proj_b = state.join("no-daemon");
+    fs::create_dir_all(&proj_a).unwrap();
+    fs::create_dir_all(&proj_b).unwrap();
+    fs::write(proj_a.join("daemon.sock"), "").unwrap();
+    // proj_b has no daemon.sock
+
+    let result = enumerate_daemon_sockets_in(state);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, "has-daemon");
+}
+
+#[test]
+fn test_enumerate_daemon_sockets_skips_files_not_dirs() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state = tmp.path();
+
+    // Create a regular file (not a dir) at the top level
+    fs::write(state.join("not-a-dir"), "").unwrap();
+    // And a real project dir with socket
+    let proj = state.join("real-project");
+    fs::create_dir_all(&proj).unwrap();
+    fs::write(proj.join("daemon.sock"), "").unwrap();
+
+    let result = enumerate_daemon_sockets_in(state);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].0, "real-project");
+}
+
 // ── workflow_state_file ────────────────────────────────────────────────
 
 #[test]

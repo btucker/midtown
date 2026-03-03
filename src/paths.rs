@@ -388,6 +388,39 @@ pub fn daemon_socket_for_repo(repo: &str) -> PathBuf {
     state_dir().join("midtown").join(repo).join("daemon.sock")
 }
 
+/// Enumerate all daemon sockets across all projects.
+///
+/// Scans `~/.local/state/midtown/*/daemon.sock` and returns `(repo_name, socket_path)`
+/// pairs for each socket that exists on disk. The socket existing doesn't guarantee
+/// the daemon is running — callers should handle connection failures gracefully.
+pub fn enumerate_daemon_sockets() -> Vec<(String, PathBuf)> {
+    enumerate_daemon_sockets_in(&state_dir().join("midtown"))
+}
+
+fn enumerate_daemon_sockets_in(midtown_state: &Path) -> Vec<(String, PathBuf)> {
+    let entries = match fs::read_dir(midtown_state) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let repo_name = entry.file_name().to_string_lossy().to_string();
+            let sock = path.join("daemon.sock");
+            if sock.exists() {
+                Some((repo_name, sock))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Get the daemon socket path for the current repository.
 ///
 /// Detects the repo name from the current git working directory.
