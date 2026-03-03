@@ -9,7 +9,8 @@ gh pr view {pr_number} --json comments --jq '.comments[] | select(.body | contai
 If a comment ID is returned, save it as `COMMENT_ID` for later editing. If not, post the initial comment now:
 
 ```bash
-COMMENT_URL=$(gh pr comment {pr_number} --body "## Review Status
+COMMENT_URL=$(gh pr comment {pr_number} --body "<!-- midtown-placeholder -->
+## Review Status
 
 🔍 Review in progress by {name}...
 
@@ -22,10 +23,10 @@ COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
 ```
 
 **WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
-1. Omits `<!-- midtown: {name} -->` frontmatter
+1. Uses `<!-- midtown-placeholder -->` instead of `<!-- midtown: {name} -->` frontmatter
 2. Uses "Review Status" instead of "Code Review" as the heading
 
-This prevents the daemon from marking the PR as "reviewed" before the review is actually complete. The frontmatter and correct heading will be added when you update the comment with the final review results.
+The `<!-- midtown-placeholder -->` tag tells the daemon to ignore this comment entirely — no PR activity is generated, so the PR owner won't get a false "review feedback" nudge. The tag naturally disappears when you update the comment with the final review (replaced by `<!-- midtown: {name} -->`). The different heading prevents the daemon from marking the PR as "reviewed" prematurely.
 
 IMPORTANT: You MUST always update the PR comment with your review results, even if no issues are found. If the code-review skill finishes without providing comment text, prepare a "no issues found" comment yourself using the format from the skill.
 

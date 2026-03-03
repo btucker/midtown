@@ -650,8 +650,9 @@ fn test_issue_comment_non_review_no_review_comment_id() {
 
 #[test]
 fn test_handle_issue_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder, then edits it with the full review.
-    // The 'edited' event should be processed (non-review → review transition).
+    // Reviewer posts a placeholder (with <!-- midtown-placeholder --> tag),
+    // then edits it with the full review. The 'edited' event should be
+    // processed (non-review → review transition).
     let payload = serde_json::json!({
         "action": "edited",
         "issue": {
@@ -665,7 +666,7 @@ fn test_handle_issue_comment_edited_placeholder_to_review() {
         },
         "changes": {
             "body": {
-                "from": "## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
             }
         },
         "repository": {"full_name": "org/repo"}
@@ -1238,8 +1239,9 @@ fn test_pull_request_event_routes_to_ops_channel() {
 
 #[test]
 fn test_handle_review_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder inline comment, then edits it with a review.
-    // The 'edited' event should be processed (non-review → review transition).
+    // Reviewer posts a placeholder inline comment (with <!-- midtown-placeholder -->
+    // tag), then edits it with a review. The 'edited' event should be processed
+    // (non-review → review transition).
     let payload = serde_json::json!({
         "action": "edited",
         "pull_request": {
@@ -1254,7 +1256,7 @@ fn test_handle_review_comment_edited_placeholder_to_review() {
         },
         "changes": {
             "body": {
-                "from": "## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
             }
         },
         "repository": {"full_name": "org/repo"}

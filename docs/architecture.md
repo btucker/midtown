@@ -746,7 +746,9 @@ After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted t
 
 ### Placeholder Comment Handling
 
-When a reviewer is restarted (stuck or dead) and had previously posted a "Review in progress" placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
+Reviewer placeholder comments ("Review in progress by...") include a `<!-- midtown-placeholder -->` HTML tag. This tag is checked by `is_placeholder_comment()` in `webhook.rs` — both `handle_issue_comment` and `handle_review_comment` return `None` when the tag is present, suppressing `pr_activity` generation and preventing false nudges to the PR owner while the review is still in progress. The tag naturally disappears when the reviewer edits the comment with final results (replaced by `<!-- midtown: name -->`).
+
+When a reviewer is restarted (stuck or dead) and had previously posted a placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
 
 **WorldSnapshot fields** (reviewer fields are in the `reviewer: SnapshotReviewerState` sub-struct):
 - `reviewer.reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by `decide_stuck_reviewer_restarts` to select the shorter stuck threshold for placeholder PRs, and by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.

@@ -525,19 +525,26 @@ fn polling_recognizes_comment_based_review_with_space() {
 
 /// Test that "review in progress" comments are NOT detected as completed reviews.
 ///
-/// When reviewers post an initial "Review in progress..." comment (without
-/// midtown frontmatter and using "Review Status" heading), the daemon should NOT
-/// mark the PR as reviewed yet. Only when the reviewer updates the comment with
-/// final results (adding midtown frontmatter and changing to "Code Review" heading)
-/// should it be detected as reviewed.
+/// Reviewers post an initial placeholder comment with `<!-- midtown-placeholder -->`
+/// tag and "Review Status" heading. The daemon should NOT mark the PR as reviewed
+/// until the reviewer updates the comment with final results (replacing the
+/// placeholder tag with `<!-- midtown: name -->` and changing to "Code Review" heading).
 #[test]
 fn review_in_progress_not_detected_as_complete() {
-    // Review in progress comment (no frontmatter, "Review Status" heading) - should NOT be detected
+    // Legacy format (no placeholder tag, no frontmatter) - should NOT be detected
     assert!(
         !text_contains_review_signature(
             "## Review Status\n\n🔍 Review in progress by madison...\n\n---\n> [!NOTE]\n> This comment will be updated with the review results when complete.\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
         ),
         "review in progress comment should NOT be detected as completed review"
+    );
+
+    // Current format (with <!-- midtown-placeholder --> tag) - should NOT be detected
+    assert!(
+        !text_contains_review_signature(
+            "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by madison...\n\n---\n> [!NOTE]\n> This comment will be updated with the review results when complete.\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+        ),
+        "placeholder-tagged review in progress comment should NOT be detected as completed review"
     );
 
     // Same comment but with frontmatter and "Code Review" heading (final review) - should be detected

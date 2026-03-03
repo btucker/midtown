@@ -903,11 +903,13 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
 fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: IssueCommentEvent = serde_json::from_slice(body)?;
 
-    // Process 'created' events always. Process 'edited' events only when
-    // the comment transitions from non-review to review — reviewers often
-    // post a placeholder then edit it with the full review. Edits to an
-    // already-posted review (e.g. typo fixes) are ignored to avoid
-    // re-nudging the PR owner.
+    // Three-stage filter for issue comments:
+    // 1. Only process 'created' and 'edited' actions.
+    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    //    entirely — no pr_activity, no nudge to PR owner.
+    // 3. For 'edited' events, only process non-review → review transitions
+    //    (placeholder edited with final review). Edits to an already-posted
+    //    review (typo fixes) are ignored to avoid re-nudging.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
         return Ok(None);
@@ -997,11 +999,11 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
 fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: ReviewCommentEvent = serde_json::from_slice(body)?;
 
-    // Process 'created' events always. Process 'edited' events only when
-    // the comment transitions from non-review to review — reviewers often
-    // post a placeholder then edit it with the full review. Edits to an
-    // already-posted review (e.g. typo fixes) are ignored to avoid
-    // re-nudging the PR owner.
+    // Three-stage filter (mirrors handle_issue_comment):
+    // 1. Only process 'created' and 'edited' actions.
+    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    //    (defense-in-depth — unlikely for inline diff comments).
+    // 3. For 'edited', only process non-review → review transitions.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
         return Ok(None);
