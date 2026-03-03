@@ -1091,6 +1091,53 @@ export function closeThread({ pushState = true } = {}) {
   }
 }
 
+// ── Thread fork/unfork/ownership API ────────────────────────────────────────
+
+// Query thread ownership — returns { owner, is_fork, channel }
+export async function fetchThreadOwnership(threadParentId, channelName) {
+  try {
+    const params = new URLSearchParams({
+      thread_parent_id: threadParentId,
+      channel_name: channelName,
+    })
+    const res = await fetch(`${getApiBase()}/threads/ownership?${params}`)
+    if (res.ok) return await res.json()
+    return { owner: channelName, is_fork: false, channel: channelName }
+  } catch {
+    return { owner: channelName, is_fork: false, channel: channelName }
+  }
+}
+
+// Fork a thread: create a dedicated session
+export async function forkThread(threadParentId, channelName) {
+  try {
+    const res = await fetch(`${getApiBase()}/threads/fork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_parent_id: threadParentId, channel_name: channelName }),
+    })
+    return await res.json()
+  } catch (err) {
+    console.error('Failed to fork thread:', err)
+    return { error: err.message }
+  }
+}
+
+// Unfork a thread: return to channel lead
+export async function unforkThread(threadParentId) {
+  try {
+    const res = await fetch(`${getApiBase()}/threads/unfork`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_parent_id: threadParentId }),
+    })
+    return await res.json()
+  } catch (err) {
+    console.error('Failed to unfork thread:', err)
+    return { error: err.message }
+  }
+}
+
 // Search messages across all channels
 export async function searchMessages(query, limit = 50) {
   try {

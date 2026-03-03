@@ -1219,17 +1219,17 @@ pub(super) fn build_fork_config(
 
 /// Create a fork session bound to a thread, or return an existing one.
 ///
-/// This is the shared implementation used by both `handle_session_fork` (explicit fork
-/// via `midtown session fork`) and the daemon's auto-fork path in `handle_channel_post`
-/// (automatic fork on new top-level user messages to topic channels).
+/// This is the shared implementation used by `handle_session_fork` (explicit fork
+/// via `midtown session fork`), the web UI fork button (`handle_web_fork_thread`),
+/// and any other callers that need to create a thread-scoped session.
 ///
 /// Uses an atomic check-and-reserve on `topic_sessions` to prevent duplicate forks for
 /// the same thread: inserts a "pending" sentinel, then replaces it with the real
 /// session_id on success (or removes it on failure).
 ///
 /// `channel_hint` lets callers provide a known channel name that takes priority over the
-/// session record's channel field. The auto-fork path uses this since `handle_channel_post`
-/// already knows the channel from the incoming message.
+/// session record's channel field. The web fork path uses this since it already knows
+/// the channel from the UI request.
 ///
 /// `fork_name_hint` provides a human-readable description for the fork session name.
 /// When provided, the hint is slugified (non-alphanumeric chars replaced with hyphens,
@@ -1308,8 +1308,8 @@ pub(super) async fn create_fork_session(
         }
     };
 
-    // Determine channel for the fork — explicit hint takes priority (the auto-fork
-    // path knows the channel from the incoming message), then session record, then
+    // Determine channel for the fork — explicit hint takes priority (the web fork
+    // path knows the channel from the UI request), then session record, then
     // caller name (channel leads are named after their channel).
     let fork_channel = channel_hint
         .map(String::from)
@@ -1499,7 +1499,7 @@ pub(super) async fn handle_session_fork(
             }),
         ),
         Err(ref e) if e.starts_with("fork in progress") => {
-            // The daemon's auto-fork path already reserved this slot.
+            // Another concurrent fork attempt already reserved this slot.
             // Return a distinct pending response so the channel lead can
             // distinguish "retry shortly" from a hard spawn failure.
             crate::rpc::Response::success(
@@ -1512,6 +1512,185 @@ pub(super) async fn handle_session_fork(
             )
         }
         Err(e) => crate::rpc::Response::error(id, crate::rpc::RpcError::new(-32603, e)),
+    }
+}
+
+// ============================================================================
+// Web RPC handlers (thread fork/unfork/ownership from web UI)
+// ============================================================================
+
+/// Dispatch a web RPC request to the appropriate handler.
+pub(super) async fn handle_web_rpc(request: crate::web::WebRpcRequest, state: &DaemonState) {
+    use crate::web::WebRpcRequest;
+    match request {
+        WebRpcRequest::ForkThread {
+            thread_parent_id,
+            channel_name,
+            response_tx,
+        } => {
+            let result = handle_web_fork_thread(&thread_parent_id, &channel_name, state).await;
+            let _ = response_tx.send(result);
+        }
+        WebRpcRequest::UnforkThread {
+            thread_parent_id,
+            response_tx,
+        } => {
+            let result = handle_web_unfork_thread(&thread_parent_id, state).await;
+            let _ = response_tx.send(result);
+        }
+        WebRpcRequest::ThreadOwnership {
+            thread_parent_id,
+            channel_name,
+            response_tx,
+        } => {
+            let result = handle_web_thread_ownership(&thread_parent_id, &channel_name, state).await;
+            let _ = response_tx.send(result);
+        }
+    }
+}
+
+/// Fork a thread from the web UI: create a dedicated session for the given thread.
+///
+/// Looks up the channel lead for the given channel and delegates to `create_fork_session`.
+/// On success, sends a framing nudge to the new fork so it understands its thread scope.
+async fn handle_web_fork_thread(
+    thread_parent_id: &str,
+    channel_name: &str,
+    state: &DaemonState,
+) -> Result<serde_json::Value, String> {
+    // Look up the channel lead's session ID
+    let lead_session_id = {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .get(channel_name)
+            .filter(|s| !s.is_empty())
+            .cloned()
+    };
+
+    let lead_sid = lead_session_id
+        .ok_or_else(|| format!("No channel lead running for channel '{}'", channel_name))?;
+
+    match create_fork_session(
+        thread_parent_id,
+        &lead_sid,
+        Some(channel_name),
+        None, // no name hint from UI
+        "web.fork_thread",
+        state,
+    )
+    .await
+    {
+        Ok((fork_sid, is_existing)) => {
+            if !is_existing {
+                // Fresh fork: send framing nudge
+                let framing = super::rpc_channel::fork_initial_framing(channel_name);
+                let framing_effect = crate::daemon::effects::Effect::NudgeSession {
+                    session_id: fork_sid.clone(),
+                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
+                };
+                crate::daemon::effects::execute_effects(vec![framing_effect], state).await;
+            }
+            Ok(serde_json::json!({
+                "session_id": fork_sid,
+                "thread_parent_id": thread_parent_id,
+                "already_exists": is_existing,
+            }))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Unfork a thread from the web UI: kill the dedicated session and clean up.
+///
+/// Looks up the fork session bound to the thread, shuts it down, and removes
+/// all transient state so future replies route to the channel lead.
+async fn handle_web_unfork_thread(
+    thread_parent_id: &str,
+    state: &DaemonState,
+) -> Result<serde_json::Value, String> {
+    // Find the fork session for this thread
+    let fork_session_id = {
+        let topic = state.topic_sessions.lock().unwrap();
+        topic
+            .get(thread_parent_id)
+            .filter(|s| s.as_str() != "pending")
+            .cloned()
+    };
+
+    let fork_sid =
+        fork_session_id.ok_or_else(|| "No dedicated session exists for this thread".to_string())?;
+
+    // Look up the fork's name
+    let fork_name = {
+        let s2n = state.session_to_name.lock().unwrap();
+        s2n.get(&fork_sid).cloned()
+    };
+
+    // Shut down the fork session
+    if let Some(ref name) = fork_name {
+        if let Err(e) = state.session_manager.shutdown(name).await {
+            warn!(
+                "web.unfork_thread: failed to shut down fork session {}: {}",
+                name, e
+            );
+        }
+        // Clean up all transient state
+        state.cleanup_coworker_state(name).await;
+    }
+
+    // Also remove from topic_sessions directly in case cleanup didn't cover it
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        topic.remove(thread_parent_id);
+    }
+
+    info!(
+        "web.unfork_thread: removed fork session for thread {} (name={:?}, sid={})",
+        thread_parent_id, fork_name, fork_sid
+    );
+
+    Ok(serde_json::json!({
+        "thread_parent_id": thread_parent_id,
+        "removed_session": fork_name,
+    }))
+}
+
+/// Query thread ownership: who handles this thread?
+async fn handle_web_thread_ownership(
+    thread_parent_id: &str,
+    channel_name: &str,
+    state: &DaemonState,
+) -> Result<crate::web::ThreadOwnershipInfo, String> {
+    // Check if there's a fork session for this thread
+    let fork_session_id = {
+        let topic = state.topic_sessions.lock().unwrap();
+        topic
+            .get(thread_parent_id)
+            .filter(|s| s.as_str() != "pending")
+            .cloned()
+    };
+
+    if let Some(fork_sid) = fork_session_id {
+        // Thread has a dedicated session
+        let owner_name = {
+            let s2n = state.session_to_name.lock().unwrap();
+            s2n.get(&fork_sid)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+        Ok(crate::web::ThreadOwnershipInfo {
+            owner: owner_name,
+            is_fork: true,
+            channel: Some(channel_name.to_string()),
+        })
+    } else {
+        // Thread handled by channel lead
+        let lead_name = channel_name.to_string();
+        Ok(crate::web::ThreadOwnershipInfo {
+            owner: lead_name,
+            is_fork: false,
+            channel: Some(channel_name.to_string()),
+        })
     }
 }
 

@@ -299,10 +299,12 @@ pub async fn start_webhook_server(
     broadcast::Sender<WebUpdate>,
     mpsc::Receiver<MobileChannelPost>,
     Option<Arc<crate::push::PushManager>>,
+    mpsc::Receiver<web::WebRpcRequest>,
 )> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
     let (mobile_tx, mobile_rx) = mpsc::channel(100);
+    let (web_rpc_tx, web_rpc_rx) = mpsc::channel(32);
 
     let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
@@ -336,6 +338,7 @@ pub async fn start_webhook_server(
         default_branch,
         max_coworkers,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: Some(web_rpc_tx),
     });
 
     // CORS layer for development (allows requests from Vite dev server)
@@ -365,7 +368,7 @@ pub async fn start_webhook_server(
         }
     });
 
-    Ok((rx, web_updates_tx, mobile_rx, push_manager))
+    Ok((rx, web_updates_tx, mobile_rx, push_manager, web_rpc_rx))
 }
 
 /// Health check endpoint

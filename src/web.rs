@@ -145,6 +145,38 @@ pub struct MobileChannelPost {
     pub thread_parent_id: Option<String>,
 }
 
+/// Thread ownership info returned by the thread_ownership API.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadOwnershipInfo {
+    /// Display name of the session that owns this thread (channel lead or fork name).
+    pub owner: String,
+    /// True when the thread is handled by a dedicated fork session.
+    pub is_fork: bool,
+    /// Channel name this thread belongs to.
+    pub channel: Option<String>,
+}
+
+/// A request from the web server to the daemon that expects a response.
+pub enum WebRpcRequest {
+    /// Fork a thread: create a dedicated session for the given thread.
+    ForkThread {
+        thread_parent_id: String,
+        channel_name: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    /// Unfork a thread: kill the dedicated session and return to channel lead.
+    UnforkThread {
+        thread_parent_id: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+    },
+    /// Query thread ownership (who handles this thread).
+    ThreadOwnership {
+        thread_parent_id: String,
+        channel_name: String,
+        response_tx: tokio::sync::oneshot::Sender<Result<ThreadOwnershipInfo, String>>,
+    },
+}
+
 /// Shared state for WebSocket connections
 pub struct WebState {
     pub config: WebConfig,
@@ -165,6 +197,9 @@ pub struct WebState {
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
+    /// Sender for thread fork/unfork/ownership RPCs to the daemon.
+    /// Optional because standalone webserver tests don't need the daemon.
+    pub web_rpc_tx: Option<mpsc::Sender<WebRpcRequest>>,
 }
 
 impl WebState {
@@ -381,6 +416,9 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/search", get(api_search))
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
+        .route("/api/threads/fork", post(api_thread_fork))
+        .route("/api/threads/unfork", post(api_thread_unfork))
+        .route("/api/threads/ownership", get(api_thread_ownership))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -2222,6 +2260,129 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         reply_count: None,
         last_reply: None,
     })
+}
+
+// ── Thread fork/unfork/ownership API ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ThreadForkRequest {
+    thread_parent_id: String,
+    channel_name: String,
+}
+
+#[derive(Deserialize)]
+struct ThreadUnforkRequest {
+    thread_parent_id: String,
+}
+
+#[derive(Deserialize)]
+struct ThreadOwnershipQuery {
+    thread_parent_id: String,
+    channel_name: String,
+}
+
+async fn api_thread_fork(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<ThreadForkRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let rpc_tx = state.web_rpc_tx.as_ref().ok_or_else(|| {
+        warn!("api_thread_fork: no web_rpc_tx available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rpc_tx
+        .send(WebRpcRequest::ForkThread {
+            thread_parent_id: body.thread_parent_id,
+            channel_name: body.channel_name,
+            response_tx: tx,
+        })
+        .await
+        .map_err(|_| {
+            error!("api_thread_fork: failed to send to daemon");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match rx.await {
+        Ok(Ok(value)) => Ok(Json(value)),
+        Ok(Err(e)) => {
+            warn!("api_thread_fork: daemon error: {}", e);
+            Ok(Json(serde_json::json!({ "error": e })))
+        }
+        Err(_) => {
+            error!("api_thread_fork: response channel dropped");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn api_thread_unfork(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<ThreadUnforkRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let rpc_tx = state.web_rpc_tx.as_ref().ok_or_else(|| {
+        warn!("api_thread_unfork: no web_rpc_tx available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rpc_tx
+        .send(WebRpcRequest::UnforkThread {
+            thread_parent_id: body.thread_parent_id,
+            response_tx: tx,
+        })
+        .await
+        .map_err(|_| {
+            error!("api_thread_unfork: failed to send to daemon");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match rx.await {
+        Ok(Ok(value)) => Ok(Json(value)),
+        Ok(Err(e)) => {
+            warn!("api_thread_unfork: daemon error: {}", e);
+            Ok(Json(serde_json::json!({ "error": e })))
+        }
+        Err(_) => {
+            error!("api_thread_unfork: response channel dropped");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn api_thread_ownership(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<ThreadOwnershipQuery>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let rpc_tx = state.web_rpc_tx.as_ref().ok_or_else(|| {
+        warn!("api_thread_ownership: no web_rpc_tx available");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    rpc_tx
+        .send(WebRpcRequest::ThreadOwnership {
+            thread_parent_id: params.thread_parent_id,
+            channel_name: params.channel_name,
+            response_tx: tx,
+        })
+        .await
+        .map_err(|_| {
+            error!("api_thread_ownership: failed to send to daemon");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    match rx.await {
+        Ok(Ok(info)) => Ok(Json(serde_json::json!(info))),
+        Ok(Err(e)) => {
+            warn!("api_thread_ownership: daemon error: {}", e);
+            Ok(Json(serde_json::json!({ "error": e })))
+        }
+        Err(_) => {
+            error!("api_thread_ownership: response channel dropped");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// Broadcast a new channel message to all WebSocket clients

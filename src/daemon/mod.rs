@@ -2859,6 +2859,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
     let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
+    let mut web_rpc_rx: Option<tokio::sync::mpsc::Receiver<crate::web::WebRpcRequest>> = None;
     let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
@@ -2884,11 +2885,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         )
         .await
         {
-            Ok((rx, updates_tx, mob_rx, push_mgr)) => {
+            Ok((rx, updates_tx, mob_rx, push_mgr, wrpc_rx)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
                 web_updates_tx = Some(updates_tx);
                 mobile_rx = Some(mob_rx);
+                web_rpc_rx = Some(wrpc_rx);
                 shared_push_manager = push_mgr;
 
                 // Spawn webhook forwarder watchdog task
@@ -3467,6 +3469,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     thread_parent_id,
                     &state,
                 ).await;
+            }
+
+            // Process web RPC requests (thread fork/unfork/ownership from web UI)
+            Some(web_rpc) = async {
+                match web_rpc_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                rpc_session::handle_web_rpc(web_rpc, &state).await;
             }
 
             // Drain events from headless sessions to prevent stdout buffer filling up.

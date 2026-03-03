@@ -55,6 +55,7 @@ async fn test_mobile_send_message_forwards_to_daemon() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     let json = r#"{"type": "send_message", "content": "hello from mobile"}"#;
@@ -237,6 +238,7 @@ async fn test_coworker_nudge_returns_error() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     let json = r#"{"type": "nudge", "target": "lexington", "message": "test nudge"}"#;
@@ -296,6 +298,7 @@ async fn test_coworker_nudge_not_supported_via_web_ui() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     // Try to nudge a coworker (not "lead")
@@ -357,6 +360,7 @@ async fn test_error_channel_backpressure() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     // Trigger 20 errors (channel capacity is 10) by sending invalid messages.
@@ -615,6 +619,7 @@ async fn test_answer_question_invalid_coworker_name() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     let json =
@@ -642,6 +647,7 @@ async fn test_answer_question_empty_answer() {
         default_branch: "main".to_string(),
         max_coworkers: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        web_rpc_tx: None,
     });
 
     let json = r#"{"type": "answer_question", "coworker_name": "lexington", "answer": ""}"#;

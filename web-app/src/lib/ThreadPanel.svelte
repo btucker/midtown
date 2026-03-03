@@ -8,7 +8,7 @@
 
 <script>
   import { threadData, agentToolItems, threadToolItems, deepLinkMsgId } from './store.js'
-  import { sendMessage, closeThread, getApiBase } from './api.js'
+  import { sendMessage, closeThread, getApiBase, fetchThreadOwnership, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
@@ -101,6 +101,18 @@
   let thinking = $state(false)
   let thinkingTimeout = null
 
+  // Thread ownership state: tracks whether this thread has a dedicated fork session.
+  // { owner: string, is_fork: boolean, channel?: string } or null when loading/unknown.
+  let threadOwnership = $state(null)
+  let forkLoading = $state(false)
+
+  // Whether the current channel is a topic channel (non-default, non-DM)
+  let isTopicChannel = $derived(
+    $threadData?.channelName
+    && $threadData.channelName !== 'midtown'
+    && !$threadData.channelName.startsWith('dm-')
+  )
+
   // Stable thread identity: changes only when a different thread is opened or closed.
   // Using $derived ensures the clearing effect below re-runs only on actual thread switches,
   // not on every message-array update (which reassigns $threadData but keeps the same id).
@@ -120,6 +132,42 @@
       thinkingTimeout = null
     }
   })
+
+  // Fetch thread ownership when the thread panel opens or switches threads.
+  $effect(() => {
+    const tid = currentThreadId
+    const channel = $threadData?.channelName
+    threadOwnership = null
+    if (tid && channel && channel !== 'midtown' && !channel.startsWith('dm-')) {
+      fetchThreadOwnership(tid, channel).then((info) => {
+        // Guard against stale fetch
+        if (currentThreadId === tid) {
+          threadOwnership = info
+        }
+      })
+    }
+  })
+
+  async function handleToggleFork() {
+    const tid = currentThreadId
+    const channel = $threadData?.channelName
+    if (!tid || !channel) return
+    forkLoading = true
+    try {
+      if (threadOwnership?.is_fork) {
+        await unforkThread(tid)
+      } else {
+        await forkThread(tid, channel)
+      }
+      // Refresh ownership after toggle
+      const info = await fetchThreadOwnership(tid, channel)
+      if (currentThreadId === tid) {
+        threadOwnership = info
+      }
+    } finally {
+      forkLoading = false
+    }
+  }
 
   // Save/restore drafts when switching threads
   $effect(() => {
@@ -385,7 +433,36 @@
 
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-2 bg-card border-b-2 border-border shrink-0">
-      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+      <div class="flex items-center gap-2 min-w-0">
+        <div class="relative shrink-0">
+          <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+          {#if threadOwnership?.is_fork}
+            <span
+              class="absolute -top-0.5 -right-2 w-2 h-2 rounded-full bg-primary"
+              title="Running in a dedicated thread session"
+            ></span>
+          {/if}
+        </div>
+        {#if isTopicChannel && currentThreadId}
+          <button
+            class="text-[0.7rem] px-2 py-0.5 rounded border transition-all duration-150 shrink-0 {threadOwnership?.is_fork
+              ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+              : 'border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground'}"
+            onclick={handleToggleFork}
+            disabled={forkLoading}
+            title={threadOwnership?.is_fork ? 'Return thread to channel lead' : 'Create a dedicated session for this thread'}
+            data-testid="thread-fork-toggle"
+          >
+            {#if forkLoading}
+              ...
+            {:else if threadOwnership?.is_fork}
+              Return to main
+            {:else}
+              Dedicate session
+            {/if}
+          </button>
+        {/if}
+      </div>
       <button
         class="w-8 h-8 flex items-center justify-center bg-transparent border border-border rounded-md text-muted-foreground text-[1.3rem] cursor-pointer transition-all duration-150 leading-none hover:bg-accent hover:border-destructive hover:text-destructive ml-2 shrink-0"
         onclick={handleClose}
@@ -587,7 +664,34 @@
         aria-label="Back to channel"
         data-testid="thread-back-button"
       >&larr;</button>
-      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+      <div class="relative shrink-0">
+        <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+        {#if threadOwnership?.is_fork}
+          <span
+            class="absolute -top-0.5 -right-2 w-2 h-2 rounded-full bg-primary"
+            title="Running in a dedicated thread session"
+          ></span>
+        {/if}
+      </div>
+      {#if isTopicChannel && currentThreadId}
+        <button
+          class="text-[0.7rem] px-2 py-0.5 rounded border transition-all duration-150 shrink-0 ml-auto {threadOwnership?.is_fork
+            ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+            : 'border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground'}"
+          onclick={handleToggleFork}
+          disabled={forkLoading}
+          title={threadOwnership?.is_fork ? 'Return thread to channel lead' : 'Create a dedicated session for this thread'}
+          data-testid="thread-fork-toggle-mobile"
+        >
+          {#if forkLoading}
+            ...
+          {:else if threadOwnership?.is_fork}
+            Return to main
+          {:else}
+            Dedicate session
+          {/if}
+        </button>
+      {/if}
     </div>
 
     <!-- Mobile messages -->
