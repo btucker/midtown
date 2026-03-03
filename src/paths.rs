@@ -288,7 +288,8 @@ pub fn assets_dir_for_repo(repo: &str) -> PathBuf {
 /// in PR descriptions. Unlike the uploads directory (which stores files
 /// uploaded via multipart POST), screenshots are saved directly by the
 /// `midtown coworker screenshot` command and served at
-/// `/api/screenshots/<filename>` by the per-project daemon.
+/// `/api/projects/:name/screenshots/:filename` on the shared gateway
+/// and `/api/screenshots/:filename` on the per-project daemon.
 pub fn screenshots_dir_for_repo(repo: &str) -> PathBuf {
     projects_dir_for_repo(repo).join("screenshots")
 }
