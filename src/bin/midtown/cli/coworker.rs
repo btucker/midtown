@@ -126,7 +126,8 @@ impl Drop for TempFileGuard {
 ///
 /// Does not require a daemon connection — runs Playwright locally and saves
 /// the screenshot to the project's screenshots directory with a UUID filename.
-/// The file is then served by the daemon at `/api/screenshots/<uuid>.<ext>`.
+/// The file is then served at `/api/projects/:name/screenshots/:filename`
+/// on the shared gateway and `/api/screenshots/:filename` on the per-project daemon.
 pub fn handle_screenshot(
     url: &str,
     output: Option<&str>,
