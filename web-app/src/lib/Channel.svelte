@@ -5,6 +5,7 @@
   import { tick, onMount, untrack } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
+  import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
@@ -938,7 +939,7 @@
       getDescription={getAutocompleteDescription}
       onSelect={insertAutocompleteItem}
     />
-    <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border" onsubmit={handleSubmit}>
+    <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="file-preview">
           {#if pendingFile.type.startsWith('image/')}
@@ -959,14 +960,14 @@
           </button>
         </div>
       {/if}
-      <div class="flex gap-2 w-full">
+      <div class="relative w-full">
         <textarea
           data-testid="channel-input"
           bind:this={textareaElement}
           bind:value={inputText}
           placeholder={isDm ? `Message @${dmPeerName}...` : `Message to #${$activeChannel}...`}
           rows="1"
-          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-border rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}
@@ -975,9 +976,9 @@
           type="submit"
           disabled={!inputText.trim() && !pendingFile || uploading}
           data-testid="send-button"
-          class="py-[13px] px-[22px] border-none rounded-[26px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-primary/90"
+          class="absolute right-[12px] top-[50%] -translate-y-[50%] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         >
-          {uploading ? 'Uploading...' : 'Send'}
+          <SendHorizontal size={18} />
         </button>
       </div>
     </form>

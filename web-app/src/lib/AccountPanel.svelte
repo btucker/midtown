@@ -4,6 +4,7 @@
   import { estimateTimeToFull, formatResetTime, usageColor } from './usage-utils.js'
   import { onMount } from 'svelte'
 
+  let { footerLeft } = $props()
   let listExpanded = $state(false)
   let expandedKey = $state(null)
   let switchingKey = $state(null)
@@ -211,16 +212,21 @@
       {/if}
     {/if}
 
-    <!-- Toggle to show/hide inactive accounts -->
-    {#if inactiveProfiles.length > 0}
-      <button
-        type="button"
-        class="w-full text-[0.6rem] text-muted-foreground bg-transparent border-none px-1 py-0.5 cursor-pointer hover:text-sidebar-foreground transition-colors text-right"
-        onclick={toggleList}
-      >
-        {listExpanded ? 'Hide' : 'Show all'} ({inactiveProfiles.length + activeProfiles.length})
-      </button>
-    {/if}
+    <!-- Bottom row: optional left content + toggle -->
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-1">
+        {#if footerLeft}{@render footerLeft()}{/if}
+      </div>
+      {#if inactiveProfiles.length > 0}
+        <button
+          type="button"
+          class="text-[0.6rem] text-muted-foreground bg-transparent border-none px-1 py-0.5 cursor-pointer hover:text-sidebar-foreground transition-colors"
+          onclick={toggleList}
+        >
+          {listExpanded ? 'Hide' : 'Show all'} ({inactiveProfiles.length + activeProfiles.length})
+        </button>
+      {/if}
+    </div>
 
     {#if error}
       <div class="text-[0.62rem] text-destructive px-1 py-0.5">{error}</div>

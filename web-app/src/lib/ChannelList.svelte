@@ -5,6 +5,7 @@
   import {
     getChannelTaskCount,
     getChannelCiStatus,
+    getChannelHasActiveTasks,
     computeExpandedAfterTriangleClick,
     computeExpandedAfterChannelNameClick,
     computeVisibleDmChannels,
@@ -28,6 +29,11 @@
   // Track which channels have their task lists expanded (default: collapsed)
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
+
+  // Auto-expand the active channel when it gains tasks (e.g., task created while viewing)
+  $: if ($activeChannel && getChannelHasActiveTasks($activeChannel, $kanbanData) && !expandedChannels.has($activeChannel)) {
+    expandedChannels.add($activeChannel)
+  }
 
   // DM section: collapsed by default, shows unread + active + visited DMs when expanded
   let dmSectionExpanded = false

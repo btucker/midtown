@@ -222,37 +222,6 @@
             >
               <SearchIcon size={16} />
             </button>
-            <button
-              class="theme-toggle"
-              class:push-subscribed={$pushSubscribed}
-              onclick={togglePush}
-              disabled={!$pushSupported || $pushPermission === 'denied'}
-              title={!$pushSupported
-                ? 'Push notifications not supported in this browser'
-                : $pushPermission === 'denied'
-                  ? 'Notifications blocked in browser settings'
-                  : $pushSubscribed
-                    ? 'Disable push notifications'
-                    : 'Enable push notifications'}
-            >
-              {#if $pushSubscribed}
-                <Bell size={16} />
-              {:else}
-                <BellOff size={16} />
-              {/if}
-            </button>
-            <button
-              data-testid="theme-toggle"
-              class="theme-toggle"
-              onclick={toggleTheme}
-              title={$theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            >
-              {#if $theme === 'dark'}
-                <Sun size={16} />
-              {:else}
-                <Moon size={16} />
-              {/if}
-            </button>
           </div>
         </SidebarHeader>
 
@@ -271,7 +240,41 @@
         <SidebarFooter class="p-2 pb-1">
           {#if activeView === 'board'}
             <CoworkerStatus />
-            <AccountPanel />
+            <AccountPanel>
+              {#snippet footerLeft()}
+                <button
+                  class="theme-toggle"
+                  class:push-subscribed={$pushSubscribed}
+                  onclick={togglePush}
+                  disabled={!$pushSupported || $pushPermission === 'denied'}
+                  title={!$pushSupported
+                    ? 'Push notifications not supported in this browser'
+                    : $pushPermission === 'denied'
+                      ? 'Notifications blocked in browser settings'
+                      : $pushSubscribed
+                        ? 'Disable push notifications'
+                        : 'Enable push notifications'}
+                >
+                  {#if $pushSubscribed}
+                    <Bell size={16} />
+                  {:else}
+                    <BellOff size={16} />
+                  {/if}
+                </button>
+                <button
+                  data-testid="theme-toggle"
+                  class="theme-toggle"
+                  onclick={toggleTheme}
+                  title={$theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                >
+                  {#if $theme === 'dark'}
+                    <Sun size={16} />
+                  {:else}
+                    <Moon size={16} />
+                  {/if}
+                </button>
+              {/snippet}
+            </AccountPanel>
           {/if}
         </SidebarFooter>
       </Sidebar>
