@@ -912,6 +912,11 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     if event.action != "created" && !is_edited {
         return Ok(None);
     }
+    // Ignore reviewer placeholder comments ("review in progress") — these
+    // should not generate pr_activity or nudge the PR owner.
+    if is_placeholder_comment(&event.comment.body) {
+        return Ok(None);
+    }
     if is_edited {
         if !is_review_comment(&event.comment.body) {
             return Ok(None);
@@ -999,6 +1004,11 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     // re-nudging the PR owner.
     let is_edited = event.action == "edited";
     if event.action != "created" && !is_edited {
+        return Ok(None);
+    }
+    // Ignore reviewer placeholder comments (defense-in-depth — unlikely for
+    // inline diff comments, but prevents false nudges if it ever happens).
+    if is_placeholder_comment(&event.comment.body) {
         return Ok(None);
     }
     if is_edited {
@@ -1275,6 +1285,15 @@ fn compute_check_duration(
 /// `daemon/helpers.rs` to detect review comments from webhook payloads.
 fn is_review_comment(body: &str) -> bool {
     crate::daemon::helpers::text_contains_review_signature(body)
+}
+
+/// Check if a comment is a reviewer placeholder ("review in progress").
+///
+/// Placeholder comments contain `<!-- midtown-placeholder -->` and should be
+/// ignored entirely — no `pr_activity` is generated, preventing false nudges
+/// to the PR owner while the review is still in progress.
+fn is_placeholder_comment(body: &str) -> bool {
+    body.contains("<!-- midtown-placeholder -->")
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely
