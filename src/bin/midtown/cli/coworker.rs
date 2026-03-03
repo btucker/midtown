@@ -252,9 +252,16 @@ pub(crate) fn save_screenshot_locally(
 
     if let Some(scheme) = webserver_scheme {
         let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
+        // Encode characters unsafe in URL path segments while preserving - . _ ~
+        const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+            .remove(b'-')
+            .remove(b'.')
+            .remove(b'_')
+            .remove(b'~');
+        let encoded_repo = percent_encoding::utf8_percent_encode(repo, PATH_SEGMENT);
         let url = format!(
             "{}://localhost:{}/api/projects/{}/screenshots/{}",
-            scheme, port, repo, filename
+            scheme, port, encoded_repo, filename
         );
         let alt = if before {
             "before"

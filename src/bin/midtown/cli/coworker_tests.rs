@@ -227,6 +227,41 @@ fn save_screenshot_locally_github_before_uses_before_alt_text() {
 }
 
 #[test]
+fn save_screenshot_locally_github_url_encodes_repo_name() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-github-encode-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        Some("http"),
+        "my project#1",
+    );
+
+    assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.contains("/api/projects/my%20project%231/screenshots/"),
+            "Repo name with spaces/special chars should be URL-encoded, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
 fn save_screenshot_locally_github_after_uses_after_alt_text() {
     let screenshots_tmp = tempfile::tempdir().unwrap();
     let screenshots_dir = screenshots_tmp.path().join("screenshots");
