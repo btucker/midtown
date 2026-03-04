@@ -92,6 +92,7 @@ export default defineConfig({
   },
   build: {
     emptyOutDir: true,
+    sourcemap: true,
   },
   test: {
     exclude: ['e2e/**', 'node_modules/**'],

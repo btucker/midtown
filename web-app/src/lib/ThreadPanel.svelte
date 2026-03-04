@@ -116,11 +116,19 @@
   )
   let forkPending = $state(false)
 
-  // Clear forkPending when ownership state updates
+  // Clear forkPending when ownership state updates.
+  // Uses a version counter to prevent stale microtasks from overwriting a
+  // synchronous `forkPending = true` set by a subsequent handleForkToggle call.
+  let forkPendingVersion = 0
   $effect(() => {
     if ($threadData?.parentMessage?.id) {
       const _ownership = $threadOwnership[$threadData.parentMessage.id]
-      forkPending = false
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      const version = ++forkPendingVersion
+      queueMicrotask(() => {
+        if (version !== forkPendingVersion) return
+        forkPending = false
+      })
     }
   })
 
@@ -128,6 +136,7 @@
 
   function handleForkToggle() {
     if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
+    forkPendingVersion++  // invalidate any pending microtask that would clear forkPending
     forkPending = true
     forkError = null
     const onError = (msg) => {
@@ -156,7 +165,8 @@
   // Clear thinking when the thread is closed or switched to a different thread.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
-    thinking = false
+    // Defer state write to avoid state_unsafe_mutation during derived evaluation
+    queueMicrotask(() => { thinking = false })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
@@ -175,10 +185,16 @@
       }
     }
     if (prevThreadId !== tid) {
-      replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation.
+      // resizeTextarea must run after the state write so the textarea height reflects
+      // the restored draft content, not the stale empty value.
+      const draft = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+      queueMicrotask(() => {
+        replyText = draft
+        tick().then(() => resizeTextarea())
+      })
     }
     prevThreadId = tid
-    tick().then(() => resizeTextarea())
   })
 
   // Clear thinking when real InProgress tool items arrive.
@@ -196,7 +212,8 @@
     const items = threadItems.length > 0 ? threadItems : channelItems
     const hasInProgress = items.some((item) => item.status === 'InProgress')
     if (hasInProgress) {
-      thinking = false
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      queueMicrotask(() => { thinking = false })
       if (thinkingTimeout) {
         clearTimeout(thinkingTimeout)
         thinkingTimeout = null
