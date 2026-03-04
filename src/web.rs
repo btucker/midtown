@@ -242,6 +242,11 @@ pub struct ThreadOwnershipData {
     /// is active; the frontend extracts the avenue prefix to color-code activity dots.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
+    /// The parent channel lead's name (e.g., "web"). When present, the frontend
+    /// displays the fork session using the parent lead's name and color instead
+    /// of the fork session's own name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_lead: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
