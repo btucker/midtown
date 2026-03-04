@@ -111,8 +111,6 @@ struct ResolvePayload {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PaneHost {
-    Zellij,
-    Tmux,
     Ghostty,
     ITerm,
     Unknown,
@@ -137,8 +135,6 @@ impl PaneLauncher {
 
     fn launch(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
         match self.host {
-            PaneHost::Tmux => self.launch_tmux(cwd, shell_command),
-            PaneHost::Zellij => self.launch_zellij(cwd, shell_command),
             PaneHost::Ghostty => self.launch_ghostty(cwd, shell_command),
             PaneHost::ITerm => self.launch_iterm(cwd, shell_command),
             PaneHost::Unknown => {
@@ -146,39 +142,6 @@ impl PaneLauncher {
                 Ok("current terminal".to_string())
             }
         }
-    }
-
-    fn launch_tmux(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
-        let status = Command::new("tmux")
-            .args(["split-window", "-h", "-c", cwd, "sh", "-lc", shell_command])
-            .status()
-            .map_err(|e| format!("Failed to run tmux split-window: {}", e))?;
-        if !status.success() {
-            return Err("tmux split-window failed".to_string());
-        }
-        Ok("tmux split pane".to_string())
-    }
-
-    fn launch_zellij(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
-        let status = Command::new("zellij")
-            .args([
-                "action",
-                "new-pane",
-                "-d",
-                "right",
-                "--cwd",
-                cwd,
-                "--",
-                "sh",
-                "-lc",
-                shell_command,
-            ])
-            .status()
-            .map_err(|e| format!("Failed to run zellij action new-pane: {}", e))?;
-        if !status.success() {
-            return Err("zellij action new-pane failed".to_string());
-        }
-        Ok("zellij pane".to_string())
     }
 
     fn launch_ghostty(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
@@ -1046,13 +1009,6 @@ fn trigger_ghostty_keybinding(binding: &str) -> Result<bool, String> {
 }
 
 fn detect_pane_host_from(get_env: impl Fn(&str) -> Option<String>) -> PaneHost {
-    if get_env("ZELLIJ").is_some() {
-        return PaneHost::Zellij;
-    }
-    if get_env("TMUX").is_some() {
-        return PaneHost::Tmux;
-    }
-
     let term_program = get_env("TERM_PROGRAM")
         .unwrap_or_default()
         .to_ascii_lowercase();

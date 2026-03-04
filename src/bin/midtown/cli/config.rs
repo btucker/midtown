@@ -42,8 +42,6 @@ const VALID_KEYS: &[&str] = &[
     "default.max_coworkers",
     "default.chat_layout",
     "default.chat_min_width",
-    "default.zellij_swap_layout",
-    "default.zellij_chat_pane_size",
     "default.user_display_name",
     "default.bin_command",
     "daemon.webhook_port",
@@ -278,8 +276,6 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
         "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
-        "default.zellij_swap_layout" => fmt_opt(config.default.zellij_swap_layout),
-        "default.zellij_chat_pane_size" => fmt_opt(config.default.zellij_chat_pane_size),
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
         "default.bin_command" => fmt_opt(config.default.bin_command.as_deref()),
         "daemon.webhook_port" => fmt_opt(config.daemon.webhook_port),
@@ -339,8 +335,6 @@ fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -
         "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
-        "default.zellij_swap_layout" => fmt_opt(config.default.zellij_swap_layout),
-        "default.zellij_chat_pane_size" => fmt_opt(config.default.zellij_chat_pane_size),
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
         "default.bin_command" => fmt_opt(config.default.bin_command.as_deref()),
         "daemon.webhook_port" => fmt_opt(config.daemon.webhook_port),
@@ -409,12 +403,6 @@ fn apply_global_key(
         }
         "default.chat_min_width" => {
             config.default.chat_min_width = Some(parse_u16(key, value)?);
-        }
-        "default.zellij_swap_layout" => {
-            config.default.zellij_swap_layout = Some(parse_bool(key, value)?);
-        }
-        "default.zellij_chat_pane_size" => {
-            config.default.zellij_chat_pane_size = Some(parse_pane_size(value)?);
         }
         "default.user_display_name" => {
             config.default.user_display_name = Some(value.to_string());
@@ -510,12 +498,6 @@ fn apply_project_key(
         }
         "default.chat_min_width" => {
             config.default.chat_min_width = Some(parse_u16(key, value)?);
-        }
-        "default.zellij_swap_layout" => {
-            config.default.zellij_swap_layout = Some(parse_bool(key, value)?);
-        }
-        "default.zellij_chat_pane_size" => {
-            config.default.zellij_chat_pane_size = Some(parse_pane_size(value)?);
         }
         "default.user_display_name" => {
             config.default.user_display_name = Some(value.to_string());
@@ -660,23 +642,6 @@ fn parse_usize(key: &str, value: &str) -> Result<usize, String> {
             value, key
         )
     })
-}
-
-/// Parse a Zellij chat pane size: must be 10-90.
-fn parse_pane_size(value: &str) -> Result<u8, String> {
-    let n = value.parse::<u8>().map_err(|_| {
-        format!(
-            "Invalid value '{}' for 'default.zellij_chat_pane_size'. Expected an integer 10-90.",
-            value
-        )
-    })?;
-    if !(10..=90).contains(&n) {
-        return Err(format!(
-            "Invalid value '{}' for 'default.zellij_chat_pane_size'. Must be between 10 and 90.",
-            value
-        ));
-    }
-    Ok(n)
 }
 
 fn parse_u16(key: &str, value: &str) -> Result<u16, String> {

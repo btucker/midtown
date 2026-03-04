@@ -93,11 +93,7 @@ enum Commands {
         repos: Vec<std::path::PathBuf>,
     },
     /// Stop midtown services
-    Stop {
-        /// Keep legacy midtown-* multiplexer sessions running if present
-        #[arg(long)]
-        keep_session: bool,
-    },
+    Stop {},
     /// Restart midtown (stop + start)
     Restart {
         /// Skip waiting for active review coworkers to go on break before restart
@@ -547,8 +543,8 @@ fn main() {
     }
 
     // Stop command (stops daemon, doesn't need existing connection)
-    if let Commands::Stop { keep_session } = &command {
-        let result = cli::handle_stop(*keep_session);
+    if let Commands::Stop {} = &command {
+        let result = cli::handle_stop();
         handle_result(format, result);
         return;
     }

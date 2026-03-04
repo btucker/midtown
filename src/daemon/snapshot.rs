@@ -142,7 +142,7 @@ pub struct SnapshotCoworkerState {
     /// Populated alongside `active_names` during snapshot collection.
     #[serde(default)]
     pub active_session_ids: HashSet<String>,
-    /// Tmux session name (e.g., "midtown-projectname").
+    /// Session name (e.g., "midtown-projectname").
     pub session_name: String,
     /// Coworker start times keyed by lowercase name.
     pub coworker_start_times: HashMap<String, DateTime<Utc>>,
@@ -614,7 +614,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
     let running_coworkers = state.coworkers.list_running();
-    let session_name = format!("{}{}", crate::process::SESSION_PREFIX, state.repo_name);
+    let session_name = format!("midtown-{}", state.repo_name);
 
     let coworker_snapshots: Vec<CoworkerSnapshot> = active_coworkers
         .iter()

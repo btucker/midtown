@@ -18,7 +18,7 @@ cargo install --path .          # release build + install to ~/.cargo/bin/
 # Test
 cargo test                      # unit + non-ignored integration tests
 cargo test <test_name>          # run a single test by name
-cargo test --test daemon_e2e -- --ignored --test-threads=1  # E2E (requires Zellij)
+cargo test --test daemon_e2e -- --ignored --test-threads=1  # E2E tests
 
 # Lint (CI enforces -D warnings)
 cargo clippy --all-targets --all-features -- -D warnings
@@ -51,7 +51,7 @@ sccache --show-stats   # verify cache hits after a second build
 
 **Pre-commit hooks** (cargo-husky): `cargo fmt` and `cargo clippy` run automatically on commit. If clippy fails, the commit is rejected — fix before retrying.
 
-**E2E tests** require Zellij and run with `--ignored`. CI uses `MIDTOWN_WEBHOOK_PORT=0` and `MIDTOWN_CHAT_MONITOR=0` to disable network features during testing.
+**E2E tests** run with `--ignored`. CI uses `MIDTOWN_WEBHOOK_PORT=0` and `MIDTOWN_CHAT_MONITOR=0` to disable network features during testing.
 
 **Containerized E2E tests** (canonical way to run E2E — reproducible environment):
 

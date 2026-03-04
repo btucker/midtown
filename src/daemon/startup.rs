@@ -321,7 +321,6 @@ pub async fn recover_coworker_records(
 /// - Match the midtown settings pattern (scoped to this installation)
 /// - Are truly orphaned (PPID=1), OR
 /// - Are children of a stale midtown daemon (parent is a midtown process that isn't the current daemon)
-/// - Are not tmux processes
 ///
 /// `session_pids_to_preserve` is an exclusion list of PIDs belonging to headless
 /// sessions that should be recovered on startup. These processes are intentionally
@@ -362,7 +361,7 @@ pub fn kill_zombie_claude_processes(
         return;
     }
 
-    // Filter to orphaned processes or children of stale daemons, excluding tmux
+    // Filter to orphaned processes or children of stale daemons
     let mut zombie_pids = Vec::new();
     for pid in candidate_pids {
         // Skip PIDs belonging to sessions we intend to recover. These processes
@@ -374,22 +373,6 @@ pub fn kill_zombie_claude_processes(
                 "Skipping session-survival process {} (will be recovered with --resume)",
                 pid
             );
-            continue;
-        }
-
-        // Check if process is tmux (should not kill)
-        let is_tmux = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "comm="])
-            .output()
-            .ok()
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .starts_with("tmux")
-            })
-            .unwrap_or(false);
-
-        if is_tmux {
             continue;
         }
 

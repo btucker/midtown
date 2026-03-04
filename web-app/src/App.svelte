@@ -9,7 +9,6 @@
   import ThreadPanel from '$lib/ThreadPanel.svelte'
   import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
-  import Tmux from '$lib/Tmux.svelte'
 
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
@@ -36,7 +35,7 @@
     if (favicon) favicon.href = $theme === 'dark' ? '/favicon-dark.png' : '/favicon-light.png'
   })
 
-  let activeView = $state('board') // 'board' (channel list + chat) or 'status' or 'tmux'
+  let activeView = $state('board') // 'board' (channel list + chat) or 'status'
   let projectDropdownOpen = $state(false)
   let searchOpen = $state(false)
 
@@ -241,8 +240,6 @@
             </div>
           {:else if activeView === 'status'}
             <Status />
-          {:else if activeView === 'tmux'}
-            <Tmux />
           {/if}
         </SidebarContent>
 
@@ -362,8 +359,6 @@
           </div>
         {:else if activeView === 'status'}
           <!-- Status view shown in sidebar -->
-        {:else if activeView === 'tmux'}
-          <!-- Tmux view shown in sidebar -->
         {/if}
       </main>
     </SidebarProvider>

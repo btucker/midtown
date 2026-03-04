@@ -9,7 +9,6 @@
 //! - `GET /api/projects` - List all known projects with status
 //! - `GET /api/projects/:name/status` - Proxy to per-project daemon status
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
-//! - `GET /api/projects/:name/zellij-web-url` - Get Zellij web client URL for project
 //! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
 //! - `GET /api/projects/:name/screenshots/:filename` - Serve per-project screenshot images for PR embedding
 //! - `GET /api/projects/:name/channels/:channel_name/notes` - List channel notes (markdown files)
@@ -426,17 +425,6 @@ pub(crate) fn mime_type_for_path(path: &std::path::Path) -> &'static str {
     }
 }
 
-/// Get the Zellij web client URL for a project.
-///
-/// Returns the URL and session name for the Zellij web client embed.
-async fn project_zellij_web_url(Path(name): Path<String>) -> Json<serde_json::Value> {
-    let session = format!("midtown-{}", name);
-    Json(serde_json::json!({
-        "url": "https://localhost:6780",
-        "session": session,
-    }))
-}
-
 /// List markdown notes for a channel.
 ///
 /// Path: `/api/projects/:name/channels/:channel_name/notes`
@@ -704,10 +692,6 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
         .route("/projects", get(list_projects))
         .route("/projects/{name}/status", get(project_status))
         .route("/projects/{name}/channel", get(project_channel))
-        .route(
-            "/projects/{name}/zellij-web-url",
-            get(project_zellij_web_url),
-        )
         .route("/projects/{name}/assets/{*path}", get(project_asset))
         .route(
             "/projects/{name}/screenshots/{filename}",

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 /// Test that daemon.enter-drain RPC sets the draining flag.
 #[test]
-#[ignore] // requires tmux
+#[ignore] // requires daemon
 fn test_enter_drain_mode() {
     // Clean up any previous test data
     let repo_name = format!("drain-test-{}", std::process::id());

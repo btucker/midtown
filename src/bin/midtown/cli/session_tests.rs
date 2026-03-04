@@ -78,25 +78,6 @@ fn normalize_single_target_rejects_missing_value() {
 // ── Pane host detection ───────────────────────────────────────────────
 
 #[test]
-fn detect_host_prefers_zellij_over_tmux() {
-    let host = detect_pane_host_from(|k| match k {
-        "ZELLIJ" => Some("1".to_string()),
-        "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
-        _ => None,
-    });
-    assert_eq!(host, PaneHost::Zellij);
-}
-
-#[test]
-fn detect_host_tmux_from_env() {
-    let host = detect_pane_host_from(|k| match k {
-        "TMUX" => Some("/tmp/tmux-1/default,123,0".to_string()),
-        _ => None,
-    });
-    assert_eq!(host, PaneHost::Tmux);
-}
-
-#[test]
 fn detect_host_ghostty_from_term_program() {
     let host = detect_pane_host_from(|k| match k {
         "TERM_PROGRAM" => Some("ghostty".to_string()),

@@ -308,7 +308,6 @@ fn open_diagram_in_browser(app: &App, idx: usize) {
 /// - End: \x1b]8;;\x07
 ///
 /// Requirements for clickable links:
-/// - tmux 3.4+ with `allow-passthrough on` (if running in tmux)
 /// - Terminal with OSC 8 support (iTerm2, kitty, WezTerm, etc.)
 fn render_hyperlinks<W: io::Write>(
     backend: &mut CrosstermBackend<W>,

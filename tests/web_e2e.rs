@@ -738,9 +738,8 @@ fn test_web_api_status_returns_kanban_data() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Note: /api/tmux-windows, /api/tmux-pane, and /api/lead-pane endpoints were
-// removed as part of the Zellij migration (Phase 7). The Svelte web app now
-// embeds the Zellij web client instead of fetching tmux pane content.
+// Note: /api/tmux-windows, /api/tmux-pane, and /api/lead-pane endpoints
+// were removed (legacy terminal multiplexer integration).
 // ────────────────────────────────────────────────────────────────────────────
 
 // ────────────────────────────────────────────────────────────────────────────

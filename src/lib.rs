@@ -1,8 +1,7 @@
-//! Midtown - Multi-agent workspace management daemon for Gas Town.
+//! Midtown - Multi-agent workspace management daemon.
 //!
 //! This crate provides the core library for the Midtown daemon, which manages
-//! multiple agent workspaces (polecats, refineries, witnesses) in a Git-based
-//! workflow system.
+//! multiple agent workspaces in a Git-based workflow system.
 //!
 //! ## Core Components
 //!
@@ -63,7 +62,7 @@ mod message;
 // Coworker management
 pub mod coworker;
 
-// Process management (orphan cleanup, PID tracking, Zellij detection)
+// Process management (orphan cleanup, PID tracking)
 pub mod process;
 
 // Settings and prompt file management for Claude Code sessions

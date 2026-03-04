@@ -78,7 +78,7 @@ fn invalid_bool_returns_error() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    let result = set_global_key("default.zellij_swap_layout", "maybe", &config_path);
+    let result = set_global_key("daemon.chat_monitor_enabled", "maybe", &config_path);
     assert!(result.is_err());
     let msg = result.unwrap_err();
     assert!(
@@ -120,8 +120,8 @@ fn set_and_get_global_bool() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    set_global_key("default.zellij_swap_layout", "true", &config_path).unwrap();
-    let value = get_global_key("default.zellij_swap_layout", &config_path).unwrap();
+    set_global_key("daemon.chat_monitor_enabled", "true", &config_path).unwrap();
+    let value = get_global_key("daemon.chat_monitor_enabled", &config_path).unwrap();
     assert_eq!(value, "true");
 }
 
@@ -274,16 +274,6 @@ fn set_and_get_project_chat_min_width() {
 }
 
 #[test]
-fn set_and_get_project_zellij_chat_pane_size() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_project_config(&dir);
-
-    set_project_key("default.zellij_chat_pane_size", "40", &config_path).unwrap();
-    let value = get_project_key("default.zellij_chat_pane_size", &config_path).unwrap();
-    assert_eq!(value, "40");
-}
-
-#[test]
 fn set_and_get_project_worktree_cleanup_retention_hours() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
@@ -325,14 +315,6 @@ fn list_global_shows_all_keys() {
     assert!(output.contains("default.chat_layout"), "Missing: {output}");
     assert!(
         output.contains("default.chat_min_width"),
-        "Missing: {output}"
-    );
-    assert!(
-        output.contains("default.zellij_swap_layout"),
-        "Missing: {output}"
-    );
-    assert!(
-        output.contains("default.zellij_chat_pane_size"),
         "Missing: {output}"
     );
     assert!(
@@ -474,48 +456,6 @@ fn set_persists_to_disk_via_project_config_load() {
 // Pane size range validation
 // ──────────────────────────────────────────────────────────────────────────────
 
-#[test]
-fn pane_size_below_minimum_returns_error() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_global_config(&dir);
-
-    let result = set_global_key("default.zellij_chat_pane_size", "5", &config_path);
-    assert!(result.is_err());
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("10") && msg.contains("90"),
-        "Expected range hint in: {msg}"
-    );
-}
-
-#[test]
-fn pane_size_above_maximum_returns_error() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_global_config(&dir);
-
-    let result = set_global_key("default.zellij_chat_pane_size", "95", &config_path);
-    assert!(result.is_err());
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("10") && msg.contains("90"),
-        "Expected range hint in: {msg}"
-    );
-}
-
-#[test]
-fn pane_size_boundary_values_are_valid() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_global_config(&dir);
-
-    set_global_key("default.zellij_chat_pane_size", "10", &config_path).unwrap();
-    let v = get_global_key("default.zellij_chat_pane_size", &config_path).unwrap();
-    assert_eq!(v, "10");
-
-    set_global_key("default.zellij_chat_pane_size", "90", &config_path).unwrap();
-    let v = get_global_key("default.zellij_chat_pane_size", &config_path).unwrap();
-    assert_eq!(v, "90");
-}
-
 // ──────────────────────────────────────────────────────────────────────────────
 // Project-scope type validation errors
 // ──────────────────────────────────────────────────────────────────────────────
@@ -531,20 +471,6 @@ fn project_scope_invalid_integer_returns_error() {
     assert!(
         msg.contains("invalid") || msg.contains("parse") || msg.contains("integer"),
         "Expected parse error in: {msg}"
-    );
-}
-
-#[test]
-fn project_scope_pane_size_out_of_range_returns_error() {
-    let dir = TempDir::new().unwrap();
-    let config_path = temp_project_config(&dir);
-
-    let result = set_project_key("default.zellij_chat_pane_size", "5", &config_path);
-    assert!(result.is_err());
-    let msg = result.unwrap_err();
-    assert!(
-        msg.contains("10") && msg.contains("90"),
-        "Expected range hint in: {msg}"
     );
 }
 

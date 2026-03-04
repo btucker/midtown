@@ -38,7 +38,7 @@ struct CoworkerSnapshot {
 struct DispatchSnapshotData {
     /// All tasks from the snapshot.
     all_tasks: Vec<Task>,
-    /// Names of currently active coworkers (running tmux windows).
+    /// Names of currently active coworkers (running sessions).
     active_names: HashSet<String>,
     /// Coworkers currently busy (have in_progress tasks).
     busy_coworkers: HashSet<String>,
@@ -398,7 +398,7 @@ fn pending_task_with_active_owner_gets_nudge() {
 /// Test that idle coworkers are available for task assignment.
 ///
 /// An idle coworker is one who is:
-/// - Active (has a running tmux window)
+/// - Active (has a running session)
 /// - Not busy (no in_progress tasks)
 /// - No open PR (not waiting for review)
 /// - Not assigned as a reviewer

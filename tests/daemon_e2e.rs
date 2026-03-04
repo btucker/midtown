@@ -1787,7 +1787,7 @@ fn test_daemon_installs_required_plugins() {
 
     let start_result = Command::new(&binary_path)
         .arg("start")
-        .arg("--daemon-only") // Don't create Zellij session, just start daemon
+        .arg("--daemon-only") // Just start daemon
         .current_dir(&fixture.temp_dir)
         .env("MIDTOWN_WEBHOOK_PORT", "0")
         .env("MIDTOWN_CHAT_MONITOR", "0")

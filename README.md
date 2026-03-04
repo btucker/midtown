@@ -60,7 +60,7 @@ If you're in a repo that's part of a project:
 midtown view
 ```
 
-You're now in the Zellij session with the Project Lead's Claude Code instance.
+You're now in the chat TUI with the Project Lead's Claude Code instance.
 
 To attach to a named project from any directory:
 
@@ -76,7 +76,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 
 | Command | Description |
 |---------|-------------|
-| `midtown start` | Start the daemon and Zellij session |
+| `midtown start` | Start the daemon |
 | `midtown stop` | Stop everything |
 | `midtown restart [--force]` | Restart the daemon (`--force` skips reviewer drain wait) |
 | `midtown status` | Show system status |
@@ -229,8 +229,6 @@ Project settings take precedence over global defaults. All fields are optional.
 bin_command = "midtown"         # CLI command to invoke midtown
 chat_layout = "auto"            # "auto", "split", or "window"
 chat_min_width = 160            # Min terminal width for split layout (auto mode)
-zellij_swap_layout = false      # Lead left + chat right when true
-zellij_chat_pane_size = 35      # Chat pane width percentage (10-90)
 max_coworkers = 10              # Maximum concurrent coworkers
 
 [daemon]
@@ -270,9 +268,6 @@ primary_repo = "/path/to/backend"
 [default]
 bin_command = "cargo run --release --"
 max_coworkers = 4
-zellij_swap_layout = true       # Project-specific override
-zellij_chat_pane_size = 40      # Wider chat for this project
-
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
 
@@ -285,7 +280,7 @@ review_mode = "local"             # Force local reviewer coworkers for this proj
 
 The `[project]` section defines:
 
-- `name` - Project name used for Zellij sessions, paths, etc.
+- `name` - Project name used for sessions, paths, etc.
 - `repos` - List of repository paths belonging to the project
 - `primary_repo` - The main repo used for the daemon socket and channel
 
@@ -372,7 +367,7 @@ Daemon settings can be overridden with environment variables:
 
 ## Docker
 
-Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (Zellij, git, gh CLI, Claude CLI).
+Midtown is available as a Docker image for containerized deployments. The image includes all runtime dependencies (git, gh CLI, Claude CLI).
 
 ### Pull from Docker Hub
 

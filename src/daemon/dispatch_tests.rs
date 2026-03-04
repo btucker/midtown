@@ -2437,7 +2437,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
         pending_tasks_without_owners: vec![
             Task {
                 id: "1263".to_string(),
-                subject: "Phase 2: Daemon RPC endpoints for Zellij plugin".to_string(),
+                subject: "Phase 2: Daemon RPC endpoints for TUI plugin".to_string(),
                 status: TaskStatus::Pending,
                 owner: None,
                 blocked_by: vec![],

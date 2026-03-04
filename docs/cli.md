@@ -6,10 +6,9 @@
 
 | Command | Description |
 |---------|-------------|
-| `midtown start [--swap-layout] [--project <name>] [--add-repo <path>]` | Start the daemon and Zellij session |
-| `midtown stop [--keep-session]` | Stop the daemon (optionally keep Zellij session) |
+| `midtown start [--project <name>] [--add-repo <path>]` | Start the daemon |
+| `midtown stop` | Stop the daemon |
 | `midtown restart [--force]` | Restart the daemon (waits for active reviewers to go on break unless `--force`) |
-| `midtown attach [<project>]` | Attach to the project's Zellij session |
 | `midtown status` | Show system status |
 | `midtown chat` | Open the IRC-style chat TUI |
 | `midtown log [--hooks] [--path] [-f] [-n <lines>]` | View daemon or hook logs |
@@ -44,7 +43,7 @@ Attach to a headless coworker's session in an interactive terminal pane for debu
 | `midtown session detach <name>` | Detach and resume headless execution |
 | `midtown session list` | List headless sessions with status |
 
-**How it works:** Attach stops the headless process (the Claude session persists on disk), then opens an interactive terminal pane with `claude --resume`. When you detach, the daemon re-spawns the headless session, picking up where it left off. In Zellij, the plugin handles attach/detach via the dashboard sidebar.
+**How it works:** Attach stops the headless process (the Claude session persists on disk), then opens an interactive terminal pane with `claude --resume`. When you detach, the daemon re-spawns the headless session, picking up where it left off.
 
 ## Task Management
 

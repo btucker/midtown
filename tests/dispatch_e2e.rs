@@ -42,7 +42,7 @@ struct Task {
 struct DispatchSnapshot {
     /// All tasks from the snapshot.
     all_tasks: Vec<Task>,
-    /// Names of currently active coworkers (running tmux windows).
+    /// Names of currently active coworkers (running sessions).
     active_names: HashSet<String>,
     /// Coworkers currently busy (have in_progress tasks), lowercase.
     busy_coworkers: HashSet<String>,
@@ -1469,13 +1469,13 @@ fn snapshot_preconditions_for_zero_coworker_dispatch() {
 // PR decision function tests with captured snapshots
 // =============================================================================
 
-/// Regression test: When a coworker is active (has a tmux window) but not idle,
-/// the daemon should nudge them rather than trying to spawn a new window.
+/// Regression test: When a coworker is active (has a session) but not idle,
+/// the daemon should nudge them rather than trying to spawn a new session.
 ///
 /// Bug: The daemon logged "call-in failed" for PR #708 notifications targeting
 /// pleasant because `decide_pr_issue_action_with_handoff` and
 /// `decide_pr_comment_action_with_handoff` returned `SpawnOwner` for active-but-busy
-/// coworkers. Spawning fails when the coworker already has a tmux window.
+/// coworkers. Spawning fails when the coworker already has a session.
 ///
 /// Snapshot: captured while pleasant was active and working, but the daemon was
 /// trying to spawn (not nudge) for review-complete and CI-green notifications.
