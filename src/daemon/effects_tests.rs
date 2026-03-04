@@ -1447,47 +1447,43 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
 
 // ── DM separator tests ──────────────────────────────────────────────
 
-/// SpawnSession for a non-reviewer task produces a PostSystemMessage separator
+/// SpawnSession for a task produces a PostSystemMessage separator
 /// targeting the coworker's DM channel (dm-<name>).
 #[test]
 fn test_dm_separator_produced_for_dev_session() {
-    let effect = build_dm_separator_effect("park", "42", Some("Fix auth bug"), false);
-    assert!(
-        effect.is_some(),
-        "non-reviewer session should produce a DM separator"
-    );
-    if let Some(Effect::PostSystemMessage { message, channel }) = effect {
-        assert_eq!(channel, Some("dm-park".to_string()));
-        assert!(
-            message.contains("Task !42"),
-            "separator should contain the task ID, got: {}",
-            message
-        );
-        assert!(
-            message.contains("Fix auth bug"),
-            "separator should contain the task subject, got: {}",
-            message
-        );
-    } else {
-        panic!("expected PostSystemMessage effect");
+    let effect = build_dm_separator_effect("park", "42", Some("Fix auth bug"));
+    match effect {
+        Effect::PostSystemMessage { message, channel } => {
+            assert_eq!(channel, Some("dm-park".to_string()));
+            assert!(
+                message.contains("Task !42"),
+                "separator should contain the task ID, got: {}",
+                message
+            );
+            assert!(
+                message.contains("Fix auth bug"),
+                "separator should contain the task subject, got: {}",
+                message
+            );
+        }
+        other => panic!("expected PostSystemMessage, got {:?}", other),
     }
 }
 
-/// SpawnSession for a non-reviewer task without a subject still produces a separator.
+/// SpawnSession for a task without a subject still produces a separator.
 #[test]
 fn test_dm_separator_without_subject() {
-    let effect = build_dm_separator_effect("madison", "99", None, false);
-    assert!(
-        effect.is_some(),
-        "should produce separator even without task subject"
-    );
-    if let Some(Effect::PostSystemMessage { message, channel }) = effect {
-        assert_eq!(channel, Some("dm-madison".to_string()));
-        assert!(
-            message.contains("Task !99"),
-            "separator should contain the task ID, got: {}",
-            message
-        );
+    let effect = build_dm_separator_effect("madison", "99", None);
+    match effect {
+        Effect::PostSystemMessage { message, channel } => {
+            assert_eq!(channel, Some("dm-madison".to_string()));
+            assert!(
+                message.contains("Task !99"),
+                "separator should contain the task ID, got: {}",
+                message
+            );
+        }
+        other => panic!("expected PostSystemMessage, got {:?}", other),
     }
 }
 
@@ -1497,10 +1493,10 @@ fn test_dm_separator_without_subject() {
 #[test]
 fn test_dm_separator_empty_subject_treated_as_none() {
     // Direct call with Some("") — shows the raw behavior
-    let effect = build_dm_separator_effect("park", "42", Some(""), false);
+    let effect = build_dm_separator_effect("park", "42", Some(""));
     let msg = match effect {
-        Some(Effect::PostSystemMessage { message, .. }) => message,
-        _ => panic!("expected PostSystemMessage"),
+        Effect::PostSystemMessage { message, .. } => message,
+        other => panic!("expected PostSystemMessage, got {:?}", other),
     };
     // If callers forget to filter, the output has a trailing ": " — this
     // test documents the current behavior so callers know to filter.
@@ -1512,16 +1508,12 @@ fn test_dm_separator_empty_subject_treated_as_none() {
     );
 }
 
-/// Reviewer sessions now produce DM separator effects so their output
+/// Reviewer sessions produce DM separator effects so their output
 /// streams to dm-<name> channels alongside regular coworkers.
 #[test]
 fn test_dm_separator_produced_for_reviewer_session() {
-    let effect = build_dm_separator_effect("riverside", "42", Some("Review PR"), true);
-    assert!(
-        effect.is_some(),
-        "reviewer session should produce a DM separator"
-    );
-    match effect.unwrap() {
+    let effect = build_dm_separator_effect("riverside", "42", Some("Review PR"));
+    match effect {
         Effect::PostSystemMessage { message, channel } => {
             assert_eq!(channel, Some("dm-riverside".to_string()));
             assert!(message.contains("!42"));

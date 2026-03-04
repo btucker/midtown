@@ -1667,11 +1667,18 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
 ///
 /// // Send to main channel (uses default repo name)
 /// let msg1 = Message::text("agent1", "Hello");
-/// router.send(&msg1).unwrap();
+/// let result1 = router.send(&msg1).unwrap();
+/// assert!(result1.is_new, "first message to a channel reports is_new");
+///
+/// // Second send to the same channel is not new
+/// let msg1b = Message::text("agent1", "Again");
+/// let result1b = router.send(&msg1b).unwrap();
+/// assert!(!result1b.is_new, "subsequent sends are not new");
 ///
 /// // Send to a topic channel (lazy-opens "pr-42" channel)
 /// let msg2 = Message::for_channel("pr-42", "agent1", "Review feedback", midtown::MessageType::Text);
-/// router.send(&msg2).unwrap();
+/// let result2 = router.send(&msg2).unwrap();
+/// assert!(result2.is_new, "first message to a new channel reports is_new");
 /// ```
 /// Result of a [`ChannelRouter::send`] operation.
 ///
