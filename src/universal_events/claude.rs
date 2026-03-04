@@ -270,7 +270,7 @@ pub fn extract_tool_events(
 /// Maximum bytes retained in a `semantic_header` string.
 ///
 /// Matches the bounding strategy used by [`MAX_TOOL_RESULT_OUTPUT_BYTES`]:
-/// headers flow through RPC (`kanban.data`) and WebSocket broadcasts, so they
+/// headers flow through RPC (`coworkers.status`) and WebSocket broadcasts, so they
 /// need a size cap even though the TUI would clip them naturally. 256 bytes is
 /// generous enough for any practical terminal width.
 const MAX_SEMANTIC_HEADER_BYTES: usize = 256;
@@ -278,7 +278,7 @@ const MAX_SEMANTIC_HEADER_BYTES: usize = 256;
 /// Maximum bytes retained from a tool result's output string.
 ///
 /// The TUI only uses `is_error` from ToolResult items — the raw output is never
-/// displayed but is serialized over RPC on every `kanban.data` poll. Capping at
+/// displayed but is serialized over RPC on every status poll. Capping at
 /// 256 bytes prevents large Read/Bash/Grep outputs from bloating daemon memory
 /// and RPC payloads.
 const MAX_TOOL_RESULT_OUTPUT_BYTES: usize = 256;

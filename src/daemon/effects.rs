@@ -1055,7 +1055,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 thread_parent_id,
                 items,
             } => {
-                // Store items in DaemonState for TUI RPC consumers (kanban.data).
+                // Store items in DaemonState for TUI RPC consumers (coworkers.status).
                 {
                     let mut tool_map = state.recent_tool_items.write().unwrap();
                     let entry = tool_map.entry(agent_name.to_lowercase()).or_default();

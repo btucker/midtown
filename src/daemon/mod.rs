@@ -21,7 +21,6 @@ mod rpc_coworker;
 mod rpc_headed;
 mod rpc_headless;
 mod rpc_insight;
-mod rpc_kanban;
 mod rpc_prs;
 mod rpc_reminder;
 mod rpc_session;
@@ -598,16 +597,10 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
-    /// Kanban data cache with 60s TTL.
-    ///
-    /// Deprecated — use `prs_cache` + `coworkers.status` instead. Kept for backward
-    /// compatibility with the `kanban.data` RPC during migration.
-    kanban_cache: rpc_kanban::KanbanCache,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
     ///
     /// Stores the PR GraphQL response (open PRs, merged PRs, repos) keyed by a
-    /// hash of repo paths. Unlike `kanban_cache`, this cache does NOT include
-    /// coworker state — coworker state is served separately via `coworkers.status`
+    /// hash of repo paths. Coworker state is served separately via `coworkers.status`
     /// at 1-2s poll intervals (no cache needed).
     pub(crate) prs_cache: rpc_prs::PrsCache,
     /// Draining mode flag - when true, daemon stops assigning new tasks to coworkers.
@@ -1079,8 +1072,6 @@ impl DaemonState {
         let now = std::time::Instant::now();
         let mut cache = self.rpc_response_cache.lock().await;
         cache.retain(|_, (_, timestamp)| now.duration_since(*timestamp).as_secs() < 60);
-        // Also clean up expired kanban cache entries
-        self.kanban_cache.cleanup();
         self.prs_cache.cleanup();
     }
 
@@ -1401,7 +1392,6 @@ impl DaemonState {
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
-            kanban_cache: rpc_kanban::KanbanCache::new(),
             prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
             reviewer_placeholder_cache: std::sync::Mutex::new(HashMap::new()),
