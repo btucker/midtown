@@ -4271,7 +4271,9 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
         "state": "OPEN",
     });
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut branch_owners: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    branch_owners.insert("york/add-feature".to_string(), "york".to_string());
     let registry = crate::worktree_registry::WorktreeRegistry::new();
     let active_names: std::collections::HashSet<String> =
         ["york".to_string()].into_iter().collect();
@@ -4279,7 +4281,7 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -4348,7 +4350,9 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
         "state": "OPEN",
     });
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut branch_owners: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    branch_owners.insert("york/test-tags".to_string(), "york".to_string());
     let registry = crate::worktree_registry::WorktreeRegistry::new();
     let active_names: std::collections::HashSet<String> =
         ["york".to_string()].into_iter().collect();
@@ -4356,7 +4360,7 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
