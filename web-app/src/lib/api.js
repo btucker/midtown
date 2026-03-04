@@ -24,6 +24,7 @@ import {
   threadData,
   deepLinkMsgId,
   threadOwnership,
+  threadForkOwners,
   showArchivedChannels,
   trackedThreads,
   threadUnreadCounts,
@@ -215,6 +216,7 @@ export function switchProject(projectName, webhookPort) {
   agentClearTimeouts.forEach((t) => clearTimeout(t))
   agentClearTimeouts.clear()
   threadOwners.clear()
+  threadForkOwners.set({})
   agentToolItems.set({})
   threadToolItems.set({})
   threadData.set(null)
@@ -616,6 +618,11 @@ export function handleUpdate(update) {
           const timeout = setTimeout(() => {
             agentClearTimeouts.delete(threadClearKey)
             threadOwners.delete(msg.thread_parent_id)
+            threadForkOwners.update((m) => {
+              const updated = { ...m }
+              delete updated[msg.thread_parent_id]
+              return updated
+            })
             threadToolItems.update((byThread) => {
               const updated = { ...byThread }
               delete updated[msg.thread_parent_id]
@@ -781,6 +788,7 @@ export function handleUpdate(update) {
         // Track which fork session owns this thread's tool items
         if (update.data.agent_name) {
           threadOwners.set(threadId, update.data.agent_name)
+          threadForkOwners.update((m) => ({ ...m, [threadId]: update.data.agent_name }))
         }
         if (agentClearTimeouts.has(`thread:${threadId}`)) {
           clearTimeout(agentClearTimeouts.get(`thread:${threadId}`))
