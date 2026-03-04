@@ -9,7 +9,7 @@
 //! - `rpc_headless` — one-shot execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_insight` — insight reporting and deduplication
-//! - `rpc_prs` — PR data for kanban board (`prs.status`)
+//! - `rpc_prs` — PR data and operations (`prs.status`, `pr.review`, `pr.merge`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
 //! - `rpc_status` — daemon status overview
