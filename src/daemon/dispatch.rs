@@ -1902,6 +1902,23 @@ fn dispatch_unowned_pending_tasks(
             continue;
         }
 
+        // Match orphan recovery behavior: skip tasks that are currently associated
+        // with an open PR (tracked in snapshot state), including defense-in-depth
+        // title-based detection from GitHub.
+        if !should_recover_task_optional_repo(
+            task,
+            &snap.pr.merged_pr_numbers,
+            state.all_repo_paths.first().map(|p| p.as_path()),
+            &snap.pr.tasks_with_open_prs,
+            &snap.pr.github_open_pr_task_ids,
+        ) {
+            debug!(
+                "Skipping dispatch for pending task !{} due PR-protection guard",
+                task.id
+            );
+            continue;
+        }
+
         // Session-aware dispatch: if this pending task has a stopped session
         // from a previous attempt, resume it instead of spawning fresh.
         if let Some(record) = snap.find_session_for_task(&task.id) {

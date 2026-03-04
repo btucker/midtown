@@ -2021,6 +2021,98 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
     );
 }
 
+#[test]
+fn test_resolve_pr_owner_from_inputs_uses_task_pr_field() {
+    let pr_task_associations: HashMap<u64, String> = HashMap::new();
+    let session_task_map: HashMap<String, String> = HashMap::new();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let all_tasks = vec![crate::tasks::Task {
+        id: "2047".to_string(),
+        subject: "fix some issue".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(2047),
+        created_at: None,
+    }];
+
+    let result = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
+        pr_number: 2047,
+        title: "fix coworker bug",
+        head_ref: "some/branch",
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        all_tasks: &all_tasks,
+        worktree_branch_owners: &branch_owners,
+    });
+
+    assert_eq!(
+        result,
+        Some("york".to_string()),
+        "resolve_pr_owner_from_inputs should fall back to task.pr owner when session data is missing"
+    );
+}
+
+#[test]
+fn test_resolve_pr_owner_from_inputs_prefers_session_over_task_pr_field() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(2047, "555".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("555".to_string(), "sess-xyz".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-xyz".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-xyz".to_string(),
+            task_id: Some("555".to_string()),
+            current_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("task-2047-fix".to_string()),
+            pr_number: Some(2047),
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    let branch_owners: HashMap<String, String> =
+        [("task-2047-fix".to_string(), "park".to_string())]
+            .into_iter()
+            .collect();
+    let all_tasks = vec![crate::tasks::Task {
+        id: "555".to_string(),
+        subject: "task title".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(2047),
+        created_at: None,
+    }];
+
+    let result = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
+        pr_number: 2047,
+        title: "Midtown !2047 something",
+        head_ref: "task-2047-fix",
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        all_tasks: &all_tasks,
+        worktree_branch_owners: &branch_owners,
+    });
+
+    assert_eq!(
+        result,
+        Some("madison".to_string()),
+        "Session-derived owner should still win over task metadata and branch fallback"
+    );
+}
+
 /// Integration test: poll_prs_for_issues uses session-based owner resolution
 /// when available. PR branch is "lexington/fix-auth" but session record says
 /// current_name is "madison". The owner should be "madison".
@@ -3470,6 +3562,129 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
             crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
         ),
         "Event should be PrApproved for PR #42"
+    );
+}
+
+#[tokio::test]
+async fn test_review_complete_without_owner_posts_merge_reminder() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 2042u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "reviewer/task-2042-svelte-fix",
+        "title": "feat: ReviewComplete fallback path".to_string(),
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.task_channel
+            .insert("2042".to_string(), "daemon-core".to_string());
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel {
+                sender,
+                ..
+            } if sender == "midtown"
+        )),
+        "Expected review-complete fallback post to channel output, got: {:#?}",
+        effects
+    );
+
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, Effect::RecordPrNudge { pr_number, .. } if pr_number == pr_number)
+        ),
+        "Expected RecordPrNudge to be recorded to prevent duplicate nudges, got: {:#?}",
+        effects
+    );
+
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::NudgeSession { .. }
+        )),
+        "Should not try to spawn/nudge a coworker when owner cannot be resolved, got: {:#?}",
+        effects
+    );
+}
+
+#[tokio::test]
+async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unknown() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 2043u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "reviewer/task-2043-svelte-fix",
+        "title": "feat: ReviewComplete owner fallback path".to_string(),
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            pr_number,
+            "sess-2043",
+            "reviewer/task-2043-svelte-fix",
+            "park",
+            "feat: ReviewComplete owner fallback [Midtown !2043]",
+        );
+        ps.task_channel
+            .insert("2043".to_string(), "daemon-core".to_string());
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
+        )),
+        "Expected coworker-directed nudge via author session for PR #2043, got: {:#?}",
+        effects
     );
 }
 

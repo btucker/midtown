@@ -422,6 +422,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
         escalation_target: None,
     };
@@ -440,6 +441,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
         escalation_target: None,
     };
