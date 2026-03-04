@@ -521,7 +521,7 @@ impl LaunchConfig {
     ///
     /// `project_name` is used to load sandbox configuration.
     ///
-    /// For Lead role: saves the system prompt to `~/.midtown/lead/<repo>/system-prompt.txt`
+    /// For Lead role: saves the system prompt to `~/.midtown/projects/<repo>/lead-system-prompt.txt`
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
         let system_prompt = match &self.role {

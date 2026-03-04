@@ -28,6 +28,15 @@ pub fn writable_dirs(
     configured_paths: &[String],
     project_name: &str,
 ) -> Vec<String> {
+    // Defense-in-depth: validate project_name before using it in path construction.
+    // In practice, detect_repo_name() uses .file_name() which strips path separators,
+    // but this function is public and security-critical — validate independently.
+    assert!(!project_name.is_empty(), "project_name must not be empty");
+    assert!(
+        !project_name.contains('/') && !project_name.contains('\\') && !project_name.contains(".."),
+        "project_name must not contain path separators or traversal components, got: {project_name:?}"
+    );
+
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
 
     let mut dirs = Vec::new();
