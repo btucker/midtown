@@ -12,7 +12,7 @@
   import MessageRow from './MessageRow.svelte'
   import DayDivider from './DayDivider.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
-  import { findPr as findPrUtil, getPrUrl as getPrUrlUtil } from './channelUtils.js'
+  import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from './channelUtils.js'
 
   // Windowed rendering: only render a slice of messages near the viewport.
   // Messages outside this window are not mounted in the DOM.
@@ -435,26 +435,24 @@
   // stopPropagation(), so handleLinkClick never runs on mobile. They are NOT redundant;
   // they are two separate entry points for the same click on different platforms.
   function handleMessageTap(event, msg) {
-    // Mobile-only affordance: tap a top-level message to open its thread view.
-    if ($isWideScreen || msg.thread_parent_id) return
     const target = event.target instanceof Element ? event.target : null
-    // Block real interactive controls.
-    if (target?.closest('button, input, textarea, select, label')) return
-    // Block external links but not internal pseudo-links (channel/task/PR/coworker refs).
-    // Internal refs use <a> tags from renderContent() and cover most message text on mobile,
-    // so blocking all <a> elements effectively breaks tap-to-reply on nearly every message.
-    const link = target?.closest('a')
-    if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
-    // Task links open the task's thread (with task card); PR links always open GitHub;
-    // all other taps open the message thread.
-    if (link?.dataset.task) {
-      const task = findTask(link.dataset.task)
+    const isInteractiveControl = !!target?.closest('button, input, textarea, select, label')
+    const anchor = target?.closest('a')
+    const link = anchor ? {
+      isExternal: !anchor.dataset.channel && !anchor.dataset.task && !anchor.dataset.pr && !anchor.dataset.coworker,
+      dataset: anchor.dataset,
+    } : null
+
+    const action = resolveMessageTapAction({ isWideScreen: $isWideScreen, msg, isInteractiveControl, link })
+    if (!action) return
+
+    if (action.type === 'open_task') {
+      const task = findTask(action.taskId)
       if (task) openTaskThread(task, task.channel || $activeChannel)
-    } else if (link?.dataset.pr) {
-      const prNum = link.dataset.pr
-      const url = getPrUrl(prNum)
+    } else if (action.type === 'open_pr') {
+      const url = getPrUrl(action.prNum)
       if (url) window.open(url, '_blank', 'noopener')
-    } else {
+    } else if (action.type === 'open_thread') {
       openThread(msg, $activeChannel)
     }
     // Prevent the click from also triggering the internal link handler (handleLinkClick),

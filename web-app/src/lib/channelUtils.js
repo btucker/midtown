@@ -300,3 +300,41 @@ export function getChannelPrs(channelName, kanban) {
   }
   return filterPrsByChannel(kanban.review, channelName, taskChannelMap)
 }
+
+// ── Mobile message tap handling ───────────────────────────────────────────────
+
+/**
+ * Determine the action for a mobile message tap.
+ *
+ * This is the pure decision logic extracted from Channel.svelte's
+ * handleMessageTap. The Svelte component handles DOM specifics (closest(),
+ * dataset extraction) and passes pre-processed inputs here.
+ *
+ * Returns null if the tap should be ignored (let the event propagate),
+ * or an action descriptor: { type: 'open_task', taskId } |
+ *   { type: 'open_pr', prNum } | { type: 'open_thread' }
+ *
+ * @param {object} opts
+ * @param {boolean} opts.isWideScreen - true on desktop (skip mobile handling)
+ * @param {object}  opts.msg - message object with thread_parent_id
+ * @param {boolean} opts.isInteractiveControl - true if tap target is button/input/etc.
+ * @param {object|null} opts.link - link info: { isExternal, dataset: { task, pr, channel, coworker } }
+ */
+export function resolveMessageTapAction({ isWideScreen, msg, isInteractiveControl, link }) {
+  // Mobile-only affordance: skip on desktop or when tapping inside a thread
+  if (isWideScreen || msg.thread_parent_id) return null
+  // Don't intercept taps on interactive controls
+  if (isInteractiveControl) return null
+  // External links (no internal dataset) should follow their href normally
+  if (link && link.isExternal) return null
+  // Task links open the task's thread (with task card)
+  if (link?.dataset?.task) {
+    return { type: 'open_task', taskId: link.dataset.task }
+  }
+  // PR links always open GitHub
+  if (link?.dataset?.pr) {
+    return { type: 'open_pr', prNum: link.dataset.pr }
+  }
+  // All other taps open the message's thread
+  return { type: 'open_thread' }
+}
