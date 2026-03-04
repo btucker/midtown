@@ -430,10 +430,10 @@
   }
 
   // NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
-  // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND here in
-  // handleMessageTap (mobile — fires on the message row div). handleMessageTap calls
-  // stopPropagation(), so handleLinkClick never runs on mobile. They are NOT redundant;
-  // they are two separate entry points for the same click on different platforms.
+  // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND
+  // resolveMessageTapAction (mobile decision logic in channelUtils.js). handleMessageTap
+  // calls stopPropagation(), so handleLinkClick never runs on mobile. They are NOT
+  // redundant; they are two separate entry points for the same click on different platforms.
   function handleMessageTap(event, msg) {
     const target = event.target instanceof Element ? event.target : null
     const isInteractiveControl = !!target?.closest('button, input, textarea, select, label')
