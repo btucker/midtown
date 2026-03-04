@@ -336,6 +336,19 @@ pub enum Effect {
     /// This is the time-based cleanup path (N hours after completion),
     /// complementing the PR-merge cleanup path.
     CleanupStaleWorktree { worktree_id: String },
+    /// Garbage-collect stale daemon persistent state in a single batch.
+    ///
+    /// Removes dead session records older than the retention period and prunes
+    /// orphaned task metadata map entries (task_channel, task_model,
+    /// task_plan, task_execution_skill, task_thread_id, task_message_id).
+    ///
+    /// Runs during PollTickEvent alongside stale worktree cleanup.
+    GarbageCollectState {
+        /// Session IDs to remove entirely (dead + past retention).
+        dead_session_ids: Vec<String>,
+        /// Orphaned task IDs to remove from metadata maps.
+        orphaned_task_ids: Vec<String>,
+    },
     /// Ensure a task-based worktree exists at the specified path.
     ///
     /// Creates the worktree if it doesn't exist, or succeeds idempotently
@@ -1806,6 +1819,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Worktree {} not found in registry, skipping cleanup",
                         worktree_id
                     );
+                }
+            }
+            Effect::GarbageCollectState {
+                dead_session_ids,
+                orphaned_task_ids,
+            } => {
+                let result = {
+                    let mut ps = state.persistent_state.lock().await;
+                    let result = ps.apply_gc(&dead_session_ids, &orphaned_task_ids);
+
+                    if result.has_changes()
+                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                    {
+                        warn!("Failed to save daemon state after GC: {}", e);
+                    }
+                    result
+                };
+
+                if result.has_changes() {
+                    info!(
+                        "State GC: removed {} dead sessions, \
+                         pruned {} orphaned task entries",
+                        result.sessions_removed, result.orphaned_tasks_pruned,
+                    );
+
+                    // Post to ops channel
+                    let mut msg = crate::message::Message::system(format!(
+                        "🧹 State GC: removed {} dead session(s), \
+                         pruned {} orphaned task entries",
+                        result.sessions_removed, result.orphaned_tasks_pruned,
+                    ));
+                    msg.channel = Some(OPS_CHANNEL.to_string());
+                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                        warn!("Failed to post state GC message: {}", e);
+                    }
                 }
             }
             Effect::BindCoworkerToWorktree {

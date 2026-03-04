@@ -31,6 +31,22 @@ pub struct ProfileState {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
+/// Summary of what a garbage collection pass cleaned up.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct GcResult {
+    /// Number of dead session records removed.
+    pub sessions_removed: usize,
+    /// Number of orphaned task metadata entries pruned.
+    pub orphaned_tasks_pruned: usize,
+}
+
+impl GcResult {
+    /// Returns true if any cleanup was performed.
+    pub fn has_changes(&self) -> bool {
+        self.sessions_removed + self.orphaned_tasks_pruned > 0
+    }
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -287,6 +303,41 @@ impl DaemonPersistentState {
             self.profile_pool_state.len()
         );
         Ok(())
+    }
+
+    /// Apply garbage collection mutations to this state in-place.
+    ///
+    /// Removes dead sessions and prunes orphaned task metadata map entries.
+    /// Returns a summary of what was cleaned up.
+    ///
+    /// This is a pure mutation method — no I/O. The caller is responsible
+    /// for saving state and logging after calling this.
+    pub fn apply_gc(
+        &mut self,
+        dead_session_ids: &[String],
+        orphaned_task_ids: &[String],
+    ) -> GcResult {
+        let mut result = GcResult::default();
+
+        // 1. Remove dead sessions entirely
+        for sid in dead_session_ids {
+            if self.sessions.remove(sid).is_some() {
+                result.sessions_removed += 1;
+            }
+        }
+
+        // 2. Prune orphaned task metadata maps
+        for task_id in orphaned_task_ids {
+            self.task_channel.remove(task_id);
+            self.task_model.remove(task_id);
+            self.task_plan.remove(task_id);
+            self.task_execution_skill.remove(task_id);
+            self.task_thread_id.remove(task_id);
+            self.task_message_id.remove(task_id);
+            result.orphaned_tasks_pruned += 1;
+        }
+
+        result
     }
 
     /// Migrate from legacy separate files into the unified format.
