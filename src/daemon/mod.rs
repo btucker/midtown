@@ -40,7 +40,7 @@ use constants::*;
 pub use constants::{
     DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
-    PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS, PR_REVIEW_DELAY_SECS,
+    PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS,
 };
 pub use state::DaemonPersistentState;
 pub use trackers::{
@@ -3203,14 +3203,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 if let Some(ci_check) = webhook_event.ci_check_passed {
                     debug!("Buffering CI success for batching: {} on {}", ci_check.check_name, ci_check.target);
 
-                    // Check if this CI completion should trigger a reviewer spawn (retry logic).
-                    // When the initial pending spawn (45s after PR opens) was skipped for any reason
-                    // (coworker limit, CI pending, etc.), retry when CI becomes green.
-                    let state_clone = Arc::clone(&state);
-                    let ci_check_clone = ci_check.clone();
-                    tokio::spawn(async move {
-                        pr::handle_ci_completion_for_review_spawn(&state_clone, &ci_check_clone).await;
-                    });
+                    // Reviewer spawn retry on CI completion is now handled by the
+                    // workflow script's pr.ci_passed handler calling rpc.spawn_reviewer().
+                    // The polling backstop also catches PRs that need review.
 
                     let mut buffer = state.ci_notification_buffer.lock().await;
                     buffer.add(ci_check);
@@ -3226,19 +3221,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     });
                 }
 
-                // Queue a reviewer spawn after the delay (persisted in daemon-state.json)
+                // Record that this PR was handled by the webhook (for polling deference).
+                // Reviewer spawning is now driven by the workflow script's pr.opened
+                // handler calling rpc.spawn_reviewer(), not by the daemon's inline
+                // pending_review_spawn queue.
                 if let Some(pr_number) = webhook_event.needs_review {
-                    let spawn_after = chrono::Utc::now()
-                        + chrono::Duration::seconds(PR_REVIEW_DELAY_SECS as i64);
                     let mut ps = state.persistent_state.lock().await;
                     ps.github.record_webhook_event(pr_number);
-                    ps.github.add_pending_review_spawn(pr_number, spawn_after);
                     if let Err(e) = ps.save_for_repo(&state.repo_name) {
-                        warn!("Failed to persist pending review spawn: {}", e);
+                        warn!("Failed to persist webhook event record: {}", e);
                     }
-                    info!(
-                        "Webhook: PR #{} queued for review spawn in {}s",
-                        pr_number, PR_REVIEW_DELAY_SECS
+                    debug!(
+                        "Webhook: PR #{} needs review — workflow script will handle spawning",
+                        pr_number
                     );
                 }
 
@@ -3263,21 +3258,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             );
                         }
 
-                        // Warn the author immediately not to enable auto-merge — but only
-                        // when a review will actually be queued (non-draft PRs). Draft PRs
-                        // don't get a reviewer, so the warning would be misleading.
-                        // Gating on needs_review mirrors the exact condition used to queue
-                        // the pending_review_spawn (webhook.rs: "opened" if !draft).
-                        if webhook_event.needs_review == Some(pr_opened.pr_number) {
-                            pr_effects.push(pr::build_pr_opened_author_warning_effect(
-                                author,
-                                pr_opened.pr_number,
-                            ));
-                            info!(
-                                "Warned PR #{} author {} not to enable auto-merge (review queued)",
-                                pr_opened.pr_number, author
-                            );
-                        }
+                        // Auto-merge warning is now sent by the workflow script's
+                        // pr.opened handler (policy, not mechanism).
                     }
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]
@@ -3834,10 +3816,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let cleanup_effects = dispatch::decide_stale_branch_cleanup(&cleanup_data);
                     effects::execute_effects(cleanup_effects, &state).await;
                 }
-                // Process any pending webhook review spawns whose delay has expired
-                let review_snap = snapshot::collect_world_snapshot(&state).await;
-                let review_effects = pr::process_pending_review_spawns(&review_snap, &state).await;
-                effects::execute_effects(review_effects, &state).await;
+                // Reviewer spawning from webhooks is now driven by the workflow script.
+                // The polling backstop in poll_prs_for_issues still runs
+                // collect_reviewer_effects() for PRs that webhook events missed.
             }
 
             // Periodic channel log rotation (rotates all active channels)

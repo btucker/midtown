@@ -384,7 +384,7 @@ In addition to the shared channel, the daemon can deliver targeted messages to i
 
 **PR review gate warnings**: Two mailbox messages are sent to PR authors to prevent premature auto-merge:
 
-1. **PR-opened warning** (`pr_opened_author_warning`): Delivered immediately via the `pr_opened` webhook handler when a non-draft PR is opened. Sent before a reviewer is assigned, ensuring the author is warned even when the reviewer spawn is delayed (e.g., coworker limit temporarily hit). Gated on `needs_review.is_some()` so draft PRs don't receive it.
+1. **PR-opened warning**: Sent by the workflow script's `pr.opened` handler via `rpc.nudge_coworker()`. This is policy — teams using auto-merge can remove or customize this nudge in their `workflow.py`. Delivered before the reviewer is spawned, ensuring the author is warned even when the spawn is delayed.
 
 2. **Reviewer-spawned notification** (`reviewer_spawned_author_warning`): Delivered via `SpawnCoworkerWithCallbacks.on_success` in `collect_reviewer_effects_with_source` when the reviewer actually spawns. Identifies the reviewer by name and reinforces the hold on auto-merge. This fires only on successful spawn, while the PR-opened warning covers the gap when spawn is delayed.
 
