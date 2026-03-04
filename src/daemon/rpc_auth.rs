@@ -304,6 +304,25 @@ pub(super) async fn handle_auth_switch(
             .collect();
         (reviewers, channel_leads)
     };
+    // Capture channel lead names and reviewer channel assignments for escalation_target resolution.
+    let (channel_lead_names, reviewer_channels) = {
+        let persistent = state.persistent_state.lock().await;
+        let lead_names = persistent.channel_lead_names();
+        let channels: HashMap<String, Option<String>> = reviewer_pr_by_name
+            .keys()
+            .filter_map(|name| {
+                persistent
+                    .sessions
+                    .values()
+                    .find(|r| {
+                        r.current_name.as_deref() == Some(name)
+                            || r.preferred_name.as_deref() == Some(name)
+                    })
+                    .map(|r| (name.clone(), r.channel.clone()))
+            })
+            .collect();
+        (lead_names, channels)
+    };
     let task_id_by_coworker: HashMap<String, String> = {
         let assignments = state.coworker_task_assignments.lock().unwrap();
         assignments
@@ -389,6 +408,16 @@ pub(super) async fn handle_auth_switch(
                         crate::launch::SessionMode::Fresh
                     };
                     reviewer.model = coworker.model.clone();
+                    // Restore channel and resolve escalation target from session record
+                    if let Some(channel) = reviewer_channels
+                        .get(&coworker.name)
+                        .and_then(|c| c.clone())
+                    {
+                        if channel_lead_names.contains(&channel) {
+                            reviewer.escalation_target = Some(channel.clone());
+                        }
+                        reviewer.channel = Some(channel);
+                    }
                     reviewer
                 } else if resume_compatible {
                     build_coworker_relaunch_config(coworker, &state.repo_name)

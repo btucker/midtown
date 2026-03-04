@@ -538,8 +538,9 @@ pub async fn recover_from_session_records(
     let mut effects = Vec::new();
     let mut recovered_session_ids = HashSet::new();
 
-    let sessions = {
+    let (sessions, channel_lead_names) = {
         let ps = persistent_state.lock().await;
+        let lead_names = ps.channel_lead_names();
         // Filter to sessions that were running at shutdown time.
         // The `sessions` map accumulates historical records; only those
         // with `is_running: true` were active when the daemon last persisted.
@@ -573,7 +574,7 @@ pub async fn recover_from_session_records(
                 }
             }
         }
-        by_name.into_values().collect::<Vec<_>>()
+        (by_name.into_values().collect::<Vec<_>>(), lead_names)
     };
 
     if sessions.is_empty() {
@@ -660,6 +661,14 @@ pub async fn recover_from_session_records(
                 repo_name,
                 crate::config::ExecutionRole::Reviewer,
             );
+            // Restore channel from session record and resolve escalation target
+            // so recovered reviewers route notes to the channel lead.
+            config.channel = record.channel.clone();
+            if let Some(ref channel_name) = config.channel
+                && channel_lead_names.contains(channel_name)
+            {
+                config.escalation_target = Some(channel_name.clone());
+            }
         }
         config.model =
             super::helpers::resolve_model_for_role(repo_name, config.auth_provider, &config.role);

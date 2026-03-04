@@ -3500,3 +3500,161 @@ fn state_gc_works_with_zero_retention_period() {
         other => panic!("Expected GarbageCollectState, got {:?}", other),
     }
 }
+
+/// Stuck reviewer respawn should set escalation_target when a channel lead exists.
+#[test]
+fn test_stuck_reviewer_respawn_sets_escalation_target_with_channel_lead() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 42u64;
+    let task_id = "100";
+    let channel_name = "auth-feature";
+
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: Some("sess-rev-100".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck: no events for past REVIEWER_STUCK_DURATION
+    snap.health.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("amsterdam".to_string(), pr_number);
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-rev-100".to_string());
+
+    // PR → task → channel chain
+    snap.pr
+        .pr_task_associations
+        .insert(pr_number, task_id.to_string());
+    snap.task_channel
+        .insert(task_id.to_string(), channel_name.to_string());
+
+    // Channel lead exists for this channel
+    snap.channel_lead_sessions
+        .insert(channel_name.to_string(), "sess-lead-auth".to_string());
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    let config = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+                Some(config)
+            } else {
+                None
+            }
+        })
+        .expect("Expected a SpawnCoworkerWithCallbacks effect for stuck reviewer respawn");
+
+    assert_eq!(
+        config.escalation_target,
+        Some(channel_name.to_string()),
+        "Respawned reviewer should have escalation_target set to channel name when a channel lead exists"
+    );
+}
+
+/// Stuck reviewer respawn should leave escalation_target as None when no channel lead exists.
+#[test]
+fn test_stuck_reviewer_respawn_no_escalation_target_without_channel_lead() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 42u64;
+    let task_id = "100";
+    let channel_name = "auth-feature";
+
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: Some("sess-rev-100".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    snap.health.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("amsterdam".to_string(), pr_number);
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-rev-100".to_string());
+
+    // PR → task → channel chain
+    snap.pr
+        .pr_task_associations
+        .insert(pr_number, task_id.to_string());
+    snap.task_channel
+        .insert(task_id.to_string(), channel_name.to_string());
+
+    // No channel lead for this channel — channel_lead_sessions is empty
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    let config = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+                Some(config)
+            } else {
+                None
+            }
+        })
+        .expect("Expected a SpawnCoworkerWithCallbacks effect for stuck reviewer respawn");
+
+    assert_eq!(
+        config.escalation_target, None,
+        "Respawned reviewer should have escalation_target=None when no channel lead exists"
+    );
+}

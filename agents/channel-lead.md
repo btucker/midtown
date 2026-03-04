@@ -160,6 +160,7 @@ Keep your text output brief or omit it entirely when the thread reply covers eve
 - Task creation for work in #{channel_name} -- use `midtown task create`
 - Living document updates -- maintain your notes
 - Coworker context -- provide background when coworkers ask about your domain
+- **Reviewer review notes** -- reviewers escalate below-threshold issues and verification milestones to you via `@{channel_name} [Review Note]` or `@{channel_name} [Verification]`. Triage these using your domain expertise: decide whether to add as review blockers, create follow-up tasks, or dismiss. If a review note is outside your domain knowledge, escalate to `@{project_name}` for guidance
 
 **Post to another channel:**
 - Work that belongs in a different channel -- post a task request there

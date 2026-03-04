@@ -8,6 +8,7 @@
 //! Template variables:
 //! - `{name}` — the agent's name (coworker name, channel name, or project name for Project Lead)
 //! - `{project_name}` — the project name (e.g., "midtown")
+//! - `{escalation_target}` — reviewer only: who to @mention for review notes (channel lead or project name)
 
 use std::path::PathBuf;
 
@@ -139,6 +140,7 @@ pub fn coworker_system_prompt(name: &str, project_name: &str) -> String {
 pub fn reviewer_system_prompt(
     name: &str,
     project_name: &str,
+    escalation_target: &str,
     platform: crate::auth::AuthProvider,
     pr_number: Option<u64>,
 ) -> String {
@@ -151,6 +153,7 @@ pub fn reviewer_system_prompt(
     format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}")
         .replace("{name}", name)
         .replace("{project_name}", project_name)
+        .replace("{escalation_target}", escalation_target)
         .replace("{code_review_invocation}", &invocation)
 }
 

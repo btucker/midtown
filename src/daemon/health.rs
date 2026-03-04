@@ -1632,6 +1632,14 @@ fn build_reviewer_respawn_effects(
     // Route reviewer to the task's topic channel.
     config.channel = snap.channel_for_pr(pr_number);
 
+    // Route escalation mentions to the channel lead when available.
+    if let Some(ref channel_name) = config.channel {
+        let lead_names = snap.channel_lead_names();
+        if lead_names.contains(channel_name) {
+            config.escalation_target = Some(channel_name.clone());
+        }
+    }
+
     effects.push(Effect::EnsureWorktree {
         worktree_id: worktree_id.clone(),
         path: wt_path,

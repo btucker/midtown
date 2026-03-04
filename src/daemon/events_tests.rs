@@ -15,6 +15,7 @@ fn make_spawn(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     })
 }
@@ -86,6 +87,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
@@ -109,6 +111,7 @@ fn make_assign_and_spawn(name: &str) -> Effect {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
     Effect::AssignAndSpawn {
@@ -172,6 +175,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
@@ -281,6 +285,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
@@ -297,6 +302,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 

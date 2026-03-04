@@ -772,10 +772,14 @@ When a channel is created, archived, unarchived, or renamed, the daemon broadcas
 
 Reviewers inherit the topic channel of the task associated with their PR. The data flow is: PR number → `pr_task_associations` → task ID → `task_channel` → channel name → `LaunchConfig.channel` → `MIDTOWN_CHANNEL` env var. This ensures `midtown channel post` from within a reviewer session routes to the task's topic channel instead of the main channel.
 
-The lookup happens at three spawn sites:
-- **Initial spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): Uses `PrContext::routing_only()` to read channel routing data in a single lock acquisition before the per-PR loop, then calls `ctx.get_channel(pr_number)`.
-- **Stuck restart** (`health.rs`, `build_reviewer_respawn_effects`): Uses `WorldSnapshot::channel_for_pr()` — the synchronous equivalent for decision functions operating on the snapshot.
+**Escalation target routing**: When a reviewer's channel has an active channel lead, `LaunchConfig.escalation_target` is set to the channel name. The `{escalation_target}` template variable in the reviewer system prompt then resolves to the channel lead instead of the project lead. This routes review notes (below-threshold issues) to the domain expert for triage rather than the project lead. Falls back to the project name when no channel lead exists.
+
+The lookup happens at five spawn/respawn sites:
+- **Initial spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): Uses `PrContext::routing_only()` to read channel routing data in a single lock acquisition before the per-PR loop, then calls `ctx.get_channel(pr_number)`. Resolves `escalation_target` from `channel_lead_names`.
+- **Stuck restart** (`health.rs`, `build_reviewer_respawn_effects`): Uses `WorldSnapshot::channel_for_pr()` — the synchronous equivalent for decision functions operating on the snapshot. Resolves `escalation_target` from `WorldSnapshot::channel_lead_names()`.
 - **Dead restart** (`health.rs`, `build_reviewer_respawn_effects`): Same path as stuck restart.
+- **Daemon recovery** (`startup.rs`, `recover_from_session_records`): Restores `channel` from `SessionRecord.channel` and resolves `escalation_target` from `channel_lead_names()`.
+- **Auth rotation** (`rpc_auth.rs`): Captures reviewer channels from session records before relaunch and resolves `escalation_target` from `channel_lead_names()`.
 
 `WorldSnapshot::channel_for_pr()` and `PrContext::get_channel()` are parallel implementations of the same two-step lookup for the sync (snapshot) and async (persistent state) contexts respectively.
 

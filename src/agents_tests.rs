@@ -171,7 +171,13 @@ fn test_reviewer_resume_prompt_contains_task_verification() {
 
 #[test]
 fn test_reviewer_system_prompt_merges_all_sources() {
-    let prompt = reviewer_system_prompt("lexington", "midtown", AuthProvider::Claude, Some(42));
+    let prompt = reviewer_system_prompt(
+        "lexington",
+        "midtown",
+        "midtown",
+        AuthProvider::Claude,
+        Some(42),
+    );
 
     // Should contain content from common.md
     assert!(
@@ -212,7 +218,8 @@ fn test_reviewer_system_prompt_merges_all_sources() {
 
 #[test]
 fn test_reviewer_prompts_use_daemon_review_post() {
-    let system_prompt = reviewer_system_prompt("park", "midtown", AuthProvider::Claude, Some(42));
+    let system_prompt =
+        reviewer_system_prompt("park", "midtown", "midtown", AuthProvider::Claude, Some(42));
     let resume_prompt = reviewer_resume_prompt(42, AuthProvider::Claude);
 
     // Frontmatter is now handled by the daemon, not the reviewer agent.
@@ -230,6 +237,47 @@ fn test_reviewer_prompts_use_daemon_review_post() {
     assert!(
         resume_prompt.contains("midtown pr review post"),
         "Reviewer resume prompt should instruct using `midtown pr review post`"
+    );
+}
+
+#[test]
+fn test_reviewer_system_prompt_substitutes_escalation_target() {
+    // When escalation_target differs from project_name, review notes should
+    // @mention the escalation target (channel lead) not the project lead.
+    let prompt = reviewer_system_prompt(
+        "york",
+        "midtown",
+        "daemon-core",
+        AuthProvider::Claude,
+        Some(42),
+    );
+
+    // escalation_target should be substituted in review note examples
+    assert!(
+        prompt.contains("@daemon-core [Review Note]"),
+        "Reviewer system prompt should substitute {{escalation_target}} with channel lead name"
+    );
+    assert!(
+        !prompt.contains("{escalation_target}"),
+        "Reviewer system prompt should not contain unreplaced {{escalation_target}}"
+    );
+
+    // project_name should still be substituted elsewhere (e.g., coworker prompt sections)
+    assert!(
+        prompt.contains("midtown"),
+        "Reviewer system prompt should still reference the project name"
+    );
+}
+
+#[test]
+fn test_reviewer_system_prompt_escalation_falls_back_to_project_name() {
+    // When escalation_target equals project_name, behavior is unchanged
+    let prompt =
+        reviewer_system_prompt("york", "midtown", "midtown", AuthProvider::Claude, Some(42));
+
+    assert!(
+        prompt.contains("@midtown [Review Note]"),
+        "When escalation target is project name, review notes should @mention project lead"
     );
 }
 

@@ -92,6 +92,10 @@ pub struct LaunchConfig {
     pub auth_profile_dir: Option<PathBuf>,
     /// Auth provider for this session. Determines which auth env var is set.
     pub auth_provider: crate::auth::AuthProvider,
+    /// Escalation target for reviewer agents. When set, `{escalation_target}` in
+    /// the reviewer system prompt is replaced with this value (typically the channel
+    /// lead name). Falls back to `project_name` when `None`.
+    pub escalation_target: Option<String>,
     /// Override for the `initial_prompt` stored in `SessionRecord` at spawn time.
     ///
     /// When `Some`, `spawn_coworker` persists this value instead of `initial_prompt`.
@@ -314,6 +318,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider,
+            escalation_target: None,
             persisted_initial_prompt: None,
         }
     }
@@ -356,6 +361,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider,
+            escalation_target: None,
             persisted_initial_prompt: None,
         }
     }
@@ -401,6 +407,7 @@ impl LaunchConfig {
                 channel: None,
                 auth_profile_dir: None,
                 auth_provider,
+                escalation_target: None,
                 persisted_initial_prompt: None,
             }
         }
@@ -458,6 +465,7 @@ impl LaunchConfig {
             channel: None,
             auth_profile_dir: None,
             auth_provider,
+            escalation_target: None,
             persisted_initial_prompt: None,
         }
     }
@@ -510,6 +518,7 @@ impl LaunchConfig {
             channel: Some(channel_name_str),
             auth_profile_dir: None,
             auth_provider,
+            escalation_target: None,
             persisted_initial_prompt: None,
         }
     }
@@ -528,6 +537,7 @@ impl LaunchConfig {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
                 &self.name,
                 project_name,
+                self.escalation_target.as_deref().unwrap_or(project_name),
                 self.auth_provider,
                 self.pr_number,
             ),

@@ -98,32 +98,32 @@ midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
 
 If a test isn't applicable (e.g., documentation-only issues, style issues that a linter would catch), say "Test suggestion: N/A (style/docs issue)".
 
-REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@{project_name} PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
+REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@{escalation_target} PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
 
-NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead about:
+NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the channel lead (or project lead) about:
 
 1. **Verification milestones** — When you verify something significant works (containerized E2E tests pass locally, a complex integration works, a tricky edge case is handled correctly):
-   - "@{project_name} [Verification] Ran containerized E2E tests locally — all 41 tests pass"
-   - "@{project_name} [Verification] Tested webhook flow end-to-end — events are routed correctly"
+   - "@{escalation_target} [Verification] Ran containerized E2E tests locally — all 41 tests pass"
+   - "@{escalation_target} [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues (NOT in PR review)** — Consolidate ALL below-threshold issues for the PR into a **single** `@{project_name} [Review Note]` message. These items scored below your review threshold and were **deliberately excluded from the PR review comment** — the PR author has not seen them. You are escalating to the lead for triage. Do NOT post separate messages for each issue. Use markdown formatting for readability:
+2. **Below-threshold issues (NOT in PR review)** — Consolidate ALL below-threshold issues for the PR into a **single** `@{escalation_target} [Review Note]` message. These items scored below your review threshold and were **deliberately excluded from the PR review comment** — the PR author has not seen them. You are escalating for triage. Do NOT post separate messages for each issue. Use markdown formatting for readability:
    - Multiple issues — use bullet points with **bold** key terms and backticks for `code references`:
      ```
-     @{project_name} [Review Note] PR #123:
+     @{escalation_target} [Review Note] PR #123:
      The following scored below my review threshold and were NOT included in the PR review. Escalating for triage — should any be added as review blockers, or handled as follow-up tasks?
      - **Untested edge case** — `process_event()` in `handler.rs` doesn't check for empty input
      - **Missing null check** — `get_repo_url()` returns empty string instead of `None`
      ```
    - Single issue — a single sentence with backticks for code references:
      ```
-     @{project_name} [Review Note] PR #123 (not in PR review — escalating for triage): **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Add as review blocker, or follow-up task?
+     @{escalation_target} [Review Note] PR #123 (not in PR review — escalating for triage): **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Add as review blocker, or follow-up task?
      ```
 
-**Do NOT include numeric scores in @{project_name} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
+**Do NOT include numeric scores in @{escalation_target} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
 
-The threshold filters the PR comment to avoid noise for the PR author, but below-threshold issues may still be real bugs that the scoring misjudged — that's why you escalate them to the lead.
+The threshold filters the PR comment to avoid noise for the PR author, but below-threshold issues may still be real bugs that the scoring misjudged — that's why you escalate them.
 
-**HANDLING LEAD TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, write the updated review to a temp file and resubmit:
+**HANDLING TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, write the updated review to a temp file and resubmit:
 
 ```bash
 # Write the full updated review (with the new issue appended)
@@ -134,7 +134,7 @@ REVIEW_EOF
 midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
 ```
 
-**Progress (100%)**: After posting your final review comment and any @{project_name} notifications:
+**Progress (100%)**: After posting your final review comment and any @{escalation_target} notifications:
 ```bash
 midtown state --progress 100
 ```
