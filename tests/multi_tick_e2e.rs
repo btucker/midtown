@@ -165,12 +165,12 @@ fn test_no_duplicate_orphaned_pr_tasks() {
         include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
     let mut harness = MultiTickHarness::from_json(fixture).unwrap();
 
-    // Inject an orphaned PR: reviewed, CI green, has a coworker branch prefix, no task.
+    // Inject an orphaned PR: reviewed, CI green, branch resolves to a coworker, no task.
     // open_prs_data is Vec<serde_json::Value> matching the GitHub API shape.
     let orphan_pr = json!({
         "number": 8888,
         "title": "feat: Test orphan PR [Midtown !999]",
-        "headRefName": "broadway/test-orphan",
+        "headRefName": "task-999-test-orphan",
         "isDraft": false,
         "statusCheckRollup": [
             {"conclusion": "SUCCESS"}
@@ -178,6 +178,10 @@ fn test_no_duplicate_orphaned_pr_tasks() {
     });
     harness.snapshot_mut().pr.open_prs_data.push(orphan_pr);
     harness.snapshot_mut().reviewer.reviewed_prs.insert(8888);
+    harness
+        .snapshot_mut()
+        .worktree_branch_owners
+        .insert("task-999-test-orphan".to_string(), "broadway".to_string());
 
     // Tick 1: Reconcile should nudge the lead for the orphaned PR (not create a task)
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);

@@ -442,6 +442,16 @@ Tasks complete through two paths depending on whether they produce a PR:
 
 The daemon receives real-time GitHub events via webhooks (PR creation, reviews, check runs) verified with HMAC-SHA256 signatures. PR polling runs as a backstop for missed webhook deliveries and handles time-based concerns like merge conflict detection and stuck PR identification.
 
+### PR Coworker Attribution
+
+PR-to-coworker resolution uses two paths depending on context:
+
+- **Webhooks** (real-time): Frontmatter-only (`<!-- midtown: name -->` in the PR body). Webhooks do not attempt branch-based resolution — if frontmatter is missing, the PR's `owner_coworker` is `None` and the daemon falls back to session-based resolution. CI events (`status`, `check_run`) never carry a PR body, so they always resolve to `None` at webhook time; the daemon handles attribution via session-based resolution on the next tick.
+
+- **Polling** (backstop): Session-based resolution first (PR# → task → session → current_name), then branch-based lookup via the `worktree_branch_owners` map from the worktree registry. The map resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names. Legacy coworker-prefixed branches (e.g., `lexington/fix-auth`) are no longer supported.
+
+Key functions: `determine_pr_coworker()` (webhook.rs, frontmatter-only), `resolve_pr_owner()` (pr.rs, session + branch map), `coworker_from_branch()` (helpers.rs, pure map lookup).
+
 ## Webhook Ports
 
 Each project daemon runs its own webhook server for GitHub integration. Port 47022 is reserved for the shared multi-project webserver. Per-project daemons auto-assign ports starting at 47023, persisting the assignment in the project's `config.toml` for stability across restarts.

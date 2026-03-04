@@ -77,35 +77,29 @@ fn test_extract_pr_number_none() {
 }
 
 #[test]
-fn test_coworker_from_branch() {
+fn test_coworker_from_branch_with_map() {
+    let mut map = std::collections::HashMap::new();
+    map.insert("task-42-fix-auth".to_string(), "lexington".to_string());
+    map.insert("review-pr-99".to_string(), "park".to_string());
+
     assert_eq!(
-        coworker_from_branch("lexington/fix-auth"),
+        coworker_from_branch("task-42-fix-auth", &map),
         Some("lexington".to_string())
     );
     assert_eq!(
-        coworker_from_branch("park/add-feature"),
+        coworker_from_branch("review-pr-99", &map),
         Some("park".to_string())
     );
     assert_eq!(
-        coworker_from_branch("madison/refactor"),
-        Some("madison".to_string())
+        coworker_from_branch("unknown-branch", &map),
+        None,
+        "unknown branch should return None"
     );
-}
-
-#[test]
-fn test_coworker_from_branch_case_insensitive() {
     assert_eq!(
-        coworker_from_branch("LEXINGTON/fix"),
-        Some("lexington".to_string())
+        coworker_from_branch("main", &map),
+        None,
+        "main should return None"
     );
-    assert_eq!(coworker_from_branch("Park/thing"), Some("park".to_string()));
-}
-
-#[test]
-fn test_coworker_from_branch_not_coworker() {
-    assert_eq!(coworker_from_branch("feature/something"), None);
-    assert_eq!(coworker_from_branch("fix/bug"), None);
-    assert_eq!(coworker_from_branch("main"), None);
 }
 
 // Lead nudge tests

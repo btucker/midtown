@@ -403,7 +403,7 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub worktree_registry: crate::worktree_registry::WorktreeRegistry,
     /// Branch name → coworker name mapping from the worktree registry.
-    /// Used by `coworker_from_branch()` to look up task-based branches (task-*, review-pr-*).
+    /// Used by `coworker_from_branch()` to resolve branch ownership.
     pub worktree_branch_owners: HashMap<String, String>,
     /// PR number → branch name mapping from the worktree registry for merged PRs.
     /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.
@@ -746,11 +746,25 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── PR / GitHub state ───────────────────────────────────────────────
+    // Build branch_owners early so get_coworkers_with_merged_prs can resolve
+    // task-based branches (e.g., "task-42-fix-auth") to coworker names.
+    let early_branch_owners: HashMap<String, String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, a)| {
+                a.current_coworker
+                    .as_ref()
+                    .map(|c| (a.branch_name.clone(), c.clone()))
+            })
+            .collect()
+    };
     let coworkers_with_open_prs: HashSet<String> = super::pr::get_coworkers_with_open_prs(state)
         .into_iter()
         .collect();
     let coworkers_with_merged_prs: HashSet<String> =
-        super::pr::get_coworkers_with_merged_prs(state);
+        super::pr::get_coworkers_with_merged_prs(state, &early_branch_owners);
     // Merged PR numbers are populated as a side effect of the above call.
     let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
     let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review, open_prs_data) = {

@@ -167,7 +167,7 @@ pub struct CiCheckPassed {
 pub struct PrReviewStateChange {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    /// The coworker who owns the PR (from body frontmatter)
     pub owner_coworker: Option<String>,
     /// The reviewer who submitted the review
     pub reviewer: String,
@@ -190,7 +190,7 @@ pub enum ReviewState {
 pub struct PrCiFailure {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    /// The coworker who owns the PR (from body frontmatter)
     pub owner_coworker: Option<String>,
     /// Name of the failed check
     pub check_name: String,
@@ -206,7 +206,7 @@ pub struct PrOpenedInfo {
     pub pr_number: u64,
     /// The branch name (e.g., "lexington/feature-auth")
     pub branch: String,
-    /// The coworker who opened the PR (from branch prefix or body frontmatter)
+    /// The coworker who opened the PR (from body frontmatter)
     pub author_coworker: Option<String>,
     /// The PR title (no longer used for task completion - see PrMergedInfo)
     pub title: String,
@@ -238,7 +238,7 @@ pub enum CommentNode {
 pub struct PrActivity {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from branch prefix or body frontmatter)
+    /// The coworker who owns the PR (from body frontmatter)
     pub owner_coworker: Option<String>,
     /// The PR branch name (used to detect lead/* branches)
     pub branch: Option<String>,
@@ -570,14 +570,8 @@ struct StatusEvent {
     description: Option<String>,
     #[allow(dead_code)]
     sha: String,
-    branches: Option<Vec<StatusBranch>>,
     #[allow(dead_code)]
     repository: Repository,
-}
-
-#[derive(Debug, Deserialize)]
-struct StatusBranch {
-    name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -642,20 +636,6 @@ const COWORKER_NAMES: &[&str] = &[
     "riverside",
 ];
 
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-///
-/// **Note:** This only supports legacy `<coworker>/<description>` branches. Task-based
-/// branches (`task-*`, `review-pr-*`) are handled via frontmatter (`<!-- midtown: name -->`)
-/// in the PR body. Since webhooks don't have access to the worktree registry, they rely on
-/// coworkers including frontmatter in their PRs for correct attribution.
-fn coworker_from_branch(branch: &str) -> Option<&'static str> {
-    let prefix = branch.split('/').next()?;
-    COWORKER_NAMES
-        .iter()
-        .find(|&&name| name.eq_ignore_ascii_case(prefix))
-        .copied()
-}
-
 /// Extract coworker name from frontmatter in body (e.g., "<!-- midtown: lexington -->")
 fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
     // Look for <!-- midtown: name --> pattern
@@ -671,24 +651,10 @@ fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
 }
 
 /// Determine the coworker associated with a PR-related event.
-/// Priority: frontmatter > branch prefix
+/// Uses frontmatter (`<!-- midtown: name -->`) in the PR body for attribution.
 /// Returns None if no coworker can be determined.
-fn determine_pr_coworker(branch: Option<&str>, body: Option<&str>) -> Option<&'static str> {
-    // Check frontmatter first (explicit attribution)
-    if let Some(body) = body
-        && let Some(name) = coworker_from_frontmatter(body)
-    {
-        return Some(name);
-    }
-
-    // Check branch prefix
-    if let Some(branch) = branch
-        && let Some(name) = coworker_from_branch(branch)
-    {
-        return Some(name);
-    }
-
-    None
+fn determine_pr_coworker(body: Option<&str>) -> Option<&'static str> {
+    body.and_then(coworker_from_frontmatter)
 }
 
 /// Format @mention prefix for a coworker, or empty string if none.
@@ -701,7 +667,7 @@ fn mention_prefix(coworker: Option<&str>) -> String {
 
 /// Determine the commenter identity from a comment body.
 ///
-/// Priority: comment frontmatter > PR coworker (from branch/body) > GitHub username.
+/// Priority: comment frontmatter > PR coworker (from frontmatter) > GitHub username.
 /// The `pr_coworker` fallback handles the common case where a coworker posts a comment
 /// without the `<!-- midtown: name -->` signature — we infer their identity from the PR
 /// owner. This only applies when the commenter is the repo owner (the shared GitHub
@@ -751,10 +717,10 @@ fn strip_frontmatter(body: &str) -> String {
 fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: PullRequestEvent = serde_json::from_slice(body)?;
 
-    // Determine coworker from branch prefix or PR body frontmatter
+    // Determine coworker from PR body frontmatter
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let coworker = determine_pr_coworker(branch, pr_body);
+    let coworker = determine_pr_coworker(pr_body);
     let mention = mention_prefix(coworker);
 
     let action_text = match event.action.as_str() {
@@ -832,10 +798,10 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         return Ok(None);
     }
 
-    // Determine coworker from PR branch prefix or body frontmatter
+    // Determine coworker from PR body frontmatter
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let coworker = determine_pr_coworker(branch, pr_body);
+    let coworker = determine_pr_coworker(pr_body);
     let mention = mention_prefix(coworker);
 
     let action_text = match event.review.state.to_lowercase().as_str() {
@@ -1029,14 +995,14 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         }
     }
 
-    // Determine coworker from PR branch prefix or body frontmatter (for @mention)
+    // Determine coworker from PR body frontmatter (for @mention)
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
-    let coworker = determine_pr_coworker(branch, pr_body);
+    let coworker = determine_pr_coworker(pr_body);
     let mention = mention_prefix(coworker);
 
     // Determine commenter: use coworker name from comment signature if present,
-    // fall back to PR coworker (from branch/body) when signature is missing
+    // fall back to PR coworker (from frontmatter) when signature is missing
     // and commenter is the repo owner (shared account)
     let commenter = commenter_identity(
         &event.comment.body,
@@ -1097,13 +1063,9 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
 fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error> {
     let event: StatusEvent = serde_json::from_slice(body)?;
 
-    // Determine coworker from first branch in the branches array
-    let branch = event
-        .branches
-        .as_ref()
-        .and_then(|branches| branches.first())
-        .map(|b| b.name.as_str());
-    let coworker = determine_pr_coworker(branch, None);
+    // CI status events don't carry a PR body, so coworker attribution
+    // is handled by session-based resolution in the daemon, not here.
+    let coworker = determine_pr_coworker(None);
     let mention = mention_prefix(coworker);
 
     let action_text = match event.state.as_str() {
@@ -1138,13 +1100,14 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
         return Ok(None);
     }
 
-    // Determine coworker from branch prefix (check_suite includes head_branch)
     let branch = event
         .check_run
         .check_suite
         .as_ref()
         .and_then(|cs| cs.head_branch.as_deref());
-    let coworker = determine_pr_coworker(branch, None);
+    // CI check events don't carry a PR body, so coworker attribution
+    // is handled by session-based resolution in the daemon, not here.
+    let coworker = determine_pr_coworker(None);
     let mention = mention_prefix(coworker);
 
     let pr_info = event

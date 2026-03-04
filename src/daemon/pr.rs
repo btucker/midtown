@@ -24,53 +24,13 @@ use super::trackers::{PrIssueType, StuckConditionType};
 
 /// Get list of coworker names who have open PRs.
 ///
-/// A coworker is considered to have an open PR if the PR's branch name
-/// starts with the coworker's name (e.g., "lexington/fix-auth").
 /// Coworkers with open PRs should NEVER be sent on a break.
-/// Get coworker names that have open PRs (branch name starts with coworker name).
 ///
-/// Uses cached data from the latest `poll_prs_for_issues` call when available,
-/// avoiding a separate `gh pr list` API call.
+/// Uses cached data from the latest `poll_prs_for_issues` call.
+/// Returns empty on the first tick before the poll populates the cache.
 pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
     let cache = state.pr_coworker_cache.read().unwrap();
-    if !cache.open_pr_owners.is_empty() {
-        return cache.open_pr_owners.iter().cloned().collect();
-    }
-    drop(cache);
-
-    // Fallback to API call if cache is empty (e.g., first tick before poll runs)
-    let output = std::process::Command::new("gh")
-        .args(["pr", "list", "--json", "headRefName"])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                return prs
-                    .iter()
-                    .filter_map(|pr| {
-                        pr.get("headRefName")
-                            .and_then(|r| r.as_str())
-                            .and_then(coworker_from_branch)
-                    })
-                    .collect();
-            }
-            Vec::new()
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "Failed to get PRs from gh CLI for idle check: {}",
-                stderr.trim()
-            );
-            Vec::new()
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list for idle check: {}", e);
-            Vec::new()
-        }
-    }
+    cache.open_pr_owners.iter().cloned().collect()
 }
 
 /// Resolve a PR's owner via the session-centric path:
@@ -80,7 +40,7 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
 /// or `None` if any link in the chain is missing (no task association, no session,
 /// or session has neither current_name nor preferred_name).
 ///
-/// This gives session-based routing priority over branch-name parsing. When a
+/// This gives session-based routing priority over branch-based lookup. When a
 /// coworker is reassigned to a different name on restart, the session record
 /// tracks the current name, so PRs route to the correct coworker.
 ///
@@ -108,7 +68,7 @@ fn resolve_pr_owner_from_session(
 /// PR# → pr_task_associations → task_id → session_id → session.name
 ///
 /// Returns `Some(name)` if the full chain resolves, `None` otherwise.
-/// Callers should fall back to branch-name parsing when this returns `None`.
+/// Callers should fall back to branch-based lookup when this returns `None`.
 async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
     let ps = state.persistent_state.lock().await;
     let pr_task_associations = ps.github.pr_to_task_map();
@@ -281,11 +241,17 @@ fn add_task_assignment_to_on_success(
 /// polling less frequently saves significant API calls.
 const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 
-/// Get coworker names that have recently merged PRs (branch name starts with coworker name).
+/// Get coworker names that have recently merged PRs.
 ///
 /// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
 /// every 5 minutes since merge events aren't time-critical.
-pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
+///
+/// The `branch_owners` map (from the worktree registry) is needed to resolve
+/// task-based branch names (e.g., "task-42-fix-auth") to coworker names.
+pub(super) fn get_coworkers_with_merged_prs(
+    state: &DaemonState,
+    branch_owners: &HashMap<String, String>,
+) -> HashSet<String> {
     // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
     let needs_refresh = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -334,7 +300,7 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                     .collect();
                 let coworkers: HashSet<String> = branches
                     .iter()
-                    .filter_map(|b| coworker_from_branch(b))
+                    .filter_map(|b| coworker_from_branch(b, branch_owners))
                     .collect();
                 let numbers: HashSet<u64> = prs
                     .iter()
@@ -494,7 +460,8 @@ pub(super) fn detect_abandoned_pr_tasks(
 /// Resolve the owner of a PR from snapshot data.
 ///
 /// Tries session-based resolution first (PR# → task → session → current_name),
-/// then falls back to branch-name parsing. Returns `None` if neither path yields an owner.
+/// then falls back to branch-based lookup via the worktree registry's branch_owners map.
+/// Returns `None` if neither path yields an owner.
 fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pr_number,
@@ -502,7 +469,7 @@ fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Opt
         &snap.session_task_map,
         &snap.sessions,
     )
-    .or_else(|| coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)))
+    .or_else(|| coworker_from_branch(head_ref, &snap.worktree_branch_owners))
 }
 
 // ============================================================================
@@ -630,9 +597,7 @@ async fn update_pr_caches(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
+                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
             })
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
@@ -682,9 +647,7 @@ async fn update_pr_caches(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
+                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
             })
             .collect();
         let mut cache = state.pr_coworker_cache.write().unwrap();
@@ -699,9 +662,7 @@ async fn update_pr_caches(
             .filter_map(|pr| {
                 pr.get("headRefName")
                     .and_then(|r| r.as_str())
-                    .and_then(|branch| {
-                        coworker_from_branch_with_map(branch, Some(&snap.worktree_branch_owners))
-                    })
+                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
             })
             .collect();
         let mut sessions = state.pr_break_sessions.write().unwrap();
@@ -866,6 +827,7 @@ fn update_review_status_cache(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
+    branch_owners: &HashMap<String, String>,
 ) {
     let prs_needing_review: usize = prs
         .iter()
@@ -889,7 +851,7 @@ fn update_review_status_cache(
         .filter_map(|pr| {
             pr.get("headRefName")
                 .and_then(|r| r.as_str())
-                .and_then(coworker_from_branch)
+                .and_then(|branch| coworker_from_branch(branch, branch_owners))
         })
         .collect();
 
@@ -1088,7 +1050,7 @@ pub(super) async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
 
-    update_review_status_cache(state, &prs, &reviewed_prs);
+    update_review_status_cache(state, &prs, &reviewed_prs, &snap.worktree_branch_owners);
 
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
@@ -1724,7 +1686,7 @@ fn no_review_nudge_self_review(
     let is_assigned = ctx.assigned_prs.contains(&pf.number);
 
     let build_busy_reason = || {
-        let pr_author = coworker_from_branch_with_map(pf.head_ref, Some(ctx.branch_owners));
+        let pr_author = coworker_from_branch(pf.head_ref, ctx.branch_owners);
         let mut busy: Vec<String> = ctx
             .running_coworkers
             .iter()
@@ -2209,11 +2171,10 @@ async fn collect_comment_notification_effects(
         }
 
         // Only check coworker-owned PRs beyond this point
-        let owner =
-            match coworker_from_branch_with_map(head_ref, Some(&snap.worktree_branch_owners)) {
-                Some(o) => o,
-                None => continue, // Not a coworker PR
-            };
+        let owner = match coworker_from_branch(head_ref, &snap.worktree_branch_owners) {
+            Some(o) => o,
+            None => continue, // Not a coworker PR
+        };
 
         // Fetch PR details with comments on-demand
         let pr_with_comments = match fetch_pr_comments(pr_number).await {
@@ -2586,7 +2547,7 @@ async fn collect_reviewer_effects(
     pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
-        Some(&snap.worktree_branch_owners),
+        &snap.worktree_branch_owners,
         &snap.worktree_registry,
         &snap.coworkers.active_names,
         state,
@@ -2598,7 +2559,7 @@ async fn collect_reviewer_effects(
 }
 
 pub(crate) async fn collect_reviewer_effects_with_source(
-    branch_owners_map: Option<&std::collections::HashMap<String, String>>,
+    branch_owners: &std::collections::HashMap<String, String>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
     active_names: &std::collections::HashSet<String>,
     state: &DaemonState,
@@ -2702,8 +2663,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
             let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-            // Only nudge coworker-owned PRs (validates branch prefix against known names)
-            if let Some(owner) = coworker_from_branch_with_map(head_ref, branch_owners_map) {
+            // Only nudge coworker-owned PRs (resolved via branch_owners map)
+            if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
                 let should_nudge = {
                     let tracker = state.pr_issue_tracker.lock().await;
                     tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
@@ -2845,9 +2806,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                         pr_number, head_ref
                     );
                     false
-                } else if let Some(owner) =
-                    coworker_from_branch_with_map(head_ref, branch_owners_map)
-                {
+                } else if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
                     // The branch identifies a coworker owner. Only treat as orphaned if
                     // the coworker is NOT currently active — an active coworker can always
                     // address review feedback regardless of whether a worktree is registered.
@@ -2906,9 +2865,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         }
 
         // Also exclude the PR author from reviewer selection to prevent self-review.
-        // The author is identified by the branch prefix (e.g., "riverside" from "riverside/feature").
+        // The author is identified via the branch_owners map.
         let mut excluded_names = channel_lead_names.clone();
-        let pr_author = coworker_from_branch_with_map(head_ref, branch_owners_map);
+        let pr_author = coworker_from_branch(head_ref, branch_owners);
         if let Some(ref author) = pr_author {
             excluded_names.insert(author.clone());
         }
@@ -3491,12 +3450,6 @@ async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::
     }
 }
 
-/// Async version of `get_pr_owner_coworker` that doesn't block the Tokio runtime.
-async fn get_pr_owner_coworker_async(pr_number: u64) -> Option<String> {
-    let branch = get_pr_branch_async(pr_number).await?;
-    coworker_from_branch(&branch)
-}
-
 /// Fetch the branch name (headRefName) for a PR using the GitHub CLI.
 async fn get_pr_branch_async(pr_number: u64) -> Option<String> {
     let output = tokio::process::Command::new("gh")
@@ -3571,13 +3524,7 @@ pub(super) async fn handle_pr_comment_nudge(
     let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
 
     // Only check coworker-owned PRs beyond this point
-    let owner = match session_owner {
-        Some(o) => Some(o),
-        None => match activity.owner_coworker {
-            Some(ref o) => Some(o.clone()),
-            None => get_pr_owner_coworker_async(pr_number).await,
-        },
-    };
+    let owner = session_owner.or_else(|| activity.owner_coworker.clone());
 
     let Some(mut owner) = owner else {
         debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
@@ -3837,14 +3784,8 @@ pub(super) async fn handle_webhook_review_state_change(
     // Session-centric resolution first: PR → task → session → name
     let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
 
-    // Resolve owner: session path first, then webhook data, then branch lookup
-    let owner = match session_owner {
-        Some(o) => Some(o),
-        None => match change.owner_coworker {
-            Some(ref o) => Some(o.clone()),
-            None => get_pr_owner_coworker_async(pr_number).await,
-        },
-    };
+    // Resolve owner: session path first, then webhook data
+    let owner = session_owner.or_else(|| change.owner_coworker.clone());
 
     let Some(owner) = owner else {
         debug!(
@@ -3961,14 +3902,8 @@ pub(super) async fn handle_webhook_ci_failure(
     // Session-centric resolution first: PR → task → session → name
     let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
 
-    // Resolve owner: session path first, then webhook data, then branch lookup
-    let owner = match session_owner {
-        Some(o) => Some(o),
-        None => match failure.owner_coworker {
-            Some(ref o) => Some(o.clone()),
-            None => get_pr_owner_coworker_async(pr_number).await,
-        },
-    };
+    // Resolve owner: session path first, then webhook data
+    let owner = session_owner.or_else(|| failure.owner_coworker.clone());
 
     let Some(owner) = owner else {
         debug!(
@@ -4281,7 +4216,7 @@ fn collect_stale_check_effects_with_time(
 /// on PR open), leaving the PR orphaned with no one to merge it even after review + CI green.
 ///
 /// A PR is considered orphaned if:
-/// 1. It has a coworker or task branch prefix (e.g., "lexington/feature" or "task-123-fix")
+/// 1. It has a known branch in the worktree registry or uses the task-* prefix
 /// 2. It has a completed review (in `reviewed_prs`)
 /// 3. All CI checks are passing (`all_ci_checks_passed`)
 /// 4. There's no in_progress task linked to it (not in `pr_task_associations`)
@@ -4302,14 +4237,14 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             None => continue,
         };
 
-        // Only consider PRs with coworker or task branch prefixes
+        // Only consider PRs with known branches or task-* prefixes
         let branch = match pr.get("headRefName").and_then(|r| r.as_str()) {
             Some(b) => b,
             None => continue,
         };
 
-        // Check if it's a coworker branch or task branch
-        let has_valid_prefix = coworker_from_branch(branch).is_some()
+        // Check if it's a coworker branch, task branch, or lead branch
+        let has_valid_prefix = coworker_from_branch(branch, &snap.worktree_branch_owners).is_some()
             || branch.starts_with("task-")
             || is_lead_branch(branch);
 
