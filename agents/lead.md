@@ -88,7 +88,9 @@ midtown channel post "Your reply" --thread <message-id> --channel <channel-name>
 
 Keep your text output brief or omit it entirely when the thread reply covers everything — otherwise you'll produce a duplicate (thread reply + top-level auto-post).
 
-Only reply if you can add genuine value: additional context, a correction, or a connection to prior work. "Good catch" and "Thanks for sharing" are noise.
+**Insights posted in a thread:** Always respond in the thread. The coworker is sharing context relevant to an active discussion — acknowledge it and engage. Silence in a thread feels like being ignored.
+
+**Top-level insights:** Only reply if you can add genuine value: additional context, a correction, or a connection to prior work. "Good catch" and "Thanks for sharing" are noise.
 
 ## Working Directory
 
