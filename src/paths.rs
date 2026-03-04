@@ -653,24 +653,19 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Migrate data from the old directory structure to the new one (era 1).
+/// Migrate data from the old directory structure to the new one.
 ///
 /// Old structure: `~/.midtown/<repo>/...`
-/// New structure: `~/.midtown/{projects,coworkers,lead}/<repo>/...`
+/// New structure: `~/.midtown/{projects,lead}/<repo>/...`
 ///
 /// Migrates:
 /// - `channel.jsonl` -> `projects/<repo>/channel.jsonl`
 /// - `cursors/` -> `projects/<repo>/cursors/`
 /// - `logs/` -> `projects/<repo>/logs/`
 /// - `daemon.pid` -> `projects/<repo>/daemon.pid`
-/// - `worktrees/` -> `coworkers/<repo>/`
+/// - `worktrees/` -> `projects/<repo>/worktrees/`
 /// - `lead-session-id` -> `lead/<repo>/session-id`
 /// - `lead-initialized` -> `lead/<repo>/lead-initialized`
-///
-/// Note: This is era 1 of the migration chain. The `coworkers/<repo>/` and
-/// `worktrees/<repo>/` paths produced here are further migrated by
-/// [`migrate_worktree_paths()`] (era 2) into `projects/<repo>/coworkers/`
-/// and `projects/<repo>/worktrees/` respectively.
 ///
 /// Returns Ok(true) if migration was performed, Ok(false) if already migrated or nothing to migrate.
 pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {

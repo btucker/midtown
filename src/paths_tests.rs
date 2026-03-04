@@ -227,6 +227,7 @@ fn test_migrate_directory_structure_moves_old_layout_without_recursion() {
     )
     .unwrap();
 
+    // If recursion regresses, this call overflows the stack and the test never reaches assertions.
     let result = migrate_directory_structure(repo);
     assert!(result.is_ok(), "migration should succeed");
     assert!(result.unwrap(), "migration should report changes");
@@ -243,6 +244,10 @@ fn test_migrate_directory_structure_moves_old_layout_without_recursion() {
             .join("README.md")
             .exists(),
         "worktree should move to projects/<repo>/worktrees"
+    );
+    assert!(
+        new_projects_dir.join("logs").exists(),
+        "logs should move to projects/<repo>"
     );
     assert!(
         tmp.path()
