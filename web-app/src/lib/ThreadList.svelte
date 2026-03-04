@@ -9,20 +9,23 @@
   // Build the set of thread IDs already represented by tasks
   const taskThreadIds = $derived(getTaskThreadIds($kanbanData))
 
-  // Cleanup callback: permanently remove task-backed threads from stores
-  function cleanupTaskBacked(ids) {
+  // Threads for this channel, filtered and sorted (pure derivation — no side effects)
+  const threadData = $derived(
+    getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds)
+  )
+  const channelThreads = $derived(threadData.threads)
+
+  // Side effect: permanently remove task-backed threads from stores
+  $effect(() => {
+    const ids = threadData.toClean
+    if (ids.length === 0) return
     trackedThreads.update((t) => {
       const next = { ...t }
       for (const id of ids) delete next[id]
       return next
     })
     dismissedThreads.update((s) => new Set([...s, ...ids]))
-  }
-
-  // Threads for this channel, filtered and sorted
-  const channelThreads = $derived(
-    getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds, cleanupTaskBacked)
-  )
+  })
 
   function handleClick(thread) {
     // Try to find the parent message in the channel's message store
