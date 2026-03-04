@@ -40,7 +40,6 @@ from midtown import run, MidtownRPC
 
 def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
     if event["type"] == "pr.approved":
-        author = event.get("coworker", "someone")
         rpc.post_to_channel(f"🎉 PR #{event['pr_number']} approved!")
 
 if __name__ == "__main__":
@@ -667,22 +666,29 @@ If a channel handles reviews externally (e.g., human reviewers), you can skip th
 from midtown import run, MidtownRPC
 
 def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
+    task_id = event.get("task_id")
+
     if event["type"] == "pr.opened":
+        coworker = event["coworker"]
         rpc.post_to_channel(
-            f"PR #{event['pr_number']} opened by {event['coworker']} — "
+            f"PR #{event['pr_number']} opened by {coworker} — "
             "skipping auto-review (human review required for docs)"
         )
+        # Track the PR author so we can nudge them on approval
+        if task_id:
+            state.setdefault("tasks", {})[task_id] = {"pr_author": coworker}
         # No rpc.spawn_reviewer() call → no reviewer spawned
 
     elif event["type"] == "pr.approved":
-        author = event.get("coworker", "")
+        # pr.approved has no coworker field — read the author from state
+        author = state.get("tasks", {}).get(task_id, {}).get("pr_author") if task_id else None
         if author:
             rpc.nudge_coworker(author, f"PR #{event['pr_number']} approved — merge when ready")
 
     elif event["type"] == "pr.merged":
-        task_id = event.get("task_id")
         if task_id:
             rpc.complete_task(task_id)
+            state.get("tasks", {}).pop(task_id, None)
 
 if __name__ == "__main__":
     run(handle)
