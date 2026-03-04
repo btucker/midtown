@@ -427,14 +427,8 @@
       } else if (target.classList.contains('pr-link')) {
         e.preventDefault()
         const prNum = target.dataset.pr
-        const pr = findPr(prNum)
-        const task = pr?.task_id ? findTask(pr.task_id) : null
-        if (task) {
-          openTaskThread(task, task.channel || $activeChannel)
-        } else {
-          const url = getPrUrl(prNum)
-          if (url) window.open(url, '_blank', 'noopener')
-        }
+        const url = getPrUrl(prNum)
+        if (url) window.open(url, '_blank', 'noopener')
       } else if (target.classList.contains('coworker-link')) {
         // Prevent the browser from following the '#' href; no detail panel action.
         e.preventDefault()
@@ -471,21 +465,15 @@
     // so blocking all <a> elements effectively breaks tap-to-reply on nearly every message.
     const link = target?.closest('a')
     if (link && !link.dataset.channel && !link.dataset.task && !link.dataset.pr && !link.dataset.coworker) return
-    // Task links open the task's thread (with task card); PR links open task thread or GitHub;
+    // Task links open the task's thread (with task card); PR links always open GitHub;
     // all other taps open the message thread.
     if (link?.dataset.task) {
       const task = findTask(link.dataset.task)
       if (task) openTaskThread(task, task.channel || $activeChannel)
     } else if (link?.dataset.pr) {
       const prNum = link.dataset.pr
-      const pr = findPr(prNum)
-      const task = pr?.task_id ? findTask(pr.task_id) : null
-      if (task) {
-        openTaskThread(task, task.channel || $activeChannel)
-      } else {
-        const url = getPrUrl(prNum)
-        if (url) window.open(url, '_blank', 'noopener')
-      }
+      const url = getPrUrl(prNum)
+      if (url) window.open(url, '_blank', 'noopener')
     } else {
       openThread(msg, $activeChannel)
     }
