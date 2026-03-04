@@ -835,6 +835,13 @@ export function handleUpdate(update) {
       // (e.g., "park-discuss-ab12"); when destroyed, clear the entry.
       if (has_dedicated_session && owner) {
         threadForkOwners.update((m) => ({ ...m, [thread_parent_id]: owner }))
+      } else if (has_dedicated_session && !owner) {
+        // Owner unresolvable — clear any stale entry to avoid misattribution.
+        threadForkOwners.update((m) => {
+          const updated = { ...m }
+          delete updated[thread_parent_id]
+          return updated
+        })
       } else if (!has_dedicated_session) {
         threadForkOwners.update((m) => {
           const updated = { ...m }
