@@ -66,6 +66,13 @@ fn test_stamp_existing_reviewed_at() {
     assert!(result.contains("reviewed_at: 2026-03-04T10:00:00Z"));
     assert!(!result.contains("2026-03-01"));
     assert!(result.contains("# Content"));
+    // Bug regression: re-stamped content must remain parseable
+    let re_parsed = parse_note_reviewed_at(&result);
+    assert!(
+        re_parsed.is_some(),
+        "Re-stamped content must be parseable; got:\n{}",
+        result
+    );
 }
 
 #[test]

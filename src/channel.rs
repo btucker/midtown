@@ -2005,7 +2005,7 @@ fn stamp_reviewed_at_in_content(content: &str, timestamp: &str) -> String {
             .collect();
 
         if found {
-            return format!("---\n{}---{}", updated_lines.join("\n"), rest);
+            return format!("---\n{}\n---{}", updated_lines.join("\n"), rest);
         } else {
             // Add reviewed_at to existing frontmatter
             return format!(
