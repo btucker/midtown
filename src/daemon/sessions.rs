@@ -58,14 +58,20 @@ pub(super) fn is_auth_error(error_msg: &str) -> bool {
 
 /// Check if an error message indicates an unrecoverable stale Codex thread/session.
 ///
-/// Codex resume failures can return errors like:
+/// Codex resume/fork failures can return errors like:
 /// - "no rollout found for thread id <id>"
+/// - "thread not found" / "thread_not_found"
 ///
 /// These do not recover with retries; the saved session/thread ID must be cleared
 /// and a fresh session spawned.
+///
+/// Keep in sync with `is_stale_codex_thread_error` in `headless.rs` which handles
+/// fast in-process retries for the same class of errors.
 fn is_stale_codex_session_error(error_msg: &str) -> bool {
     let lowercase = error_msg.to_lowercase();
     lowercase.contains("no rollout found for thread id")
+        || lowercase.contains("thread not found")
+        || lowercase.contains("thread_not_found")
 }
 
 /// Parse usage limit messages to extract reset time.

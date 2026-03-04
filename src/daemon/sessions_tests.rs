@@ -43,6 +43,13 @@ fn test_is_stale_codex_session_error_detects_rollout_missing() {
 }
 
 #[test]
+fn test_is_stale_codex_session_error_detects_thread_not_found() {
+    assert!(is_stale_codex_session_error("thread not found"));
+    assert!(is_stale_codex_session_error("Thread Not Found"));
+    assert!(is_stale_codex_session_error("thread_not_found"));
+}
+
+#[test]
 fn test_is_stale_codex_session_error_ignores_generic_errors() {
     let msg = "request failed with temporary network error";
     assert!(!is_stale_codex_session_error(msg));
