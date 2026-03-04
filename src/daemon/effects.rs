@@ -3578,16 +3578,19 @@ async fn respawn_fork(
 ) {
     // Build a fork config. We pass an empty calling_session_id and override
     // resume_session_id to None — crash recovery spawns fresh, not from parent.
+    // Use name_override (not fork_name_hint) to reuse the exact original name,
+    // keeping cooldown keys stable and HeadlessConfig identity consistent.
     let (name, mut headless_config) = super::rpc_session::build_fork_config(
         thread_parent_id,
-        "",              // no calling session (crash recovery)
-        None,            // no caller name
-        Some(fork_name), // reuse the original fork name as hint
+        "",   // no calling session (crash recovery)
+        None, // no caller name
+        None, // no hint — we use name_override instead
         channel,
         working_dir,
         auth_provider,
         is_channel_lead,
         &state.repo_name,
+        Some(fork_name), // reuse exact original fork name
     );
     headless_config.resume_session_id = None; // Fresh session, don't resume from parent
 
