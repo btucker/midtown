@@ -293,6 +293,86 @@ fn test_serialize_tool_activity_with_tool_result() {
 }
 
 // ============================================================================
+// Tests for build_channel_leads_working — per-channel-lead activity map
+// ============================================================================
+
+#[test]
+fn test_channel_leads_working_active_session() {
+    let mut health = HashMap::new();
+    health.insert(
+        "web".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    let names: std::collections::HashSet<String> = ["web"].iter().map(|s| s.to_string()).collect();
+    let result = build_channel_leads_working(&health, &names);
+    assert_eq!(result.get("web").and_then(|v| v.as_bool()), Some(true));
+}
+
+#[test]
+fn test_channel_leads_working_stale_session() {
+    let stale_ts = Utc::now() - chrono::Duration::seconds(10);
+    let mut health = HashMap::new();
+    health.insert(
+        "auth".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(stale_ts),
+            ..Default::default()
+        },
+    );
+    let names: std::collections::HashSet<String> = ["auth"].iter().map(|s| s.to_string()).collect();
+    let result = build_channel_leads_working(&health, &names);
+    assert_eq!(result.get("auth").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn test_channel_leads_working_missing_health() {
+    // Channel lead registered but no health entry yet (just spawned)
+    let health: HashMap<String, ProcessHealth> = HashMap::new();
+    let names: std::collections::HashSet<String> = ["web"].iter().map(|s| s.to_string()).collect();
+    let result = build_channel_leads_working(&health, &names);
+    assert_eq!(result.get("web").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn test_channel_leads_working_multiple_channels() {
+    let mut health = HashMap::new();
+    health.insert(
+        "web".to_string(),
+        ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    health.insert(
+        "auth".to_string(),
+        ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(Utc::now()),
+            ..Default::default()
+        },
+    );
+    let names: std::collections::HashSet<String> =
+        ["web", "auth"].iter().map(|s| s.to_string()).collect();
+    let result = build_channel_leads_working(&health, &names);
+    assert_eq!(result.get("web").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(result.get("auth").and_then(|v| v.as_bool()), Some(false));
+}
+
+#[test]
+fn test_channel_leads_working_empty_set() {
+    let health: HashMap<String, ProcessHealth> = HashMap::new();
+    let names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let result = build_channel_leads_working(&health, &names);
+    assert!(result.is_empty());
+}
+
+// ============================================================================
 // Tests for project lead filtering — the lead must not appear in the
 // coworker status list regardless of whether it uses the legacy "lead" name
 // or the canonical repo name. Regression tests for !1723.

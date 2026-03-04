@@ -1,5 +1,5 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData, threadUnreadCounts } from './store.js'
+  import { messages, messagesByChannel, activeChannel, activeProject, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData, threadUnreadCounts } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
   import { tick, onMount, untrack } from 'svelte'
@@ -25,8 +25,6 @@
   let uploading = $state(false)
   let textareaElement = $state(null)
   let formWrapperElement = $state(null)
-  let channelLeadThinking = $state(false)
-  let channelLeadThinkingTimeout = null
   let channelItemsActive = $state(false)
   let channelItemsActiveTimeout = null
   let topSentinel = $state(null)
@@ -134,7 +132,12 @@
   let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || [])
 
   // Activity strip computed values (always-rendered single line above input)
-  let isLeadWorking = $derived($activeChannel === 'midtown' ? !!$daemonStatus?.lead_working : false)
+  // Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
+  let isLeadWorking = $derived(
+    $activeChannel === 'midtown' || $activeChannel === $activeProject
+      ? !!$daemonStatus?.lead_working
+      : !!$daemonStatus?.channel_leads_working?.[$activeChannel]
+  )
   // Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
   // InProgress in the store even after its ToolResult arrives in a later batch (items
   // are appended, not updated). Only count a call as truly in-progress if no matching
@@ -153,8 +156,8 @@
       )
     })
   })
-  let showActivity = $derived(activeChannelToolItems.length > 0 || channelLeadThinking || isLeadWorking)
-  let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive) || channelLeadThinking)
+  let showActivity = $derived(activeChannelToolItems.length > 0 || isLeadWorking)
+  let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive))
 
   // Most recent tool call entry for inline display in the activity strip.
   // Replicates ToolActivity's merge logic but returns only the last call.
@@ -518,27 +521,6 @@
     tick().then(() => resizeTextarea())
   })
 
-  // Clear optimistic thinking state when real tool activity arrives
-  $effect(() => {
-    if (activeChannelToolItems.some((item) => item.status === 'InProgress')) {
-      channelLeadThinking = false
-      if (channelLeadThinkingTimeout) {
-        clearTimeout(channelLeadThinkingTimeout)
-        channelLeadThinkingTimeout = null
-      }
-    }
-  })
-
-  // Clear optimistic thinking state when switching channels
-  $effect(() => {
-    $activeChannel // track dependency
-    channelLeadThinking = false
-    if (channelLeadThinkingTimeout) {
-      clearTimeout(channelLeadThinkingTimeout)
-      channelLeadThinkingTimeout = null
-    }
-  })
-
   // Track tool item activity freshness: mark active when new items arrive,
   // mark stale after 8s of silence. This catches channel leads that stop
   // mid-tool (no ToolResult or final message to clear InProgress items).
@@ -562,10 +544,6 @@
   // Ensure the timeouts are cleared when the component is destroyed
   $effect(() => {
     return () => {
-      if (channelLeadThinkingTimeout) {
-        clearTimeout(channelLeadThinkingTimeout)
-        channelLeadThinkingTimeout = null
-      }
       if (channelItemsActiveTimeout) {
         clearTimeout(channelItemsActiveTimeout)
         channelItemsActiveTimeout = null
@@ -589,14 +567,6 @@
           : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
 
         sendMessage(message, $activeChannel)
-        if ($activeChannel !== 'midtown' && $activeChannel !== 'main') {
-          channelLeadThinking = true
-          if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
-          channelLeadThinkingTimeout = setTimeout(() => {
-            channelLeadThinking = false
-            channelLeadThinkingTimeout = null
-          }, 30000)
-        }
         inputText = ''
         if (textareaElement) textareaElement.value = ''
         pendingFile = null
@@ -607,14 +577,6 @@
       }
     } else if (inputText.trim()) {
       sendMessage(inputText.trim(), $activeChannel)
-      if ($activeChannel !== 'midtown' && $activeChannel !== 'main') {
-        channelLeadThinking = true
-        if (channelLeadThinkingTimeout) clearTimeout(channelLeadThinkingTimeout)
-        channelLeadThinkingTimeout = setTimeout(() => {
-          channelLeadThinking = false
-          channelLeadThinkingTimeout = null
-        }, 30000)
-      }
       inputText = ''
       channelDrafts.delete($activeChannel)
       clearMobileTextarea(textareaElement, () => { inputText = '' })
@@ -908,9 +870,8 @@
 
   <!-- Activity strip: always rendered at fixed height to prevent layout shift.
        Shows [dots?] [lead name] [icon] [tool description] on one line.
-       In the main channel ('midtown'), dots are driven by lead_working (same signal as
-       the TUI braille spinner). In topic channels, InProgress tool items drive the dots —
-       channel leads don't have a separate lead_working signal. -->
+       Dots are driven by lead_working for the main channel and channel_leads_working
+       for topic channels (same 5s activity-timeout signal as the TUI braille spinner). -->
   <div class="h-[1.5em] flex items-center gap-[6px] px-[18px] text-[0.82rem] overflow-hidden whitespace-nowrap shrink-0" data-testid="activity-strip">
     {#if showActivity}
       {#if showDots}
