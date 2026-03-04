@@ -3002,3 +3002,183 @@ fn test_stale_notes_emits_nudge_and_cooldown_effects() {
         "Second effect should be RecordCooldown for note_staleness/dev"
     );
 }
+
+// ── Reviewer channel routing tests ──────────────────────────────────────────
+
+/// Stuck reviewer respawn should inherit the task's topic channel.
+///
+/// When a reviewer gets stuck and is respawned, the new LaunchConfig should
+/// carry the PR's associated task channel so the replacement reviewer's
+/// `midtown channel post` commands route to the correct topic channel.
+#[test]
+fn test_stuck_reviewer_respawn_inherits_task_channel() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 42u64;
+    let task_id = "100";
+    let channel_name = "auth-feature";
+
+    // Active reviewer coworker
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "amsterdam".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(30),
+        current_task: None,
+        session_id: Some("sess-rev-100".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Stuck: no events for past REVIEWER_STUCK_DURATION
+    snap.health.headless_process_health.insert(
+        "amsterdam".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(10)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: None,
+        },
+    );
+
+    // Reviewer assignment
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("amsterdam".to_string(), pr_number);
+
+    // Session mapping
+    snap.name_session_map
+        .insert("amsterdam".to_string(), "sess-rev-100".to_string());
+
+    // PR → task → channel chain
+    snap.pr
+        .pr_task_associations
+        .insert(pr_number, task_id.to_string());
+    snap.task_channel
+        .insert(task_id.to_string(), channel_name.to_string());
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Find the SpawnCoworkerWithCallbacks and check config.channel
+    let config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        config.is_some(),
+        "Expected a SpawnCoworkerWithCallbacks effect for stuck reviewer respawn. Effects: {:#?}",
+        effects
+    );
+
+    assert_eq!(
+        config.unwrap().channel,
+        Some(channel_name.to_string()),
+        "Respawned reviewer LaunchConfig.channel should be set to the task's topic channel '{}'. \
+         Before fix: respawned reviewers had channel: None, routing all posts to the main channel.",
+        channel_name
+    );
+}
+
+/// Dead reviewer respawn should also inherit the task's topic channel.
+#[test]
+fn test_dead_reviewer_respawn_inherits_task_channel() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 55u64;
+    let task_id = "200";
+    let channel_name = "billing-feature";
+
+    // Active reviewer coworker
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(5),
+        current_task: None,
+        session_id: Some("sess-rev-200".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Dead: process has exited
+    snap.health.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(now - chrono::Duration::minutes(2)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: Some(1),
+        },
+    );
+
+    // Reviewer assignment + not yet reviewed
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("lexington".to_string(), pr_number);
+
+    // Session mapping
+    snap.name_session_map
+        .insert("lexington".to_string(), "sess-rev-200".to_string());
+
+    // PR → task → channel chain
+    snap.pr
+        .pr_task_associations
+        .insert(pr_number, task_id.to_string());
+    snap.task_channel
+        .insert(task_id.to_string(), channel_name.to_string());
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    // Find the SpawnCoworkerWithCallbacks and check config.channel
+    let config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        config.is_some(),
+        "Expected a SpawnCoworkerWithCallbacks effect for dead reviewer respawn. Effects: {:#?}",
+        effects
+    );
+
+    assert_eq!(
+        config.unwrap().channel,
+        Some(channel_name.to_string()),
+        "Respawned reviewer LaunchConfig.channel should be set to the task's topic channel '{}'. \
+         Before fix: respawned reviewers had channel: None.",
+        channel_name
+    );
+}

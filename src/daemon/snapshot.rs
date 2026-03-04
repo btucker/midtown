@@ -556,6 +556,23 @@ impl WorldSnapshot {
         self.channel_lead_sessions.keys().cloned().collect()
     }
 
+    /// Look up the topic channel for a PR via its associated task.
+    ///
+    /// Chains `pr_task_associations` (PR# → task_id) and `task_channel`
+    /// (task_id → channel name). Analogous to `PrContext::get_channel()`
+    /// on the async side — use this in synchronous decision functions that
+    /// operate on the snapshot.
+    pub fn channel_for_pr(&self, pr_number: u64) -> Option<String> {
+        let task_id = self.pr.pr_task_associations.get(&pr_number)?;
+        self.task_channel.get(task_id).cloned()
+    }
+
+    /// Look up the topic channel for a PR, falling back to the repo name.
+    pub fn channel_for_pr_or_default(&self, pr_number: u64) -> String {
+        self.channel_for_pr(pr_number)
+            .unwrap_or_else(|| self.repo_name.clone())
+    }
+
     /// Look up the session record for a task, if one exists.
     ///
     /// Chains `session_task_map` (task_id → session_id) and `sessions`

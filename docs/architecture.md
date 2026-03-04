@@ -755,6 +755,17 @@ When a channel is created, archived, unarchived, or renamed, the daemon broadcas
 
 **TUI**: The TUI creates channels via daemon RPC when available (falling back to direct filesystem access if the daemon is unreachable), so the daemon handles broadcasting. The TUI's 30-second channel poll handles updates from other clients.
 
+## Reviewer Channel Routing
+
+Reviewers inherit the topic channel of the task associated with their PR. The data flow is: PR number → `pr_task_associations` → task ID → `task_channel` → channel name → `LaunchConfig.channel` → `MIDTOWN_CHANNEL` env var. This ensures `midtown channel post` from within a reviewer session routes to the task's topic channel instead of the main channel.
+
+The lookup happens at three spawn sites:
+- **Initial spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): Uses `PrContext::routing_only()` to read channel routing data in a single lock acquisition before the per-PR loop, then calls `ctx.get_channel(pr_number)`.
+- **Stuck restart** (`health.rs`, `build_reviewer_respawn_effects`): Uses `WorldSnapshot::channel_for_pr()` — the synchronous equivalent for decision functions operating on the snapshot.
+- **Dead restart** (`health.rs`, `build_reviewer_respawn_effects`): Same path as stuck restart.
+
+`WorldSnapshot::channel_for_pr()` and `PrContext::get_channel()` are parallel implementations of the same two-step lookup for the sync (snapshot) and async (persistent state) contexts respectively.
+
 ## Reviewer Health and Stuck Detection
 
 Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).

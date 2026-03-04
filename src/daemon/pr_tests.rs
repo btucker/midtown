@@ -4066,3 +4066,144 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
         effects
     );
 }
+
+// ── Reviewer channel routing tests ──────────────────────────────────────────
+
+/// Reviewers should inherit the topic channel of the PR's associated task.
+///
+/// When a PR has an associated task (via pr_author_sessions → task_id) and that
+/// task has a channel mapping (task_channel), the reviewer's LaunchConfig.channel
+/// must be set to that channel so MIDTOWN_CHANNEL routes their posts correctly.
+#[tokio::test]
+async fn test_reviewer_spawn_inherits_task_channel() {
+    let pr_number = 77770u64;
+    let task_id = "500";
+    let channel_name = "auth-feature";
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "madison/auth-feature",
+        "title": format!("feat: Add auth endpoint [Midtown !{}]", task_id),
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["madison".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Set up the PR → task → channel chain in persistent state
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            pr_number,
+            "test-session-id",
+            "madison/auth-feature",
+            "madison",
+            &format!("feat: Add auth endpoint [Midtown !{}]", task_id),
+        );
+        ps.task_channel
+            .insert(task_id.to_string(), channel_name.to_string());
+    }
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    // Extract the LaunchConfig from SpawnCoworkerWithCallbacks
+    let config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        config.is_some(),
+        "Expected a SpawnCoworkerWithCallbacks effect. Effects: {:#?}",
+        effects
+    );
+
+    assert_eq!(
+        config.unwrap().channel,
+        Some(channel_name.to_string()),
+        "Reviewer LaunchConfig.channel should be set to the task's topic channel '{}'. \
+         Before fix: reviewers spawned with channel: None, so all their `midtown channel post` \
+         commands routed to the main channel instead of the task's topic channel.",
+        channel_name
+    );
+}
+
+/// Reviewers for PRs without an associated task should have channel: None.
+///
+/// Not all PRs have task associations (e.g., lead-authored PRs). In those cases,
+/// the reviewer should spawn with no channel, defaulting to the main channel.
+#[tokio::test]
+async fn test_reviewer_spawn_no_channel_when_no_task_association() {
+    let pr_number = 77771u64;
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "madison/quick-fix",
+        "title": "fix: Quick typo fix",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["madison".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    let config = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
+            Some(config)
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        config.is_some(),
+        "Expected a SpawnCoworkerWithCallbacks effect. Effects: {:#?}",
+        effects
+    );
+
+    assert_eq!(
+        config.unwrap().channel,
+        None,
+        "Reviewer LaunchConfig.channel should be None when the PR has no task association."
+    );
+}
