@@ -151,18 +151,34 @@ impl WorktreeRegistry {
         Ok(())
     }
 
-    /// Unbind a coworker from their worktree (worktree stays for reuse).
-    pub fn unbind_coworker(&mut self, coworker: &str) {
+    /// Unbind a coworker from all worktrees (worktree stays for reuse).
+    ///
+    /// Historically `coworker_index` is one-to-one, but stale on-disk state can
+    /// contain multiple worktrees bound to the same coworker (e.g. after
+    /// interrupted resumes). This method clears every matching assignment to
+    /// keep session cleanup paths idempotent.
+    pub fn unbind_coworker(&mut self, coworker: &str) -> bool {
         let key = coworker.to_lowercase();
-        if let Some(wt_id) = self.coworker_index.remove(&key)
-            && let Some(assignment) = self.assignments.get_mut(&wt_id)
-            && assignment
+        let mut removed = false;
+
+        for assignment in self.assignments.values_mut() {
+            if assignment
                 .current_coworker
                 .as_ref()
-                .is_some_and(|c| c.to_lowercase() == key)
-        {
-            assignment.current_coworker = None;
+                .is_some_and(|c| c.eq_ignore_ascii_case(&key))
+            {
+                assignment.current_coworker = None;
+                removed = true;
+            }
         }
+
+        // Coworker index is single-value by design; clear it unconditionally if
+        // we cleared at least one binding.
+        if removed {
+            self.coworker_index.remove(&key);
+        }
+
+        removed
     }
 
     /// Set the PR number for a worktree.
@@ -465,6 +481,51 @@ mod tests {
         assert!(registry.get_by_coworker("park").is_none());
         // Worktree still exists
         assert!(registry.get("task-42-add-auth").is_some());
+    }
+
+    #[test]
+    fn test_registry_unbind_coworker_removes_all_bindings() {
+        let mut registry = WorktreeRegistry::new();
+
+        let assignment_a = WorktreeAssignment {
+            worktree_id: "task-42-add-auth".to_string(),
+            branch_name: "task-42-add-auth".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("Broadway".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let assignment_b = WorktreeAssignment {
+            worktree_id: "task-43-fix-logout".to_string(),
+            branch_name: "task-43-fix-logout".to_string(),
+            task_id: Some("43".to_string()),
+            current_coworker: Some("broadway".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        registry.assign_worktree(assignment_a).unwrap();
+        registry.assign_worktree(assignment_b).unwrap();
+
+        assert!(registry.unbind_coworker("broadway"));
+        assert!(registry.get_by_coworker("broadway").is_none());
+        assert!(
+            registry
+                .get("task-42-add-auth")
+                .unwrap()
+                .current_coworker
+                .is_none()
+        );
+        assert!(
+            registry
+                .get("task-43-fix-logout")
+                .unwrap()
+                .current_coworker
+                .is_none()
+        );
     }
 
     #[test]

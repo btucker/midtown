@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use tracing::{debug, info, warn};
@@ -558,6 +559,48 @@ pub enum Effect {
     EmitWorkflowEvent(crate::workflow::WorkflowEvent),
 }
 
+/// Extract task IDs that are currently claimed by spawn or nudge effects.
+///
+/// This is used by in-flight tracking and dual-path deduplication to avoid
+/// generating multiple spawn/nudge effects for the same task in one or adjacent
+/// ticks.
+pub(crate) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+
+    for effect in effects {
+        match effect {
+            // Fresh and session-aware spawns.
+            Effect::AssignAndSpawn { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+            Effect::SpawnSession { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+
+            // Resolved task IDs for callback-based success paths.
+            Effect::NudgeSessionWithCallbacks { on_success, .. }
+            | Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
+                for sub_effect in on_success {
+                    if let Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
+                        ids.insert(task_id.clone());
+                    }
+                }
+            }
+
+            // Keep this for completeness and safety in tests/caller-defined
+            // effects, even though production callsites generally use callback
+            // forms above.
+            Effect::RecordTaskAssignment { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+
+            _ => {}
+        }
+    }
+
+    ids
+}
+
 impl Effect {
     /// Convenience: nudge a channel lead with a freeform message.
     ///
@@ -736,23 +779,10 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     }
     info!(coworker = %name, "SHUTDOWN_COWORKER: headless session stopped");
 
-    // Clean up all transient coworker state (shared with session death path).
-    // This releases the name back to NamePool, cleans up session reverse maps
-    // (name_to_session, session_to_name, task_to_session), and marks the
-    // SessionRecord as stopped in persistent state.
-    state.cleanup_coworker_state(name).await;
-
-    // Unbind from worktree registry (worktree persists for build cache reuse)
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.worktree_registry.unbind_coworker(name);
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
-            warn!(
-                "Failed to save daemon state after unbinding coworker: {}",
-                e
-            );
-        }
-    }
+    // Clean up all transient coworker state and release the worktree binding.
+    // This preserves the previous shutdown behavior while avoiding duplicated
+    // persistence-write paths.
+    state.cleanup_dead_coworker_state(name).await;
     Ok(())
 }
 
@@ -1301,17 +1331,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // AssignAndSpawn or SpawnSession; for reviewer spawns it is
                 // included directly in the on_success vector (see pr.rs).
                 //
-                // Extract task IDs from on_success RecordTaskAssignment effects
-                // to clear their in-flight markers after the spawn completes.
-                let task_ids: Vec<String> = on_success
-                    .iter()
-                    .filter_map(|e| {
-                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
-                            Some(task_id.clone())
-                        } else {
-                            None
-                        }
-                    })
+                // Clear in-flight markers for task IDs claimed by this effect.
+                let task_ids: Vec<String> = extract_claimed_task_ids_from_effects(&on_success)
+                    .into_iter()
                     .collect();
 
                 let name = config.name.clone();
@@ -2399,6 +2421,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 resume,
                 mut config,
             } => {
+                let task_id = task_id.clone();
                 // 1. Allocate name from NamePool
                 let channel_lead_names = {
                     let ps = state.persistent_state.lock().await;
@@ -2410,6 +2433,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 };
                 let Some(name) = name else {
                     warn!("No available names for SpawnSession {}", session_id);
+                    state.clear_task_spawn_in_flight(&task_id);
                     continue;
                 };
 
@@ -2588,6 +2612,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                     }
                 }
+                state.clear_task_spawn_in_flight(&task_id);
             }
 
             Effect::ShutdownSession { session_id, reason } => {
@@ -2888,17 +2913,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 reason,
                 on_success,
             } => {
-                // Extract task IDs from on_success RecordTaskAssignment effects
-                // to clear their in-flight markers after the nudge completes.
-                let task_ids: Vec<String> = on_success
-                    .iter()
-                    .filter_map(|e| {
-                        if let Effect::RecordTaskAssignment { task_id, .. } = e {
-                            Some(task_id.clone())
-                        } else {
-                            None
-                        }
-                    })
+                // Clear in-flight markers for task IDs claimed by this effect.
+                let task_ids: Vec<String> = extract_claimed_task_ids_from_effects(&on_success)
+                    .into_iter()
                     .collect();
 
                 if let Some(follow_up) = send_session_nudge(state, &session_id, &reason).await {
