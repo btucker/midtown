@@ -315,14 +315,18 @@
         </button>
       </div>
 
-      {#if isExpanded && hasActiveTasks}
-        <div class="px-3 py-1 pb-2">
-          <TaskList channelName={channel.name} />
-        </div>
-      {/if}
-      {#if isExpanded && hasTrackedThreads}
-        <div class="px-3 py-0 pb-1">
-          <ThreadList channelName={channel.name} />
+      {#if isExpanded && (hasActiveTasks || hasTrackedThreads)}
+        <div class={!isActive ? 'expanded-group' : ''}>
+          {#if hasActiveTasks}
+            <div class="px-3 py-1 pb-2">
+              <TaskList channelName={channel.name} />
+            </div>
+          {/if}
+          {#if hasTrackedThreads}
+            <div class="px-3 py-0 pb-1">
+              <ThreadList channelName={channel.name} />
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -394,6 +398,12 @@
     box-shadow:
       0 -4px 6px -4px rgba(0, 0, 0, 0.3),
       0 4px 6px -4px rgba(0, 0, 0, 0.3);
+  }
+
+  .expanded-group {
+    background: hsl(var(--muted-foreground) / 0.06);
+    border-radius: 6px;
+    margin: 0 4px;
   }
 
   .task-pip {

@@ -2,6 +2,8 @@
   import { kanbanData, coworkers } from './store.js'
   import { openTaskThread, selectDm } from './api.js'
   import { getSenderColor } from './messageUtils.js'
+  import Feather from '@lucide/svelte/icons/feather'
+  import Search from '@lucide/svelte/icons/search'
 
   let { channelName = '' } = $props()
 
@@ -37,12 +39,12 @@
   // Map coworker name → coworker object for progress/phase lookup
   const cwMap = $derived(new Map($coworkers.map(cw => [cw.name, cw])))
 
-  // Map task_id → PR reviewer for showing reviewer avatar
+  // Map task_id → { reviewer, reviewPosted } for showing reviewer avatar + glow state
   const taskReviewerMap = $derived.by(() => {
     const map = new Map()
     for (const pr of $kanbanData.review) {
       if (pr.task_id != null && pr.reviewer) {
-        map.set(String(pr.task_id), pr.reviewer)
+        map.set(String(pr.task_id), { reviewer: pr.reviewer, reviewPosted: pr.review_posted || false })
       }
     }
     return map
@@ -55,58 +57,89 @@
     return 'hsl(var(--accent-teal))'
   }
 
+  /**
+   * Build progress bar segments: 70% dev, 20% review, 10% fix.
+   * Returns array of { width, color } for each filled segment.
+   */
+  function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
+    const segments = []
+    if (!reviewer) {
+      // Dev phase: author filling 0-70%
+      segments.push({ width: (cwProgress / 100) * 70, color: ownerColor })
+    } else if (!reviewPosted) {
+      // Review phase: dev complete (70%), reviewer filling the 20% block
+      segments.push({ width: 70, color: ownerColor })
+      segments.push({ width: 20, color: reviewerColor })
+    } else {
+      // Fix phase: dev (70%) + review (20%) complete, fix segment not filled
+      // (coworker progress is cumulative and not reset between phases, so we
+      // can't derive fix-specific progress from it — show 90% until task completes)
+      segments.push({ width: 70, color: ownerColor })
+      segments.push({ width: 20, color: reviewerColor })
+    }
+    return segments
+  }
+
   function handleTaskClick(task) {
     openTaskThread(task, task.channel || channelName)
   }
 </script>
 
-<div class="task-list">
+<div class="flex flex-col gap-0.5 py-1 pb-1.5">
   {#each channelTasks as task}
     {@const isActive = task.status === 'in_progress'}
     {@const isBlocked = task.blocked_by?.length > 0}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const hasProgress = cw?.progress != null}
-    {@const reviewer = taskReviewerMap.get(String(task.id))}
+    {@const reviewInfo = taskReviewerMap.get(String(task.id))}
+    {@const reviewer = reviewInfo?.reviewer}
+    {@const reviewPosted = reviewInfo?.reviewPosted}
     <button
-      class="task-row"
-      class:active={isActive}
-      class:blocked={isBlocked}
+      class="flex items-stretch gap-1.5 pr-2 py-[5px] border-none bg-transparent cursor-pointer rounded-[5px] transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground hover:bg-sidebar-accent {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
       onclick={() => handleTaskClick(task)}
     >
-      <span class="status-bar" style="background: {statusBarColor(task, cw)}"></span>
-      <div class="task-content">
-        <div class="task-top-line">
-          <span class="task-id">!{task.id}</span>
-          <span class="task-subject">{task.subject}</span>
+      <span class="w-[3px] rounded-sm flex-shrink-0" style="background: {statusBarColor(task, cw)}"></span>
+      <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
+        <div class="flex items-center gap-1.5">
+          <span class="flex-shrink-0 font-semibold {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
+          <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{task.subject}</span>
           {#if isBlocked}
-            <span class="blocked-badge" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
+            <span class="flex-shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
           {/if}
           {#if task.owner}
+            {@const ownerGlow = isActive && (!reviewer || reviewPosted)}
             <button
-              class="owner-chip"
-              style="background-color: {getSenderColor(task.owner)}"
+              class="avatar-chip"
+              class:glowing={ownerGlow}
+              style="background-color: {getSenderColor(task.owner)}{ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
               title="{task.owner}{cw?.phase ? ` · ${cw.phase}` : ''}"
               onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
-            >{task.owner[0].toUpperCase()}</button>
+            >{task.owner[0].toUpperCase()}<span class="chip-badge"><Feather size={11} strokeWidth={2.5} fill="white" /></span></button>
           {/if}
           {#if reviewer}
+            {@const reviewerGlow = isActive && !reviewPosted}
             <button
-              class="reviewer-chip"
-              style="border-color: {getSenderColor(reviewer)}"
-              title="{reviewer} · reviewing"
+              class="avatar-chip"
+              class:glowing={reviewerGlow}
+              style="background-color: {getSenderColor(reviewer)}{reviewerGlow ? `; --glow-color: ${getSenderColor(reviewer)}` : ''}"
+              title="{reviewer} · {reviewPosted ? 'reviewed' : 'reviewing'}"
               onclick={(e) => { e.stopPropagation(); selectDm(reviewer) }}
-            >{reviewer[0].toUpperCase()}</button>
+            >{reviewer[0].toUpperCase()}<span class="chip-badge"><Search size={11} strokeWidth={2.5} fill="white" style="transform: scaleX(-1)" /></span></button>
           {/if}
         </div>
-        {#if isActive && hasProgress}
-          <div class="progress-row">
-            <div class="progress-track">
-              <div
-                class="progress-fill"
-                style="width: {cw.progress}%; background: {getSenderColor(task.owner)}"
-              ></div>
+        {#if isActive && hasProgress && task.owner}
+          {@const segments = lifecycleSegments(cw?.progress ?? 0, reviewer, reviewPosted, getSenderColor(task.owner), reviewer ? getSenderColor(reviewer) : null)}
+          {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
+          <div class="flex items-center gap-1.5 pr-0.5">
+            <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
+              {#each segments as seg}
+                <div
+                  class="h-full transition-[width] duration-500 ease-in-out"
+                  style="width: {seg.width}%; background: {seg.color}"
+                ></div>
+              {/each}
             </div>
-            <span class="progress-label">{cw.progress}%</span>
+            <span class="flex-shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{totalPct}%</span>
           </div>
         {/if}
       </div>
@@ -114,96 +147,13 @@
   {/each}
 
   {#if channelTasks.length === 0}
-    <div class="empty">No active tasks</div>
+    <div class="px-3 py-2 text-[0.72rem] text-muted-foreground italic text-center">No active tasks</div>
   {/if}
 </div>
 
 <style>
-  .task-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px 0 6px;
-  }
-
-  .task-row {
-    display: flex;
-    align-items: stretch;
-    gap: 6px;
-    padding: 5px 8px 5px 0;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    border-radius: 5px;
-    transition: background 0.1s;
-    text-align: left;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    line-height: 1.3;
-    color: hsl(var(--muted-foreground));
-  }
-
-  .task-row:hover {
-    background: hsl(var(--sidebar-accent));
-  }
-
-  .task-row.active {
-    color: hsl(var(--sidebar-foreground));
-  }
-
-  .status-bar {
-    width: 3px;
-    border-radius: 2px;
-    flex-shrink: 0;
-  }
-
-  .task-row.active .status-bar {
-  }
-
-  .task-content {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .task-top-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .task-id {
-    flex-shrink: 0;
-    font-weight: 600;
-    opacity: 0.6;
-  }
-
-  .task-row.active .task-id {
-    opacity: 0.8;
-  }
-
-  .task-subject {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .blocked-badge {
-    flex-shrink: 0;
-    font-size: 0.62rem;
-    color: hsl(var(--status-amber));
-    opacity: 0.85;
-  }
-
-  .task-row.blocked {
-    opacity: 0.65;
-  }
-
-  .owner-chip {
+  .avatar-chip {
+    position: relative;
     flex-shrink: 0;
     width: 16px;
     height: 16px;
@@ -222,67 +172,21 @@
     cursor: pointer;
   }
 
-  .owner-chip:hover {
+  .avatar-chip:hover {
     opacity: 0.85;
   }
 
-  .reviewer-chip {
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    border: 1.5px solid;
-    padding: 0;
-    margin-left: -4px;
+  .chip-badge {
+    position: absolute;
+    bottom: -4px;
+    right: -4px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 0.55rem;
-    font-weight: 700;
-    font-family: var(--font-sans);
-    color: hsl(var(--muted-foreground));
-    background: hsl(var(--sidebar-background));
-    line-height: 1;
-    cursor: pointer;
+    color: hsl(var(--sidebar-foreground));
   }
 
-  .reviewer-chip:hover {
-    opacity: 0.85;
-  }
-
-  .progress-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding-right: 2px;
-  }
-
-  .progress-track {
-    flex: 1;
-    height: 3px;
-    background: hsl(var(--sidebar-accent));
-    border-radius: 2px;
-    overflow: hidden;
-  }
-
-  .progress-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.5s ease;
-  }
-
-  .progress-label {
-    flex-shrink: 0;
-    font-size: 0.6rem;
-    color: hsl(var(--accent-teal));
-    font-variant-numeric: tabular-nums;
-  }
-
-  .empty {
-    padding: 8px 12px;
-    font-size: 0.72rem;
-    color: hsl(var(--muted-foreground));
-    font-style: italic;
-    text-align: center;
+  .glowing {
+    box-shadow: 0 0 6px 1px var(--glow-color);
   }
 </style>

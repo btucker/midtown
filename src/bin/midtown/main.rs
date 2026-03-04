@@ -636,12 +636,19 @@ fn main() {
                 before,
                 after,
                 github,
+                wait_for_selector,
             }),
         ..
     } = &command
     {
-        let result =
-            cli::handle_coworker_screenshot(url, output.as_deref(), *before, *after, *github);
+        let result = cli::handle_coworker_screenshot(
+            url,
+            output.as_deref(),
+            *before,
+            *after,
+            *github,
+            wait_for_selector.as_deref(),
+        );
         handle_result(format, result);
         return;
     }

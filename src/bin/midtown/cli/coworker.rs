@@ -71,6 +71,9 @@ pub enum CoworkerCommand {
         /// Output GitHub-compatible markdown (![screenshot](URL)) instead of [Attached: /path]
         #[arg(long)]
         github: bool,
+        /// Wait for a CSS selector to appear before taking the screenshot
+        #[arg(long)]
+        wait_for_selector: Option<String>,
     },
 }
 
@@ -141,6 +144,7 @@ pub fn handle_screenshot(
     before: bool,
     after: bool,
     github: bool,
+    wait_for_selector: Option<&str>,
 ) -> Result<Response, String> {
     // Determine the desired extension from the output filename
     let ext = if let Some(name) = output {
@@ -160,8 +164,15 @@ pub fn handle_screenshot(
 
     // Run Playwright to capture the screenshot
     eprintln!("Capturing screenshot of {}...", url);
-    let playwright_output = std::process::Command::new("npx")
-        .args(["playwright@latest", "screenshot", "--browser", "chromium"])
+    let mut cmd = std::process::Command::new("npx");
+    cmd.args(["playwright@latest", "screenshot", "--browser", "chromium"]);
+    if let Some(selector) = wait_for_selector {
+        cmd.args(["--wait-for-selector", selector]);
+    } else {
+        // Default: wait 3s for SPA async initialization
+        cmd.args(["--wait-for-timeout", "3000"]);
+    }
+    let playwright_output = cmd
         .arg(url)
         .arg(&tmp_path)
         .output()
