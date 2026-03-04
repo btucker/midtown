@@ -282,7 +282,7 @@
           <div class="flex items-center gap-1.5">
             {#if !isExpanded && (hasActiveTasks || hasTrackedThreads)}
               {@const tasks = hasActiveTasks ? getChannelTasks(channel.name, $kanbanData) : []}
-              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds) : []}
+              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds).threads : []}
               {@const unreadThreads = threads.filter(t => t.unread > 0)}
               <div class="flex items-center gap-[3px]">
                 {#each tasks as task}

@@ -203,17 +203,16 @@ export function getTaskThreadIds(kanban) {
 
 /**
  * Get tracked threads for a channel, sorted by lastActivity (newest first).
- * Filters out threads that are represented by tasks (dedup) and permanently
- * removes them from trackedThreads + adds to dismissedThreads.
+ * Pure function — filters out task-backed threads and returns their IDs
+ * in `toClean` for the caller to handle cleanup separately (e.g. in a $effect).
  *
  * @param {string} channelName
  * @param {object} tracked - $trackedThreads store value
  * @param {object} unreadCounts - $threadUnreadCounts store value
  * @param {Set} taskThreadIds - from getTaskThreadIds()
- * @param {Function} cleanupFn - callback(idsToRemove) to permanently remove task-backed threads
- * @returns {Array<{id, subject, lastActivity, replyCount, unread}>}
+ * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread}>, toClean: string[] }}
  */
-export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds, cleanupFn) {
+export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds) {
   const threads = []
   const toClean = []
   for (const [id, entry] of Object.entries(tracked)) {
@@ -231,12 +230,8 @@ export function getChannelThreads(channelName, tracked, unreadCounts, taskThread
       unread: unreadCounts[id] || 0,
     })
   }
-  // Side-effect: permanently remove task-backed threads
-  if (toClean.length > 0 && cleanupFn) {
-    cleanupFn(toClean)
-  }
   threads.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''))
-  return threads
+  return { threads, toClean }
 }
 
 /**

@@ -3,6 +3,7 @@ import {
   getChannelTaskCount,
   getChannelCiStatus,
   getChannelPrs,
+  getChannelThreads,
   computeExpandedAfterTriangleClick,
   computeExpandedAfterChannelNameClick,
   computeVisibleDmChannels,
@@ -224,6 +225,55 @@ describe('getChannelPrs', () => {
     const prs = getChannelPrs('special-channel', kanban)
     expect(prs).toHaveLength(1)
     expect(prs[0].number).toBe(99)
+  })
+})
+
+describe('getChannelThreads', () => {
+  const tracked = {
+    'thread-1': { channelName: 'web', subject: 'Thread 1', lastActivity: '2026-03-04T10:00:00Z', replyCount: 3 },
+    'thread-2': { channelName: 'web', subject: 'Thread 2', lastActivity: '2026-03-04T11:00:00Z', replyCount: 1 },
+    'thread-3': { channelName: 'auth', subject: 'Auth thread', lastActivity: '2026-03-04T09:00:00Z' },
+    'task-thread': { channelName: 'web', subject: 'Task-backed thread', lastActivity: '2026-03-04T12:00:00Z' },
+  }
+  const unreadCounts = { 'thread-1': 2, 'thread-2': 0, 'task-thread': 5 }
+  const taskThreadIds = new Set(['task-thread'])
+
+  it('returns threads for the given channel, filtered and sorted by lastActivity', () => {
+    const result = getChannelThreads('web', tracked, unreadCounts, taskThreadIds)
+    expect(result.threads).toHaveLength(2)
+    // sorted newest first: thread-2 (11:00) before thread-1 (10:00)
+    expect(result.threads[0].id).toBe('thread-2')
+    expect(result.threads[1].id).toBe('thread-1')
+  })
+
+  it('includes unread counts in thread objects', () => {
+    const result = getChannelThreads('web', tracked, unreadCounts, taskThreadIds)
+    const t1 = result.threads.find(t => t.id === 'thread-1')
+    const t2 = result.threads.find(t => t.id === 'thread-2')
+    expect(t1.unread).toBe(2)
+    expect(t2.unread).toBe(0)
+  })
+
+  it('excludes task-backed threads from the thread list', () => {
+    const result = getChannelThreads('web', tracked, unreadCounts, taskThreadIds)
+    const ids = result.threads.map(t => t.id)
+    expect(ids).not.toContain('task-thread')
+  })
+
+  it('returns toClean IDs for task-backed threads (no side-effect callback)', () => {
+    const result = getChannelThreads('web', tracked, unreadCounts, taskThreadIds)
+    expect(result.toClean).toEqual(['task-thread'])
+  })
+
+  it('returns empty toClean when no task-backed threads exist', () => {
+    const result = getChannelThreads('web', tracked, unreadCounts, new Set())
+    expect(result.toClean).toEqual([])
+  })
+
+  it('filters by channel name', () => {
+    const result = getChannelThreads('auth', tracked, unreadCounts, taskThreadIds)
+    expect(result.threads).toHaveLength(1)
+    expect(result.threads[0].id).toBe('thread-3')
   })
 })
 
