@@ -154,6 +154,136 @@ fn test_extract_assistant_text_codex_delta_only_not_emitted() {
     assert_eq!(extract_assistant_text(&events), "");
 }
 
+// ── Codex turn/completed fallback tests ─────────────────────────────
+
+#[test]
+fn test_extract_assistant_text_codex_delta_plus_turn_completed_uses_result_text() {
+    // Codex normal flow: delta events + turn/completed (no item/completed for agentMessage).
+    // The text should be extracted from the turn/completed Result event.
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello "}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "world"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Result {
+            subtype: "success".to_string(),
+            is_error: false,
+            result: Some("Hello world".to_string()),
+            duration_ms: None,
+            total_cost_usd: None,
+            session_id: Some("thread_123".to_string()),
+            usage: None,
+            extra: json!({"provider": "codex", "status": "completed"}),
+        },
+    ];
+
+    assert_eq!(extract_assistant_text(&events), "Hello world");
+}
+
+#[test]
+fn test_extract_assistant_text_codex_completed_takes_precedence_over_result() {
+    // When item/completed IS available, it should be used (not the Result text).
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "delta"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "completed text"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex", "event": "item/completed"}),
+        },
+        StreamEvent::Result {
+            subtype: "success".to_string(),
+            is_error: false,
+            result: Some("completed text".to_string()),
+            duration_ms: None,
+            total_cost_usd: None,
+            session_id: Some("thread_123".to_string()),
+            usage: None,
+            extra: json!({"provider": "codex", "status": "completed"}),
+        },
+    ];
+
+    // Should use item/completed text, not double up with Result text
+    assert_eq!(extract_assistant_text(&events), "completed text");
+}
+
+#[test]
+fn test_extract_assistant_text_codex_error_result_not_used_as_fallback() {
+    // Error results should NOT be posted as channel text.
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "delta"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex"}),
+        },
+        StreamEvent::Result {
+            subtype: "error".to_string(),
+            is_error: true,
+            result: Some("turn failed: timeout".to_string()),
+            duration_ms: None,
+            total_cost_usd: None,
+            session_id: Some("thread_123".to_string()),
+            usage: None,
+            extra: json!({"provider": "codex", "status": "failed"}),
+        },
+    ];
+
+    assert_eq!(extract_assistant_text(&events), "");
+}
+
+#[test]
+fn test_extract_assistant_text_codex_result_without_text_ignored() {
+    // Result with None text should not produce output.
+    let events = vec![StreamEvent::Result {
+        subtype: "success".to_string(),
+        is_error: false,
+        result: None,
+        duration_ms: None,
+        total_cost_usd: None,
+        session_id: Some("thread_123".to_string()),
+        usage: None,
+        extra: json!({"provider": "codex", "status": "completed"}),
+    }];
+
+    assert_eq!(extract_assistant_text(&events), "");
+}
+
+#[test]
+fn test_extract_assistant_text_non_codex_result_ignored() {
+    // Non-Codex Result events should not contribute text.
+    let events = vec![StreamEvent::Result {
+        subtype: "success".to_string(),
+        is_error: false,
+        result: Some("Claude result".to_string()),
+        duration_ms: None,
+        total_cost_usd: None,
+        session_id: Some("session_123".to_string()),
+        usage: None,
+        extra: json!({}),
+    }];
+
+    assert_eq!(extract_assistant_text(&events), "");
+}
+
 // ── process_lead_output tests ───────────────────────────────────────
 
 #[test]
