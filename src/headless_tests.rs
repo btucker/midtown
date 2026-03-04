@@ -756,8 +756,9 @@ fn test_codex_translate_stale_resume_triggers_retry() {
     // Should NOT emit an error event — swallowed for retry.
     assert!(event.is_none());
     assert_eq!(post_action, CodexPostAction::RetryThreadStart);
-    // State should be reset for a fresh thread/start.
-    assert!(!state.initialized);
+    // State should be ready for a fresh thread/start (initialized stays true
+    // because the process-level initialize handshake was already completed).
+    assert!(state.initialized);
     assert!(state.start_request_id.is_none());
     assert!(state.resume_thread_id.is_none());
     assert!(state.retried_fresh_start);

@@ -842,7 +842,8 @@ fn codex_translate_event(
                 && !state.retried_fresh_start
             {
                 warn!("Codex thread/resume got stale thread error — retrying with thread/start");
-                state.initialized = false;
+                // Don't clear initialized — the process-level initialize handshake
+                // already completed. codex_retry_thread_start() sends only thread/start.
                 state.start_request_id = None;
                 state.resume_thread_id = None;
                 state.retried_fresh_start = true;
@@ -1785,6 +1786,10 @@ impl HeadlessSession {
     ///
     /// For Claude, this is a no-op. For Codex app-server, this sends
     /// `initialize` and one of `thread/start`, `thread/resume`, or `thread/fork`.
+    ///
+    /// This method handles the initial startup handshake only. For stale-thread
+    /// retries mid-session, use [`codex_retry_thread_start()`] instead, which
+    /// skips the redundant `initialize` and sends only `thread/start`.
     pub async fn ensure_ready(&mut self) -> std::io::Result<()> {
         let Some(state) = self.codex_state_mut() else {
             return Ok(());
@@ -1814,6 +1819,42 @@ impl HeadlessSession {
         let (start_method, start_params) = codex_thread_init_request(
             resume_thread_id.as_deref(),
             fork_session,
+            allow_tools,
+            cwd.as_deref(),
+            &model,
+            &system_prompt,
+        );
+
+        let start_id = self.codex_send_request(start_method, start_params).await?;
+        if let Some(state) = self.codex_state_mut() {
+            state.initialized = true;
+            state.start_request_id = Some(start_id);
+            state.start_phase = start_method.to_string();
+        }
+
+        Ok(())
+    }
+
+    /// Send only `thread/start` to the Codex app-server without re-sending `initialize`.
+    ///
+    /// Used by `RetryThreadStart` when a stale thread is detected on resume.
+    /// The process-level `initialize` handshake was already completed on first launch;
+    /// only a new thread needs to be started.
+    async fn codex_retry_thread_start(&mut self) -> std::io::Result<()> {
+        let Some(state) = self.codex_state_mut() else {
+            return Ok(());
+        };
+
+        let model = state.model.clone();
+        let cwd = state.cwd.clone();
+        let system_prompt = state.system_prompt.clone();
+        let allow_tools = state.allow_tools;
+
+        // resume_thread_id was already cleared by codex_translate_event;
+        // fork_session=false since this is a fresh start, not a fork.
+        let (start_method, start_params) = codex_thread_init_request(
+            None,  // no resume — starting fresh
+            false, // not a fork
             allow_tools,
             cwd.as_deref(),
             &model,
@@ -1883,14 +1924,30 @@ impl HeadlessSession {
                     }
                 }
                 CodexPostAction::RetryThreadStart => {
-                    // Stale thread detected — re-initialize with a fresh thread/start.
-                    // ensure_ready() will use thread/start since resume_thread_id was cleared.
+                    // Stale thread detected — send only thread/start (not initialize).
+                    // The app-server process was already initialized on first launch;
+                    // we just need a new thread.
                     info!("Retrying Codex session with fresh thread/start after stale thread");
-                    if let Err(e) = self.ensure_ready().await {
-                        warn!("Failed to retry Codex thread/start: {}", e);
-                        return None;
+
+                    // Clean up the stale resume_thread_id from the routing table
+                    // to prevent misrouted events during the retry window.
+                    if let Some(context) = self.codex_session() {
+                        context
+                            .runtime
+                            .resume_to_session
+                            .write()
+                            .expect("resume_to_session lock poisoned")
+                            .retain(|_, session_token| session_token != &context.token);
                     }
-                    // Continue the loop to receive the thread/start response.
+
+                    let result = self.codex_retry_thread_start().await;
+                    match result {
+                        Ok(()) => {} // Continue the loop to receive the thread/start response.
+                        Err(e) => {
+                            warn!("Failed to retry Codex thread/start: {}", e);
+                            return None;
+                        }
+                    }
                 }
                 CodexPostAction::None => {}
             }
