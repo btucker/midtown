@@ -239,19 +239,3 @@ body {
 .hljs { background: transparent; padding: 0 }
 pre code.hljs { padding: 0 }
 
-/* Auto-output messages: dimmed text + subtle left border to distinguish
-   streamed session output from explicit channel posts */
-.auto-output {
-  border-left: 2px solid hsl(var(--muted-foreground) / 0.2);
-  padding-left: 16px;
-}
-
-.auto-output .message-text {
-  color: hsl(var(--muted-foreground));
-}
-
-/* Suppress the inner insight border-left when the message already has
-   the auto-output left border, avoiding a distracting double border. */
-.auto-output .border-l-2 {
-  border-left: none;
-}
