@@ -74,7 +74,10 @@
     const ch = $activeChannel
     const len = channelMessages.length
     if (!(ch in initialMessageCounts) && len > 0) {
-      initialMessageCounts = { ...initialMessageCounts, [ch]: len }
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      queueMicrotask(() => {
+        initialMessageCounts = { ...initialMessageCounts, [ch]: len }
+      })
     }
   })
 
@@ -90,11 +93,14 @@
     if (ch !== prevRenderChannel) {
       // Channel switch — position at tail using current message count
       prevRenderChannel = ch
-      renderStartIndex = Math.max(0, len - INITIAL_WINDOW_SIZE)
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      const newIndex = Math.max(0, len - INITIAL_WINDOW_SIZE)
+      queueMicrotask(() => { renderStartIndex = newIndex })
     } else if (len > 0 && renderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
       // Same channel, history just loaded (was empty, now has messages).
       // Only fires once: after this, renderStartIndex > 0 so guard fails.
-      renderStartIndex = len - INITIAL_WINDOW_SIZE
+      const newIndex = len - INITIAL_WINDOW_SIZE
+      queueMicrotask(() => { renderStartIndex = newIndex })
     }
     // New messages on current channel: no-op. visibleMessages is an
     // open-ended slice so new messages at the end render automatically.
@@ -114,8 +120,11 @@
     }
     if (prevChannel !== ch) {
       const draft = channelDrafts.get(ch)
-      inputText = draft?.text ?? ''
-      pendingFile = draft?.file ?? null
+      // Defer state writes to avoid state_unsafe_mutation during derived evaluation
+      queueMicrotask(() => {
+        inputText = draft?.text ?? ''
+        pendingFile = draft?.file ?? null
+      })
     }
     prevChannel = ch
     tick().then(() => resizeTextarea())
@@ -499,13 +508,15 @@
       channelItemsActiveTimeout = null
     }
     if (items.length > 0) {
-      channelItemsActive = true
+      // Defer state write to avoid state_unsafe_mutation — channelItemsActive
+      // feeds $derived showDots which is read during the same flush cycle
+      queueMicrotask(() => { channelItemsActive = true })
       channelItemsActiveTimeout = setTimeout(() => {
         channelItemsActive = false
         channelItemsActiveTimeout = null
       }, 8000)
     } else {
-      channelItemsActive = false
+      queueMicrotask(() => { channelItemsActive = false })
     }
   })
 

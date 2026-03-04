@@ -120,7 +120,8 @@
   $effect(() => {
     if ($threadData?.parentMessage?.id) {
       const _ownership = $threadOwnership[$threadData.parentMessage.id]
-      forkPending = false
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      queueMicrotask(() => { forkPending = false })
     }
   })
 
@@ -156,7 +157,8 @@
   // Clear thinking when the thread is closed or switched to a different thread.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
-    thinking = false
+    // Defer state write to avoid state_unsafe_mutation during derived evaluation
+    queueMicrotask(() => { thinking = false })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
@@ -175,7 +177,9 @@
       }
     }
     if (prevThreadId !== tid) {
-      replyText = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      const draft = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
+      queueMicrotask(() => { replyText = draft })
     }
     prevThreadId = tid
     tick().then(() => resizeTextarea())
@@ -196,7 +200,8 @@
     const items = threadItems.length > 0 ? threadItems : channelItems
     const hasInProgress = items.some((item) => item.status === 'InProgress')
     if (hasInProgress) {
-      thinking = false
+      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      queueMicrotask(() => { thinking = false })
       if (thinkingTimeout) {
         clearTimeout(thinkingTimeout)
         thinkingTimeout = null
