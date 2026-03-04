@@ -129,6 +129,8 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -285,6 +287,8 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -468,6 +472,8 @@ fn test_check_for_usage_limits_with_reset_time() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -578,6 +584,8 @@ fn test_check_for_usage_limits_already_scheduled() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -723,6 +731,8 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     }
 }
 
@@ -1635,6 +1645,8 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);
@@ -1753,6 +1765,8 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);

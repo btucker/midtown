@@ -10,7 +10,7 @@ mod client;
 
 use cli::{
     AuthCommand, ChannelCommand, ConfigCommand, CoworkerCommand, DiagramCommand, E2eCommand,
-    HeadedWrapperCommand, HookCommand, PrCommand, SessionCommand, TaskCommand,
+    HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, SessionCommand, TaskCommand,
 };
 use client::DaemonClient;
 
@@ -251,6 +251,11 @@ enum Commands {
         /// Additional arguments to pass to the claude CLI
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Channel note management (review, list)
+    Notes {
+        #[command(subcommand)]
+        command: NotesCommand,
     },
     /// Update midtown to the latest release
     Update {
@@ -692,6 +697,13 @@ fn main() {
         return;
     }
 
+    // Notes commands (no daemon required - operates on local files)
+    if let Commands::Notes { command } = &command {
+        let result = cli::handle_notes(command);
+        handle_result(format, result);
+        return;
+    }
+
     // Update command (no daemon required - checks GitHub releases)
     if let Commands::Update { check } = &command {
         let result = cli::handle_update(*check);
@@ -1068,6 +1080,7 @@ fn main() {
         | Commands::Hook { .. }
         | Commands::Diagram { .. }
         | Commands::Log { .. }
+        | Commands::Notes { .. }
         | Commands::Webserver { .. }
         | Commands::Update { .. } => unreachable!(),
     };

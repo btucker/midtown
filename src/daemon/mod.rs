@@ -3086,6 +3086,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Skip the first tick (token was just fetched at startup)
     gh_token_refresh_interval.tick().await;
 
+    // Timer for periodic note staleness review (every hour)
+    let mut note_review_interval = interval(NOTE_REVIEW_CHECK_INTERVAL);
+    // Skip the first tick (which fires immediately)
+    note_review_interval.tick().await;
+
     // Timer for periodic channel rotation
     let mut channel_rotation_interval = interval(CHANNEL_ROTATION_CHECK_INTERVAL);
     // Skip the first tick (which fires immediately)
@@ -3900,6 +3905,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Runs every 2 minutes to monitor API consumption for adaptive throttling.
             _ = rate_limit_check_interval.tick() => {
                 run_tick(&events::DaemonEvent::RateLimitCheckTick, &state).await;
+            }
+
+            // Periodic note staleness review: check for stale notes and nudge leads.
+            _ = note_review_interval.tick() => {
+                run_tick(&events::DaemonEvent::NoteReviewTick, &state).await;
             }
 
             // Periodic GH_TOKEN refresh: re-run `gh auth token` to pick up

@@ -324,6 +324,10 @@ impl MultiTickHarness {
                 // pure decision functions to call
                 vec![]
             }
+            DaemonEvent::NoteReviewTick => {
+                // Note review checks do filesystem I/O, skipped in harness
+                vec![]
+            }
         };
 
         // Apply effects to mutate the snapshot for the next tick

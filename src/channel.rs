@@ -3,6 +3,7 @@
 use crate::Result;
 use crate::cursor::Cursor;
 use crate::message::Message;
+use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -1914,6 +1915,192 @@ fn cleanup_archived_channel_conflicts(base_dir: &Path) {
     }
 }
 
+// ── Note staleness review system ──────────────────────────────────────────
+
+/// Metadata about a channel note file.
+#[derive(Debug, Clone)]
+pub struct NoteInfo {
+    /// Absolute path to the note file.
+    pub path: PathBuf,
+    /// Filename without extension (used as display name).
+    pub name: String,
+    /// Channel this note belongs to.
+    pub channel: String,
+    /// When the note was last reviewed (from YAML frontmatter), if ever.
+    pub reviewed_at: Option<DateTime<Utc>>,
+}
+
+/// Default staleness threshold in hours (3 days = 72 hours).
+pub const NOTE_STALENESS_THRESHOLD_HOURS: i64 = 72;
+
+/// Parse `reviewed_at` from YAML frontmatter in a note's content.
+///
+/// Frontmatter is delimited by `---` on its own line at the start of the file.
+/// Looks for a `reviewed_at:` key with an ISO 8601 / RFC 3339 timestamp.
+///
+/// Returns `None` if no frontmatter, no `reviewed_at` key, or unparseable timestamp.
+pub fn parse_note_reviewed_at(content: &str) -> Option<DateTime<Utc>> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with("---") {
+        return None;
+    }
+
+    // Find the closing `---`
+    let after_opener = &trimmed[3..];
+    let closing = after_opener.find("\n---")?;
+    let frontmatter = &after_opener[..closing];
+
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("reviewed_at:") {
+            let value = value.trim();
+            // Try RFC 3339 / ISO 8601
+            if let Ok(dt) = DateTime::parse_from_rfc3339(value) {
+                return Some(dt.with_timezone(&Utc));
+            }
+            // Try without timezone (assume UTC)
+            if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+                return Some(naive.and_utc());
+            }
+        }
+    }
+
+    None
+}
+
+/// Stamp a note file's `reviewed_at` to the current time.
+///
+/// If the file already has YAML frontmatter with `reviewed_at`, updates it in place.
+/// If it has frontmatter without `reviewed_at`, appends the field.
+/// If it has no frontmatter, prepends a new frontmatter block.
+pub fn stamp_note_reviewed(path: &Path) -> std::io::Result<()> {
+    let content = fs::read_to_string(path)?;
+    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let new_content = stamp_reviewed_at_in_content(&content, &now);
+    fs::write(path, new_content)
+}
+
+/// Pure function: update or add `reviewed_at` in note content.
+fn stamp_reviewed_at_in_content(content: &str, timestamp: &str) -> String {
+    let trimmed = content.trim_start();
+
+    if let Some(after_opener) = trimmed.strip_prefix("---")
+        && let Some(closing_pos) = after_opener.find("\n---")
+    {
+        let frontmatter = &after_opener[..closing_pos];
+        let rest = &after_opener[closing_pos + 4..]; // skip "\n---"
+
+        // Check if reviewed_at already exists in frontmatter
+        let mut found = false;
+        let updated_lines: Vec<String> = frontmatter
+            .lines()
+            .map(|line| {
+                if line.trim().starts_with("reviewed_at:") {
+                    found = true;
+                    format!("reviewed_at: {}", timestamp)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+
+        if found {
+            return format!("---\n{}---{}", updated_lines.join("\n"), rest);
+        } else {
+            // Add reviewed_at to existing frontmatter
+            return format!(
+                "---{}\nreviewed_at: {}\n---{}",
+                frontmatter, timestamp, rest
+            );
+        }
+    }
+
+    // No frontmatter — prepend new block
+    format!("---\nreviewed_at: {}\n---\n{}", timestamp, content)
+}
+
+/// List all notes for a channel with their review metadata.
+pub fn list_channel_note_infos(base_dir: &Path, channel_name: &str) -> Vec<NoteInfo> {
+    if !Channel::is_valid_channel_name(channel_name) {
+        return vec![];
+    }
+
+    let notes_dir = base_dir.join("channels").join(channel_name).join("notes");
+    if !notes_dir.is_dir() {
+        return vec![];
+    }
+
+    let mut entries: Vec<_> = match fs::read_dir(&notes_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("md"))
+            .collect(),
+        Err(_) => return vec![],
+    };
+    entries.sort_by_key(|e| e.file_name());
+
+    entries
+        .into_iter()
+        .map(|entry| {
+            let path = entry.path();
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let reviewed_at = fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| parse_note_reviewed_at(&content));
+            NoteInfo {
+                path,
+                name,
+                channel: channel_name.to_string(),
+                reviewed_at,
+            }
+        })
+        .collect()
+}
+
+/// Find stale notes across all non-archived channels.
+///
+/// A note is stale if `reviewed_at` is older than `threshold` or missing entirely.
+/// Returns a map of channel name → list of stale note names.
+pub fn find_stale_notes(
+    base_dir: &Path,
+    now: DateTime<Utc>,
+    threshold: chrono::Duration,
+) -> HashMap<String, Vec<String>> {
+    let channels = match Channel::list(base_dir, false, None) {
+        Ok(channels) => channels,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut result = HashMap::new();
+
+    for channel_info in channels {
+        if channel_info.is_archived || channel_info.is_dm {
+            continue;
+        }
+        let notes = list_channel_note_infos(base_dir, &channel_info.name);
+        let stale: Vec<String> = notes
+            .into_iter()
+            .filter(|note| match note.reviewed_at {
+                None => true,
+                Some(reviewed) => now - reviewed > threshold,
+            })
+            .map(|note| note.name)
+            .collect();
+        if !stale.is_empty() {
+            result.insert(channel_info.name, stale);
+        }
+    }
+
+    result
+}
+
 #[path = "channel_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "channel_note_tests.rs"]
+#[cfg(test)]
+mod note_tests;

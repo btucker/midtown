@@ -41,6 +41,12 @@ pub enum DaemonEvent {
     /// Runs every 2 minutes to monitor GraphQL and REST API usage.
     /// Used by adaptive throttling to reduce PR polling when quotas run low.
     RateLimitCheckTick,
+    /// Periodic note review tick: check for stale channel notes and nudge leads.
+    ///
+    /// Runs every hour. Scans channel note directories for notes whose
+    /// `reviewed_at` frontmatter is older than the staleness threshold (3 days)
+    /// or missing. Nudges the channel lead to review or delete stale notes.
+    NoteReviewTick,
 }
 
 /// Evaluate a daemon event against the current world snapshot, returning effects.
@@ -244,6 +250,7 @@ pub async fn evaluate_tick(
             }
             effects
         }
+        DaemonEvent::NoteReviewTick => super::health::check_for_stale_notes(snap),
     }
 }
 
