@@ -263,13 +263,16 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// Tools that channel leads (and their forks) are not allowed to use.
 ///
 /// Channel leads are coordinators and domain experts — they scope work and create
-/// tasks, but never implement code. This list is passed as `--disallowedTools` to
-/// the Claude CLI, providing hard enforcement that the LLM cannot bypass.
+/// tasks, but never implement code. For Claude/z.ai providers, this list is passed
+/// as `--disallowedTools` to the CLI, providing hard enforcement that the LLM
+/// cannot bypass. For Codex, `disallowed_tools` is not supported, so enforcement
+/// relies on the prompt-based instruction in `channel-lead.md`.
 ///
 /// Note: `Bash` is intentionally NOT included because channel leads need it for
 /// coordination commands (`midtown task create`, `midtown channel post`, etc.).
 /// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
-/// modify code", which is sufficient since Edit/Write are hard-blocked here.
+/// modify code", which is sufficient since Edit/Write are hard-blocked for
+/// Claude/z.ai and prompt-restricted for Codex.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
     ["Edit", "Write", "NotebookEdit"]
         .iter()
@@ -585,7 +588,13 @@ impl LaunchConfig {
         // Channel leads get hard tool restrictions — they are coordinators,
         // not implementers. This is enforced at the CLI level via --disallowedTools
         // so the LLM cannot bypass it.
-        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. }) {
+        //
+        // Exception: Codex doesn't support disallowed_tools in its protocol.
+        // For Codex channel leads, we rely on the prompt-based restriction in
+        // channel-lead.md ("do not use Edit/Write") instead.
+        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. })
+            && !matches!(self.auth_provider, crate::auth::AuthProvider::Codex)
+        {
             channel_lead_disallowed_tools()
         } else {
             vec![]
