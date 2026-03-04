@@ -40,7 +40,7 @@ pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
 /// or `None` if any link in the chain is missing (no task association, no session,
 /// or session has neither current_name nor preferred_name).
 ///
-/// This gives session-based routing priority over branch-name parsing. When a
+/// This gives session-based routing priority over branch-based lookup. When a
 /// coworker is reassigned to a different name on restart, the session record
 /// tracks the current name, so PRs route to the correct coworker.
 ///
@@ -68,7 +68,7 @@ fn resolve_pr_owner_from_session(
 /// PR# → pr_task_associations → task_id → session_id → session.name
 ///
 /// Returns `Some(name)` if the full chain resolves, `None` otherwise.
-/// Callers should fall back to branch-name parsing when this returns `None`.
+/// Callers should fall back to branch-based lookup when this returns `None`.
 async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
     let ps = state.persistent_state.lock().await;
     let pr_task_associations = ps.github.pr_to_task_map();
@@ -245,7 +245,13 @@ const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 ///
 /// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
 /// every 5 minutes since merge events aren't time-critical.
-pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<String> {
+///
+/// The `branch_owners` map (from the worktree registry) is needed to resolve
+/// task-based branch names (e.g., "task-42-fix-auth") to coworker names.
+pub(super) fn get_coworkers_with_merged_prs(
+    state: &DaemonState,
+    branch_owners: &HashMap<String, String>,
+) -> HashSet<String> {
     // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
     let needs_refresh = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -292,10 +298,10 @@ pub(super) fn get_coworkers_with_merged_prs(state: &DaemonState) -> HashSet<Stri
                             .map(|s| s.to_string())
                     })
                     .collect();
-                // Coworker resolution requires the branch_owners map (from WorldSnapshot),
-                // which isn't available in this gh CLI fallback path. The cache will be
-                // populated with owners on the next poll tick via update_pr_caches().
-                let coworkers: HashSet<String> = HashSet::new();
+                let coworkers: HashSet<String> = branches
+                    .iter()
+                    .filter_map(|b| coworker_from_branch(b, branch_owners))
+                    .collect();
                 let numbers: HashSet<u64> = prs
                     .iter()
                     .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
@@ -454,7 +460,8 @@ pub(super) fn detect_abandoned_pr_tasks(
 /// Resolve the owner of a PR from snapshot data.
 ///
 /// Tries session-based resolution first (PR# → task → session → current_name),
-/// then falls back to branch-name parsing. Returns `None` if neither path yields an owner.
+/// then falls back to branch-based lookup via the worktree registry's branch_owners map.
+/// Returns `None` if neither path yields an owner.
 fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pr_number,
@@ -3895,7 +3902,7 @@ pub(super) async fn handle_webhook_ci_failure(
     // Session-centric resolution first: PR → task → session → name
     let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
 
-    // Resolve owner: session path first, then webhook data, then branch lookup
+    // Resolve owner: session path first, then webhook data
     let owner = session_owner.or_else(|| failure.owner_coworker.clone());
 
     let Some(owner) = owner else {
