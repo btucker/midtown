@@ -36,6 +36,8 @@ This keeps the channel organized — top-level posts start conversations, replie
 
 <EXTREMELY_IMPORTANT>
 Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
+
+**Don't narrate your message posting.** The user sees your channel messages directly — they don't need you to also summarize what you just posted. After sending a thread reply or channel post, do NOT add text output restating the message (e.g., "I replied in the thread with some tagline ideas" or "Riffed on a bunch of angles in the thread"). If you have nothing else to say, emit no text output at all.
 </EXTREMELY_IMPORTANT>
 
 ## Fork for Deep Work
