@@ -43,6 +43,8 @@ struct SidecarProcess {
     stdout: BufReader<tokio::process::ChildStdout>,
     /// Stdin pipe for sending event envelopes.
     stdin: tokio::process::ChildStdin,
+    /// Handle for the background stderr drain task.
+    _stderr_drain: tokio::task::JoinHandle<()>,
 }
 
 /// Per-script sidecar state (running process + restart bookkeeping).
@@ -100,15 +102,8 @@ impl WorkflowSidecarManager {
 
         let mut sidecars = self.sidecars.lock().await;
 
-        // Check if this script is known to be single-shot only.
-        if sidecars
-            .get(&canonical)
-            .is_some_and(|entry| entry.single_shot_only)
-        {
-            return Ok(false);
-        }
-
-        // Check for hot-reload: if the script's mtime changed, kill the old sidecar.
+        // Check for hot-reload: if the script's mtime changed, kill the old sidecar
+        // and clear the single_shot_only flag (the user may have upgraded the script).
         let current_mtime = std::fs::metadata(script_path)
             .and_then(|m| m.modified())
             .ok();
@@ -126,6 +121,15 @@ impl WorkflowSidecarManager {
             entry.crash_count = 0;
             entry.last_crash = None;
             entry.script_mtime = None;
+            entry.single_shot_only = false;
+        }
+
+        // Check if this script is known to be single-shot only.
+        if sidecars
+            .get(&canonical)
+            .is_some_and(|entry| entry.single_shot_only)
+        {
+            return Ok(false);
         }
 
         // Ensure sidecar is running (spawn if needed).
@@ -170,6 +174,7 @@ impl WorkflowSidecarManager {
                         "Script does not support sidecar mode — using subprocess fallback"
                     );
                     entry.single_shot_only = true;
+                    entry.script_mtime = current_mtime;
                     return Ok(false);
                 }
                 Err(SidecarSpawnError::Io(e)) => {
@@ -376,6 +381,32 @@ async fn spawn_sidecar(script_path: &Path) -> Result<SidecarProcess, SidecarSpaw
         .take()
         .ok_or_else(|| SidecarSpawnError::Io(io::Error::other("no stdin")))?;
 
+    // Drain stderr in a background task to prevent the OS pipe buffer from
+    // filling up and blocking the sidecar process.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| SidecarSpawnError::Io(io::Error::other("no stderr")))?;
+    let script_display = script_path.display().to_string();
+    let stderr_drain = tokio::spawn(async move {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break,
+                Ok(_) => {
+                    debug!(
+                        script = %script_display,
+                        stderr = line.trim(),
+                        "Sidecar stderr"
+                    );
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     let mut reader = BufReader::new(stdout);
 
     // Wait for the ready signal.
@@ -396,6 +427,7 @@ async fn spawn_sidecar(script_path: &Path) -> Result<SidecarProcess, SidecarSpaw
                     child,
                     stdout: reader,
                     stdin,
+                    _stderr_drain: stderr_drain,
                 });
             }
             // Got output but not the ready signal — not a sidecar-mode script.
