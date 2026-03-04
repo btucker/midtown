@@ -485,6 +485,7 @@
           index={0}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
+          class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
@@ -703,6 +704,7 @@
           index={0}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
+          class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
