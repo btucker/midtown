@@ -585,7 +585,13 @@ impl LaunchConfig {
         // Channel leads get hard tool restrictions — they are coordinators,
         // not implementers. This is enforced at the CLI level via --disallowedTools
         // so the LLM cannot bypass it.
-        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. }) {
+        //
+        // Exception: Codex doesn't support disallowed_tools in its protocol.
+        // For Codex channel leads, we rely on the prompt-based restriction in
+        // channel-lead.md ("do not use Edit/Write") instead.
+        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. })
+            && !matches!(self.auth_provider, crate::auth::AuthProvider::Codex)
+        {
             channel_lead_disallowed_tools()
         } else {
             vec![]

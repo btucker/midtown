@@ -1208,7 +1208,9 @@ pub(super) fn build_fork_config(
             _ => Some(uuid::Uuid::new_v4().to_string()),
         },
         fork_session: true,
-        disallowed_tools: if is_channel_lead {
+        disallowed_tools: if is_channel_lead
+            && !matches!(auth_provider, crate::auth::AuthProvider::Codex)
+        {
             crate::launch::channel_lead_disallowed_tools()
         } else {
             vec![]

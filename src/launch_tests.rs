@@ -175,3 +175,68 @@ fn test_lead_headless_config_has_no_disallowed_tools() {
         "Lead should not have disallowed tools"
     );
 }
+
+#[test]
+fn test_codex_channel_lead_skips_disallowed_tools() {
+    use crate::auth::AuthProvider;
+
+    // Construct a channel lead config with Codex provider directly,
+    // since LaunchConfig::channel_lead() reads provider from repo config.
+    let config = LaunchConfig {
+        name: "ops".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::ChannelLead {
+            channel_name: "ops".to_string(),
+            domain_context: String::new(),
+        },
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        team_name: Some("midtown-myrepo".to_string()),
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: Some("ops".to_string()),
+        auth_provider: AuthProvider::Codex,
+        auth_profile_dir: None,
+        persisted_initial_prompt: None,
+    };
+
+    let headless = config.to_headless_config("myrepo");
+    assert!(
+        headless.disallowed_tools.is_empty(),
+        "Codex channel lead should NOT have disallowed_tools (Codex doesn't support them; \
+         prompt-based enforcement is used instead)"
+    );
+}
+
+#[test]
+fn test_claude_channel_lead_still_has_disallowed_tools() {
+    use crate::auth::AuthProvider;
+
+    let config = LaunchConfig {
+        name: "ops".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::ChannelLead {
+            channel_name: "ops".to_string(),
+            domain_context: String::new(),
+        },
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        team_name: Some("midtown-myrepo".to_string()),
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: Some("ops".to_string()),
+        auth_provider: AuthProvider::Claude,
+        auth_profile_dir: None,
+        persisted_initial_prompt: None,
+    };
+
+    let headless = config.to_headless_config("myrepo");
+    assert!(
+        !headless.disallowed_tools.is_empty(),
+        "Claude channel lead should still have disallowed_tools"
+    );
+    assert!(headless.disallowed_tools.contains(&"Edit".to_string()));
+    assert!(headless.disallowed_tools.contains(&"Write".to_string()));
+}
