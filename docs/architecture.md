@@ -611,6 +611,8 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
 
 ## Workflow Script System
 
+> **User-facing guide:** See [Writing Custom Workflow Scripts](workflow-customization.md) for a tutorial with examples, the full event reference, RPC methods, and testing instructions. This section documents the internal architecture.
+
 Each channel can have a `workflow.py` script that controls how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](../sdk/python/).
 
 **Authoritative for PR lifecycle**: For the 5 PR lifecycle events (`pr.approved`, `pr.changes_requested`, `pr.ci_failed`, `pr.ci_passed`, `pr.conflict`), the workflow script is the **sole authority** when a channel + task association exists. The daemon emits cooldown tracking (`RecordPrNudge`) and the workflow event — the script handles nudging via `rpc.nudge_coworker()`. This means overriding `pr.approved` in a channel's `workflow.py` fully controls what happens when a PR is approved. For PRs without channel/task associations, the daemon's compiled-in inline effects are preserved as a fallback.

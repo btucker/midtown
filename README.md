@@ -580,7 +580,7 @@ cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/d
    .midtown/channels/<channel>/workflow.py
 ```
 
-The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation.
+The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation. See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
 
 ### Channel Sync
 
