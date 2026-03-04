@@ -79,6 +79,7 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
                     } else {
                         start_phase
                     },
+                    retried_fresh_start: false,
                 }
             },
         )
@@ -361,6 +362,7 @@ proptest! {
             system_prompt: String::new(),
             output_schema: None,
             start_phase: "thread/start".to_string(),
+            retried_fresh_start: false,
         };
         let mut session_id: Option<String> = None;
 

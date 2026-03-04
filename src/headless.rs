@@ -252,6 +252,8 @@ struct CodexProtocolState {
     system_prompt: String,
     output_schema: Option<serde_json::Value>,
     start_phase: String,
+    /// Guard: true after one stale-thread retry so we don't loop infinitely.
+    retried_fresh_start: bool,
 }
 
 #[derive(Debug)]
@@ -732,6 +734,8 @@ struct CodexLaunchPlan {
 enum CodexPostAction {
     None,
     DispatchPendingTurns,
+    /// Stale thread detected on `thread/resume` — retry with fresh `thread/start`.
+    RetryThreadStart,
 }
 
 fn codex_heartbeat_event(
@@ -830,6 +834,21 @@ fn codex_translate_event(
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
+            // Stale thread on resume: retry with fresh thread/start instead of
+            // surfacing the error to the daemon (which would take ~30s to restart).
+            if is_start_response
+                && state.start_phase == "thread/resume"
+                && is_stale_codex_thread_error(msg)
+                && !state.retried_fresh_start
+            {
+                warn!("Codex thread/resume got stale thread error — retrying with thread/start");
+                state.initialized = false;
+                state.start_request_id = None;
+                state.resume_thread_id = None;
+                state.retried_fresh_start = true;
+                return (None, CodexPostAction::RetryThreadStart);
+            }
+
             let was_turn_in_progress = state.turn_in_progress;
             if !is_start_response && was_turn_in_progress {
                 // Avoid deadlock: if turn/start failed, clear in-flight flag so future nudges can run.
@@ -1076,6 +1095,19 @@ fn codex_translate_event(
         ),
         CodexPostAction::None,
     )
+}
+
+/// Check if an error message indicates a stale/expired Codex thread.
+///
+/// Codex threads expire after a period of inactivity. Resuming returns errors like:
+/// - "no rollout found for thread id <id>"
+///
+/// Detected early in `codex_translate_event` so we can retry with `thread/start`
+/// instead of going through the slow health-check → restart cycle (~30s → ~2s).
+fn is_stale_codex_thread_error(error_msg: &str) -> bool {
+    error_msg
+        .to_lowercase()
+        .contains("no rollout found for thread id")
 }
 
 fn codex_thread_init_request(
@@ -1456,6 +1488,7 @@ impl CodexHeadlessAdapter {
             system_prompt: plan.system_prompt,
             output_schema: plan.output_schema,
             start_phase: "thread/start".to_string(),
+            retried_fresh_start: false,
         }));
 
         let resume_thread_id = match &protocol {
@@ -1843,10 +1876,23 @@ impl HeadlessSession {
                 (SessionProtocol::Claude, _) => (None, CodexPostAction::None),
             };
 
-            if post_action == CodexPostAction::DispatchPendingTurns
-                && let Err(e) = self.codex_dispatch_pending_turns().await
-            {
-                warn!("Failed to dispatch queued codex turn: {}", e);
+            match post_action {
+                CodexPostAction::DispatchPendingTurns => {
+                    if let Err(e) = self.codex_dispatch_pending_turns().await {
+                        warn!("Failed to dispatch queued codex turn: {}", e);
+                    }
+                }
+                CodexPostAction::RetryThreadStart => {
+                    // Stale thread detected — re-initialize with a fresh thread/start.
+                    // ensure_ready() will use thread/start since resume_thread_id was cleared.
+                    info!("Retrying Codex session with fresh thread/start after stale thread");
+                    if let Err(e) = self.ensure_ready().await {
+                        warn!("Failed to retry Codex thread/start: {}", e);
+                        return None;
+                    }
+                    // Continue the loop to receive the thread/start response.
+                }
+                CodexPostAction::None => {}
             }
 
             if let Some(event) = event {
