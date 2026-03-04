@@ -401,61 +401,6 @@ fn test_backfill_reviewer_session_ids() {
 }
 
 #[test]
-fn test_add_pending_review_spawn() {
-    let mut state = GitHubState::default();
-    let future = Utc::now() + chrono::Duration::seconds(60);
-
-    state.add_pending_review_spawn(42, future);
-    assert_eq!(state.pending_review_spawns.len(), 1);
-    assert_eq!(state.pending_review_spawns[0].pr_number, 42);
-
-    // Duplicate should be ignored
-    state.add_pending_review_spawn(42, future);
-    assert_eq!(state.pending_review_spawns.len(), 1);
-
-    // Different PR should be added
-    state.add_pending_review_spawn(43, future);
-    assert_eq!(state.pending_review_spawns.len(), 2);
-}
-
-#[test]
-fn test_drain_ready_review_spawns() {
-    let mut state = GitHubState::default();
-    let past = Utc::now() - chrono::Duration::seconds(10);
-    let future = Utc::now() + chrono::Duration::seconds(60);
-
-    state.add_pending_review_spawn(42, past);
-    state.add_pending_review_spawn(43, future);
-    state.add_pending_review_spawn(44, past);
-
-    let ready = state.drain_ready_review_spawns();
-    assert_eq!(ready.len(), 2);
-    assert!(ready.contains(&42));
-    assert!(ready.contains(&44));
-
-    // Only the future spawn should remain
-    assert_eq!(state.pending_review_spawns.len(), 1);
-    assert_eq!(state.pending_review_spawns[0].pr_number, 43);
-}
-
-#[test]
-fn test_pending_review_spawns_persist() {
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("github-state.json");
-
-    let mut state = GitHubState::default();
-    let future = Utc::now() + chrono::Duration::seconds(60);
-    state.add_pending_review_spawn(42, future);
-    state.add_pending_review_spawn(43, future);
-    state.save(&path).unwrap();
-
-    let loaded = GitHubState::load(&path).unwrap();
-    assert_eq!(loaded.pending_review_spawns.len(), 2);
-    assert_eq!(loaded.pending_review_spawns[0].pr_number, 42);
-    assert_eq!(loaded.pending_review_spawns[1].pr_number, 43);
-}
-
-#[test]
 fn test_assignment_source_persists() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("github-state.json");

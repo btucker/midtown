@@ -290,6 +290,35 @@ class MidtownRPC:
         return self._call("coworker.nudge", params)
 
     # ------------------------------------------------------------------
+    # PR methods
+    # ------------------------------------------------------------------
+
+    def spawn_reviewer(self, pr_number: int) -> Any:
+        """Request the daemon to spawn a reviewer for a pull request.
+
+        The daemon handles all reviewer setup: worktree creation, name
+        selection, assignment tracking, and launch configuration.  The
+        workflow script controls *when* to spawn — the daemon controls *how*.
+
+        Parameters
+        ----------
+        pr_number:
+            The GitHub PR number to review.
+
+        Returns
+        -------
+        A dict with a ``"message"`` key describing the outcome (e.g.
+        ``"Reviewer assigned: lexington (PR #42)"``).
+
+        Raises
+        ------
+        RpcError
+            If the PR is not open, already reviewed, or no coworker slots
+            are available.
+        """
+        return self._call("pr.review", {"pr": pr_number})
+
+    # ------------------------------------------------------------------
     # Daemon methods
     # ------------------------------------------------------------------
 

@@ -30,11 +30,6 @@ pub struct GitHubState {
     #[serde(default)]
     pub reviewed_prs: std::collections::HashSet<u64>,
 
-    /// Pending reviewer spawns from webhook events, waiting for the delay to expire.
-    /// Persisted so they survive daemon restarts (unlike the previous tokio::sleep approach).
-    #[serde(default)]
-    pub pending_review_spawns: Vec<PendingReviewSpawn>,
-
     /// Per-PR timestamp of the last webhook event that handled this PR.
     /// Polling checks this to defer to webhooks when they're healthy for a specific PR.
     #[serde(default)]
@@ -60,18 +55,6 @@ pub struct GitHubState {
     /// addressed (via `<!-- addresses-review: {id} -->` tags) before allowing merge.
     #[serde(default)]
     pub pr_review_comment_ids: HashMap<u64, Vec<u64>>,
-}
-
-/// A pending reviewer spawn triggered by a webhook event.
-///
-/// Instead of using `tokio::time::sleep` in a detached task (which is lost on restart),
-/// pending spawns are persisted here and checked each tick.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingReviewSpawn {
-    /// PR number that needs a reviewer.
-    pub pr_number: u64,
-    /// Wall-clock time after which the reviewer should be spawned.
-    pub spawn_after: DateTime<Utc>,
 }
 
 /// How the reviewer assignment was triggered.
@@ -457,32 +440,6 @@ impl GitHubState {
     pub fn cleanup_stale_webhook_events(&mut self) {
         let cutoff = Utc::now() - chrono::Duration::seconds(3600);
         self.pr_last_webhook_event.retain(|_, ts| *ts > cutoff);
-    }
-
-    /// Add a pending review spawn for a PR.
-    pub fn add_pending_review_spawn(&mut self, pr_number: u64, spawn_after: DateTime<Utc>) {
-        // Don't add duplicates for the same PR
-        if !self
-            .pending_review_spawns
-            .iter()
-            .any(|p| p.pr_number == pr_number)
-        {
-            self.pending_review_spawns.push(PendingReviewSpawn {
-                pr_number,
-                spawn_after,
-            });
-        }
-    }
-
-    /// Drain pending review spawns that are ready (spawn_after <= now).
-    pub fn drain_ready_review_spawns(&mut self) -> Vec<u64> {
-        let now = Utc::now();
-        let (ready, remaining): (Vec<_>, Vec<_>) = self
-            .pending_review_spawns
-            .drain(..)
-            .partition(|p| p.spawn_after <= now);
-        self.pending_review_spawns = remaining;
-        ready.into_iter().map(|p| p.pr_number).collect()
     }
 
     /// Check if a PR has a cached completed review result.

@@ -180,29 +180,6 @@ fn expired_assignment_allows_new_spawn() {
     );
 }
 
-/// Test pending review spawns prevent duplicate scheduling.
-#[test]
-fn pending_spawn_prevents_duplicate() {
-    let mut state = GitHubState::default();
-    let future = Utc::now() + chrono::Duration::seconds(60);
-
-    // Add pending spawn for PR 52
-    state.add_pending_review_spawn(52, future);
-    assert_eq!(state.pending_review_spawns.len(), 1);
-
-    // Try to add duplicate - should be ignored
-    state.add_pending_review_spawn(52, future);
-    assert_eq!(
-        state.pending_review_spawns.len(),
-        1,
-        "Duplicate pending spawn should be ignored"
-    );
-
-    // Different PR should be added
-    state.add_pending_review_spawn(53, future);
-    assert_eq!(state.pending_review_spawns.len(), 2);
-}
-
 // =============================================================================
 // Tests: Reviewer assignment persistence
 // =============================================================================
@@ -235,36 +212,6 @@ fn reviewer_assignment_persists() {
         loaded.pr_reviewers.get(&61).map(|a| a.source),
         Some(AssignmentSource::PollingFallback)
     );
-}
-
-/// Test that pending review spawns persist across restart.
-#[test]
-fn pending_spawns_persist_across_restart() {
-    use tempfile::tempdir;
-
-    let dir = tempdir().unwrap();
-    let path = dir.path().join("github-state.json");
-
-    // Create state with pending spawns
-    let mut state = GitHubState::default();
-    let future = Utc::now() + chrono::Duration::seconds(30);
-    state.add_pending_review_spawn(70, future);
-    state.add_pending_review_spawn(71, future);
-
-    // Persist
-    state.save(&path).unwrap();
-
-    // Load and verify
-    let loaded = GitHubState::load(&path).unwrap();
-    assert_eq!(loaded.pending_review_spawns.len(), 2);
-
-    let pr_numbers: Vec<u64> = loaded
-        .pending_review_spawns
-        .iter()
-        .map(|p| p.pr_number)
-        .collect();
-    assert!(pr_numbers.contains(&70));
-    assert!(pr_numbers.contains(&71));
 }
 
 /// Test reviewed_prs cache persists (monotonic review tracking).
@@ -516,7 +463,7 @@ fn closed_prs_cleaned_up() {
 // Tests: Integration scenarios
 // =============================================================================
 
-/// Test complete reviewer lifecycle: spawn -> review -> complete -> cleanup.
+/// Test complete reviewer lifecycle: assign -> review -> complete -> cleanup.
 #[test]
 fn complete_reviewer_lifecycle() {
     use tempfile::tempdir;
@@ -525,28 +472,13 @@ fn complete_reviewer_lifecycle() {
     let path = dir.path().join("github-state.json");
     let pr_number = 200u64;
 
-    // Phase 1: PR opened, webhook triggers pending spawn
+    // Phase 1: PR opened, workflow script triggers reviewer spawn via RPC
     let mut state = GitHubState::default();
-    let spawn_after = Utc::now() + chrono::Duration::seconds(30);
-    state.add_pending_review_spawn(pr_number, spawn_after);
     state.record_webhook_event(pr_number);
-    state.save(&path).unwrap();
-
-    // Simulate daemon restart
-    let mut state = GitHubState::load(&path).unwrap();
-    assert_eq!(state.pending_review_spawns.len(), 1);
-
-    // Phase 2: Spawn delay elapsed, reviewer spawned
-    // (Simulate by manually backdating the pending spawn)
-    state.pending_review_spawns[0].spawn_after = Utc::now() - chrono::Duration::seconds(1);
-    let ready = state.drain_ready_review_spawns();
-    assert_eq!(ready, vec![pr_number]);
-
-    // Assign the reviewer
     state.assign_reviewer(pr_number, "amsterdam", AssignmentSource::Webhook);
     state.save(&path).unwrap();
 
-    // Phase 3: Review completed
+    // Phase 2: Review completed
     let mut state = GitHubState::load(&path).unwrap();
     assert!(state.is_assigned(pr_number));
 
@@ -554,7 +486,7 @@ fn complete_reviewer_lifecycle() {
     state.remove_assignment(pr_number);
     state.save(&path).unwrap();
 
-    // Phase 4: PR merged, cleanup
+    // Phase 3: PR merged, cleanup
     let mut state = GitHubState::load(&path).unwrap();
     assert!(state.has_cached_review(pr_number));
     assert!(!state.is_assigned(pr_number));
@@ -617,22 +549,13 @@ fn webhook_polling_race_handled() {
     let mut state = GitHubState::default();
     let pr_number = 210u64;
 
-    // Webhook arrives first and queues pending spawn
-    let spawn_after = Utc::now() + chrono::Duration::seconds(30);
-    state.add_pending_review_spawn(pr_number, spawn_after);
+    // Webhook arrives and records the event
     state.record_webhook_event(pr_number);
 
     // Polling runs - should defer to webhook
     assert!(
         state.webhook_recently_handled(pr_number, 120),
         "Polling should defer to recent webhook"
-    );
-
-    // Pending spawn also blocks duplicates
-    assert_eq!(
-        state.pending_review_spawns.len(),
-        1,
-        "Should have exactly one pending spawn"
     );
 }
 

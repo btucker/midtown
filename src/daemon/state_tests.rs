@@ -142,9 +142,6 @@ fn test_full_roundtrip_with_all_fields() {
         crate::github_state::AssignmentSource::PollingFallback,
     );
     state.github.mark_reviewed_pr(10);
-    state
-        .github
-        .add_pending_review_spawn(3, chrono::Utc::now() + chrono::Duration::seconds(60));
 
     // Populate reminders
     state.reminders.add(
@@ -172,7 +169,6 @@ fn test_full_roundtrip_with_all_fields() {
     assert_eq!(loaded.github.get_reviewer(1), Some("broadway"));
     assert_eq!(loaded.github.get_reviewer(2), Some("park"));
     assert!(loaded.github.has_cached_review(10));
-    assert_eq!(loaded.github.pending_review_spawns.len(), 1);
     assert_eq!(loaded.reminders.reminders.len(), 2);
     assert_eq!(loaded.task_channel.len(), 2);
     assert_eq!(loaded.task_channel.get("10"), Some(&"auth".to_string()));

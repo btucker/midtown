@@ -44,7 +44,7 @@ Side effects
 
 * ``task.created``       — call ``daemon.check-pending`` for immediate dispatch
                            (side-effect only; no state transition)
-* ``pr.opened``          — post to channel that review is needed; spawn a reviewer
+* ``pr.opened``          — warn author about auto-merge; spawn a reviewer via RPC
 * ``pr.approved``        — nudge author: PR approved, please merge
 * ``pr.changes_requested``— nudge author: please address review feedback
 * ``pr.ci_failed``       — nudge author: CI failed, please investigate
@@ -206,13 +206,25 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
             rpc.post_to_channel(
                 f"PR #{pr_number} opened by {coworker} — assigning reviewer"
             )
-            rpc.spawn_coworker(
-                prompt=(
-                    f"Please review PR #{pr_number} opened by {coworker}. "
-                    "Use the `code-review` skill to analyze it, then post your "
-                    "review as a GitHub comment on the PR."
+            # Warn the author not to enable auto-merge before review completes.
+            # This is policy — teams using auto-merge can remove this nudge
+            # from their custom workflow.py.
+            if coworker:
+                rpc.nudge_coworker(
+                    coworker,
+                    f"PR #{pr_number} is queued for code review. Do NOT enable "
+                    "auto-merge until you receive a ReviewComplete notification "
+                    "from the daemon.",
                 )
-            )
+            # Ask the daemon to spawn a reviewer.  The daemon handles worktree
+            # setup, name selection, and assignment tracking.  If the PR is
+            # already reviewed or assigned, this is a safe no-op.
+            try:
+                rpc.spawn_reviewer(pr_number)
+            except Exception as exc:
+                rpc.post_to_channel(
+                    f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
+                )
 
     elif event_type == "pr.approved" and pr_number:
         # The reviewer approved.  Nudge the PR author so they can decide to merge.
@@ -261,6 +273,15 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
                     f"PR #{pr_number}: CI is green — please address any review "
                     "feedback and merge when ready",
                 )
+        # Retry reviewer spawn when CI passes — the initial spawn (on pr.opened)
+        # may have been blocked by coworker limits or other transient conditions.
+        # spawn_reviewer is a safe no-op if a reviewer is already assigned.
+        try:
+            rpc.spawn_reviewer(pr_number)
+        except Exception as exc:
+            rpc.post_to_channel(
+                f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
+            )
 
     elif event_type == "task.created":
         # A new task arrived — kick off immediate dispatch so it starts right

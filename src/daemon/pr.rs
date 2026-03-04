@@ -3,8 +3,7 @@
 //! This module runs in the background to:
 //! - Poll open PRs for merge conflicts, CI failures, and review status
 //! - Nudge PR authors when approved (author-driven merge decisions)
-//! - Spawn reviewer coworkers for unreviewed PRs
-//! - Process pending review spawns from webhook-triggered delays
+//! - Spawn reviewer coworkers for unreviewed PRs (via polling backstop)
 //! - Nudge PR owners when their PR receives comments
 
 use std::collections::{HashMap, HashSet};
@@ -413,25 +412,9 @@ fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64)
     hasher.finish()
 }
 
-/// Build the effect that warns a PR author not to enable auto-merge before review completes.
-///
-/// Sent immediately when a non-draft PR is opened (from the `pr_opened` webhook handler),
-/// before a reviewer is assigned. This ensures the author is warned even if the reviewer
-/// spawn is temporarily blocked (e.g., coworker limit), because without this early warning
-/// the only notification is `reviewer_spawned_author_warning` which fires only after a
-/// successful spawn — never reaching the author when spawn fails.
-///
-/// Only call this for non-draft PRs where a review will actually be queued.
-pub(super) fn build_pr_opened_author_warning_effect(author: &str, pr_number: u64) -> Effect {
-    Effect::DeliverMailboxMessage {
-        name: author.to_string(),
-        message: crate::daemon_messages::pr_opened_author_warning(pr_number),
-        summary: Some(format!(
-            "PR #{} queued for review — hold auto-merge",
-            pr_number
-        )),
-    }
-}
+// NOTE: build_pr_opened_author_warning_effect was removed — the auto-merge
+// warning is now sent by the workflow script's pr.opened handler (policy).
+// See sdk/python/midtown/default_workflow.py.
 
 /// Detect tasks linked to abandoned PRs (closed without merge) and return reset effects.
 ///
@@ -2648,7 +2631,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // When polling, defer to webhooks if one recently handled this PR.
         // This prevents polling from spawning a duplicate reviewer when the
-        // webhook path already queued a pending spawn for the same PR.
+        // webhook already triggered reviewer spawning via the workflow script.
         if source == crate::github_state::AssignmentSource::PollingFallback {
             let ps = state.persistent_state.lock().await;
             if ps
@@ -3204,266 +3187,10 @@ fn review_complete_action_to_effects(
     }
 }
 
-/// Process pending webhook-triggered reviewer spawns whose delay has expired.
-///
-/// Drains ready entries from the persisted `pending_review_spawns` queue,
-/// fetches each PR's current data, and returns effects for eligible spawns.
-/// Unlike the previous `tokio::time::sleep` approach, these survive daemon restarts.
-///
-/// Returns effects to be executed by the caller (following the evaluate-execute pattern).
-pub(super) async fn process_pending_review_spawns(
-    snap: &WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    let mut all_effects = Vec::new();
-
-    // Build branch → coworker map from the worktree registry for task-based branch lookup
-    let branch_owners: std::collections::HashMap<String, String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.worktree_registry
-            .all_assignments()
-            .iter()
-            .filter_map(|(_, a)| {
-                a.current_coworker
-                    .as_ref()
-                    .map(|coworker| (a.branch_name.clone(), coworker.clone()))
-            })
-            .collect()
-    };
-
-    // Drain ready spawns from persistent state
-    let ready_prs = {
-        let mut ps = state.persistent_state.lock().await;
-        let ready = ps.github.drain_ready_review_spawns();
-        if !ready.is_empty()
-            && let Err(e) = ps.save_for_repo(&state.repo_name)
-        {
-            warn!("Failed to persist review spawn drain: {}", e);
-        }
-        ready
-    };
-
-    if ready_prs.is_empty() {
-        return all_effects;
-    }
-
-    for pr_number in ready_prs {
-        info!("Processing pending review spawn for PR #{}", pr_number);
-
-        // Fetch this specific PR's data
-        let output = match tokio::process::Command::new("gh")
-            .args([
-                "pr",
-                "view",
-                &pr_number.to_string(),
-                "--json",
-                "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
-            ])
-            .output()
-            .await
-        {
-            Ok(output) => output,
-            Err(e) => {
-                warn!(
-                    "Webhook: Failed to fetch PR #{} for review spawn: {}",
-                    pr_number, e
-                );
-                continue;
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Webhook: gh pr view #{} failed: {}", pr_number, stderr);
-            continue;
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let pr: serde_json::Value = match serde_json::from_str(&stdout) {
-            Ok(pr) => pr,
-            Err(e) => {
-                warn!("Webhook: Failed to parse PR #{} JSON: {}", pr_number, e);
-                continue;
-            }
-        };
-
-        // Check the PR is still open
-        let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
-        if pr_state != "OPEN" {
-            debug!(
-                "Webhook: PR #{} is no longer open (state={}), skipping review",
-                pr_number, pr_state
-            );
-            continue;
-        }
-
-        // Reuse the existing spawn logic (handles draft check, assignment dedup, etc.)
-        // Use Webhook source since this was triggered by a webhook event.
-        let effects = collect_reviewer_effects_with_source(
-            Some(&branch_owners),
-            &snap.worktree_registry,
-            &snap.coworkers.active_names,
-            state,
-            &[pr],
-            crate::github_state::AssignmentSource::Webhook,
-            &HashMap::new(), // Webhook path: spawning reviewers, not nudging authors
-        )
-        .await;
-        all_effects.extend(effects);
-    }
-
-    all_effects
-}
-
-/// Handle CI completion for reviewer spawn retry.
-///
-/// When CI passes on a PR, check if the PR needs a reviewer spawned.
-/// This handles the case where the initial pending spawn (45s after PR opened)
-/// was skipped for any reason (coworker limit, CI pending, etc.), and now that
-/// CI is green, we should retry the spawn.
-///
-/// Triggered by webhook `ci_check_passed` events.
-pub(super) async fn handle_ci_completion_for_review_spawn(
-    state: &DaemonState,
-    ci_check: &crate::webhook::CiCheckPassed,
-) {
-    // Extract PR number from target (format: "PR #123")
-    let pr_number = match ci_check.target.strip_prefix("PR #") {
-        Some(num_str) => match num_str.parse::<u64>() {
-            Ok(num) => num,
-            Err(_) => {
-                debug!(
-                    "CI check target '{}' is not a PR reference, skipping review spawn check",
-                    ci_check.target
-                );
-                return;
-            }
-        },
-        None => {
-            // Not a PR (e.g., "main" branch) - no review needed
-            debug!(
-                "CI check target '{}' is not a PR, skipping review spawn check",
-                ci_check.target
-            );
-            return;
-        }
-    };
-
-    debug!(
-        "CI passed for PR #{} - checking if reviewer spawn is needed",
-        pr_number
-    );
-
-    // Build branch → coworker map for task-based branch lookup and get worktree registry
-    let (branch_owners, worktree_registry) = {
-        let ps = state.persistent_state.lock().await;
-        let branch_owners: std::collections::HashMap<String, String> = ps
-            .worktree_registry
-            .all_assignments()
-            .iter()
-            .filter_map(|(_, a)| {
-                a.current_coworker
-                    .as_ref()
-                    .map(|coworker| (a.branch_name.clone(), coworker.clone()))
-            })
-            .collect();
-        (branch_owners, ps.worktree_registry.clone())
-    };
-
-    // Build active_names including both pane-based and headless sessions,
-    // matching the WorldSnapshot construction in snapshot.rs
-    let mut active_names: std::collections::HashSet<String> = state
-        .coworkers
-        .list_running()
-        .into_iter()
-        .map(|cw| cw.name.to_lowercase())
-        .collect();
-    for name in state.session_manager.list_names().await {
-        if state.session_manager.is_alive(&name).await {
-            active_names.insert(name.to_lowercase());
-        }
-    }
-
-    // Fetch PR data to check if it needs review
-    let output = match tokio::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state",
-        ])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(e) => {
-            warn!(
-                "CI completion: Failed to fetch PR #{} for review spawn check: {}",
-                pr_number, e
-            );
-            return;
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "CI completion: gh pr view #{} failed: {}",
-            pr_number, stderr
-        );
-        return;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let pr: serde_json::Value = match serde_json::from_str(&stdout) {
-        Ok(pr) => pr,
-        Err(e) => {
-            warn!(
-                "CI completion: Failed to parse PR #{} JSON: {}",
-                pr_number, e
-            );
-            return;
-        }
-    };
-
-    // Check if PR is still open
-    let pr_state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("");
-    if pr_state != "OPEN" {
-        debug!(
-            "CI completion: PR #{} is no longer open (state={}), skipping review spawn",
-            pr_number, pr_state
-        );
-        return;
-    }
-
-    // Use the existing spawn logic (handles all conditions: draft, age, review status, assignment, etc.)
-    // Use Webhook source since this was triggered by a webhook event (CI completion).
-    let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
-        &worktree_registry,
-        &active_names,
-        state,
-        &[pr],
-        crate::github_state::AssignmentSource::Webhook,
-        &HashMap::new(), // Webhook path: spawning reviewers, not nudging authors
-    )
-    .await;
-
-    if !effects.is_empty() {
-        info!(
-            "CI completion triggered reviewer spawn for PR #{} ({} effects)",
-            pr_number,
-            effects.len()
-        );
-        crate::daemon::effects::execute_effects(effects, state).await;
-    } else {
-        debug!(
-            "CI completion: PR #{} does not need reviewer spawn (already assigned or reviewed)",
-            pr_number
-        );
-    }
-}
+// NOTE: process_pending_review_spawns and handle_ci_completion_for_review_spawn
+// were removed — reviewer spawning from webhooks is now driven by the workflow
+// script's pr.opened and pr.ci_passed handlers calling rpc.spawn_reviewer().
+// The polling backstop (collect_reviewer_effects) still runs during poll ticks.
 
 /// Uncached check for whether a PR has at least one completed review.
 ///
