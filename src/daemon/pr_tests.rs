@@ -3436,6 +3436,56 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
     );
 }
 
+/// !2003, !2019: Fallback path — without a workflow script, inline effects are
+/// preserved alongside the workflow event.
+///
+/// When no `workflow.py` exists, `pr_action_to_effects` falls through to the
+/// inline-effects path (NudgeSession + RecordPrNudge) and appends the workflow
+/// event. This preserves backward compatibility for projects that haven't
+/// adopted workflow scripts.
+#[test]
+fn fallback_inline_effects_without_workflow_script() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    // No install_workflow_script() — deliberately testing the no-script fallback
+
+    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+
+    // Without a script: inline NudgeSession effect fires AND workflow event is appended
+    let has_nudge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }));
+    assert!(
+        has_nudge,
+        "Fallback path should produce NudgeSessionWithCallbacks when no workflow script exists"
+    );
+
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "Workflow event should still be appended in fallback path"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
+        ),
+        "Event should be PrApproved for PR #42"
+    );
+}
+
 /// !2003: HandoffToCoworker effects are preserved even when a workflow event exists.
 ///
 /// When the action is HandoffToCoworker (idle coworker available for session handoff),
