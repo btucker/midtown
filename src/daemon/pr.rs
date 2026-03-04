@@ -2934,6 +2934,15 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // defaults to the right channel (via MIDTOWN_CHANNEL env var).
         config.channel = pr_ctx.get_channel(pr_number);
 
+        // Route escalation mentions (@{escalation_target}) to the channel lead
+        // for this task's channel, falling back to the project lead if no channel
+        // or no channel lead exists.
+        if let Some(ref channel_name) = config.channel
+            && channel_lead_names.contains(channel_name)
+        {
+            config.escalation_target = Some(channel_name.clone());
+        }
+
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
             path: wt_path.clone(),

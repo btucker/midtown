@@ -36,6 +36,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         channel: None,
         auth_provider: crate::auth::AuthProvider::Claude,
         auth_profile_dir: None,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
@@ -198,6 +199,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         channel: Some("ops".to_string()),
         auth_provider: AuthProvider::Codex,
         auth_profile_dir: None,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
@@ -229,6 +231,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         channel: Some("ops".to_string()),
         auth_provider: AuthProvider::Claude,
         auth_profile_dir: None,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 

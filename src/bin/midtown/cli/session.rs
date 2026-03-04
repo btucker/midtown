@@ -813,13 +813,15 @@ pub(crate) fn build_attach_shell_command(
         channel: None,
         auth_profile_dir: Some(profile_dir.clone()),
         auth_provider: provider,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
     let system_prompt = match &launch_config.role {
         midtown::launch::CoworkerRole::Lead => midtown::agents::main_lead_system_prompt(&repo_name),
         midtown::launch::CoworkerRole::Reviewer => {
-            midtown::agents::reviewer_system_prompt(name, &repo_name, provider, None)
+            // In CLI attach context, no channel lead info is available — fall back to project name
+            midtown::agents::reviewer_system_prompt(name, &repo_name, &repo_name, provider, None)
         }
         midtown::launch::CoworkerRole::Coworker => {
             midtown::agents::coworker_system_prompt(name, &repo_name)

@@ -139,6 +139,7 @@ pub fn coworker_system_prompt(name: &str, project_name: &str) -> String {
 pub fn reviewer_system_prompt(
     name: &str,
     project_name: &str,
+    escalation_target: &str,
     platform: crate::auth::AuthProvider,
     pr_number: Option<u64>,
 ) -> String {
@@ -151,6 +152,7 @@ pub fn reviewer_system_prompt(
     format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}")
         .replace("{name}", name)
         .replace("{project_name}", project_name)
+        .replace("{escalation_target}", escalation_target)
         .replace("{code_review_invocation}", &invocation)
 }
 
