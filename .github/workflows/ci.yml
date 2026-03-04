@@ -47,8 +47,6 @@ jobs:
         include:
           - test: daemon_e2e
             flags: "--ignored --test-threads=1 --skip installs_required_plugins"
-          # zellij_start_e2e removed - midtown start no longer creates Zellij sessions (use midtown view)
-          # tmux_e2e removed - this PR deletes tmux.rs and all tmux integration
           - test: full_stack_e2e
             flags: "--ignored --test-threads=1 --skip nudge_reaches_real_claude"
           # nudge_delivery_e2e removed - this PR deletes the test file
@@ -87,10 +85,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Install tmux
-        run: |
-          sudo apt-get update && sudo apt-get install -y tmux
-
       - name: Install WASM target
         run: rustup target add wasm32-wasip1
 
@@ -102,9 +96,6 @@ jobs:
           git config --global user.email "e2e@midtown.test"
           git config --global user.name "Midtown E2E"
           git config --global init.defaultBranch main
-
-      - name: Start tmux server
-        run: tmux start-server
 
       - name: Run ${{ matrix.test }} with coverage
         run: ./scripts/with-isolated-home.sh cargo llvm-cov --no-report --test ${{ matrix.test }} -- ${{ matrix.flags }}

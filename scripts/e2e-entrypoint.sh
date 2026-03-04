@@ -2,7 +2,7 @@
 # e2e-entrypoint.sh — In-container test orchestrator for Midtown E2E tests.
 #
 # Modes:
-#   coordination (default) — Runs daemon/Zellij/nudge/channel/task E2E tests.
+#   coordination (default) — Runs daemon/nudge/channel/task E2E tests.
 #                            No Claude auth needed; uses a stub lead command.
 #   full                   — Runs coordination tests first, then full_stack_e2e
 #                            tests that exercise real Claude Code integration.
@@ -10,8 +10,8 @@
 #
 # Test suites run in parallel where safe. Each suite uses unique resources
 # (PID-based names, unique sockets, dynamic ports) so different suites don't
-# conflict. Suites that need Zellij use --test-threads=1 within themselves
-# but can still run concurrently with other suites.
+# conflict. Suites that need --test-threads=1 within themselves can still
+# run concurrently with other suites.
 set -euo pipefail
 
 MODE="${1:-coordination}"
@@ -20,16 +20,12 @@ shift || true  # consume mode arg; remaining args pass through to cargo test
 echo "=== Midtown E2E Test Runner ==="
 echo "Mode: ${MODE}"
 echo "Rust: $(rustc --version)"
-echo "zellij: $(zellij --version 2>/dev/null || echo 'not found')"
 echo ""
 
 # --- Git config (tests create repos and need an author identity) ---
 git config --global user.email "e2e@midtown.test"
 git config --global user.name "Midtown E2E"
 git config --global init.defaultBranch main
-
-# --- Zellij is started per-test as needed (no global server required) ---
-echo "Zellij available for E2E tests"
 
 # --- Parallel job management ---
 # Track background PIDs and their labels for error reporting.
@@ -85,17 +81,11 @@ run_coordination_tests() {
 
     # Wave 1: Independent suites run concurrently.
     # Each suite uses unique PID-based resource names so they don't conflict.
-    # Suites with Zellij need --test-threads=1 *within* themselves but can
-    # overlap with other suites safely.
 
     run_bg "daemon_e2e" \
         cargo test --release --test daemon_e2e -- --ignored --test-threads=1 \
             --skip test_daemon_installs_required_plugins \
             "${test_args[@]}"
-
-    # Note: tmux_e2e and nudge_delivery_e2e suites are skipped in the container
-    # because they require tmux, which is no longer installed (replaced by Zellij).
-    # These tests can still be run locally where tmux is available.
 
     run_bg "chat_e2e" \
         cargo test --release --test chat_e2e -- --ignored "${test_args[@]}"

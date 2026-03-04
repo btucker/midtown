@@ -410,7 +410,6 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/channels", get(api_channels_list))
         .route("/api/channels/create", post(api_channels_create))
         .route("/api/status", get(api_status))
-        .route("/api/zellij-web-url", get(api_zellij_web_url))
         .route("/api/push/vapid-key", get(api_push_vapid_key))
         .route("/api/push/subscribe", post(api_push_subscribe))
         .route("/api/push/unsubscribe", post(api_push_unsubscribe))
@@ -1324,18 +1323,6 @@ fn fetch_merged_prs_via_cli() -> Vec<serde_json::Value> {
         _ => Vec::new(),
     }
 }
-/// Get the Zellij web client URL for embedding in the web app.
-///
-/// Returns the URL of the Zellij web client and the session name,
-/// so the Svelte app can embed it in an iframe.
-async fn api_zellij_web_url(State(state): State<Arc<WebState>>) -> impl IntoResponse {
-    let session = format!("midtown-{}", state.config.repo);
-    Json(serde_json::json!({
-        "url": "https://localhost:6780",
-        "session": session,
-    }))
-}
-
 /// Get the VAPID public key for push subscription.
 async fn api_push_vapid_key(
     State(state): State<Arc<WebState>>,
@@ -2207,9 +2194,8 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 ));
             }
 
-            // Nudge delivery via tmux has been removed. Lead nudges now
-            // flow through the headed intercom queue, not the web UI.
-            return Err("Lead nudge via web UI is no longer supported (tmux removed)".to_string());
+            // Lead nudges flow through the headed intercom queue, not the web UI.
+            return Err("Lead nudge via web UI is not supported".to_string());
         }
         ClientMessage::SendKey { target, key } => {
             // Validate target name
@@ -2225,10 +2211,9 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 return Err("Only 'Escape' key is supported".to_string());
             }
 
-            // send_key via tmux has been removed. All coworkers are
-            // headless and controlled through SessionManager.
+            // All coworkers are headless and controlled through SessionManager.
             return Err(format!(
-                "Send key to {} via web UI is no longer supported (tmux removed)",
+                "Send key to {} via web UI is not supported",
                 target
             ));
         }

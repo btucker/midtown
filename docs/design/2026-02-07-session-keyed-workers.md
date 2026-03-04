@@ -66,7 +66,7 @@ This creates a hard limit: each named coworker can only run one task at a time. 
 
 **Display only (can keep names):**
 - Channel messages — Sender identity
-- Tmux window names — Human-readable labels
+- Terminal window names — Human-readable labels
 - Web UI — Coworker cards
 - Nudge targeting — Need to route to correct session
 
@@ -340,7 +340,7 @@ Effect::NudgeCoworker {
 ### Pros
 
 ✅ **Preserves channel readability** — Messages still show "lexington", not "lexington:abc-123"
-✅ **Backward compatible display** — Web UI, tmux tabs can still show simple names
+✅ **Backward compatible display** — Web UI can still show simple names
 ✅ **Clear ownership model** — Task owner is a concrete SessionKey, not ambiguous
 ✅ **Incremental migration** — Can land SessionKey types first, populate session_id field gradually
 ✅ **Familiar mental model** — "lexington is working on multiple tasks" is intuitive

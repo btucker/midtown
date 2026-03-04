@@ -45,34 +45,6 @@ fn resolve_project_name(project: &Option<String>) -> Option<String> {
     })
 }
 
-/// Get the session name for an explicit or inferred project.
-/// Format: midtown-{project_name}
-/// Used for both Zellij and tmux sessions.
-///
-/// Returns an error if no project name can be determined.
-fn session_name_for(project: &Option<String>) -> Result<String, String> {
-    match resolve_project_name(project) {
-        Some(name) => Ok(format!("midtown-{}", name)),
-        None => Err(
-            "Not in a git repository. Run midtown from within a git repo or use --repo."
-                .to_string(),
-        ),
-    }
-}
-
-/// Get the session name based on the project name.
-/// Format: midtown-{project_name}
-/// Used for both Zellij and tmux sessions.
-///
-/// The project name is resolved from config.toml `[project].name`,
-/// falling back to the git repo directory name.
-///
-/// Returns an error if not in a git repository, since a tmux session
-/// requires a valid project context.
-fn session_name() -> Result<String, String> {
-    session_name_for(&None)
-}
-
 /// Get the socket path for the daemon.
 fn socket_path() -> PathBuf {
     midtown::paths::daemon_socket()
@@ -251,111 +223,6 @@ fn cleanup_stale_daemon() {
     // Clean up stale files
     let _ = std::fs::remove_file(&pid_path);
     let _ = std::fs::remove_file(socket_path());
-}
-
-/// Check if the project's tmux session exists.
-fn session_exists(session: &str) -> bool {
-    // Check Zellij first, then fall back to tmux
-    if zellij_session_exists(session) {
-        return true;
-    }
-    tmux_session_exists(session)
-}
-
-/// Check if a Zellij session with the given name exists.
-/// Delegates to the shared implementation in `midtown::process`.
-fn zellij_session_exists(session: &str) -> bool {
-    midtown::process::zellij_session_exists(session)
-}
-
-/// Check if a Zellij session is actively running (not exited/resurrectable).
-fn zellij_running_session_exists(session: &str) -> bool {
-    midtown::process::zellij_running_session_exists(session)
-}
-
-/// Resolve Zellij's on-disk `session_info` directory using `zellij setup --check`.
-///
-/// Returns a best-effort path to the session info root, typically one of:
-/// - `<cache-dir>/<version>/session_info`
-/// - `<cache-dir>/session_info`
-fn zellij_session_info_root() -> Option<PathBuf> {
-    let output = Command::new("zellij")
-        .args(["setup", "--check"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut cache_dir: Option<PathBuf> = None;
-    let mut version: Option<String> = None;
-
-    for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("[CACHE DIR]:") {
-            let p = rest.trim().trim_matches('"');
-            if !p.is_empty() {
-                cache_dir = Some(PathBuf::from(p));
-            }
-        } else if let Some(rest) = line.strip_prefix("[Version]:") {
-            let v = rest.trim().trim_matches('"').to_string();
-            if !v.is_empty() {
-                version = Some(v);
-            }
-        }
-    }
-
-    let cache_dir = cache_dir?;
-    if let Some(version) = version {
-        let versioned = cache_dir.join(version).join("session_info");
-        if versioned.exists() {
-            return Some(versioned);
-        }
-    }
-    Some(cache_dir.join("session_info"))
-}
-
-/// Delete an exited/resurrectable Zellij session entry.
-///
-/// Zellij can report sessions as `EXITED - attach to resurrect`; these are not
-/// killable with `kill-session` and can block Midtown startup if treated as live.
-/// We first ask Zellij to delete it, then fall back to removing stale
-/// `session_info/<name>` metadata if needed.
-fn cleanup_exited_zellij_session(session: &str) -> Result<bool, String> {
-    let _ = Command::new("zellij")
-        .args(["delete-session", "--force", session])
-        .status();
-
-    if !matches!(
-        midtown::process::zellij_session_state(session),
-        Some(midtown::process::ZellijSessionState::Exited)
-    ) {
-        return Ok(true);
-    }
-
-    if let Some(root) = zellij_session_info_root() {
-        let stale_dir = root.join(session);
-        if stale_dir.exists() {
-            std::fs::remove_dir_all(&stale_dir)
-                .map_err(|e| format!("Failed to remove stale Zellij session metadata: {}", e))?;
-        }
-    }
-
-    Ok(!matches!(
-        midtown::process::zellij_session_state(session),
-        Some(midtown::process::ZellijSessionState::Exited)
-    ))
-}
-
-/// Check if a tmux session with the given name exists.
-fn tmux_session_exists(session: &str) -> bool {
-    let output = Command::new("tmux")
-        .args(["has-session", "-t", session])
-        .output();
-
-    match output {
-        Ok(o) => o.status.success(),
-        Err(_) => false,
-    }
 }
 
 /// Find the git repository root by walking up the directory tree.
@@ -1015,74 +882,12 @@ pub fn handle_webserver_restart() -> Result<Response, String> {
 
 /// Handle `midtown stop` command.
 ///
-/// Stops the daemon, webserver, and optionally the tmux session.
+/// Stops the daemon and webserver.
 /// Also cleans up any orphaned `gh webhook forward` processes.
-pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
+pub fn handle_stop() -> Result<Response, String> {
     let mut messages = Vec::new();
 
-    // Get session name (if in a git repo)
-    if let Ok(session) = session_name() {
-        // Stop session (unless --keep-session)
-        if !keep_session && session_exists(&session) {
-            // Try Zellij first, then tmux
-            if zellij_session_exists(&session) {
-                if zellij_running_session_exists(&session) {
-                    // Kill the Zellij session — `zellij kill-session` sends SIGHUP to
-                    // pane processes, which Claude Code may survive. Use
-                    // `zellij kill-session` first, then clean up any orphaned processes.
-                    let status = Command::new("zellij")
-                        .args(["kill-session", &session])
-                        .status()
-                        .map_err(|e| format!("Failed to kill Zellij session: {}", e))?;
-
-                    if status.success() {
-                        messages.push(format!("Stopped Zellij session '{}'", session));
-                    } else {
-                        messages.push(format!(
-                            "Warning: Failed to stop Zellij session '{}'",
-                            session
-                        ));
-                    }
-                } else if cleanup_exited_zellij_session(&session)? {
-                    messages.push(format!("Deleted exited Zellij session '{}'", session));
-                } else {
-                    messages.push(format!(
-                        "Warning: Failed to delete exited Zellij session '{}'",
-                        session
-                    ));
-                }
-            }
-
-            // Also try tmux — both may exist in mixed environments, or only tmux
-            if tmux_session_exists(&session) {
-                // SIGTERM all pane processes first — Claude Code survives SIGHUP
-                // (which is what tmux kill-session sends), leaving orphaned processes
-                // that consume memory and cause contention with other instances.
-                midtown::process::terminate_session_processes(&session);
-
-                let status = Command::new("tmux")
-                    .args(["kill-session", "-t", &session])
-                    .status()
-                    .map_err(|e| format!("Failed to kill tmux session: {}", e))?;
-
-                if status.success() {
-                    messages.push(format!("Stopped tmux session '{}'", session));
-                } else {
-                    messages.push(format!(
-                        "Warning: Failed to stop tmux session '{}'",
-                        session
-                    ));
-                }
-            }
-        } else if session_exists(&session) {
-            messages.push(format!(
-                "Keeping session '{}' (use without --keep-session to stop)",
-                session
-            ));
-        }
-    }
-
-    // Step 2: Stop daemon (this also signals the gh webhook forwarder to stop)
+    // Step 1: Stop daemon (this also signals the gh webhook forwarder to stop)
     if daemon_is_running() {
         // Read the PID and send SIGTERM for a clean shutdown
         let pid_path = midtown::paths::daemon_pid_file();
@@ -1136,22 +941,20 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
         messages.push("Daemon was not running".to_string());
     }
 
-    // Step 3: Kill any orphaned `gh webhook forward` processes.
+    // Step 2: Kill any orphaned `gh webhook forward` processes.
     // The daemon's SIGTERM handler should have already stopped these, but
     // if the daemon exited uncleanly they may be left behind.
     kill_orphaned_webhook_forwarders(&mut messages);
 
-    // Step 4: Kill any orphaned claude processes.
-    // Claude Code handles SIGHUP, so if the tmux session was killed directly
-    // (without going through `midtown stop`), processes may still be running.
+    // Step 3: Kill any orphaned claude processes.
     kill_orphaned_claude_processes(&mut messages);
 
-    // Step 5: Kill any orphaned codex app-server processes.
+    // Step 4: Kill any orphaned codex app-server processes.
     // The Codex daemon-side app-server is shared and long-lived, so when the
     // daemon exits without graceful shutdown it can remain orphaned.
     kill_orphaned_codex_processes(&mut messages);
 
-    // Step 6: Stop the standalone webserver
+    // Step 5: Stop the standalone webserver
     if webserver_is_running() {
         match stop_webserver() {
             Ok(true) => messages.push("Stopped webserver".to_string()),
@@ -1167,11 +970,7 @@ pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
 
 /// Kill any orphaned Claude processes that were started by midtown.
 ///
-/// Claude Code (node) handles SIGHUP, so when a tmux session is killed directly
-/// (without going through `midtown stop`), claude processes survive and become
-/// orphaned (PPID=1). This function finds and kills only those orphans.
-///
-/// We're conservative here: only kill processes that:
+/// Only kills processes that:
 /// 1. Match midtown's settings file pattern
 /// 2. Have PPID=1 (truly orphaned, no legitimate parent)
 ///
@@ -1480,7 +1279,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
             e
         );
         drop(client);
-        handle_stop(true)?;
+        handle_stop()?;
 
         let poll_interval = std::time::Duration::from_millis(50);
         let timeout = std::time::Duration::from_secs(2);
@@ -1595,8 +1394,6 @@ fn resolve_attach_context(project: Option<&str>) -> Result<AttachContext, String
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum AttachHost {
-    Tmux,
-    Zellij,
     Ghostty,
     ITerm,
     Unknown,
@@ -1604,13 +1401,6 @@ pub(super) enum AttachHost {
 
 impl AttachHost {
     pub(super) fn detect() -> Self {
-        if std::env::var("ZELLIJ").is_ok() {
-            return Self::Zellij;
-        }
-        if std::env::var("TMUX").is_ok() {
-            return Self::Tmux;
-        }
-
         let term_program = std::env::var("TERM_PROGRAM")
             .unwrap_or_default()
             .to_ascii_lowercase();
@@ -1852,37 +1642,6 @@ pub(super) fn launch_lead_split(
     shell_command: &str,
 ) -> Result<String, String> {
     match host {
-        AttachHost::Tmux => {
-            let status = Command::new("tmux")
-                .args(["split-window", "-h", "-c", cwd, "sh", "-lc", shell_command])
-                .status()
-                .map_err(|e| format!("Failed to run tmux split-window: {}", e))?;
-            if !status.success() {
-                return Err("tmux split-window failed".to_string());
-            }
-            Ok("tmux split pane".to_string())
-        }
-        AttachHost::Zellij => {
-            let status = Command::new("zellij")
-                .args([
-                    "action",
-                    "new-pane",
-                    "-d",
-                    "right",
-                    "--cwd",
-                    cwd,
-                    "--",
-                    "sh",
-                    "-lc",
-                    shell_command,
-                ])
-                .status()
-                .map_err(|e| format!("Failed to run zellij action new-pane: {}", e))?;
-            if !status.success() {
-                return Err("zellij action new-pane failed".to_string());
-            }
-            Ok("zellij split pane".to_string())
-        }
         AttachHost::Ghostty => {
             if !trigger_ghostty_split_action()? {
                 return Err(
@@ -1933,10 +1692,9 @@ pub(super) fn launch_lead_split(
             }
             Err("iTerm split launch failed".to_string())
         }
-        AttachHost::Unknown => Err(
-            "Unsupported terminal host for automatic split. Use zellij/tmux/ghostty/iTerm."
-                .to_string(),
-        ),
+        AttachHost::Unknown => {
+            Err("Unsupported terminal host for automatic split. Use ghostty or iTerm.".to_string())
+        }
     }
 }
 
@@ -2120,19 +1878,7 @@ pub fn handle_project_list() -> Result<Response, String> {
             "stopped"
         };
 
-        // Check tmux session
-        let session = format!("midtown-{}", name);
-        let has_session = session_exists(&session);
-
-        let status_display = if status == "running" && has_session {
-            "running"
-        } else if status == "running" {
-            "daemon only"
-        } else {
-            "stopped"
-        };
-
-        lines.push(format!("{:<20} {}", name, status_display));
+        lines.push(format!("{:<20} {}", name, status));
     }
 
     Ok(Response::message(lines.join("\n")))
@@ -2320,29 +2066,15 @@ mod tests {
     }
 
     #[test]
-    fn test_session_name_in_fake_repo() {
+    fn test_find_git_root_in_fake_repo() {
         let temp = TempDir::new().unwrap();
         let repo_dir = temp.path().join("my-project");
         fs::create_dir_all(&repo_dir).unwrap();
         create_git_repo(&repo_dir);
 
         with_temp_cwd(&repo_dir, || {
-            // find_git_root should work, but session_name uses git rev-parse
-            // which won't work in a fake repo. Just test find_git_root here.
             let result = find_git_root();
             assert!(result.is_some());
-        });
-    }
-
-    #[test]
-    fn test_session_name_not_in_repo() {
-        let temp = TempDir::new().unwrap();
-        // Don't create .git
-
-        with_temp_cwd(temp.path(), || {
-            let result = session_name();
-            assert!(result.is_err());
-            assert!(result.unwrap_err().contains("Not in a git repository"));
         });
     }
 
@@ -2367,12 +2099,6 @@ mod tests {
     }
 
     #[test]
-    fn test_session_exists_nonexistent() {
-        // Random session name that definitely doesn't exist
-        assert!(!session_exists("midtown-nonexistent-test-session-12345"));
-    }
-
-    #[test]
     fn test_resolve_project_name_explicit() {
         let result = resolve_project_name(&Some("my-project".to_string()));
         assert_eq!(result, Some("my-project".to_string()));
@@ -2388,22 +2114,6 @@ mod tests {
             // Outside a git repo, detect_project_name returns None and repo_root fails
             // so result should be None
             assert!(result.is_none());
-        });
-    }
-
-    #[test]
-    fn test_session_name_for_explicit_project() {
-        let result = session_name_for(&Some("myapp".to_string()));
-        assert_eq!(result.unwrap(), "midtown-myapp");
-    }
-
-    #[test]
-    fn test_session_name_for_none_outside_repo() {
-        let temp = TempDir::new().unwrap();
-
-        with_temp_cwd(temp.path(), || {
-            let result = session_name_for(&None);
-            assert!(result.is_err());
         });
     }
 

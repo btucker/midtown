@@ -111,8 +111,8 @@ pub fn handle_start(
 }
 
 /// Handle stop command (no daemon required - it stops the daemon)
-pub fn handle_stop(keep_session: bool) -> Result<Response, String> {
-    daemon::handle_stop(keep_session)
+pub fn handle_stop() -> Result<Response, String> {
+    daemon::handle_stop()
 }
 
 /// Handle restart command (stop + start)

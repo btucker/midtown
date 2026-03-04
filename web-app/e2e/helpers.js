@@ -417,14 +417,6 @@ export async function mockAllRoutes(page, overrides = {}) {
     route.fulfill({ status: 200, contentType: 'text/plain', body: 'ok' })
   )
 
-  await page.route('**/api/projects/*/tmux-windows', (route) =>
-    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'no session' }) })
-  )
-
-  await page.route('**/api/projects/*/tmux-pane*', (route) =>
-    route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'no session' }) })
-  )
-
   await page.route('**/api/lead-pane', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(leadPane) })
   )

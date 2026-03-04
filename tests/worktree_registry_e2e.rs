@@ -27,17 +27,6 @@ fn test_repo_name() -> String {
     format!("worktree-e2e-test-{}-{}", std::process::id(), counter)
 }
 
-/// Check if tmux is available.
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .arg("-V")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
 /// Test fixture for worktree registry E2E tests.
 ///
 /// Creates an isolated environment with a fake git repo and manages
@@ -49,14 +38,12 @@ struct WorktreeTestFixture {
     project_dir: PathBuf,
     /// Worktree directory under ~/.midtown/projects/<name>/worktrees/
     worktree_dir: PathBuf,
-    /// Repository name (used for socket path derivation and tmux session)
+    /// Repository name (used for socket path derivation)
     repo_name: String,
     /// Path to the daemon socket
     socket_path: PathBuf,
     /// Daemon process handle (if started)
     daemon_process: Option<std::process::Child>,
-    /// Tmux session name (midtown-<repo_name>)
-    session_name: String,
 }
 
 impl WorktreeTestFixture {
@@ -149,8 +136,6 @@ impl WorktreeTestFixture {
             let _ = fs::create_dir_all(parent);
         }
 
-        let session_name = format!("midtown-{}", repo_name);
-
         Some(Self {
             temp_dir,
             project_dir,
@@ -158,7 +143,6 @@ impl WorktreeTestFixture {
             repo_name,
             socket_path,
             daemon_process: None,
-            session_name,
         })
     }
 
@@ -269,47 +253,19 @@ impl WorktreeTestFixture {
         self.worktree_dir.join(format!("task-{}-{}", task_id, slug))
     }
 
-    /// List tmux windows in the session.
-    fn list_tmux_windows(&self) -> Vec<String> {
-        let output = Command::new("tmux")
-            .args([
-                "list-windows",
-                "-t",
-                &self.session_name,
-                "-F",
-                "#{window_name}",
-            ])
-            .output()
-            .ok();
-
-        match output {
-            Some(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(String::from)
-                .collect(),
-            _ => vec![],
-        }
-    }
-
-    /// Get the current working directory of a tmux pane.
-    fn get_pane_cwd(&self, window_name: &str) -> Option<PathBuf> {
-        let target = format!("{}:{}", self.session_name, window_name);
-        let output = Command::new("tmux")
-            .args([
-                "display-message",
-                "-t",
-                &target,
-                "-p",
-                "#{pane_current_path}",
-            ])
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            Some(PathBuf::from(path))
-        } else {
-            None
+    /// List active coworkers via daemon RPC.
+    fn list_coworkers(&self) -> Vec<String> {
+        let response = self.rpc_call("coworker.list", None);
+        match response {
+            Some(resp) => resp["result"]["coworkers"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c["name"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            None => vec![],
         }
     }
 
@@ -334,13 +290,6 @@ impl WorktreeTestFixture {
             let _ = child.wait();
         }
         self.daemon_process = None;
-
-        // Kill the tmux session
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &self.session_name])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
 
         // Final fallback: pkill
         let pattern = format!("midtown daemon.*{}", self.repo_name);
@@ -387,13 +336,8 @@ impl Drop for WorktreeTestFixture {
 ///
 /// This addresses review issue #6 from PR #752.
 #[test]
-#[ignore] // Requires tmux, built binary, and claude CLI
+#[ignore] // Requires built binary and claude CLI
 fn test_worktree_registry_integration_end_to_end() {
-    if !tmux_available() {
-        eprintln!("SKIPPED: tmux not available");
-        return;
-    }
-
     let mut fixture = match WorktreeTestFixture::new() {
         Some(f) => f,
         None => {
@@ -438,29 +382,23 @@ fn test_worktree_registry_integration_end_to_end() {
     // Wait for the daemon to detect the task
     thread::sleep(Duration::from_secs(2));
 
-    // The daemon should spawn a coworker for the pending task
-    // We don't have control over which coworker name it picks, so we wait
-    // for any coworker to appear
+    // The daemon should spawn a coworker for the pending task.
+    // Poll coworker.list RPC to detect when a coworker appears.
     let mut spawned_coworker = None;
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
 
-        let windows = fixture.list_tmux_windows();
-        if !windows.is_empty() {
-            // Find a window that's not "lead"
-            spawned_coworker = windows.into_iter().find(|w| !w.contains("lead"));
-            if spawned_coworker.is_some() {
-                break;
-            }
+        let coworkers = fixture.list_coworkers();
+        if let Some(name) = coworkers.into_iter().find(|n| n != "lead") {
+            spawned_coworker = Some(name);
+            break;
         }
     }
 
     let coworker_name = match spawned_coworker {
         Some(name) => {
-            // Extract the base coworker name (remove any status suffix)
-            let base_name = name.split(':').next().unwrap_or(&name);
-            println!("Coworker spawned: {}", base_name);
-            base_name.to_string()
+            println!("Coworker spawned: {}", name);
+            name
         }
         None => {
             eprintln!(
@@ -485,18 +423,7 @@ fn test_worktree_registry_integration_end_to_end() {
         "Task worktree should have .git directory"
     );
 
-    // ASSERTION 2: Verify the coworker is running in the task worktree
-    if let Some(cwd) = fixture.get_pane_cwd(&coworker_name) {
-        assert_eq!(
-            cwd, worktree_path,
-            "Coworker should be running in task worktree. Expected: {:?}, Got: {:?}",
-            worktree_path, cwd
-        );
-    } else {
-        eprintln!("Warning: Could not determine coworker's working directory");
-    }
-
-    // ASSERTION 3: Verify RegisterWorktreeAssignment and BindCoworkerToWorktree effects
+    // ASSERTION 2: Verify RegisterWorktreeAssignment and BindCoworkerToWorktree effects
     // were generated by checking the worktree registry state via RPC
     let registry_response = fixture
         .rpc_call("worktree.list", None)
@@ -555,7 +482,7 @@ fn test_worktree_registry_integration_end_to_end() {
         found_worktree
     );
 
-    // ASSERTION 4: Verify coworker appears in coworker.list
+    // ASSERTION 3: Verify coworker appears in coworker.list
     let list_response = fixture.rpc_call("coworker.list", None);
     assert!(
         list_response.is_some(),

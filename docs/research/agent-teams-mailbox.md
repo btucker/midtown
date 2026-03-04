@@ -1,5 +1,7 @@
 # Research: Claude Code Agent Teams Mailbox System
 
+> **Note (historical):** This research doc was written when midtown used tmux send-keys for nudges. The mailbox system described here has since been implemented, and all tmux/zellij code has been removed.
+
 ## Task #836: Explore replacing tmux send-keys nudges with Claude agent teams sendMessage
 
 ### Executive Summary
