@@ -206,7 +206,7 @@ The main lead session name equals the repo name (e.g. `"midtown"`), not the hard
 - **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `repo_name.to_lowercase()`
 - **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
 
-All lead-identity checks use `helpers::is_project_lead(name, repo_name)` (`src/daemon/helpers.rs`), which accepts both the canonical repo name and the legacy `"lead"` string for backward compatibility with older sessions. This single helper is used by `rpc_kanban.rs`, `dispatch.rs`, `mod.rs`, and `pr.rs` to ensure consistent behavior. The `coworkers.status` API uses `is_lead_health_active(health, repo_name)` to check both health-map keys.
+All lead-identity checks use `helpers::is_project_lead(name, repo_name)` (`src/daemon/helpers.rs`), which accepts both the canonical repo name and the legacy `"lead"` string for backward compatibility with older sessions. This single helper is used by `rpc_kanban.rs`, `dispatch.rs`, `mod.rs`, and `pr.rs` to ensure consistent behavior. The `coworkers.status` API uses `is_lead_health_active(health, repo_name)` to check both health-map keys. Per-channel-lead activity is computed by `build_channel_leads_working()`, which maps each registered channel lead name to a bool via `is_session_actively_working()`.
 
 **Backward-compat guard — `is_project_lead()`**: In `rpc_kanban.rs`, `is_project_lead(name, repo_name)` encapsulates the two-condition check for lead sessions: it returns `true` if the name equals the repo name *or* the legacy literal `"lead"` (case-insensitive). All code that needs to identify or exclude the lead session should call this helper rather than inlining the two-condition check. Current callers: `handle_coworker_list()` (`rpc_coworker.rs`), `handle_status()` (`rpc_status.rs`), `handle_coworker_report_state()` (`rpc_coworker.rs`), and the kanban build path in `rpc_kanban.rs`.
 
@@ -503,7 +503,7 @@ The `midtown chat` command opens a split-panel interface with:
 - Real-time token usage and cost tracking
 
 **Data polling**:
-- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL.
+- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL. Response includes `lead_working` (bool), `channel_leads_working` (map of channel name → bool), `tool_activity`, `coworkers`, `max_coworkers`, and `channel_leads`.
 - **Task list** (5s): Local filesystem reads (`~/.claude/tasks/`) — nearly instant, no network.
 - **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
 - **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
@@ -545,6 +545,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Coworker status monitoring
   - `web-app/src/lib/CoworkerStatus.svelte` filters inactive rows only when phase explicitly indicates idle/done (or status indicates stopped/idle), and keeps rows whose phase is null/empty if `status` indicates active work.
   - This is a defensive fix for mixed payloads where `/status` may omit `phase` but includes `status`.
+- Typing indicators: The web app's `/api/status` endpoint (`web.rs`) forwards `lead_working` and `channel_leads_working` from the `coworkers.status` RPC response. `Channel.svelte` uses `lead_working` for the main channel and `channel_leads_working[channelName]` for topic channels to show typing dots when a lead or channel lead is actively working (5-second activity window based on `ProcessHealth.last_event_at`).
 - Auth profile switching
   - **Per-project**: CLI sends `auth.switch` to the current project's daemon via its Unix socket. The daemon writes the project config and restarts affected sessions.
   - **Global (`--global`)**: CLI enumerates all daemon sockets in `~/.local/state/midtown/` via `enumerate_daemon_sockets()` and sends `auth.switch(all=true, force=true)` to each. The `force` flag ensures every daemon restarts its sessions even if another daemon already wrote the global config. Uses a reduced 3s per-daemon timeout to bound total CLI wait time.

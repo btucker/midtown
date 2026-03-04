@@ -796,14 +796,10 @@ fn fetch_prs_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde_js
 
 /// Fetch live coworker state from the daemon via `coworkers.status` RPC.
 ///
-/// Returns an empty vec if the daemon is unreachable.
-fn fetch_coworkers_via_rpc(repo: &str) -> Vec<serde_json::Value> {
+/// Returns the full RPC result so callers can extract `coworkers`,
+/// `lead_working`, `channel_leads_working`, etc.
+fn fetch_coworkers_via_rpc(repo: &str) -> Option<serde_json::Value> {
     daemon_rpc(repo, "coworkers.status")
-        .as_ref()
-        .and_then(|r| r.get("coworkers"))
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default()
 }
 
 /// Fetch repository status via gh CLI
@@ -946,7 +942,14 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     // --- PR data: prefer prs.status RPC (60s server-side cache), fall back to gh CLI ---
     // --- Coworker data: prefer coworkers.status RPC (live, no cache) ---
     let repo_name = state.config.repo.clone();
-    let (pull_requests, merged_prs, rpc_coworkers) = tokio::task::spawn_blocking(move || {
+    let (
+        pull_requests,
+        merged_prs,
+        rpc_coworkers,
+        lead_working,
+        channel_leads_working,
+        tool_activity,
+    ) = tokio::task::spawn_blocking(move || {
         // Fetch PR data from daemon (cached 60s server-side)
         let (rpc_prs, rpc_merged) = fetch_prs_via_rpc(&repo_name).unwrap_or_else(|| {
             // Fall back to cached gh CLI calls
@@ -963,15 +966,40 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             (open, merged)
         });
 
-        // Fetch coworker state separately (live, no cache)
-        let rpc_coworkers = fetch_coworkers_via_rpc(&repo_name);
-        let coworkers = if rpc_coworkers.is_empty() {
-            None
-        } else {
-            Some(rpc_coworkers)
-        };
+        // Fetch coworker state separately (live, no cache).
+        // Returns the full RPC result so we can extract lead_working,
+        // channel_leads_working, and tool_activity alongside coworkers.
+        let rpc_result = fetch_coworkers_via_rpc(&repo_name);
+        let coworkers: Option<Vec<serde_json::Value>> = rpc_result
+            .as_ref()
+            .and_then(|r| r.get("coworkers"))
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+            .cloned();
+        let lead_working = rpc_result
+            .as_ref()
+            .and_then(|r| r.get("lead_working"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let channel_leads_working = rpc_result
+            .as_ref()
+            .and_then(|r| r.get("channel_leads_working"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let tool_activity = rpc_result
+            .as_ref()
+            .and_then(|r| r.get("tool_activity"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
 
-        (rpc_prs, rpc_merged, coworkers)
+        (
+            rpc_prs,
+            rpc_merged,
+            coworkers,
+            lead_working,
+            channel_leads_working,
+            tool_activity,
+        )
     })
     .await
     .unwrap_or_default();
@@ -1238,6 +1266,9 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_statuses": repo_statuses,
         "max_coworkers": state.max_coworkers,
         "user_display_name": user_display_name,
+        "lead_working": lead_working,
+        "channel_leads_working": channel_leads_working,
+        "tool_activity": tool_activity,
     });
 
     Ok(axum::Json(status))
