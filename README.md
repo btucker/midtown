@@ -106,6 +106,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown notes list [--channel <name>] [--stale]` | List channel notes with staleness status |
 | `midtown notes review <path>` | Mark a note as reviewed (stamps `reviewed_at` in frontmatter) |
 | `midtown pr list` | List pull requests |
+| `midtown pr review request <N>` | Spawn a reviewer coworker for PR #N |
 | `midtown pr merge --pr <N>` | Merge a PR after passing 3-gate checks (review exists, CI passes, feedback addressed) |
 | `midtown update` | Update to the latest release from GitHub |
 | `midtown update --check` | Check for updates without installing |

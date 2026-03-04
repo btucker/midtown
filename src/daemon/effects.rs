@@ -3078,11 +3078,30 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID on the reviewer assignment
-        let mut ps = state.persistent_state.lock().await;
-        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-            assignment.placeholder_comment_id = Some(comment_id);
-            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        // Store the comment ID on the reviewer assignment.
+        // Serialize under the lock, then write to disk after releasing it
+        // to avoid blocking the tokio runtime with file I/O.
+        let serialized = {
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
+                assignment.placeholder_comment_id = Some(comment_id);
+            }
+            serde_json::to_string_pretty(&*ps).ok()
+        };
+        if let Some(json) = serialized {
+            let repo_name = state.repo_name.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                let path = crate::paths::daemon_state_file_for_repo(&repo_name);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let tmp_path = path.with_extension("json.tmp");
+                std::fs::write(&tmp_path, &json)?;
+                crate::paths::atomic_rename(&tmp_path, &path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+            {
                 warn!(
                     "Failed to save daemon-state.json after storing placeholder comment ID: {}",
                     e

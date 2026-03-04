@@ -1,9 +1,9 @@
-//! PR data handler for the `prs.status` RPC method.
+//! PR-related RPC handlers.
 //!
-//! Contains the `prs.status` RPC handler, the `PrsCache`, and all
-//! GraphQL/PR-formatting logic for the web UI kanban board.
-//!
-//! - `prs.status` (this module): GitHub PR data, cached for 60s.
+//! - `prs.status`: GitHub PR data for the web UI kanban board, cached for 60s.
+//! - `pr.review`: Spawn a reviewer coworker for a PR.
+//! - `pr.review-post`: Update the placeholder comment with final review findings.
+//! - `pr.merge`: Merge a PR (with reviewer-active and CI gates).
 //! - `coworkers.status` (rpc_coworker.rs): live local coworker state, no cache.
 
 use std::collections::HashMap;
@@ -1018,36 +1018,90 @@ pub(super) async fn handle_pr_review_post(
     );
 
     // Step 4: Execute UpdatePrComment effect
-    let repo_full_name = state.get_repo_full_name(
-        state
-            .all_repo_paths
-            .first()
-            .expect("at least one repo path"),
-    );
+    let repo_path = match state.all_repo_paths.first() {
+        Some(path) => path,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(-32603, "No repo paths configured on daemon".to_string()),
+            );
+        }
+    };
+    let repo_full_name = state.get_repo_full_name(repo_path);
 
-    let effects = vec![super::effects::Effect::UpdatePrComment {
-        comment_id,
-        repo_full_name,
-        new_body: final_body,
-    }];
+    // Execute the comment update inline (not via execute_effects) so we can
+    // surface failures to the caller — the reviewer agent can retry on error.
+    let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "api",
+            "--method",
+            "PATCH",
+            &endpoint,
+            "-f",
+            &format!("body={}", final_body),
+        ])
+        .output()
+        .await;
 
-    super::effects::execute_effects(effects, state).await;
+    match output {
+        Ok(out) if out.status.success() => {
+            info!(
+                "Updated placeholder comment {} on {}",
+                comment_id, repo_full_name
+            );
 
-    // Clear the placeholder cache since the comment has been updated
-    {
-        let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
-        cache.remove(&pr_number);
-    }
+            // Clear the placeholder cache since the comment has been updated
+            {
+                let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+                cache.remove(&pr_number);
+            }
 
-    Response::success(
-        id,
-        serde_json::json!({
-            "message": format!(
-                "Review posted for PR #{} (comment {})",
-                pr_number, comment_id
+            Response::success(
+                id,
+                serde_json::json!({
+                    "message": format!(
+                        "Review posted for PR #{} (comment {})",
+                        pr_number, comment_id
+                    )
+                }),
             )
-        }),
-    )
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            warn!(
+                "Failed to update comment {} for PR #{}: {}",
+                comment_id,
+                pr_number,
+                stderr.trim()
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!(
+                        "Failed to update comment {} for PR #{}: {}",
+                        comment_id,
+                        pr_number,
+                        stderr.trim()
+                    ),
+                ),
+            )
+        }
+        Err(e) => {
+            warn!(
+                "Failed to run gh api for comment update {} on PR #{}: {}",
+                comment_id, pr_number, e
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to run gh api for PR #{}: {}", pr_number, e),
+                ),
+            )
+        }
+    }
 }
 
 #[path = "rpc_prs_tests.rs"]

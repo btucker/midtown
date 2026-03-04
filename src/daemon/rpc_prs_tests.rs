@@ -451,3 +451,79 @@ async fn test_review_post_body_format() {
         "extract_reviewer_from_pr_comments should be able to parse the frontmatter"
     );
 }
+
+/// When the `gh api PATCH` call fails, `handle_pr_review_post` should return
+/// an RPC error so the reviewer agent can retry, instead of silently succeeding.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await
+#[tokio::test]
+async fn test_review_post_gh_api_failure_returns_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _tmp, _guard) = make_merge_test_state();
+    let pr_number = 77u64;
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "york", AssignmentSource::Webhook);
+        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
+            assignment.placeholder_comment_id = Some(55555);
+        }
+    }
+
+    // Mock `gh` — `repo view` succeeds but `api PATCH` fails
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+    std::fs::write(
+        &mock_gh_script,
+        r#"#!/bin/bash
+if [[ "$1" == "repo" ]]; then
+    echo '{"nameWithOwner":"btucker/midtown"}'
+elif [[ "$1" == "api" ]]; then
+    echo "rate limit exceeded" >&2
+    exit 1
+else
+    exit 1
+fi
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let response = handle_pr_review_post(
+        crate::rpc::RequestId::Number(1),
+        pr_number,
+        "## Review\nLGTM",
+        &state,
+    )
+    .await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Should return an error, not silently succeed
+    assert!(
+        response.error.is_some(),
+        "Should return RPC error when gh api PATCH fails, got success: {:?}",
+        response.result
+    );
+    let err = response.error.unwrap();
+    assert!(
+        err.message.contains("Failed to update comment"),
+        "Error should mention the update failure, got: {}",
+        err.message
+    );
+}
