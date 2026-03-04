@@ -14,29 +14,23 @@ Coworkers are the agents created to pick up and execute those tasks. Coworkers o
 
 ## Quick Start
 
-### 0. Prereqs
-
-1. Install the [GitHub CLI](https://cli.github.com/).
-2. Install [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
-3. Install [Node.js](https://nodejs.org/) (only needed when building from source — release binaries and Docker images include a pre-built web app).
-
 ### 1. Install
 
-The quickest way to install:
+The quickest way to install (requires [GitHub CLI](https://cli.github.com/)):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/btucker/midtown/main/install.sh | sh
 ```
 
-This detects your OS and architecture, downloads the latest release binary, and installs it to `~/.cargo/bin`. Set `MIDTOWN_INSTALL_DIR` to change the install location. If `~/.cargo/bin` is not already in your PATH, the script will print instructions to add it.
+This detects your OS and architecture, downloads the latest release binary, and installs it to `~/.cargo/bin`. The installer checks for `gh` and will prompt you to install it if missing. Set `MIDTOWN_INSTALL_DIR` to change the install location. If `~/.cargo/bin` is not already in your PATH, the script will print instructions to add it.
 
-Or install from [crates.io](https://crates.io/crates/midtown):
+Or install from [crates.io](https://crates.io/crates/midtown) (requires [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) and [GitHub CLI](https://cli.github.com/)):
 
 ```bash
 cargo install midtown
 ```
 
-Or from source:
+Or from source (requires [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html), [GitHub CLI](https://cli.github.com/), and [Node.js](https://nodejs.org/)):
 
 ```bash
 cargo install --path .

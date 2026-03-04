@@ -34,6 +34,14 @@ detect_arch() {
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 
+# ── Check dependencies ──────────────────────────────────────────────────────
+
+if ! command -v gh >/dev/null 2>&1; then
+    echo "Error: GitHub CLI (gh) is required but not installed." >&2
+    echo "Install it from: https://cli.github.com/" >&2
+    exit 1
+fi
+
 # ── Resolve latest version ───────────────────────────────────────────────────
 
 echo "Detecting latest midtown release..."
