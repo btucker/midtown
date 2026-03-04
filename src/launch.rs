@@ -853,28 +853,6 @@ mod tests {
     }
 
     #[test]
-    fn test_to_headless_config_reviewer_escalation_target() {
-        // Without escalation_target, falls back to project_name
-        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-        let headless = config.to_headless_config("midtown");
-        assert!(
-            headless.system_prompt.contains("@midtown [Review Note]"),
-            "Without escalation_target, review notes should @mention project name"
-        );
-
-        // With escalation_target set to channel lead
-        let mut config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-        config.escalation_target = Some("daemon-core".to_string());
-        let headless = config.to_headless_config("midtown");
-        assert!(
-            headless
-                .system_prompt
-                .contains("@daemon-core [Review Note]"),
-            "With escalation_target, review notes should @mention channel lead"
-        );
-    }
-
-    #[test]
     fn test_to_headless_config_setting_sources_handled_by_platform() {
         // setting_sources is now always None on HeadlessConfig — the platform
         // arg builder unconditionally adds --setting-sources project,local.

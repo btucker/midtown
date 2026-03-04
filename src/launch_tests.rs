@@ -243,3 +243,26 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
     assert!(headless.disallowed_tools.contains(&"Edit".to_string()));
     assert!(headless.disallowed_tools.contains(&"Write".to_string()));
 }
+
+#[test]
+fn test_to_headless_config_reviewer_escalation_target() {
+    // Without escalation_target, falls back to project_name
+    let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
+    let headless = config.to_headless_config("midtown");
+    assert!(
+        headless.system_prompt.contains("@midtown [Review Note]"),
+        "Without escalation_target, review notes should @mention project name"
+    );
+
+    // With escalation_target set to channel lead
+    let mut config =
+        LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
+    config.escalation_target = Some("daemon-core".to_string());
+    let headless = config.to_headless_config("midtown");
+    assert!(
+        headless
+            .system_prompt
+            .contains("@daemon-core [Review Note]"),
+        "With escalation_target, review notes should @mention channel lead"
+    );
+}

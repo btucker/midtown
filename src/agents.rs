@@ -8,6 +8,7 @@
 //! Template variables:
 //! - `{name}` — the agent's name (coworker name, channel name, or project name for Project Lead)
 //! - `{project_name}` — the project name (e.g., "midtown")
+//! - `{escalation_target}` — reviewer only: who to @mention for review notes (channel lead or project name)
 
 use std::path::PathBuf;
 
