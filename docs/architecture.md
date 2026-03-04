@@ -612,7 +612,7 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
 
 > **User-facing guide:** See [Writing Custom Workflow Scripts](workflow-customization.md) for a tutorial with examples, the full event reference, RPC methods, and testing instructions. This section documents the internal architecture.
 
-Each channel can have a `workflow.py` script that controls how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](../sdk/python/).
+Each channel can have a `workflow.py` script that controls how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon using the [Midtown Python SDK](../sdk/python/), either as a persistent sidecar process or via `uv run` subprocess per event (automatic fallback).
 
 **Authoritative for PR lifecycle**: For the 5 PR lifecycle events (`pr.approved`, `pr.changes_requested`, `pr.ci_failed`, `pr.ci_passed`, `pr.conflict`), the workflow script is the **sole authority** when a channel + task association exists. The daemon emits cooldown tracking (`RecordPrNudge`) and the workflow event — the script handles nudging via `rpc.nudge_coworker()`. This means overriding `pr.approved` in a channel's `workflow.py` fully controls what happens when a PR is approved. For PRs without channel/task associations, the daemon's compiled-in inline effects are preserved as a fallback.
 
@@ -629,7 +629,7 @@ If no script is found, or if a PR has no channel/task association, the daemon fa
 
 ### Invocation
 
-The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, `dispatch.rs`, `rpc_task.rs` (task creation → `TaskCreated`), and `rpc_channel.rs` (channel posts → `CoworkerMessage` / `ChannelMessage`). The effect executes the script as:
+The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, `dispatch.rs`, `rpc_task.rs` (task creation → `TaskCreated`), and `rpc_channel.rs` (channel posts → `CoworkerMessage` / `ChannelMessage`). `invoke_workflow_script()` in `effects.rs` tries the sidecar fast path first (see below), falling back to subprocess invocation:
 
 ```
 uv run workflow.py --event '{"type":"pr.opened",...}' \
@@ -637,15 +637,30 @@ uv run workflow.py --event '{"type":"pr.opened",...}' \
     --socket ~/.local/state/midtown/<repo>/daemon.sock
 ```
 
-**Changes take effect on the next daemon tick** — no daemon restart required.
+**Changes take effect on the next daemon tick** — no daemon restart required. If a script file is modified while a sidecar is running, the sidecar detects the mtime change and restarts automatically (hot-reload).
+
+### Persistent Sidecar Mode
+
+`WorkflowSidecarManager` (`src/daemon/sidecar.rs`) maintains long-lived Python sidecar processes, one per workflow script. Instead of spawning a new `uv run` subprocess per event (~300-800ms overhead from Python startup + imports), events are sent as newline-delimited JSON on stdin and the sidecar responds with `{"ok":true}` on stdout (~5-20ms per event).
+
+**Lifecycle:**
+- **Lazy spawn**: On the first event for a script, the manager spawns `uv run workflow.py --sidecar` and waits for `{"ready":true}` on stdout (15s timeout).
+- **Automatic fallback**: If the script doesn't emit the ready signal (e.g., it uses `run()` instead of `run_loop()`), it's marked `single_shot_only` and all future events use subprocess-per-event.
+- **Hot-reload**: When the script file's mtime changes, the sidecar is killed and re-spawned. This also clears the `single_shot_only` flag, so upgrading a script from `run()` to `run_loop()` takes effect without a daemon restart.
+- **Crash restart**: Exponential backoff (500ms base, doubling per crash, capped at 60s). During backoff, events fall back to subprocess.
+- **Shutdown**: On daemon shutdown, stdin is closed (signaling EOF) with a 3s grace period before kill.
+
+**Concurrency:** Per-entry `tokio::sync::Mutex` locks allow events to different scripts to proceed concurrently. The outer `std::sync::Mutex` on the HashMap is held only briefly for lookups/inserts.
+
+**State field:** `DaemonState.workflow_sidecar: WorkflowSidecarManager` — initialized with the daemon socket path, health-checked on the session drain interval, shut down during daemon cleanup.
 
 ### State Persistence
 
-The state file (`workflow-state.json`, path from `workflow_state_file()` in `src/paths.rs`) stores the script's mutable state between invocations. Since workflow scripts are short-lived subprocesses (one `uv run` per event), external persistence is required. The `run()` entry point in the SDK loads state before calling the handler and saves it atomically afterward.
+The state file (`workflow-state.json`, path from `workflow_state_file()` in `src/paths.rs`) stores the script's mutable state between invocations. Both single-shot and sidecar modes use the same state file. The `run()` / `run_loop()` entry points in the SDK load state before calling the handler and save it atomically afterward.
 
 ### Python SDK
 
-The Midtown Python SDK (`sdk/python/midtown/`) provides the `run()` entry point and `MidtownRPC` client. A typical workflow script:
+The Midtown Python SDK (`sdk/python/midtown/`) provides `run()` (single-shot) and `run_loop()` (persistent sidecar) entry points, plus the `MidtownRPC` client. `run()` auto-detects `--sidecar` in `sys.argv` and delegates to `run_loop()`, so existing scripts gain sidecar support without code changes. A typical workflow script:
 
 ```python
 from midtown import run, MidtownRPC
