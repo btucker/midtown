@@ -119,6 +119,7 @@ pub fn process_lead_output(
                 sender: main_lead_session_name.to_string(),
                 message: trimmed,
                 channel: None,
+                auto_output: true,
             });
         }
     }
@@ -132,6 +133,7 @@ pub fn process_lead_output(
                     sender: channel_name.clone(),
                     message: trimmed,
                     channel: Some(channel_name.clone()),
+                    auto_output: true,
                 });
             }
         }
@@ -146,6 +148,7 @@ pub fn process_lead_output(
                     sender: fork_name.clone(),
                     message: trimmed,
                     channel: Some(channel_name.clone()),
+                    auto_output: true,
                 });
             }
         }
@@ -176,6 +179,7 @@ pub fn process_coworker_output(
                     sender: name.clone(),
                     message: trimmed,
                     channel: Some(format!("dm-{}", name)),
+                    auto_output: true,
                 });
             }
         }

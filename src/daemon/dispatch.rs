@@ -160,6 +160,7 @@ fn task_completed_effects(
             sender: "midtown".to_string(),
             message: channel_message,
             channel: None,
+            auto_output: false,
         },
         Effect::SendPushNotification {
             title: format!("Task !{} completed", task_id),
@@ -566,6 +567,7 @@ where
                     record.session_id, recovery.task_id, recovery.owner
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         ];
 
@@ -591,6 +593,7 @@ where
                         SPAWN_FAILURE_COOLDOWN.as_secs()
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
             ],
         });
@@ -648,6 +651,7 @@ where
                 recovery.owner, recovery.task_id
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
     ];
 
@@ -673,6 +677,7 @@ where
                     SPAWN_FAILURE_COOLDOWN.as_secs()
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         ],
     });
@@ -973,6 +978,7 @@ where
                     task_id, record.session_id, coworker_name
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         ];
 
@@ -1002,6 +1008,7 @@ where
                         SPAWN_FAILURE_COOLDOWN.as_secs()
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
             ],
         });
@@ -1161,6 +1168,7 @@ where
                 recovery.task_id, recovery.owner
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
     ];
 
@@ -1186,6 +1194,7 @@ where
                     SPAWN_FAILURE_COOLDOWN.as_secs()
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         ],
     });
@@ -1334,6 +1343,7 @@ fn decide_discovered_coworker_nudges(
                     name, task_id
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             info!(
@@ -1358,6 +1368,7 @@ fn decide_discovered_coworker_nudges(
                     name, pr_number
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             });
         } else {
             debug!(
@@ -1481,6 +1492,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
                     duplicate, task_id, task_subject, keeper
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             });
         }
     }
@@ -1782,6 +1794,7 @@ fn dispatch_owned_pending_tasks(
                         sender: "midtown".to_string(),
                         message: daemon_messages::called_in_pending_task(o, &tid.to_string()),
                         channel: Some(OPS_CHANNEL.to_string()),
+                        auto_output: false,
                     },
                 ];
 
@@ -2153,6 +2166,7 @@ fn dispatch_unowned_pending_tasks(
                     sender: "midtown".to_string(),
                     message: channel_msg,
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
             ];
             if let Some(ch) = &task.channel {
@@ -2215,6 +2229,7 @@ fn dispatch_unowned_pending_tasks(
                     sender: "midtown".to_string(),
                     message: channel_msg,
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
             ];
             if let Some(ch) = &task.channel {

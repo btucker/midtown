@@ -502,6 +502,7 @@
           index={0}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
+          class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
@@ -584,7 +585,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
-            class={msg.pending ? 'opacity-60' : ''}
+            class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -720,6 +721,7 @@
           index={0}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
+          class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
         >
           {#if isAction($threadData.parentMessage) && !hasMermaid($threadData.parentMessage.content)}
             <div class="flex gap-0 break-words">
@@ -802,7 +804,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
-            class={msg.pending ? 'opacity-60' : ''}
+            class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -908,4 +910,5 @@
     70% { background-color: hsl(var(--primary) / 0.2); }
     100% { background-color: transparent; }
   }
+
 </style>

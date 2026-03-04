@@ -604,9 +604,11 @@ Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>
 **Data flow:**
 ```
 StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
-    → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>") }
-    → channel JSONL file + WebSocket broadcast
+    → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>"), auto_output: true }
+    → channel JSONL file + WebSocket broadcast (with auto_output flag)
 ```
+
+- **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_coworker_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
 
 - **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`. This includes reviewer sessions — their output streams to DM channels alongside regular coworkers.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.

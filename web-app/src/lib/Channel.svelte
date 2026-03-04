@@ -757,6 +757,7 @@
             data-testid="message-row"
             in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
             class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
+            class:auto-output={msg.auto_output}
             class:opacity-60={msg.pending}
             class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
             onclick={(event) => handleMessageTap(event, msg)}
@@ -1199,4 +1200,5 @@
   .thread-avatar-chip:last-child {
     margin-right: 0;
   }
+
 </style>

@@ -321,6 +321,7 @@ fn test_messages_sorted_by_timestamp() {
         channel: None,
         session_id: None,
         thread_parent_id: None,
+        auto_output: false,
     };
     writeln!(file, "{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
 
@@ -334,6 +335,7 @@ fn test_messages_sorted_by_timestamp() {
         channel: None,
         session_id: None,
         thread_parent_id: None,
+        auto_output: false,
     };
     writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
 
@@ -508,6 +510,7 @@ fn test_rotate_archives_old_messages() {
                 channel: None,
                 session_id: None,
                 thread_parent_id: None,
+                auto_output: false,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -523,6 +526,7 @@ fn test_rotate_archives_old_messages() {
                 channel: None,
                 session_id: None,
                 thread_parent_id: None,
+                auto_output: false,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -592,6 +596,7 @@ fn test_rotate_resets_cursors() {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }
@@ -648,6 +653,7 @@ fn test_needs_rotation() {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
         file.write_all(existing.as_bytes()).unwrap();
@@ -1441,6 +1447,7 @@ fn test_rotate_writes_archive_to_history_dir() {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }
@@ -1788,6 +1795,7 @@ fn make_message(id: &str, content: &str, timestamp: chrono::DateTime<chrono::Utc
         channel: None,
         session_id: None,
         thread_parent_id: None,
+        auto_output: false,
     }
 }
 
@@ -1959,6 +1967,7 @@ fn test_read_all_after_rotation_preserves_history() {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }

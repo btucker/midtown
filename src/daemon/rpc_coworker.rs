@@ -513,6 +513,7 @@ pub(super) async fn handle_coworker_report_state(
                             sender: "midtown".to_string(),
                             message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
                             channel: Some(OPS_CHANNEL.to_string()),
+                            auto_output: false,
                         }];
                         effects::execute_effects(completion_effects, state).await;
                     }

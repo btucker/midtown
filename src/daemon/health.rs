@@ -183,6 +183,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                         name, pr
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 });
                 false
             }
@@ -317,6 +318,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                         TASK_RESTART_WINDOW.as_secs() / 60
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 });
                 effects.push(Effect::nudge_channel_lead(
                     &snap.repo_name,
@@ -568,6 +570,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                 name, pr_number, restart_count
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.repo_name,
@@ -645,6 +648,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
                 MAX_REVIEWER_RESTARTS,
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
     }
 
@@ -662,6 +666,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
                 escalation.pr_number, escalation.name, escalation.restart_count,
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.repo_name,
@@ -757,6 +762,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             sender: "midtown".to_string(),
             message,
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
     ];
 
@@ -819,6 +825,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
                 eligible_session_ids.len()
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
 
         for session_id in eligible_session_ids {
@@ -913,6 +920,7 @@ pub(super) fn check_and_handle_auth_errors(
                 sender: "midtown".to_string(),
                 message: message.clone(),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         );
 
@@ -1011,6 +1019,7 @@ pub(super) fn check_and_nudge_api_errors(
                     names.join(", ")
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         );
     }
@@ -1072,6 +1081,7 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
                 name
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
     }
 
@@ -1153,6 +1163,7 @@ pub(super) async fn check_and_respawn_dead_processes(
                 respawn.name, respawn.exit_code, respawn.task_id
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         });
     }
 
@@ -1287,6 +1298,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
             sender: "midtown".to_string(),
             message: "Restarting lead session for a fresh context.".to_string(),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
         Effect::ShutdownCoworker {
             name: lead.name.clone(),
@@ -1380,6 +1392,7 @@ fn effects_for_fired_reminders(
             sender: "midtown".to_string(),
             message: message.clone(),
             channel: None,
+            auto_output: false,
         });
         effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
@@ -1557,6 +1570,7 @@ fn build_reviewer_respawn_effects(
             name, pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
         ),
         channel: Some(OPS_CHANNEL.to_string()),
+        auto_output: false,
     }];
 
     effects.push(Effect::SpawnCoworkerWithCallbacks {

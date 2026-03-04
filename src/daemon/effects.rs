@@ -120,6 +120,8 @@ pub enum Effect {
         sender: String,
         message: String,
         channel: Option<String>,
+        /// Whether this message is auto-streamed output (vs. an explicit channel post).
+        auto_output: bool,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     ///
@@ -771,6 +773,7 @@ async fn send_session_nudge(
                     sender: reason.sender().to_owned(),
                     message: msg,
                     channel: Some(format!("dm-{}", name)),
+                    auto_output: false,
                 });
             }
             Some(follow_up)
@@ -973,6 +976,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 sender,
                 message,
                 channel,
+                auto_output,
             } => {
                 let has_explicit_channel = channel.is_some();
 
@@ -1005,7 +1009,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         .cloned()
                 };
 
-                let msg = if let Some(parent_id) = bound_thread {
+                let mut msg = if let Some(parent_id) = bound_thread {
                     let ch = channel_name
                         .unwrap_or_else(|| state.channel_router.default_channel_name().to_string());
                     Message::thread_reply(
@@ -1020,6 +1024,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else {
                     Message::text(&sender, &message)
                 };
+                msg.auto_output = auto_output;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }

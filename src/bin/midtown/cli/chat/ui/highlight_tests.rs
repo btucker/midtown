@@ -110,6 +110,7 @@ fn test_code_block_segment_renders_with_lang_label() {
         channel: None,
         session_id: None,
         thread_parent_id: None,
+        auto_output: false,
     };
 
     let segments = vec![ContentSegment::CodeBlock {
