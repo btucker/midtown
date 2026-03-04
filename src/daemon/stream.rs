@@ -29,8 +29,15 @@ fn extract_text_blocks(message: &serde_json::Value) -> String {
 /// Collects all text blocks from all Assistant events in a single drain cycle,
 /// returning a single aggregated string. This avoids flooding the channel with
 /// per-token or per-event messages during streaming.
+///
+/// For Codex sessions, prefers `item/completed` assistant events (which contain
+/// the full message text) over per-delta events to avoid duplication. When no
+/// `item/completed` events are available (the normal Codex flow is deltas →
+/// `turn/completed`), falls back to the result text from `StreamEvent::Result`.
 pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
     let mut aggregated = String::new();
+    let mut has_codex_completed = false;
+    let mut has_codex_deltas = false;
 
     for event in events {
         if let StreamEvent::Assistant { message, extra, .. } = event {
@@ -51,7 +58,34 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
                 // Codex emits per-delta assistant chunks and then a full completed
                 // assistant message. For channel posting, emit completed text only
                 // to avoid duplicate posts when delta/completed split across drains.
+                has_codex_completed = true;
                 aggregated.push_str(&text);
+            } else {
+                has_codex_deltas = true;
+            }
+        }
+    }
+
+    // Codex fallback: the normal Codex protocol flow is deltas → turn/completed
+    // without a separate item/completed for agentMessage items. When no
+    // item/completed text was found, use the turn/completed result text instead.
+    //
+    // Guard: only fall back when Codex deltas were present in this drain cycle.
+    // A bare Result without deltas likely means item/completed was already posted
+    // in a previous drain — using Result here would duplicate the post.
+    if aggregated.is_empty() && !has_codex_completed && has_codex_deltas {
+        for event in events {
+            if let StreamEvent::Result {
+                result: Some(text),
+                is_error: false,
+                extra,
+                ..
+            } = event
+            {
+                let is_codex = extra.get("provider").and_then(|v| v.as_str()) == Some("codex");
+                if is_codex && !text.is_empty() {
+                    aggregated.push_str(text);
+                }
             }
         }
     }
