@@ -1541,8 +1541,12 @@ impl ClaudeHeadlessAdapter {
             .unwrap_or(std::path::Path::new("/tmp"));
         let project_name = config.project_name.as_deref().unwrap_or("midtown");
         let sandbox_config = crate::config::get_project_sandbox_config(project_name);
-        let writable =
-            crate::sandbox::writable_dirs(primary_repo, &[], &sandbox_config.allowed_paths);
+        let writable = crate::sandbox::writable_dirs(
+            primary_repo,
+            &[],
+            &sandbox_config.allowed_paths,
+            project_name,
+        );
 
         let mut cmd = if cfg!(target_os = "macos") {
             match crate::sandbox::sandbox_exec_prefix(&writable) {

@@ -700,6 +700,7 @@ impl LaunchConfig {
             primary_repo,
             &self.additional_dirs,
             &sandbox_config.allowed_paths,
+            project_name,
         );
         let sandbox_prefix: Vec<String> = if cfg!(target_os = "macos") {
             match crate::sandbox::sandbox_exec_prefix(&writable) {

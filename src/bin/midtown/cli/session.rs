@@ -813,8 +813,12 @@ pub(crate) fn build_attach_shell_command(
         .collect();
 
     let sandbox_config = midtown::config::get_project_sandbox_config(&repo_name);
-    let writable =
-        midtown::sandbox::writable_dirs(Path::new(cwd), &[], &sandbox_config.allowed_paths);
+    let writable = midtown::sandbox::writable_dirs(
+        Path::new(cwd),
+        &[],
+        &sandbox_config.allowed_paths,
+        &repo_name,
+    );
 
     let mut cmd_parts: Vec<String> = Vec::new();
     if cfg!(target_os = "macos")
