@@ -284,6 +284,25 @@ fn test_extract_assistant_text_non_codex_result_ignored() {
     assert_eq!(extract_assistant_text(&events), "");
 }
 
+#[test]
+fn test_extract_assistant_text_codex_bare_result_no_deltas_ignored() {
+    // Cross-drain dedup: a bare Result event (no deltas in this drain cycle)
+    // should NOT produce output. This prevents duplicate posts when
+    // item/completed was already handled in a previous drain cycle.
+    let events = vec![StreamEvent::Result {
+        subtype: "success".to_string(),
+        is_error: false,
+        result: Some("Already posted text".to_string()),
+        duration_ms: None,
+        total_cost_usd: None,
+        session_id: Some("thread_123".to_string()),
+        usage: None,
+        extra: json!({"provider": "codex", "status": "completed"}),
+    }];
+
+    assert_eq!(extract_assistant_text(&events), "");
+}
+
 // ── process_lead_output tests ───────────────────────────────────────
 
 #[test]

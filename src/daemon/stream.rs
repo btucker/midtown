@@ -37,6 +37,7 @@ fn extract_text_blocks(message: &serde_json::Value) -> String {
 pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
     let mut aggregated = String::new();
     let mut has_codex_completed = false;
+    let mut has_codex_deltas = false;
 
     for event in events {
         if let StreamEvent::Assistant { message, extra, .. } = event {
@@ -59,6 +60,8 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
                 // to avoid duplicate posts when delta/completed split across drains.
                 has_codex_completed = true;
                 aggregated.push_str(&text);
+            } else {
+                has_codex_deltas = true;
             }
         }
     }
@@ -66,7 +69,11 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
     // Codex fallback: the normal Codex protocol flow is deltas → turn/completed
     // without a separate item/completed for agentMessage items. When no
     // item/completed text was found, use the turn/completed result text instead.
-    if aggregated.is_empty() && !has_codex_completed {
+    //
+    // Guard: only fall back when Codex deltas were present in this drain cycle.
+    // A bare Result without deltas likely means item/completed was already posted
+    // in a previous drain — using Result here would duplicate the post.
+    if aggregated.is_empty() && !has_codex_completed && has_codex_deltas {
         for event in events {
             if let StreamEvent::Result {
                 result: Some(text),
