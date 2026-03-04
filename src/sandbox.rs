@@ -33,8 +33,8 @@ pub fn writable_dirs(
     // but this function is public and security-critical — validate independently.
     assert!(!project_name.is_empty(), "project_name must not be empty");
     assert!(
-        !project_name.contains('/') && !project_name.contains('\\') && !project_name.contains(".."),
-        "project_name must not contain path separators or traversal components, got: {project_name:?}"
+        !project_name.contains('/') && !project_name.contains('\\') && project_name != "..",
+        "project_name must not contain path separators or be a traversal component, got: {project_name:?}"
     );
 
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));

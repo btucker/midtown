@@ -468,13 +468,20 @@ fn test_writable_dirs_rejects_slash_in_project_name() {
 
 #[test]
 #[should_panic(expected = "project_name must not contain")]
-fn test_writable_dirs_rejects_embedded_dotdot() {
+fn test_writable_dirs_rejects_embedded_dotdot_with_slash() {
+    // This panics due to the '/' — embedded .. with separators is a traversal path
     writable_dirs(
         Path::new("/home/user/project"),
         &[],
         &[],
         "my-project/../escape",
     );
+}
+
+#[test]
+#[should_panic(expected = "project_name must not contain")]
+fn test_writable_dirs_rejects_bare_dotdot() {
+    writable_dirs(Path::new("/home/user/project"), &[], &[], "..");
 }
 
 #[test]
@@ -490,6 +497,8 @@ fn test_writable_dirs_accepts_valid_project_names() {
     let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "my-project");
     let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "repo_name.git");
     let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "CamelCase123");
+    // Double dots in filenames are valid — only bare ".." is a traversal component
+    let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "foo..bar");
 }
 
 #[test]
