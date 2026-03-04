@@ -116,38 +116,15 @@ pub fn is_coworker_sender(from: &str, main_lead_name: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from) && !from.eq_ignore_ascii_case(main_lead_name)
 }
 
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
+/// Extract coworker name from branch using the worktree registry's branch_owners map.
 ///
-/// Supports two branch naming conventions:
-/// - Legacy: `<coworker>/<description>` (e.g., "lexington/fix-auth")
-/// - Task-based: `task-<id>-<slug>` or `review-pr-<number>` (requires branch_owners map)
-///
-/// For task-based branches, this function only works when called with the optional
-/// `branch_owners` map from the WorldSnapshot. Without it, task-based branches return None.
-pub fn coworker_from_branch(branch: &str) -> Option<String> {
-    coworker_from_branch_with_map(branch, None)
-}
-
-/// Extract coworker name from branch with optional registry lookup.
-///
-/// When `branch_owners` is provided (from WorldSnapshot.worktree_branch_owners),
-/// this can resolve task-based branch names like "task-42-fix-auth" or "review-pr-123".
-pub fn coworker_from_branch_with_map(
+/// Resolves task-based branch names like "task-42-fix-auth" or "review-pr-123"
+/// by looking them up in the `branch_owners` map from WorldSnapshot.worktree_branch_owners.
+pub fn coworker_from_branch(
     branch: &str,
-    branch_owners: Option<&std::collections::HashMap<String, String>>,
+    branch_owners: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
-    // Try legacy coworker-prefixed branches first (lexington/fix-auth)
-    if let Some(prefix) = branch.split('/').next()
-        && let Some(&name) = COWORKER_NAMES
-            .iter()
-            .find(|&&name| name.eq_ignore_ascii_case(prefix))
-    {
-        return Some(name.to_string());
-    }
-
-    // Fall back to task-based branch lookup (task-42-fix-auth, review-pr-123)
-    // This requires the branch_owners map from the worktree registry.
-    branch_owners.and_then(|map| map.get(branch).cloned())
+    branch_owners.get(branch).cloned()
 }
 
 /// Returns true if the session name identifies the project lead.

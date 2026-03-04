@@ -8,6 +8,7 @@
 //! Run with: `cargo test --test pr_management_e2e`
 
 use serde_json::json;
+use std::collections::HashMap;
 
 // Re-exported types from daemon module
 use midtown::daemon::{PrIssueTracker, PrIssueType};
@@ -19,6 +20,14 @@ use midtown::daemon::helpers::{
 
 // Decision functions
 use midtown::rules::{PrAction, decide_pr_issue_action_with_handoff};
+
+/// Helper to build a branch_owners map for test PRs.
+fn branch_owners(entries: &[(&str, &str)]) -> HashMap<String, String> {
+    entries
+        .iter()
+        .map(|(branch, owner)| (branch.to_string(), owner.to_string()))
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Test 1: PR Needing Review Spawns Reviewer
@@ -34,7 +43,7 @@ fn pr_needing_review_spawns_reviewer() {
     let pr = json!({
         "number": 42,
         "title": "feat: Add authentication endpoint",
-        "headRefName": "amsterdam/add-auth",
+        "headRefName": "task-42-add-auth",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -58,13 +67,14 @@ fn pr_needing_review_spawns_reviewer() {
         "PR needing review should have no blocking issues"
     );
 
-    // Verify owner extraction works for branch prefix
+    // Verify owner extraction works via branch_owners map
+    let map = branch_owners(&[("task-42-add-auth", "amsterdam")]);
     let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch);
+    let owner = coworker_from_branch(branch, &map);
     assert_eq!(
         owner,
         Some("amsterdam".to_string()),
-        "should extract coworker name from branch"
+        "should extract coworker name from branch via map"
     );
 
     // Verify this PR does NOT yet have a Claude review
@@ -93,7 +103,7 @@ fn draft_pr_does_not_spawn_reviewer() {
     let pr = json!({
         "number": 43,
         "title": "WIP: Experimental feature",
-        "headRefName": "lexington/experimental",
+        "headRefName": "task-43-experimental",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": true,  // Draft PR
@@ -166,7 +176,7 @@ fn approved_green_pr_auto_merges() {
     let eligible_pr = json!({
         "number": 50,
         "title": "feat: Add user settings",
-        "headRefName": "york/user-settings",
+        "headRefName": "task-50-user-settings",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -203,7 +213,7 @@ fn pr_without_approval_not_auto_mergeable() {
     let pr = json!({
         "number": 51,
         "title": "feat: Update API",
-        "headRefName": "broadway/api-update",
+        "headRefName": "task-51-api-update",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -223,7 +233,7 @@ fn pr_with_merge_conflict_not_auto_mergeable() {
     let pr = json!({
         "number": 52,
         "title": "feat: Refactor auth",
-        "headRefName": "columbus/auth-refactor",
+        "headRefName": "task-52-auth-refactor",
         "mergeable": "CONFLICTING",
         "state": "OPEN",
         "isDraft": false,
@@ -252,7 +262,7 @@ fn pr_with_failing_ci_not_auto_mergeable() {
     let pr = json!({
         "number": 53,
         "title": "feat: Add caching",
-        "headRefName": "park/caching",
+        "headRefName": "task-53-caching",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -282,7 +292,7 @@ fn pr_with_pending_ci_not_auto_mergeable() {
     let pr = json!({
         "number": 54,
         "title": "feat: Performance improvements",
-        "headRefName": "madison/perf",
+        "headRefName": "task-54-perf",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -313,7 +323,7 @@ fn pr_comment_nudges_owner() {
     let pr = json!({
         "number": 60,
         "title": "feat: Add logging",
-        "headRefName": "amsterdam/logging",
+        "headRefName": "task-60-logging",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -331,9 +341,10 @@ fn pr_comment_nudges_owner() {
         "should detect changes_requested"
     );
 
-    // Owner extraction
+    // Owner extraction via map
+    let map = branch_owners(&[("task-60-logging", "amsterdam")]);
     let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch).expect("should extract owner");
+    let owner = coworker_from_branch(branch, &map).expect("should extract owner");
     assert_eq!(owner, "amsterdam");
 
     // Test the decision function: owner is active and idle → nudge
@@ -360,7 +371,7 @@ fn pr_issue_spawns_inactive_owner() {
     let pr = json!({
         "number": 61,
         "title": "feat: Database migration",
-        "headRefName": "lexington/db-migration",
+        "headRefName": "task-61-db-migration",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -368,8 +379,9 @@ fn pr_issue_spawns_inactive_owner() {
         "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]
     });
 
+    let map = branch_owners(&[("task-61-db-migration", "lexington")]);
     let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch).expect("should extract owner");
+    let owner = coworker_from_branch(branch, &map).expect("should extract owner");
     assert_eq!(owner, "lexington");
 
     // lexington is NOT in active coworkers
@@ -454,7 +466,7 @@ fn green_ci_with_feedback_nudges_owner() {
     let pr = json!({
         "number": 65,
         "title": "feat: Improve error handling",
-        "headRefName": "vernon/error-handling",
+        "headRefName": "task-65-error-handling",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -557,22 +569,23 @@ fn lead_branch_pr_comment_detection() {
     );
 
     // Coworker extraction should return None for lead branches
-    let owner = coworker_from_branch(head_ref);
+    let empty_map = HashMap::new();
+    let owner = coworker_from_branch(head_ref, &empty_map);
     assert_eq!(
         owner, None,
         "Lead branches should not extract a coworker name"
     );
 }
 
-/// Test that non-lead PRs don't trigger lead branch handling.
+/// Test that non-lead PRs resolve via branch_owners map.
 #[test]
-fn non_lead_branch_pr_is_handled_normally() {
+fn non_lead_branch_pr_resolves_via_map() {
     use midtown::daemon::helpers::is_lead_branch;
 
     let coworker_pr = json!({
         "number": 501,
         "title": "feat: Add feature",
-        "headRefName": "madison/add-feature",
+        "headRefName": "task-501-add-feature",
         "mergeable": "MERGEABLE",
         "state": "OPEN",
         "isDraft": false,
@@ -583,15 +596,16 @@ fn non_lead_branch_pr_is_handled_normally() {
     let head_ref = coworker_pr["headRefName"].as_str().unwrap();
     assert!(
         !is_lead_branch(head_ref),
-        "Should NOT detect coworker branch as lead"
+        "Should NOT detect task branch as lead"
     );
 
-    // Coworker extraction should work normally
-    let owner = coworker_from_branch(head_ref);
+    // Coworker extraction via map
+    let map = branch_owners(&[("task-501-add-feature", "madison")]);
+    let owner = coworker_from_branch(head_ref, &map);
     assert_eq!(
         owner,
         Some("madison".to_string()),
-        "Should extract coworker from branch"
+        "Should extract coworker from branch via map"
     );
 }
 
@@ -605,7 +619,7 @@ fn pr_lifecycle_review_to_merge() {
     // Stage 1: PR opened, needs review
     let pr_needs_review = json!({
         "number": 100,
-        "headRefName": "amsterdam/feature",
+        "headRefName": "task-100-feature",
         "mergeable": "MERGEABLE",
         "isDraft": false,
         "reviewDecision": "",
@@ -625,7 +639,7 @@ fn pr_lifecycle_review_to_merge() {
     // Stage 2: Review posted, changes requested
     let pr_changes_requested = json!({
         "number": 100,
-        "headRefName": "amsterdam/feature",
+        "headRefName": "task-100-feature",
         "mergeable": "MERGEABLE",
         "isDraft": false,
         "reviewDecision": "CHANGES_REQUESTED",
@@ -647,7 +661,7 @@ fn pr_lifecycle_review_to_merge() {
     // Stage 3: Owner addresses feedback, gets approval
     let pr_approved = json!({
         "number": 100,
-        "headRefName": "amsterdam/feature",
+        "headRefName": "task-100-feature",
         "mergeable": "MERGEABLE",
         "isDraft": false,
         "reviewDecision": "APPROVED",
@@ -671,7 +685,7 @@ fn batch_pr_processing() {
         // PR with CI failure
         json!({
             "number": 200,
-            "headRefName": "amsterdam/fix",
+            "headRefName": "task-200-fix",
             "mergeable": "MERGEABLE",
             "reviewDecision": "",
             "statusCheckRollup": [{"conclusion": "FAILURE"}]
@@ -679,7 +693,7 @@ fn batch_pr_processing() {
         // PR with merge conflict
         json!({
             "number": 201,
-            "headRefName": "york/feature",
+            "headRefName": "task-201-feature",
             "mergeable": "CONFLICTING",
             "reviewDecision": "",
             "statusCheckRollup": [{"conclusion": "SUCCESS"}]
@@ -687,7 +701,7 @@ fn batch_pr_processing() {
         // Healthy PR (no issues, needs review)
         json!({
             "number": 202,
-            "headRefName": "lexington/docs",
+            "headRefName": "task-202-docs",
             "mergeable": "MERGEABLE",
             "reviewDecision": "",
             "statusCheckRollup": [{"conclusion": "SUCCESS"}]
@@ -695,7 +709,7 @@ fn batch_pr_processing() {
         // Approved PR ready for auto-merge
         json!({
             "number": 203,
-            "headRefName": "broadway/ready",
+            "headRefName": "task-203-ready",
             "mergeable": "MERGEABLE",
             "reviewDecision": "APPROVED",
             "statusCheckRollup": [{"conclusion": "SUCCESS"}]
