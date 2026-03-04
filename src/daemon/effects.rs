@@ -45,18 +45,15 @@ fn build_resume_handoff_prompt(
 
 /// Build a DM separator `PostSystemMessage` for a newly spawned session.
 ///
-/// Returns `Some(Effect::PostSystemMessage)` targeting `dm-<name>` for non-reviewer
-/// sessions, or `None` for reviewer sessions (which are ephemeral and don't have
-/// DM channels).
+/// Returns `Some(Effect::PostSystemMessage)` targeting `dm-<name>` for all
+/// sessions (including reviewers). The `_is_reviewer` parameter is retained
+/// for backward compatibility but no longer gates the separator.
 pub(super) fn build_dm_separator_effect(
     name: &str,
     task_id: &str,
     task_subject: Option<&str>,
-    is_reviewer: bool,
+    _is_reviewer: bool,
 ) -> Option<Effect> {
-    if is_reviewer {
-        return None;
-    }
     let separator = match task_subject {
         Some(subject) => format!("─── Task !{}: {} ───", task_id, subject),
         None => format!("─── Task !{} ───", task_id),
@@ -2478,9 +2475,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
 
                         // Post session separator to the coworker's DM channel.
-                        // Reviewers are ephemeral PR-scoped sessions — skip DM
-                        // separators (and the task file scan) entirely.
-                        if !is_reviewer {
+                        // Post a DM separator so the user sees a task header in
+                        // the coworker's DM channel (applies to all sessions
+                        // including reviewers).
+                        {
                             let task_subject =
                                 crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
                                     .into_iter()

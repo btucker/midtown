@@ -1512,13 +1512,21 @@ fn test_dm_separator_empty_subject_treated_as_none() {
     );
 }
 
-/// Reviewer sessions do not produce DM separator effects since they are
-/// ephemeral PR-scoped sessions without DM channels.
+/// Reviewer sessions now produce DM separator effects so their output
+/// streams to dm-<name> channels alongside regular coworkers.
 #[test]
-fn test_dm_separator_skipped_for_reviewer_session() {
+fn test_dm_separator_produced_for_reviewer_session() {
     let effect = build_dm_separator_effect("riverside", "42", Some("Review PR"), true);
     assert!(
-        effect.is_none(),
-        "reviewer session should not produce a DM separator"
+        effect.is_some(),
+        "reviewer session should produce a DM separator"
     );
+    match effect.unwrap() {
+        Effect::PostSystemMessage { message, channel } => {
+            assert_eq!(channel, Some("dm-riverside".to_string()));
+            assert!(message.contains("!42"));
+            assert!(message.contains("Review PR"));
+        }
+        other => panic!("expected PostSystemMessage, got {:?}", other),
+    }
 }
