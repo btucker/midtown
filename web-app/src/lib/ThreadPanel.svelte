@@ -386,10 +386,10 @@
   // Focus textarea only when a *new* thread opens — not on every message append.
   // Uses currentThreadId (stable thread identity) instead of $threadData to avoid
   // re-firing when the message array grows.
-  let lastFocusedThreadId = $state(null)
+  let lastFocusedThreadId = null
   $effect(() => {
     const threadId = currentThreadId
-    const lastId = untrack(() => lastFocusedThreadId)
+    const lastId = lastFocusedThreadId
     if (threadId && threadId !== lastId && textareaEl) {
       lastFocusedThreadId = threadId
       tick().then(() => textareaEl.focus())
