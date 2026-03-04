@@ -1,16 +1,28 @@
 <script>
   import { SvelteSet } from 'svelte/reactivity'
-  import { channels, activeChannel, kanbanData, activeProject, messagesByChannel, showArchivedChannels } from './store.js'
+  import { channels, activeChannel, kanbanData, coworkers, activeProject, messagesByChannel, showArchivedChannels, trackedThreads, threadUnreadCounts, dismissedThreads, threadData } from './store.js'
   import { fetchHistory, fetchChannels, getApiBase, closeThread, pushNavState } from './api.js'
   import {
     getChannelTaskCount,
+    getChannelTasks,
     getChannelCiStatus,
-    computeExpandedAfterTriangleClick,
+    getChannelHasActiveTasks,
+    getChannelHasTrackedThreads,
+    getTaskThreadIds,
+    getChannelThreads,
     computeExpandedAfterChannelNameClick,
     computeVisibleDmChannels,
   } from './channelUtils.js'
+  import { getSenderColor } from './messageUtils.js'
   import TaskList from './TaskList.svelte'
+  import ThreadList from './ThreadList.svelte'
   import ArchiveIcon from '@lucide/svelte/icons/archive'
+
+  // Build a map of coworker name → coworker object for quick lookup
+  $: coworkerMap = new Map($coworkers.map(cw => [cw.name, cw]))
+
+  // Thread IDs that are already represented by tasks (for dedup)
+  $: taskThreadIds = getTaskThreadIds($kanbanData)
 
   let showCreateInput = false
   let newChannelName = ''
@@ -28,6 +40,19 @@
   // Track which channels have their task lists expanded (default: collapsed)
   // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
   let expandedChannels = new SvelteSet()
+
+  // Auto-expand the active channel when it gains tasks or tracked threads
+  $: if ($activeChannel && !expandedChannels.has($activeChannel) && (
+    getChannelHasActiveTasks($activeChannel, $kanbanData) ||
+    getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds)
+  )) {
+    expandedChannels.add($activeChannel)
+  }
+
+  // Auto-expand the channel when a thread is opened (e.g. from the message area)
+  $: if ($threadData?.channelName && !expandedChannels.has($threadData.channelName)) {
+    expandedChannels.add($threadData.channelName)
+  }
 
   // DM section: collapsed by default, shows unread + active + visited DMs when expanded
   let dmSectionExpanded = false
@@ -78,7 +103,8 @@
       channelName,
       expandedChannels,
       $activeChannel,
-      $kanbanData
+      $kanbanData,
+      { trackedThreads: $trackedThreads, taskThreadIds }
     )
     if (next.has(channelName)) {
       expandedChannels.add(channelName)
@@ -174,22 +200,6 @@
     }
   }
 
-  function handleTriangleClick(channelName) {
-    // Capture the desired toggle state before selectChannel potentially auto-expands.
-    const next = computeExpandedAfterTriangleClick(channelName, expandedChannels)
-    // Only call selectChannel when switching to a different channel.
-    // Calling it on the already-active channel would invoke closeThread() as a side
-    // effect, closing any open thread panel just because the user toggled the task list.
-    if (channelName !== $activeChannel) {
-      selectChannel(channelName)
-    }
-    // Apply the toggle result (overrides any auto-expand from selectChannel).
-    if (next.has(channelName)) {
-      expandedChannels.add(channelName)
-    } else {
-      expandedChannels.delete(channelName)
-    }
-  }
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
@@ -256,25 +266,13 @@
     {@const isActive = $activeChannel === channel.name}
     {@const isExpanded = expandedChannels.has(channel.name)}
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
+    {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds)}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-        <!-- Fixed-width gutter keeps channel names aligned whether or not a triangle is present -->
-        <div class="w-[28px] ml-1 shrink-0 flex items-center justify-center">
-          {#if hasActiveTasks}
-            <button
-              type="button"
-              class="w-[28px] h-[28px] p-0 border-none bg-transparent text-muted-foreground text-[0.65rem] leading-none cursor-pointer flex items-center justify-center transition-colors duration-150 hover:text-sidebar-foreground"
-              onclick={() => handleTriangleClick(channel.name)}
-              title={isExpanded ? 'Collapse tasks' : 'Expand tasks'}
-            >
-              {isExpanded ? '▼' : '▶'}
-            </button>
-          {/if}
-        </div>
         <button
-          class="flex items-center justify-between flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+          class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
           onclick={() => selectChannel(channel.name)}
         >
@@ -282,6 +280,30 @@
             {formatChannelName(channel.name)}
           </div>
           <div class="flex items-center gap-1.5">
+            {#if !isExpanded && (hasActiveTasks || hasTrackedThreads)}
+              {@const tasks = hasActiveTasks ? getChannelTasks(channel.name, $kanbanData) : []}
+              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds) : []}
+              {@const unreadThreads = threads.filter(t => t.unread > 0)}
+              <div class="flex items-center gap-[3px]">
+                {#each tasks as task}
+                  {@const cw = task.owner ? coworkerMap.get(task.owner) : null}
+                  {@const pipColor = task.owner ? getSenderColor(task.owner) : null}
+                  {@const tipParts = [`!${task.id} ${task.subject}`, task.owner ? `${task.owner}${cw?.phase ? ` · ${cw.phase}` : ''}` : null, cw?.progress != null ? `${cw.progress}% done` : null].filter(Boolean)}
+                  <span
+                    class="task-pip {task.status === 'in_progress' ? 'task-pip-active' : 'task-pip-pending'}"
+                    style={pipColor ? `background: ${pipColor}` : ''}
+                    title={tipParts.join('\n')}
+                  ></span>
+                {/each}
+                {#each unreadThreads as thread}
+                  <span
+                    class="thread-pip"
+                    data-testid="sidebar-thread-pip"
+                    title={thread.subject}
+                  ></span>
+                {/each}
+              </div>
+            {/if}
             {#if ciStatus === 'passed'}
               <span class="text-[0.7rem]" title="CI passing">🟢</span>
             {:else if ciStatus === 'failed'}
@@ -294,8 +316,13 @@
       </div>
 
       {#if isExpanded && hasActiveTasks}
-        <div class="ml-6 py-1 pb-2 pl-3">
+        <div class="px-3 py-1 pb-2">
           <TaskList channelName={channel.name} />
+        </div>
+      {/if}
+      {#if isExpanded && hasTrackedThreads}
+        <div class="px-3 py-0 pb-1">
+          <ThreadList channelName={channel.name} />
         </div>
       {/if}
     </div>
@@ -321,10 +348,8 @@
         {@const hasUnread = channel.unread > 0}
         <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
           <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
-            <!-- Fixed-width gutter (no triangle for DMs — they have no tasks) -->
-            <div class="w-[28px] ml-1 shrink-0"></div>
             <button
-              class="flex items-center flex-1 min-w-0 pl-1 pr-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+              class="flex items-center flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
               aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
               onclick={() => selectChannel(channel.name)}
             >
@@ -370,4 +395,32 @@
       0 -4px 6px -4px rgba(0, 0, 0, 0.3),
       0 4px 6px -4px rgba(0, 0, 0, 0.3);
   }
+
+  .task-pip {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .task-pip-active {
+    background: hsl(var(--accent-teal));
+    box-shadow: 0 0 4px currentColor;
+    opacity: 0.9;
+  }
+
+  .task-pip-pending {
+    background: hsl(var(--muted-foreground) / 0.35);
+    opacity: 0.6;
+  }
+
+  .thread-pip {
+    width: 4px;
+    height: 4px;
+    border-radius: 1px;
+    flex-shrink: 0;
+    background: hsl(var(--accent-teal));
+    opacity: 0.8;
+  }
+
 </style>

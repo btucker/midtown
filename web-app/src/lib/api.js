@@ -25,6 +25,10 @@ import {
   deepLinkMsgId,
   threadOwnership,
   showArchivedChannels,
+  trackedThreads,
+  threadUnreadCounts,
+  dismissedThreads,
+  userSenderName,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -43,6 +47,68 @@ const agentClearTimeouts = new Map()
 // Used by the thread-clear guard to ensure only the owning fork's messages trigger a clear,
 // preventing coworkers or the lead from prematurely clearing a fork's tool display.
 const threadOwners = new Map()
+
+// Strip markdown from the first non-empty line of message content.
+function extractPlainText(content) {
+  if (!content) return ''
+  const firstLine = content.split('\n').find((l) => l.trim().length > 0) || ''
+  return firstLine
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/\[(.+?)\]\(.+?\)/g, '$1')
+    .trim()
+}
+
+// Extract a short subject line from message content for sidebar thread labels.
+function extractThreadSubject(content) {
+  const plain = extractPlainText(content)
+  if (!plain) return 'Thread'
+  return plain.length > 60 ? plain.slice(0, 57) + '...' : plain
+}
+
+// Track a thread in the sidebar (unless previously dismissed by user).
+// When the thread is already tracked, preserves lastActivity (avoids re-sorting)
+// and only upgrades the subject if a better one is available.
+function trackThread(threadParentId, channelName, content, replyCount) {
+  const dismissed = get(dismissedThreads)
+  if (dismissed.has(threadParentId)) return
+  const newSubject = extractThreadSubject(content)
+  const newFullText = extractPlainText(content)
+  trackedThreads.update((tracked) => {
+    const existing = tracked[threadParentId]
+    // Keep existing subject/fullText if the new one is just the fallback "Thread"
+    const subject = (newSubject !== 'Thread') ? newSubject : (existing?.subject || newSubject)
+    const fullText = newFullText || existing?.fullText || ''
+    return {
+      ...tracked,
+      [threadParentId]: {
+        channelName,
+        subject,
+        fullText,
+        // Only set lastActivity on initial tracking — WS handler updates it on new replies
+        lastActivity: existing?.lastActivity || new Date().toISOString(),
+        replyCount: replyCount ?? (existing?.replyCount || 0),
+      },
+    }
+  })
+}
+
+// Dismiss a tracked thread — removes from sidebar, prevents re-tracking.
+export function dismissThread(threadParentId) {
+  trackedThreads.update((tracked) => {
+    const next = { ...tracked }
+    delete next[threadParentId]
+    return next
+  })
+  dismissedThreads.update((s) => new Set([...s, threadParentId]))
+  threadUnreadCounts.update((counts) => {
+    const next = { ...counts }
+    delete next[threadParentId]
+    return next
+  })
+}
 
 let ws = null
 let reconnectTimeout = null
@@ -153,6 +219,22 @@ export function switchProject(projectName, webhookPort) {
   threadToolItems.set({})
   threadData.set(null)
   threadOwnership.set({})
+  // Clear tracked threads when switching to a different project.
+  // On same-project reload, the stores (initialized from localStorage)
+  // should be preserved.  Use the persisted project name so the first
+  // switchProject call after a page reload still detects a project change.
+  const previousProject = get(activeProject)
+  const savedThreadProject =
+    typeof localStorage !== 'undefined' ? localStorage.getItem('midtown_thread_project') : null
+  const lastProject = previousProject || savedThreadProject
+  if (lastProject !== projectName) {
+    trackedThreads.set({})
+    threadUnreadCounts.set({})
+    dismissedThreads.set(new Set())
+  }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('midtown_thread_project', projectName)
+  }
   connected.set(false)
 
   // Set the new active project
@@ -200,17 +282,27 @@ export function getApiBase() {
 function annotateThreadReplyCounts(msgs) {
   const replyCountMap = {}
   const lastReplyMap = {}
+  const participantsMap = {}
   for (const m of msgs) {
     if (m.thread_parent_id) {
       replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1
       lastReplyMap[m.thread_parent_id] = m
+      if (!participantsMap[m.thread_parent_id]) participantsMap[m.thread_parent_id] = []
+      if (!participantsMap[m.thread_parent_id].includes(m.from)) {
+        participantsMap[m.thread_parent_id].push(m.from)
+      }
     }
   }
   return msgs
     .filter((m) => !m.thread_parent_id)
     .map((m) =>
       replyCountMap[m.id]
-        ? { ...m, reply_count: replyCountMap[m.id], last_reply: lastReplyMap[m.id] }
+        ? {
+            ...m,
+            reply_count: replyCountMap[m.id],
+            last_reply: lastReplyMap[m.id],
+            reply_participants: participantsMap[m.id],
+          }
         : m
     )
 }
@@ -324,6 +416,7 @@ export async function fetchStatus() {
       if (data.max_coworkers !== undefined) {
         maxCoworkers.set(data.max_coworkers)
       }
+      userSenderName.set(data.user_display_name || 'user')
       updateKanbanData(data)
       updateRepoStatus(data)
     }
@@ -370,15 +463,9 @@ function updateKanbanData(data) {
   const prs = data.pull_requests || []
   const mergedPrs = data.merged_prs || []
 
-  // Build set of task IDs that have open PRs (normalized to strings for comparison)
-  const tasksWithOpenPrs = new Set(
-    prs.map((pr) => String(pr.task_id)).filter((id) => id !== 'null' && id !== 'undefined')
-  )
-
   kanbanData.set({
     backlog: tasks.filter((t) => t.status === 'pending'),
-    // Exclude tasks with open PRs - they belong in the Review column
-    inProgress: tasks.filter((t) => t.status === 'in_progress' && !tasksWithOpenPrs.has(String(t.id))),
+    inProgress: tasks.filter((t) => t.status === 'in_progress'),
     review: prs.map((pr) => ({
       number: pr.number,
       title: pr.title,
@@ -546,16 +633,47 @@ export function handleUpdate(update) {
             ...byChannel,
             [channelName]: channelMsgs.map((m) => {
               if (m.id === msg.thread_parent_id) {
+                const participants = m.reply_participants || []
                 return {
                   ...m,
                   reply_count: (m.reply_count || 0) + 1,
                   last_reply: msg,
+                  reply_participants: participants.includes(msg.from)
+                    ? participants
+                    : [...participants, msg.from],
                 }
               }
               return m
             }),
           }
         })
+
+        // Thread sidebar tracking: increment unread when a tracked thread gets a reply
+        // from someone other than the user, and the thread panel isn't currently showing it.
+        // Compare against both 'user' and the configured user_display_name to avoid
+        // counting the user's own replies as unread.
+        if (msg.from !== 'user' && msg.from !== get(userSenderName)) {
+          const tracked = get(trackedThreads)
+          const td = get(threadData)
+          const panelShowingThis = td && td.parentMessage?.id === msg.thread_parent_id
+          if (tracked[msg.thread_parent_id] && !panelShowingThis) {
+            threadUnreadCounts.update((counts) => ({
+              ...counts,
+              [msg.thread_parent_id]: (counts[msg.thread_parent_id] || 0) + 1,
+            }))
+          }
+          // Update lastActivity/replyCount on the tracked entry
+          if (tracked[msg.thread_parent_id]) {
+            trackedThreads.update((t) => ({
+              ...t,
+              [msg.thread_parent_id]: {
+                ...t[msg.thread_parent_id],
+                lastActivity: new Date().toISOString(),
+                replyCount: (t[msg.thread_parent_id]?.replyCount || 0) + 1,
+              },
+            }))
+          }
+        }
       } else {
         // Top-level message — add to stores, removing any matching pending optimistic message first.
         // Add to legacy messages array
@@ -747,6 +865,8 @@ export function sendMessage(content, channel = null, threadParentId = null) {
     }
 
     if (threadParentId) {
+      // Auto-track this thread in the sidebar
+      trackThread(threadParentId, channelName, null)
       // Thread reply: add to threadData if the panel is open for this parent
       threadData.update((td) => {
         if (!td) return td
@@ -989,6 +1109,14 @@ export function openThread(parentMessage, channelName, { pushState = true } = {}
   const tasks = allTasks.filter(
     (t) => t.thread_id === parentMessage.id || t.message_id === parentMessage.id,
   )
+  // Clear unread count for this thread and auto-track it in the sidebar
+  threadUnreadCounts.update((counts) => {
+    const next = { ...counts }
+    delete next[parentMessage.id]
+    return next
+  })
+  trackThread(parentMessage.id, channelName, parentMessage.content, parentMessage.reply_count)
+
   // Show panel immediately with loading state, then populate with replies
   threadData.set({ parentMessage, channelName, messages: [], tasks })
   // Query thread ownership so the UI knows whether a dedicated session exists

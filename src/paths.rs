@@ -667,6 +667,11 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
 /// - `lead-session-id` -> `lead/<repo>/session-id`
 /// - `lead-initialized` -> `lead/<repo>/lead-initialized`
 ///
+/// Note: [`migrate_worktree_paths()`] (era 2) handles a separate migration
+/// from `~/.midtown/projects/<repo>/coworkers/` to
+/// `~/.midtown/projects/<repo>/worktrees/` for repos that were partially
+/// migrated between the two eras.
+///
 /// Returns Ok(true) if migration was performed, Ok(false) if already migrated or nothing to migrate.
 pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
     let base = midtown_base_dir();

@@ -266,6 +266,9 @@ pub struct ChannelMessageData {
     /// Last reply metadata for this message's thread (top-level history only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_reply: Option<ThreadReplySummary>,
+    /// Unique participants who replied in this thread (top-level history only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_participants: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -626,6 +629,7 @@ async fn api_channel_history(
                         thread_parent_id: m.thread_parent_id,
                         reply_count: None,
                         last_reply: None,
+                        reply_participants: None,
                     }
                 })
                 .collect()
@@ -643,8 +647,10 @@ async fn api_channel_history(
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
 
-            let mut reply_meta: std::collections::HashMap<String, (usize, ThreadReplySummary)> =
-                std::collections::HashMap::new();
+            let mut reply_meta: std::collections::HashMap<
+                String,
+                (usize, ThreadReplySummary, Vec<String>),
+            > = std::collections::HashMap::new();
             for msg in &messages {
                 if let Some(parent_id) = msg.thread_parent_id.as_ref() {
                     let entry = reply_meta.entry(parent_id.clone()).or_insert((
@@ -653,12 +659,16 @@ async fn api_channel_history(
                             from: msg.from.clone(),
                             timestamp: msg.timestamp.to_rfc3339(),
                         },
+                        Vec::new(),
                     ));
                     entry.0 += 1;
                     entry.1 = ThreadReplySummary {
                         from: msg.from.clone(),
                         timestamp: msg.timestamp.to_rfc3339(),
                     };
+                    if !entry.2.contains(&msg.from) {
+                        entry.2.push(msg.from.clone());
+                    }
                 }
             }
 
@@ -667,10 +677,13 @@ async fn api_channel_history(
                 .filter(|m| m.thread_parent_id.is_none())
                 .map(|m| {
                     let channel = m.channel_name().to_string();
-                    let (reply_count, last_reply) = match reply_meta.get(&m.id) {
-                        Some((count, last)) => (Some(*count), Some(last.clone())),
-                        None => (None, None),
-                    };
+                    let (reply_count, last_reply, reply_participants) =
+                        match reply_meta.remove(&m.id) {
+                            Some((count, last, participants)) => {
+                                (Some(count), Some(last), Some(participants))
+                            }
+                            None => (None, None, None),
+                        };
                     ChannelMessageData {
                         id: m.id.clone(),
                         from: m.from,
@@ -681,6 +694,7 @@ async fn api_channel_history(
                         thread_parent_id: m.thread_parent_id,
                         reply_count,
                         last_reply,
+                        reply_participants,
                     }
                 })
                 .collect()
@@ -879,7 +893,14 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 /// Coworker state comes from `coworkers.status` (live, no cache).
 /// Both fall back to cached gh CLI calls if the daemon is unreachable.
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
+    // Load persistent state to get reviewer assignments, thread IDs, etc. (local file, cheap)
+    let persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
+            .unwrap_or_default();
+
     // Read tasks directly from Claude Code task storage (local file, cheap)
+    // Merge thread_id/message_id from daemon persistent state so the frontend
+    // can open the originating thread when a task is clicked.
     let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
         .into_iter()
         .map(|task| {
@@ -888,6 +909,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 crate::tasks::TaskStatus::InProgress => "in_progress",
                 crate::tasks::TaskStatus::Completed => "completed",
             };
+            let message_id = persistent_state.task_message_id.get(&task.id).cloned();
+            let thread_id = persistent_state.task_thread_id.get(&task.id).cloned();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
@@ -896,6 +919,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "owner": task.owner,
                 "channel": task.channel,
                 "blocked_by": task.blocked_by,
+                "message_id": message_id,
+                "thread_id": thread_id,
             })
         })
         .collect();
@@ -911,11 +936,6 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             Some((id, subject.to_string()))
         })
         .collect();
-
-    // Load persistent state to get reviewer assignments (local file, cheap)
-    let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
-            .unwrap_or_default();
     // Channel lead names for filtering (channel leads must not appear in coworker status)
     let channel_lead_names: std::collections::HashSet<String> = persistent_state
         .channel_lead_sessions
@@ -1204,6 +1224,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         Vec::new()
     };
 
+    let user_display_name = crate::config::get_user_display_name_for_project(&state.config.repo);
+
     let status = serde_json::json!({
         "daemon": "running",
         "coworkers": coworkers_data,
@@ -1215,6 +1237,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
         "max_coworkers": state.max_coworkers,
+        "user_display_name": user_display_name,
     });
 
     Ok(axum::Json(status))
@@ -2407,6 +2430,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         thread_parent_id: message.thread_parent_id.clone(),
         reply_count: None,
         last_reply: None,
+        reply_participants: None,
     })
 }
 

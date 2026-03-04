@@ -88,7 +88,7 @@
 </script>
 
 <div class="hidden md:block bg-card shrink-0">
-  <div class="flex items-center justify-between px-4 py-2">
+  <div class="flex items-center justify-between px-4 py-2 min-h-[var(--header-height)]">
     <!-- Left: channel name -->
     <div class="flex items-baseline gap-1 shrink-0">
       {#if isDm}

@@ -425,7 +425,9 @@ impl CoworkerManager {
             }
         }
 
-        // Task-based worktree must be provided by the dispatch layer
+        // Resolve the working directory for this session.
+        // Task-based coworkers get their worktree via Effect::EnsureWorktree (config.working_dir).
+        // Non-task sessions (channel leads, forks) get an on-demand detached worktree.
         let worktree_path = if let Some(ref working_dir) = config.working_dir {
             // Validate the path exists and is a valid git worktree
             if !working_dir.exists() {
@@ -453,15 +455,20 @@ impl CoworkerManager {
             );
             working_dir.clone()
         } else {
-            return Err(crate::Error::Rpc {
-                code: -32603,
-                message: format!(
-                    "No working_dir provided for coworker {}. \
-                     The dispatch layer must create a task-based worktree via \
-                     Effect::EnsureWorktree before spawning.",
-                    name
-                ),
-            });
+            // No explicit working_dir — create a detached worktree keyed by session name.
+            // This is the path for channel leads, forks, and other non-task sessions.
+            match self.worktree_manager.create_detached_worktree(name) {
+                Ok(path) => {
+                    tracing::info!("Created detached worktree for {}: {}", name, path.display());
+                    path
+                }
+                Err(e) => {
+                    return Err(crate::Error::Rpc {
+                        code: -32603,
+                        message: format!("Failed to create worktree for {}: {}", name, e),
+                    });
+                }
+            }
         };
 
         let working_dir = worktree_path

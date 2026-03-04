@@ -99,6 +99,23 @@ export function getChannelCiStatus(channelName, kanban) {
 }
 
 /**
+ * Get the actual task objects for a channel, tagged with status.
+ * Returns in-progress tasks first, then pending.
+ */
+export function getChannelTasks(channelName, kanban) {
+  const filterTasks = (list) => {
+    if (channelName === 'midtown') {
+      return list.filter((task) => !task.channel || task.channel === 'midtown')
+    }
+    return list.filter((task) => task.channel === channelName)
+  }
+  return [
+    ...filterTasks(kanban.inProgress).map(t => ({ ...t, status: 'in_progress' })),
+    ...filterTasks(kanban.backlog).map(t => ({ ...t, status: 'pending' })),
+  ]
+}
+
+/**
  * Returns true if a channel has any active tasks (in-progress or pending).
  * Used to determine whether to auto-expand the task list on channel select.
  */
@@ -124,11 +141,13 @@ export function computeExpandedAfterTriangleClick(channelName, expandedChannels)
 
 /**
  * Compute the expanded channels set after clicking the channel name.
- * - Switching to an inactive channel: auto-expand if it has active tasks.
+ * - Switching to an inactive channel: auto-expand if it has active tasks or tracked threads.
  * - Re-clicking the already-active channel: toggle expand/collapse.
  * Returns a new Set; does not mutate the input.
+ *
+ * @param {object} opts - Optional { trackedThreads, taskThreadIds } for thread-aware expansion
  */
-export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban) {
+export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban, opts = {}) {
   const next = new Set(expandedChannels)
   if (channelName === activeChannel) {
     if (next.has(channelName)) {
@@ -136,8 +155,14 @@ export function computeExpandedAfterChannelNameClick(channelName, expandedChanne
     } else {
       next.add(channelName)
     }
-  } else if (getChannelHasActiveTasks(channelName, kanban)) {
-    next.add(channelName)
+  } else {
+    const hasTasks = getChannelHasActiveTasks(channelName, kanban)
+    const hasThreads = opts.trackedThreads && opts.taskThreadIds
+      ? getChannelHasTrackedThreads(channelName, opts.trackedThreads, opts.taskThreadIds)
+      : false
+    if (hasTasks || hasThreads) {
+      next.add(channelName)
+    }
   }
   return next
 }
@@ -157,6 +182,71 @@ export function computeVisibleDmChannels(dmChannels, { expanded, showAll, active
   return dmChannels.filter(
     (ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name)
   )
+}
+
+// ── Thread sidebar utilities ──────────────────────────────────────────────────
+
+/**
+ * Build a Set of threadParentIds that are already represented by a task.
+ * A thread is "task-backed" when any task's thread_id or message_id matches it.
+ */
+export function getTaskThreadIds(kanban) {
+  const ids = new Set()
+  for (const list of [kanban.inProgress, kanban.backlog]) {
+    for (const task of list) {
+      if (task.thread_id) ids.add(task.thread_id)
+      if (task.message_id) ids.add(task.message_id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Get tracked threads for a channel, sorted by lastActivity (newest first).
+ * Filters out threads that are represented by tasks (dedup) and permanently
+ * removes them from trackedThreads + adds to dismissedThreads.
+ *
+ * @param {string} channelName
+ * @param {object} tracked - $trackedThreads store value
+ * @param {object} unreadCounts - $threadUnreadCounts store value
+ * @param {Set} taskThreadIds - from getTaskThreadIds()
+ * @param {Function} cleanupFn - callback(idsToRemove) to permanently remove task-backed threads
+ * @returns {Array<{id, subject, lastActivity, replyCount, unread}>}
+ */
+export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds, cleanupFn) {
+  const threads = []
+  const toClean = []
+  for (const [id, entry] of Object.entries(tracked)) {
+    if (entry.channelName !== channelName) continue
+    if (taskThreadIds.has(id)) {
+      toClean.push(id)
+      continue
+    }
+    threads.push({
+      id,
+      subject: entry.subject,
+      fullText: entry.fullText || entry.subject,
+      lastActivity: entry.lastActivity,
+      replyCount: entry.replyCount || 0,
+      unread: unreadCounts[id] || 0,
+    })
+  }
+  // Side-effect: permanently remove task-backed threads
+  if (toClean.length > 0 && cleanupFn) {
+    cleanupFn(toClean)
+  }
+  threads.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''))
+  return threads
+}
+
+/**
+ * Returns true if a channel has any tracked threads that aren't task-backed.
+ */
+export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds) {
+  for (const [id, entry] of Object.entries(tracked)) {
+    if (entry.channelName === channelName && !taskThreadIds.has(id)) return true
+  }
+  return false
 }
 
 /**

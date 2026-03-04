@@ -10,7 +10,7 @@
   import PendingQuestions from '$lib/PendingQuestions.svelte'
   import Status from '$lib/Status.svelte'
   import Tmux from '$lib/Tmux.svelte'
-  import CoworkerStatus from '$lib/CoworkerStatus.svelte'
+
   import AccountPanel from '$lib/AccountPanel.svelte'
   import CelebrationEffects from '$lib/CelebrationEffects.svelte'
   import SwipeGestures from '$lib/SwipeGestures.svelte'
@@ -110,6 +110,10 @@
       const deepLinkChannel = urlChannel || targetProject.name
       if (urlChannel) {
         activeChannel.set(urlChannel)
+        // Deep-linked channel may not be the main channel (e.g. DM channels,
+        // topic channels). switchProject's fetchHistory() only loads the main
+        // channel, so we must explicitly fetch the deep-linked channel's messages.
+        fetchHistory(urlChannel)
       }
       if (urlThread) {
         // If a specific message is targeted, store it so ThreadPanel can scroll to it
@@ -141,6 +145,11 @@
       if (!document.hidden && $activeProject) {
         // Page became visible and we have an active project - refresh history
         fetchHistory()
+        // Also refresh the active channel if it's not the main one (e.g. DM or topic channel)
+        const currentChannel = $activeChannel
+        if (currentChannel && currentChannel !== $activeProject) {
+          fetchHistory(currentChannel)
+        }
       }
     }
 
@@ -222,37 +231,6 @@
             >
               <SearchIcon size={16} />
             </button>
-            <button
-              class="theme-toggle"
-              class:push-subscribed={$pushSubscribed}
-              onclick={togglePush}
-              disabled={!$pushSupported || $pushPermission === 'denied'}
-              title={!$pushSupported
-                ? 'Push notifications not supported in this browser'
-                : $pushPermission === 'denied'
-                  ? 'Notifications blocked in browser settings'
-                  : $pushSubscribed
-                    ? 'Disable push notifications'
-                    : 'Enable push notifications'}
-            >
-              {#if $pushSubscribed}
-                <Bell size={16} />
-              {:else}
-                <BellOff size={16} />
-              {/if}
-            </button>
-            <button
-              data-testid="theme-toggle"
-              class="theme-toggle"
-              onclick={toggleTheme}
-              title={$theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-            >
-              {#if $theme === 'dark'}
-                <Sun size={16} />
-              {:else}
-                <Moon size={16} />
-              {/if}
-            </button>
           </div>
         </SidebarHeader>
 
@@ -270,8 +248,41 @@
 
         <SidebarFooter class="p-2 pb-1">
           {#if activeView === 'board'}
-            <CoworkerStatus />
-            <AccountPanel />
+            <AccountPanel>
+              {#snippet footerLeft()}
+                <button
+                  class="theme-toggle"
+                  class:push-subscribed={$pushSubscribed}
+                  onclick={togglePush}
+                  disabled={!$pushSupported || $pushPermission === 'denied'}
+                  title={!$pushSupported
+                    ? 'Push notifications not supported in this browser'
+                    : $pushPermission === 'denied'
+                      ? 'Notifications blocked in browser settings'
+                      : $pushSubscribed
+                        ? 'Disable push notifications'
+                        : 'Enable push notifications'}
+                >
+                  {#if $pushSubscribed}
+                    <Bell size={16} />
+                  {:else}
+                    <BellOff size={16} />
+                  {/if}
+                </button>
+                <button
+                  data-testid="theme-toggle"
+                  class="theme-toggle"
+                  onclick={toggleTheme}
+                  title={$theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+                >
+                  {#if $theme === 'dark'}
+                    <Sun size={16} />
+                  {:else}
+                    <Moon size={16} />
+                  {/if}
+                </button>
+              {/snippet}
+            </AccountPanel>
           {/if}
         </SidebarFooter>
       </Sidebar>

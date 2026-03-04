@@ -23,6 +23,7 @@ export const MOCK_MESSAGES = [
       content: 'Reviewed the plan, looks good.',
       timestamp: '2025-01-15T10:05:30Z',
     },
+    reply_participants: ['lead', 'park'],
   },
   {
     id: 'msg-2',
@@ -72,6 +73,7 @@ export const MOCK_MESSAGES = [
       content: 'Will drop notes in the thread.',
       timestamp: '2025-01-15T10:06:00Z',
     },
+    reply_participants: ['park'],
   },
   {
     id: 'msg-5',

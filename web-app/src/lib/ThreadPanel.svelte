@@ -11,6 +11,7 @@
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
+  import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
@@ -414,7 +415,7 @@
 {#if $threadData}
   <!-- Desktop: side panel with resize handle -->
   <div
-    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border shrink-0 relative shadow-[inset_8px_0_8px_-8px_rgba(0,0,0,0.15)] dark:shadow-[inset_8px_0_8px_-8px_rgba(0,0,0,0.4)]"
+    class="hidden lg:flex flex-col h-full bg-background border-l-2 border-border shrink-0 relative shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.15)] dark:shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.4)]"
     style="width: {panelWidth}px"
     data-testid="thread-panel"
   >
@@ -433,8 +434,8 @@
     </div>
 
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-2 bg-card border-b-2 border-border shrink-0">
-      <h2 class="text-[0.85rem] font-bold text-foreground m-0">Thread</h2>
+    <div class="flex items-center justify-between px-4 py-2 min-h-[var(--header-height)] bg-card border-b-2 border-border shrink-0">
+      <h2 class="text-[1.1rem] font-bold font-mono text-foreground m-0">Thread</h2>
       <div class="flex items-center gap-1">
         {#if isTopicChannel && $threadData?.parentMessage?.id}
           <button
@@ -626,23 +627,25 @@
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Input -->
-    <form class="flex gap-2 px-3 pt-2 pb-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
-      <textarea
-        data-testid="thread-input"
-        bind:this={desktopTextareaEl}
-        bind:value={replyText}
-        placeholder="Reply in thread..."
-        rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
-        onkeydown={handleTextareaKeyDown}
-        oninput={resizeTextarea}
-      ></textarea>
-      <button
-        type="submit"
-        disabled={!replyText.trim()}
-        data-testid="thread-send-button"
-        class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
-      >Send</button>
+    <form class="px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+      <div class="relative">
+        <textarea
+          data-testid="thread-input"
+          bind:this={desktopTextareaEl}
+          bind:value={replyText}
+          placeholder="Reply in thread..."
+          rows="1"
+          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          onkeydown={handleTextareaKeyDown}
+          oninput={resizeTextarea}
+        ></textarea>
+        <button
+          type="submit"
+          disabled={!replyText.trim()}
+          data-testid="thread-send-button"
+          class="absolute right-[12px] top-[50%] -translate-y-[50%] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
+        ><SendHorizontal size={18} /></button>
+      </div>
     </form>
   </div>
 
@@ -658,7 +661,7 @@
         aria-label="Back to channel"
         data-testid="thread-back-button"
       >&larr;</button>
-      <h2 class="text-[0.85rem] font-bold text-foreground m-0 flex-1">Thread</h2>
+      <h2 class="text-[1.1rem] font-bold font-mono text-foreground m-0 flex-1">Thread</h2>
       {#if isTopicChannel && $threadData?.parentMessage?.id}
         <button
           class="px-2 py-1 text-[0.72rem] rounded-md border transition-all duration-150 {hasDedicatedSession ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
@@ -842,23 +845,25 @@
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Mobile input -->
-    <form class="flex gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
-      <textarea
-        data-testid="thread-input"
-        bind:this={mobileTextareaEl}
-        bind:value={replyText}
-        placeholder="Reply in thread..."
-        rows="1"
-        class="flex-1 py-[10px] px-[14px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
-        onkeydown={handleTextareaKeyDown}
-        oninput={resizeTextarea}
-      ></textarea>
-      <button
-        type="submit"
-        disabled={!replyText.trim()}
-        data-testid="thread-send-button"
-        class="py-[10px] px-[16px] border-none rounded-[18px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.85rem] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90"
-      >Send</button>
+    <form class="px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+      <div class="relative">
+        <textarea
+          data-testid="thread-input"
+          bind:this={mobileTextareaEl}
+          bind:value={replyText}
+          placeholder="Reply in thread..."
+          rows="1"
+          class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          onkeydown={handleTextareaKeyDown}
+          oninput={resizeTextarea}
+        ></textarea>
+        <button
+          type="submit"
+          disabled={!replyText.trim()}
+          data-testid="thread-send-button"
+          class="absolute right-[12px] top-[50%] -translate-y-[50%] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
+        ><SendHorizontal size={18} /></button>
+      </div>
     </form>
   </div>
 {/if}

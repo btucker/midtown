@@ -11,9 +11,9 @@
 
 /* shadcn-svelte CSS variables for theming */
 :root {
-  --background: 30 100% 99.6%;
+  --background: 60 100% 99.8%;
   --foreground: 240 10% 3.9%;
-  --card: 30 100% 99.6%;
+  --card: 42 50% 98%;
   --card-foreground: 240 10% 3.9%;
   --popover: 30 100% 99.6%;
   --popover-foreground: 240 10% 3.9%;
@@ -31,7 +31,8 @@
   --input: 240 5.9% 90%;
   --ring: 240 5.9% 10%;
   --radius: 0.5rem;
-  --sidebar-background: 42 47% 89%;
+  --header-height: 45px;
+  --sidebar-background: 42.5 48% 90.2%;
   --sidebar-foreground: 240 5.3% 26.1%;
   --sidebar-primary: 240 5.9% 10%;
   --sidebar-primary-foreground: 0 0% 98%;

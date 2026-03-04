@@ -1,10 +1,11 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData } from './store.js'
+  import { messages, messagesByChannel, activeChannel, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData, threadUnreadCounts } from './store.js'
   import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
   import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
   import { tick, onMount, untrack } from 'svelte'
   import { fly } from 'svelte/transition'
   import ReplyIcon from '@lucide/svelte/icons/reply'
+  import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
@@ -868,16 +869,31 @@
 
           <!-- Reply indicator for messages with thread replies -->
           {#if !msg.thread_parent_id && msg.reply_count}
+            {@const threadUnread = $threadUnreadCounts[msg.id] || 0}
+            {@const participants = msg.reply_participants || (msg.last_reply ? [msg.last_reply.from] : [])}
             <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
               <button
                 data-testid="thread-summary"
                 class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
                 onclick={() => openThread(msg, $activeChannel)}
               >
-                <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
+                {#if participants.length > 0}
+                  <span class="thread-avatars">
+                    {#each participants as p}
+                      <span
+                        class="thread-avatar-chip"
+                        style="background-color: {getSenderColor(p)}"
+                        title={p}
+                      >{p[0].toUpperCase()}</span>
+                    {/each}
+                  </span>
+                {/if}
+                {#if threadUnread > 0}
+                  <span class="thread-unread-pill">{threadUnread} new</span>
+                {:else}
+                  <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
+                {/if}
                 {#if msg.last_reply}
-                  <span class="text-muted-foreground/60">&middot;</span>
-                  <span class="text-muted-foreground">{msg.last_reply.from}</span>
                   <span class="text-muted-foreground/60">&middot;</span>
                   <span class="text-muted-foreground">{formatTime(msg.last_reply.timestamp)}</span>
                 {/if}
@@ -938,7 +954,7 @@
       getDescription={getAutocompleteDescription}
       onSelect={insertAutocompleteItem}
     />
-    <form class="flex flex-col gap-2 px-3 pt-2 pb-1 bg-card border-t border-border" onsubmit={handleSubmit}>
+    <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="file-preview">
           {#if pendingFile.type.startsWith('image/')}
@@ -959,14 +975,14 @@
           </button>
         </div>
       {/if}
-      <div class="flex gap-2 w-full">
+      <div class="relative w-full">
         <textarea
           data-testid="channel-input"
           bind:this={textareaElement}
           bind:value={inputText}
           placeholder={isDm ? `Message @${dmPeerName}...` : `Message to #${$activeChannel}...`}
           rows="1"
-          class="flex-1 py-[13px] px-[17px] border-2 border-border rounded-[18px] bg-card text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-border rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}
@@ -975,9 +991,9 @@
           type="submit"
           disabled={!inputText.trim() && !pendingFile || uploading}
           data-testid="send-button"
-          class="py-[13px] px-[22px] border-none rounded-[26px] bg-primary text-primary-foreground font-bold cursor-pointer transition-all duration-200 text-[0.95rem] tracking-[0.01em] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 hover:-translate-y-[1px] active:translate-y-0 not-disabled:hover:bg-primary/90"
+          class="absolute right-[12px] top-[50%] -translate-y-[50%] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         >
-          {uploading ? 'Uploading...' : 'Send'}
+          <SendHorizontal size={18} />
         </button>
       </div>
     </form>
@@ -1183,5 +1199,40 @@
     .mobile-thread-tappable {
       cursor: pointer;
     }
+  }
+
+  .thread-unread-pill {
+    padding: 1px 5px;
+    border-radius: 8px;
+    background: hsl(var(--accent-teal));
+    color: white;
+    font-size: 0.6rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .thread-avatars {
+    display: inline-flex;
+    flex-shrink: 0;
+  }
+
+  .thread-avatar-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    font-size: 0.5rem;
+    font-weight: 700;
+    color: white;
+    line-height: 1;
+    flex-shrink: 0;
+    margin-right: -3px;
+    outline: 1.5px solid hsl(var(--background));
+  }
+
+  .thread-avatar-chip:last-child {
+    margin-right: 0;
   }
 </style>

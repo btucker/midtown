@@ -2284,14 +2284,28 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     Ok(task_id) => {
                         info!("Created task !{}: {}", task_id, subject);
                         // Post channel notification attributed to the project lead.
-                        // Effect-created tasks always go to the main channel (no channel
-                        // routing needed here — channel=None routes to the default).
-                        let msg = crate::message::Message::text(
-                            "lead",
-                            format!("created task: {}", subject),
+                        // Use task_announcement_message for consistency with the RPC path,
+                        // and capture the message ID for task-as-thread linking.
+                        let channel = state.default_channel_name();
+                        let msg = crate::daemon::rpc_task::task_announcement_message(
+                            channel, "lead", &subject, None,
                         );
-                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                            warn!("Failed to post task creation message: {}", e);
+                        let message_id = msg.id.clone();
+                        match state.send_and_broadcast_async(&msg).await {
+                            Ok(()) => {
+                                let mut ps = state.persistent_state.lock().await;
+                                ps.task_message_id
+                                    .insert(task_id.clone(), message_id.clone());
+                                if !ps.task_thread_id.contains_key(&task_id) {
+                                    ps.task_thread_id.insert(task_id.clone(), message_id);
+                                }
+                                if let Err(e) = ps.save_for_repo(&repo_name) {
+                                    warn!("Failed to save task message_id mapping: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to post task creation message: {}", e);
+                            }
                         }
                     }
                     Err(e) => {

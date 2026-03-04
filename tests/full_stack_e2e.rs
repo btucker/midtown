@@ -384,13 +384,13 @@ impl Drop for FullStackFixture {
         let _ = fs::remove_dir_all(&self.temp_dir);
 
         // Clean up any worktrees created during tests
-        let coworkers_dir = dirs::home_dir()
+        let worktrees_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
             .join("projects")
             .join(&self.repo_name)
-            .join("coworkers");
-        let _ = fs::remove_dir_all(&coworkers_dir);
+            .join("worktrees");
+        let _ = fs::remove_dir_all(&worktrees_dir);
     }
 }
 
@@ -778,7 +778,7 @@ fn test_worktree_isolation() {
         .join(".midtown")
         .join("projects")
         .join(&fixture.repo_name)
-        .join("coworkers")
+        .join("worktrees")
         .join(coworker_name);
 
     eprintln!("Waiting for worktree at: {:?}", worktree_path);
@@ -802,18 +802,18 @@ fn test_worktree_isolation() {
         // Debug: check what worktrees actually exist
         eprintln!("Debug: Checking for alternative worktree locations...");
 
-        let coworkers_base = dirs::home_dir()
+        let worktrees_base = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
             .join("projects")
             .join(&fixture.repo_name)
-            .join("coworkers");
+            .join("worktrees");
 
-        eprintln!("Coworkers base exists: {}", coworkers_base.exists());
+        eprintln!("Worktrees base exists: {}", worktrees_base.exists());
 
-        if let Ok(entries) = fs::read_dir(&coworkers_base) {
+        if let Ok(entries) = fs::read_dir(&worktrees_base) {
             for entry in entries.flatten() {
-                eprintln!("  Found coworker dir: {:?}", entry.file_name());
+                eprintln!("  Found worktree dir: {:?}", entry.file_name());
             }
         }
 
