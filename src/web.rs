@@ -273,6 +273,9 @@ pub struct ChannelMessageData {
     /// Unique participants who replied in this thread (top-level history only).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply_participants: Option<Vec<String>>,
+    /// Whether this message was auto-posted from streaming output.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_output: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -625,15 +628,16 @@ async fn api_channel_history(
                     let channel = m.channel_name().to_string();
                     ChannelMessageData {
                         id: m.id.clone(),
-                        from: m.from,
-                        content: m.content,
+                        from: m.from.clone(),
+                        content: m.content.clone(),
                         timestamp: m.timestamp.to_rfc3339(),
                         msg_type: format!("{:?}", m.message_type).to_lowercase(),
                         channel,
-                        thread_parent_id: m.thread_parent_id,
+                        thread_parent_id: m.thread_parent_id.clone(),
                         reply_count: None,
                         last_reply: None,
                         reply_participants: None,
+                        auto_output: m.auto_output,
                     }
                 })
                 .collect()
@@ -699,6 +703,7 @@ async fn api_channel_history(
                         reply_count,
                         last_reply,
                         reply_participants,
+                        auto_output: m.auto_output,
                     }
                 })
                 .collect()
@@ -2466,6 +2471,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: message.auto_output,
     })
 }
 

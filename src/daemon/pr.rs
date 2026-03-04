@@ -1433,6 +1433,7 @@ fn pr_action_to_effects(
                         pr_number,
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1460,6 +1461,7 @@ fn pr_action_to_effects(
                         get_issue_action(issue_type)
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1499,6 +1501,7 @@ fn pr_action_to_effects(
                     sender: "midtown".to_string(),
                     message,
                     channel: channel.clone(),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2408,6 +2411,7 @@ fn comment_action_to_effects(
                     sender: "midtown".to_string(),
                     message: crate::daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2434,6 +2438,7 @@ fn comment_action_to_effects(
                         get_issue_action(PrIssueType::ReviewComment)
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2473,6 +2478,7 @@ fn comment_action_to_effects(
                     sender: "midtown".to_string(),
                     message,
                     channel: channel.clone(),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2531,6 +2537,7 @@ fn handoff_to_coworker_effects(
                 assignee, pr_number, original_author, context_suffix
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2551,6 +2558,7 @@ fn handoff_to_coworker_effects(
                 message
             ),
             channel: Some(OPS_CHANNEL.to_string()),
+            auto_output: false,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -3001,6 +3009,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 sender: "midtown".to_string(),
                 message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
             // DM separator so the reviewer's output streams to dm-<name>
             Effect::PostSystemMessage {
@@ -3035,6 +3044,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     truncate_str(title, 40),
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
+                auto_output: false,
             },
         ];
 
@@ -3113,6 +3123,7 @@ fn review_complete_action_to_effects(
                     sender: "midtown".to_string(),
                     message: daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3139,6 +3150,7 @@ fn review_complete_action_to_effects(
                         get_issue_action(PrIssueType::ReviewComplete)
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3178,6 +3190,7 @@ fn review_complete_action_to_effects(
                     sender: "midtown".to_string(),
                     message,
                     channel: channel.clone(),
+                    auto_output: false,
                 },
                 Effect::RecordPrNudge {
                     pr_number,

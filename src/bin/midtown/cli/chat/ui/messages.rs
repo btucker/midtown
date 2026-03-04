@@ -446,6 +446,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -457,6 +458,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let current_tasks = HashMap::new();
@@ -502,6 +504,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -513,6 +516,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let current_tasks = HashMap::new();
@@ -555,6 +559,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let current_tasks = HashMap::new();
@@ -622,6 +627,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let current_tasks = HashMap::new();
@@ -655,6 +661,7 @@ mod tests {
 
                 session_id: None,
                 thread_parent_id: None,
+                auto_output: false,
             })
             .collect();
 
@@ -734,6 +741,7 @@ mod tests {
 
                 session_id: None,
                 thread_parent_id: None,
+                auto_output: false,
             })
             .collect();
 
@@ -858,6 +866,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let daemon_lines =
@@ -878,6 +887,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let daemon_lines2 =
             render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -898,6 +908,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -918,6 +929,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
@@ -959,6 +971,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -978,6 +991,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let daemon_lines =
             render_message(&daemon_msg, 80, Some("github"), &current_tasks, None, &[]);
@@ -1005,6 +1019,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None, &[]);
         assert_eq!(
@@ -1044,6 +1059,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1100,6 +1116,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1132,6 +1149,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1237,6 +1255,7 @@ mod tests {
 
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         }
     }
 

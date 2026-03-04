@@ -343,10 +343,12 @@ fn test_process_lead_output_returns_post_effect() {
             sender,
             message,
             channel,
+            auto_output,
         } => {
             assert_eq!(sender, "myproject");
             assert_eq!(message, "Hello from lead");
             assert!(channel.is_none());
+            assert!(auto_output, "stream output should be auto_output");
         }
         _ => panic!("Expected PostToChannel effect"),
     }
@@ -503,10 +505,12 @@ fn test_process_lead_output_channel_lead_text_posted_to_channel() {
             sender,
             message,
             channel,
+            auto_output,
         } => {
             assert_eq!(sender, "web");
             assert_eq!(message, "Hello from web channel lead");
             assert_eq!(channel.as_deref(), Some("web"));
+            assert!(auto_output, "stream output should be auto_output");
         }
         _ => panic!("Expected PostToChannel effect"),
     }
@@ -642,11 +646,13 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
         sender,
         message,
         channel,
+        auto_output,
     }) = fork_effect
     {
         assert_eq!(sender, "fork-1234");
         assert_eq!(message, "Reply from fork");
         assert_eq!(channel.as_deref(), Some("topic-omega"));
+        assert!(auto_output, "stream output should be auto_output");
     }
 }
 
@@ -1198,10 +1204,12 @@ fn test_process_coworker_output_posts_to_dm_channel() {
             sender,
             message,
             channel,
+            auto_output,
         } => {
             assert_eq!(sender, "park");
             assert_eq!(message, "Working on auth endpoint");
             assert_eq!(channel.as_deref(), Some("dm-park"));
+            assert!(auto_output, "coworker stream output should be auto_output");
         }
         _ => panic!("Expected PostToChannel effect"),
     }

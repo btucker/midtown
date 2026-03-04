@@ -567,7 +567,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
-            class={msg.pending ? 'opacity-60' : ''}
+            class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -785,7 +785,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
-            class={msg.pending ? 'opacity-60' : ''}
+            class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
               <div class="flex gap-0 break-words">
@@ -890,5 +890,16 @@
     0% { background-color: hsl(var(--primary) / 0.2); }
     70% { background-color: hsl(var(--primary) / 0.2); }
     100% { background-color: transparent; }
+  }
+
+  /* Auto-output messages: dimmed text + subtle left border */
+  :global(.auto-output) {
+    border-left: 2px solid hsl(var(--muted-foreground) / 0.2);
+    padding-left: 16px;
+  }
+
+  :global(.auto-output .message-text),
+  :global(.auto-output .action-text) {
+    color: hsl(var(--muted-foreground));
   }
 </style>

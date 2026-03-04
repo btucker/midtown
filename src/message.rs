@@ -98,6 +98,15 @@ pub struct Message {
     /// in a thread started by the message with this ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_parent_id: Option<String>,
+    /// Whether this message was auto-posted from a session's streaming output
+    /// (as opposed to an explicit `midtown channel post`). Used by the frontend
+    /// to apply muted styling for background output.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_output: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 impl Message {
@@ -127,6 +136,7 @@ impl Message {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         }
     }
 
@@ -155,6 +165,7 @@ impl Message {
             channel: Some(channel.into()),
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         }
     }
 
@@ -383,6 +394,7 @@ mod tests {
             channel: None,
             session_id: None,
             thread_parent_id: None,
+            auto_output: false,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }

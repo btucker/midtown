@@ -357,11 +357,13 @@ fn mention_action_to_effects(
                     sender: "midtown".to_string(),
                     message: format!("Called in {} in response to @mention", name),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 }],
                 on_failure: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!("Failed to call in {} for @mention", name),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 }],
             }]
         }
@@ -375,6 +377,7 @@ fn mention_action_to_effects(
                         coworker_name
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
                 }]
             } else {
                 vec![]

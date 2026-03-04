@@ -82,6 +82,7 @@ fn test_web_update_serialization() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -397,6 +398,7 @@ fn test_task_1191_channel_switching_requirements() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     };
     assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -417,6 +419,7 @@ fn test_task_1191_channel_switching_requirements() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     };
     assert_eq!(msg_default.channel, "myproject");
 
@@ -704,6 +707,7 @@ fn test_channel_message_data_with_thread_parent_id() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("thread_parent_id"));
@@ -725,6 +729,7 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("thread_parent_id"));
@@ -747,6 +752,7 @@ fn test_channel_message_data_includes_reply_metadata_when_present() {
             timestamp: "2024-01-01T00:02:00Z".to_string(),
         }),
         reply_participants: Some(vec!["park".to_string(), "york".to_string()]),
+        auto_output: false,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("\"reply_count\":3"));
@@ -769,6 +775,7 @@ fn test_channel_message_data_reply_metadata_omitted_when_none() {
         reply_count: None,
         last_reply: None,
         reply_participants: None,
+        auto_output: false,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("reply_count"));
