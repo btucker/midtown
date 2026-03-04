@@ -8,6 +8,7 @@ import {
   computeVisibleDmChannels,
   findPr,
   getPrUrl,
+  resolveMessageTapAction,
 } from './channelUtils.js'
 
 describe('getChannelTaskCount', () => {
@@ -471,5 +472,135 @@ describe('getPrUrl', () => {
     const kanban = { review: [], done: [] }
     const url = getPrUrl('42', kanban, [], primaryRepo)
     expect(url).toBe('https://github.com/btucker/midtown/pull/42')
+  })
+})
+
+// ── Mobile message tap handler ────────────────────────────────────────────────
+// resolveMessageTapAction is the pure decision logic extracted from
+// handleMessageTap in Channel.svelte. On mobile, tapping a message row can:
+//   - Open a PR on GitHub (data-pr link)
+//   - Open a task thread (data-task link)
+//   - Open the message thread (default tap)
+//   - Do nothing (desktop, thread replies, interactive controls, external links)
+
+describe('resolveMessageTapAction', () => {
+  const topLevelMsg = { thread_parent_id: null }
+  const threadReply = { thread_parent_id: 'parent-123' }
+
+  // Helper: build a link descriptor for an internal pseudo-link
+  function internalLink(dataset) {
+    return { isExternal: false, dataset }
+  }
+
+  // ── Guard conditions (returns null → let event propagate) ──
+
+  it('returns null on wide screen (desktop)', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: true,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: null,
+    })
+    expect(result).toBeNull()
+  })
+
+  it('returns null for thread replies', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: threadReply,
+      isInteractiveControl: false,
+      link: null,
+    })
+    expect(result).toBeNull()
+  })
+
+  it('returns null when tapping an interactive control', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: true,
+      link: null,
+    })
+    expect(result).toBeNull()
+  })
+
+  it('returns null for external links', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: { isExternal: true, dataset: {} },
+    })
+    expect(result).toBeNull()
+  })
+
+  // ── PR link handling (key invariant from !2027) ──
+
+  it('returns open_pr action for PR links', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: internalLink({ pr: '42' }),
+    })
+    expect(result).toEqual({ type: 'open_pr', prNum: '42' })
+  })
+
+  it('PR link takes precedence — never opens a task thread', () => {
+    // A link could theoretically have both data-pr and data-task.
+    // PR behavior must win — PR links always open GitHub (!2027 invariant).
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: internalLink({ pr: '42', task: '7' }),
+    })
+    expect(result).toEqual({ type: 'open_pr', prNum: '42' })
+  })
+
+  // ── Task link handling ──
+
+  it('returns open_task action for task links', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: internalLink({ task: '7' }),
+    })
+    expect(result).toEqual({ type: 'open_task', taskId: '7' })
+  })
+
+  // ── Default: open message thread ──
+
+  it('returns open_thread when tapping plain message text', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: null,
+    })
+    expect(result).toEqual({ type: 'open_thread' })
+  })
+
+  it('returns open_thread when tapping an internal link without task/pr', () => {
+    // Channel and coworker links are internal pseudo-links that don't
+    // have their own mobile handler — they fall through to open_thread.
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: internalLink({ channel: 'web' }),
+    })
+    expect(result).toEqual({ type: 'open_thread' })
+  })
+
+  it('returns open_thread for coworker links', () => {
+    const result = resolveMessageTapAction({
+      isWideScreen: false,
+      msg: topLevelMsg,
+      isInteractiveControl: false,
+      link: internalLink({ coworker: 'york' }),
+    })
+    expect(result).toEqual({ type: 'open_thread' })
   })
 })
