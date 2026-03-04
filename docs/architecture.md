@@ -425,7 +425,9 @@ When a coworker is called in, the daemon creates a task-based worktree at `~/.mi
 - `worktrees/task-<id>-<slug>/` — task-based worktrees (current)
 - `coworkers/<name>/` — legacy name-based worktrees (deprecated)
 
-Old paths (`~/.midtown/worktrees/<repo>/` and `~/.midtown/coworkers/<repo>/`) are auto-migrated on first access via `migrate_worktree_paths()`.
+Old paths (`~/.midtown/worktrees/<repo>/` and `~/.midtown/coworkers/<repo>/`) are auto-migrated on first access via `migrate_worktree_paths()`. Lead session data (session ID, system prompt) formerly lived in `~/.midtown/lead/<repo>/` and is auto-migrated into `~/.midtown/projects/<repo>/` (with `lead-` prefixed filenames) via `migrate_lead_to_project()`.
+
+**Sandbox writable paths**: Filesystem sandboxing (`sandbox-exec` on macOS, `bwrap` on Linux) restricts Claude Code writes to project-scoped directories. The `writable_dirs()` function builds the allow-list: `~/.midtown/projects/<project>/` and `~/.local/state/midtown/<project>/` (not the broad `~/.midtown/` or `~/.local/state/midtown/`). This prevents cross-project writes while leaving global config (`~/.midtown/config.toml`) readable.
 
 ## Task Completion
 

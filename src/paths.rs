@@ -654,10 +654,10 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Migrate data from the old directory structure to the new one.
+/// Migrate data from the old directory structure to the new one (era 1).
 ///
 /// Old structure: `~/.midtown/<repo>/...`
-/// New structure: `~/.midtown/{projects,lead}/<repo>/...`
+/// New structure: `~/.midtown/projects/<repo>/...`
 ///
 /// Migrates:
 /// - `channel.jsonl` -> `projects/<repo>/channel.jsonl`
@@ -665,13 +665,14 @@ pub fn atomic_rename(tmp: &Path, target: &Path) -> std::io::Result<()> {
 /// - `logs/` -> `projects/<repo>/logs/`
 /// - `daemon.pid` -> `projects/<repo>/daemon.pid`
 /// - `worktrees/` -> `projects/<repo>/worktrees/`
-/// - `lead-session-id` -> `lead/<repo>/session-id`
-/// - `lead-initialized` -> `lead/<repo>/lead-initialized`
+/// - `lead-session-id` -> `projects/<repo>/lead-session-id`
+/// - `lead-initialized` -> `projects/<repo>/lead-initialized`
 ///
 /// Note: [`migrate_worktree_paths()`] (era 2) handles a separate migration
 /// from `~/.midtown/projects/<repo>/coworkers/` to
 /// `~/.midtown/projects/<repo>/worktrees/` for repos that were partially
-/// migrated between the two eras.
+/// migrated between the two eras. [`migrate_lead_to_project()`] (era 3)
+/// handles migration from `~/.midtown/lead/<repo>/` into `projects/<repo>/`.
 ///
 /// Returns Ok(true) if migration was performed, Ok(false) if already migrated or nothing to migrate.
 pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
@@ -855,10 +856,10 @@ pub fn do_migrate_worktree_paths(repo: &str) -> std::io::Result<bool> {
 /// Migrate lead session data from `~/.midtown/lead/<repo>/` into
 /// `~/.midtown/projects/<repo>/` (era 3).
 ///
-/// Moves:
+/// Moves known files:
 /// - `lead/<repo>/session-id` → `projects/<repo>/lead-session-id`
 /// - `lead/<repo>/system-prompt.txt` → `projects/<repo>/lead-system-prompt.txt`
-/// - Any other files in `lead/<repo>/` → `projects/<repo>/lead-<filename>`
+/// - `lead/<repo>/lead-initialized` → `projects/<repo>/lead-initialized`
 ///
 /// Idempotent — only runs once per session per repo.
 pub fn migrate_lead_to_project(repo: &str) {
@@ -874,6 +875,8 @@ pub fn migrate_lead_to_project(repo: &str) {
         if guard.contains(repo) {
             return;
         }
+        // Don't mark as migrated yet — only mark after success so failed
+        // migrations can be retried on next access.
     }
 
     match do_migrate_lead_to_project(repo) {
