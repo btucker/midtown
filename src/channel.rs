@@ -994,58 +994,19 @@ impl Channel {
 
     /// Check whether a message with the given ID exists in the channel.
     ///
-    /// Performs a streaming line-by-line scan across all history files and returns
-    /// `true` as soon as a matching ID is found, avoiding loading all messages into
-    /// memory. This is used for thread parent ID validation on the write path.
+    /// Delegates to `find_message_by_id_async` and returns `true` when found.
+    /// This is used for thread parent ID validation on the write path.
     pub async fn contains_message_id_async(&self, target_id: &str) -> Result<bool> {
-        let history_files = self.list_all_history_files();
-
-        for path in &history_files {
-            if !path.exists() {
-                continue;
-            }
-            let file = File::open(path)?;
-            for attempt in 0..10 {
-                match file.try_lock_shared() {
-                    Ok(()) => break,
-                    Err(e) if attempt == 9 => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            format!(
-                                "Failed to acquire shared lock after {} attempts: {}",
-                                attempt + 1,
-                                e
-                            ),
-                        )
-                        .into());
-                    }
-                    Err(_) => {
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    }
-                }
-            }
-            let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                if let Ok(msg) = serde_json::from_str::<Message>(&line)
-                    && msg.id == target_id
-                {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
+        Ok(self.find_message_by_id_async(target_id).await?.is_some())
     }
 
     /// Look up a message by ID and return it if found.
     ///
-    /// Like `contains_message_id_async`, performs a streaming line-by-line scan
-    /// across all history files and returns the first matching `Message`. Used by
-    /// the fork handler to retrieve the parent message content as fallback context.
+    /// Performs a streaming line-by-line scan across all history files with
+    /// shared-lock retry (up to 10 attempts, 50ms apart) and returns the first
+    /// matching `Message`. Used by the fork handler to retrieve the parent
+    /// message content as fallback context, and by `contains_message_id_async`
+    /// for thread parent ID validation.
     pub async fn find_message_by_id_async(&self, target_id: &str) -> Result<Option<Message>> {
         let history_files = self.list_all_history_files();
 

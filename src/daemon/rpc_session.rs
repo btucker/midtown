@@ -1455,6 +1455,15 @@ pub(super) async fn create_fork_session(
     Ok((fork_session_id, false, fork_channel))
 }
 
+/// Format text as a markdown blockquote, prefixing every line with `> `.
+fn format_blockquote(content: &str) -> String {
+    content
+        .lines()
+        .map(|l| format!("> {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Handle session.fork RPC method.
 ///
 /// Forks the calling session into a new independent session bound to a thread.
@@ -1467,10 +1476,15 @@ pub(super) async fn create_fork_session(
 ///
 /// **Side effects for fresh forks:**
 /// - Sends a `NudgeSession` so the fork has an initial message to act on.
-///   Uses `initial_message` if provided; otherwise uses `fork_initial_framing`
-///   when the caller is a channel lead. Non-channel-lead callers (e.g. the
-///   project lead) get no automatic framing — the framing text assumes a
-///   channel-lead role which would be misleading.
+///   The nudge follows a 3-priority fallback chain:
+///   1. Explicit `initial_message` from the caller (always preferred).
+///   2. Parent message content looked up by `thread_parent_id` from the
+///      channel history. For channel leads, this is combined with
+///      `fork_initial_framing`; for non-channel-lead callers, the parent
+///      message is wrapped as "The following message needs investigation".
+///   3. Bare `fork_initial_framing` for channel leads when no parent
+///      message is found. Non-channel-lead callers get no nudge in this
+///      case (the framing text assumes a channel-lead role).
 /// - Broadcasts `ThreadOwnership` to web clients so the "Dedicated session"
 ///   indicator appears in the UI regardless of whether the fork was created
 ///   via CLI or web UI.
@@ -1483,8 +1497,8 @@ pub(super) async fn create_fork_session(
 ///   env var or the system init event).
 /// - `name_hint`: Optional descriptive name for the fork (e.g. "investigate auth bug").
 /// - `initial_message`: Optional initial message for the fork. When provided, this is
-///   sent as the nudge instead of the default `fork_initial_framing`. This lets callers
-///   combine fork + nudge into a single command.
+///   sent as the nudge instead of any fallback. This lets callers combine fork + nudge
+///   into a single command with precise instructions.
 pub(super) async fn handle_session_fork(
     id: RequestId,
     thread_parent_id: &str,
@@ -1520,6 +1534,10 @@ pub(super) async fn handle_session_fork(
             // Without a nudge the fork session sits idle forever with no
             // initial message to act on — this was the root cause of "forks
             // not working".
+            //
+            // Check channel-lead status up front so we don't need try_lock()
+            // inside a sync closure — .lock().await is correct in async context
+            // and avoids non-deterministic framing on lock contention.
             let is_channel_lead = {
                 let ps_guard = state.persistent_state.lock().await;
                 ps_guard
@@ -1573,12 +1591,16 @@ pub(super) async fn handle_session_fork(
                             .as_ref()
                             .map(|ch| super::rpc_channel::fork_initial_framing(ch))
                             .unwrap_or_default();
-                        Some(format!("{framing}\n\n{from} wrote:\n> {content}"))
+                        Some(format!(
+                            "{framing}\n\n{from} wrote:\n{}",
+                            format_blockquote(&content)
+                        ))
                     }
                     // Non-channel-lead + parent message: just the message context
                     (false, Some((from, content))) => Some(format!(
                         "The following message needs investigation:\n\n\
-                             {from} wrote:\n> {content}"
+                             {from} wrote:\n{}",
+                        format_blockquote(&content)
                     )),
                     // Channel lead, no parent found: bare framing
                     (true, None) => fork_channel

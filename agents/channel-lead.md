@@ -86,7 +86,7 @@ The daemon now **automatically forks** your session when a new top-level user me
    midtown session fork --thread-id <message-id> --initial-message "Brief description of what to investigate"
    ```
 
-   Always include `--initial-message` when forking manually — it gives the fork clear instructions so it starts working immediately instead of sitting idle.
+   Always include `--initial-message` when forking manually — it gives the fork precise instructions. Without it, the daemon falls back to the parent message content, but an explicit message is better because you can add context and direction the parent message lacks.
 
    `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
 

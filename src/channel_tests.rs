@@ -2199,3 +2199,72 @@ fn test_load_channel_notes_truncates_at_size_limit() {
         result.len()
     );
 }
+
+// ============================================================================
+// find_message_by_id_async tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_find_message_by_id_returns_matching_message() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    let msg1 = Message::text("alice", "Hello world");
+    let msg2 = Message::text("bob", "Goodbye world");
+    let target_id = msg2.id.clone();
+
+    channel.send(&msg1).unwrap();
+    channel.send(&msg2).unwrap();
+
+    let found = channel.find_message_by_id_async(&target_id).await.unwrap();
+    assert!(found.is_some(), "should find the message by ID");
+    let found = found.unwrap();
+    assert_eq!(found.id, target_id);
+    assert_eq!(found.from, "bob");
+    assert_eq!(found.content, "Goodbye world");
+}
+
+#[tokio::test]
+async fn test_find_message_by_id_returns_none_for_missing_id() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    channel.send(&Message::text("alice", "Hello")).unwrap();
+
+    let found = channel
+        .find_message_by_id_async("nonexistent-id")
+        .await
+        .unwrap();
+    assert!(found.is_none(), "should return None for missing ID");
+}
+
+#[tokio::test]
+async fn test_find_message_by_id_handles_empty_channel() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    let found = channel.find_message_by_id_async("any-id").await.unwrap();
+    assert!(found.is_none(), "should return None for empty channel");
+}
+
+#[tokio::test]
+async fn test_contains_message_id_delegates_to_find() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
+
+    let msg = Message::text("alice", "Hello");
+    let target_id = msg.id.clone();
+    channel.send(&msg).unwrap();
+
+    assert!(
+        channel.contains_message_id_async(&target_id).await.unwrap(),
+        "should find existing message"
+    );
+    assert!(
+        !channel
+            .contains_message_id_async("missing-id")
+            .await
+            .unwrap(),
+        "should not find missing message"
+    );
+}
