@@ -151,18 +151,34 @@ impl WorktreeRegistry {
         Ok(())
     }
 
-    /// Unbind a coworker from their worktree (worktree stays for reuse).
-    pub fn unbind_coworker(&mut self, coworker: &str) {
+    /// Unbind a coworker from all worktrees (worktree stays for reuse).
+    ///
+    /// Historically `coworker_index` is one-to-one, but stale on-disk state can
+    /// contain multiple worktrees bound to the same coworker (e.g. after
+    /// interrupted resumes). This method clears every matching assignment to
+    /// keep session cleanup paths idempotent.
+    pub fn unbind_coworker(&mut self, coworker: &str) -> bool {
         let key = coworker.to_lowercase();
-        if let Some(wt_id) = self.coworker_index.remove(&key)
-            && let Some(assignment) = self.assignments.get_mut(&wt_id)
-            && assignment
+        let mut removed = false;
+
+        for assignment in self.assignments.values_mut() {
+            if assignment
                 .current_coworker
                 .as_ref()
-                .is_some_and(|c| c.to_lowercase() == key)
-        {
-            assignment.current_coworker = None;
+                .is_some_and(|c| c.eq_ignore_ascii_case(&key))
+            {
+                assignment.current_coworker = None;
+                removed = true;
+            }
         }
+
+        // Coworker index is single-value by design; clear it unconditionally if
+        // we cleared at least one binding.
+        if removed {
+            self.coworker_index.remove(&key);
+        }
+
+        removed
     }
 
     /// Set the PR number for a worktree.

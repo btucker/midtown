@@ -398,8 +398,11 @@
 
   function resizeTextarea() {
     if (!textareaEl) return
+    textareaEl.style.overflowY = 'hidden'
     textareaEl.style.height = 'auto'
     textareaEl.style.height = textareaEl.scrollHeight + 'px'
+    textareaEl.style.overflowY =
+      textareaEl.scrollHeight > textareaEl.clientHeight ? 'auto' : 'hidden'
   }
 
   // Re-measure textarea height when its width changes (e.g., thread panel resized,
@@ -653,7 +656,7 @@
           bind:value={replyText}
           placeholder="Reply in thread..."
           rows="1"
-          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleTextareaKeyDown}
           oninput={resizeTextarea}
         ></textarea>
@@ -873,7 +876,7 @@
           bind:value={replyText}
           placeholder="Reply in thread..."
           rows="1"
-          class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleTextareaKeyDown}
           oninput={resizeTextarea}
         ></textarea>

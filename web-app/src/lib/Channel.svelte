@@ -682,8 +682,11 @@
 
   function resizeTextarea() {
     if (!textareaElement) return
+    textareaElement.style.overflowY = 'hidden'
     textareaElement.style.height = 'auto'
     textareaElement.style.height = textareaElement.scrollHeight + 'px'
+    textareaElement.style.overflowY =
+      textareaElement.scrollHeight > textareaElement.clientHeight ? 'auto' : 'hidden'
   }
 
   // Re-measure textarea height when its width changes (e.g., thread panel opens/closes,
@@ -947,7 +950,7 @@
           bind:value={inputText}
           placeholder={isDm ? `Message @${dmPeerName}...` : `Message to #${$activeChannel}...`}
           rows="1"
-          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-border rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-auto focus:border-primary placeholder:text-muted-foreground"
+          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-border rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleKeyDown}
           onpaste={handlePaste}
           oninput={handleInput}

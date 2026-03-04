@@ -76,6 +76,28 @@ fn prepare_task_worktree(
     }
 }
 
+/// Check whether this task worktree is currently bound to a different ACTIVE
+/// coworker, and therefore should be skipped for this spawn.
+fn worktree_collision_with_active_coworker(
+    snap: &snapshot::WorldSnapshot,
+    worktree_id: &str,
+    coworker: &str,
+) -> Option<String> {
+    let assignment = snap.worktree_registry.get(worktree_id)?;
+    let bound_coworker = assignment.current_coworker.as_deref()?;
+
+    if bound_coworker.eq_ignore_ascii_case(coworker) {
+        return None;
+    }
+
+    let bound_lower = bound_coworker.to_lowercase();
+    if snap.coworkers.active_names.contains(&bound_lower) {
+        return Some(bound_coworker.to_string());
+    }
+
+    None
+}
+
 // ============================================================================
 // Plan content helpers
 // ============================================================================
@@ -274,100 +296,13 @@ fn should_recover_task(
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
-    // Check if task is already completed
-    // Race condition: coworker reports completion via RPC, task is marked completed,
-    // but snapshot was collected before in_progress_tasks refreshed.
-    if task.status == crate::tasks::TaskStatus::Completed {
-        debug!(
-            "Skipping orphan recovery for task !{}: already completed",
-            task.id
-        );
-        return false;
-    }
-
-    // Check if this task has an open PR tracked via pr_task_associations.
-    // This prevents duplicate coworkers from being spawned when a task already
-    // has an open PR but the task.pr field isn't set yet.
-    // IMPORTANT: Only skip recovery if the PR is NOT merged. pr_author_sessions
-    // cleanup is async, so stale entries for merged PRs can linger. We must
-    // cross-reference merged_pr_numbers to avoid incorrectly skipping tasks.
-    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
-        if !merged_pr_numbers.contains(&pr_number) {
-            debug!(
-                "Skipping orphan recovery for task !{}: has open PR via pr_task_associations (PR #{})",
-                task.id, pr_number
-            );
-            return false;
-        } else {
-            debug!(
-                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
-                task.id, pr_number
-            );
-        }
-    }
-
-    // Check if this task has an explicit PR association that's already merged.
-    // ONLY check the explicit pr field - never fall back to text extraction.
-    // This prevents false positives like task 1142 which mentioned "PR #940 fix insufficient"
-    // as context but was actually creating a different PR.
-    if let Some(pr_number) = task.pr {
-        // Check cache first (fast path)
-        if merged_pr_numbers.contains(&pr_number) {
-            debug!(
-                "Skipping orphan recovery for task !{}: explicit PR #{} is in merged cache",
-                task.id, pr_number
-            );
-            return false;
-        }
-
-        // Cache miss — check GitHub directly (safety net against stale cache)
-        // The merged PR cache only includes last 10 PRs and refreshes every 5 minutes.
-        // This direct check prevents duplicate PRs when:
-        // 1. A PR merges but auto-completion fails
-        // 2. Coworker shuts down before next cache refresh
-        // 3. Orphan recovery would otherwise spawn duplicate work
-        match is_pr_merged(pr_number, repo_path) {
-            Some(true) => {
-                info!(
-                    "Skipping orphan recovery for task !{}: explicit PR #{} is merged (direct check)",
-                    task.id, pr_number
-                );
-                return false;
-            }
-            Some(false) => {
-                debug!(
-                    "PR #{} is open/closed (not merged), allowing orphan recovery for task !{}",
-                    pr_number, task.id
-                );
-            }
-            None => {
-                // GitHub API check failed — be conservative and allow recovery.
-                // If the PR was actually merged, auto-completion will clean it up.
-                warn!(
-                    "Failed to check PR #{} merge status for task !{}, allowing recovery",
-                    pr_number, task.id
-                );
-            }
-        }
-    }
-
-    // Defense-in-depth: Check if GitHub has an open PR with [Midtown !{task_id}] in the title.
-    // This data is pre-collected during snapshot from open_prs_data (no I/O here).
-    // Catches cases where:
-    // 1. A PR was created but pr_author_sessions wasn't updated yet
-    // 2. Daemon restarted before the PR association was persisted
-    // 3. The task.pr field hasn't been set yet
-    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
-        info!(
-            "Skipping orphan recovery for task !{}: found open PR #{} via GitHub PR title pattern",
-            task.id, open_pr
-        );
-        return false;
-    }
-
-    // No associated PR found — this is a non-PR task (investigation, review, etc.)
-    // or a task that hasn't opened a PR yet. Allow recovery.
-    true
+    should_recover_task_optional_repo(
+        task,
+        merged_pr_numbers,
+        Some(repo_path),
+        tasks_with_open_prs,
+        github_open_pr_task_ids,
+    )
 }
 
 /// Check for orphaned tasks and auto-recover coworkers.
@@ -684,35 +619,6 @@ where
     pre_spawn
 }
 
-/// Extract task IDs claimed by dispatch_via_sessions effects.
-///
-/// Scans effects for `RecordTaskAssignment` — both as top-level effects
-/// and nested inside `SpawnCoworkerWithCallbacks` on_success callbacks.
-/// Used by `events.rs` to build an exclusion set for
-/// `spawn_for_pending_tasks_excluding`, preventing dual-spawn when
-/// in_progress recovery and pending dispatch both target the same task in one tick.
-pub(super) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for effect in effects {
-        match effect {
-            // Legacy fresh spawn path: RecordTaskAssignment is nested in on_success
-            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
-                for sub in on_success {
-                    if let Effect::RecordTaskAssignment { task_id, .. } = sub {
-                        ids.insert(task_id.clone());
-                    }
-                }
-            }
-            // Session-aware resume path: RecordTaskAssignment is top-level
-            Effect::RecordTaskAssignment { task_id, .. } => {
-                ids.insert(task_id.clone());
-            }
-            _ => {}
-        }
-    }
-    ids
-}
-
 /// Session-aware dispatch for all in_progress tasks.
 ///
 /// Pre-filter: skips tasks owned by empty owners, the Lead, or channel leads
@@ -907,6 +813,15 @@ where
         // Uses prepare_task_worktree to keep the worktree registry current and
         // emit EnsureWorktree / BindCoworkerToWorktree effects.
         let wt = prepare_task_worktree(task_id, task_subject, &snap.repo_name, snap);
+        if let Some(bound_coworker) =
+            worktree_collision_with_active_coworker(snap, &wt.worktree_id, coworker_name)
+        {
+            debug!(
+                "Session dispatch: skipping task !{} because worktree {} is bound to active coworker {}",
+                task_id, wt.worktree_id, bound_coworker
+            );
+            continue;
+        }
 
         let mut config = crate::launch::LaunchConfig::coworker(
             coworker_name.to_string(),
@@ -1126,6 +1041,15 @@ where
         &snap.repo_name,
         snap,
     );
+    if let Some(bound_coworker) =
+        worktree_collision_with_active_coworker(snap, &wt.worktree_id, &recovery.owner)
+    {
+        debug!(
+            "Session dispatch: skipping fallback spawn for task !{} because worktree {} is bound to active coworker {}",
+            recovery.task_id, wt.worktree_id, bound_coworker
+        );
+        return vec![];
+    }
 
     let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
@@ -1762,6 +1686,16 @@ fn dispatch_owned_pending_tasks(
 
                 let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
 
+                if let Some(bound_coworker) =
+                    worktree_collision_with_active_coworker(snap, &wt.worktree_id, o)
+                {
+                    debug!(
+                        "Pending owned task !{}: skipping {} because worktree {} is bound to active coworker {}",
+                        tid, o, wt.worktree_id, bound_coworker
+                    );
+                    continue;
+                }
+
                 let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
                     state.repo_name.clone(),
@@ -1991,6 +1925,18 @@ fn dispatch_unowned_pending_tasks(
                 let prompt =
                     crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
                 let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
+                let coworker_name = record.preferred_name.clone().unwrap_or_default();
+
+                if let Some(bound_coworker) =
+                    worktree_collision_with_active_coworker(snap, &wt.worktree_id, &coworker_name)
+                {
+                    debug!(
+                        "Pending task !{}: skipping resume spawn for {} because worktree {} is bound to active coworker {}",
+                        task.id, coworker_name, wt.worktree_id, bound_coworker
+                    );
+                    continue;
+                }
+
                 // Staleness is pre-evaluated in WorldSnapshot::stale_working_dir_sessions.
                 let working_dir = if !record.working_dir.is_empty()
                     && !snap.stale_working_dir_sessions.contains(&record.session_id)
@@ -2010,7 +1956,7 @@ fn dispatch_unowned_pending_tasks(
                     wt.path.clone()
                 };
                 let mut config = crate::launch::LaunchConfig::coworker(
-                    record.preferred_name.clone().unwrap_or_default(),
+                    coworker_name,
                     snap.repo_name.clone(),
                     crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
                     Some(prompt),
@@ -2194,6 +2140,15 @@ fn dispatch_unowned_pending_tasks(
         } else {
             // Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
+            if let Some(bound_coworker) =
+                worktree_collision_with_active_coworker(snap, &wt.worktree_id, &coworker_name)
+            {
+                debug!(
+                    "Pending task !{}: skipping fresh spawn for {} because worktree {} is bound to active coworker {}",
+                    task.id, coworker_name, wt.worktree_id, bound_coworker
+                );
+                continue;
+            }
             let prompt =
                 crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
 

@@ -406,3 +406,85 @@ fn dedup_prevents_double_spawn_for_same_task() {
     );
     assert_eq!(task_assignments[0], "123");
 }
+
+#[test]
+fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
+    let mut config_amsterdam = LaunchConfig {
+        name: "amsterdam".to_string(),
+        session_mode: SessionMode::Resume,
+        role: CoworkerRole::Coworker,
+        initial_prompt: Some("resume task".to_string()),
+        additional_dirs: vec![],
+        pr_number: None,
+        team_name: None,
+        working_dir: Some("/tmp/task-123-amsterdam".into()),
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
+        escalation_target: None,
+    };
+    config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
+
+    let config_york = LaunchConfig {
+        name: "york".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::Coworker,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        team_name: None,
+        working_dir: None,
+        model: "sonnet".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        persisted_initial_prompt: None,
+        escalation_target: None,
+    };
+
+    let spawn_session = Effect::SpawnSession {
+        session_id: "sess-2045".to_string(),
+        task_id: "123".to_string(),
+        working_dir: std::path::PathBuf::from("/tmp/task-123"),
+        initial_prompt: "resume task".to_string(),
+        preferred_name: Some("amsterdam".to_string()),
+        is_reviewer: false,
+        resume: true,
+        config: Box::new(config_amsterdam),
+    };
+
+    let assign_spawn = Effect::AssignAndSpawn {
+        task_id: "123".to_string(),
+        owner: "york".to_string(),
+        repo_name: "test".to_string(),
+        config: config_york,
+        on_success: vec![],
+        on_failure: vec![],
+    };
+
+    let effects = vec![spawn_session, assign_spawn];
+    let deduped = dedup_spawn_effects(effects);
+
+    let spawn_count = deduped
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnCoworker(_)
+                    | Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::SpawnSession { .. }
+            )
+        })
+        .count();
+    assert_eq!(
+        spawn_count, 1,
+        "Should have only one spawn effect for task 123 even across SpawnSession"
+    );
+    assert!(
+        matches!(&deduped[0], Effect::SpawnSession { session_id, .. } if session_id == "sess-2045"),
+        "First spawn effect should be kept"
+    );
+}

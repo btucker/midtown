@@ -948,12 +948,23 @@ impl DaemonState {
     /// cooldowns, pending nudges, task assignments, recent tool activity,
     /// NamePool release, session reverse-map cleanup (name_to_session,
     /// session_to_name, task_to_session), SessionRecord persistent state update
-    /// (marks `is_running=false` and `current_name=None`), and pending questions.
+    /// (marks `is_running=false` and `current_name=None`), optional worktree
+    /// unbinding, and pending questions.
     ///
-    /// Does NOT handle session-specific operations (session_manager.shutdown vs
-    /// session_manager.remove) or worktree unbinding — those differ between the
-    /// intentional shutdown, break, and session death paths.
+    /// Does NOT handle session-manager operations (session_manager.shutdown vs
+    /// session_manager.remove) — those differ between the intentional shutdown,
+    /// break, and unexpected session death paths.
     pub(crate) async fn cleanup_coworker_state(&self, name: &str) {
+        self.cleanup_coworker_state_internal(name, false).await
+    }
+
+    /// Clean up all transient state for a dead coworker and release its worktree
+    /// binding so collisions don't block immediate respawn.
+    pub(crate) async fn cleanup_dead_coworker_state(&self, name: &str) {
+        self.cleanup_coworker_state_internal(name, true).await
+    }
+
+    async fn cleanup_coworker_state_internal(&self, name: &str, clear_worktree_binding: bool) {
         // Deregister from coworker manager
         self.coworkers.deregister(name);
         // Record stop time for lifecycle tracking
@@ -1013,36 +1024,19 @@ impl DaemonState {
             name_pool.release(name);
         }
         let removed_session_id = self.name_to_session.lock().unwrap().remove(name);
-        if let Some(session_id) = removed_session_id {
-            self.session_to_name.lock().unwrap().remove(&session_id);
+        if let Some(ref session_id) = removed_session_id {
+            self.session_to_name.lock().unwrap().remove(session_id);
             // Clean up task_to_session entries pointing to this session.
             self.task_to_session
                 .lock()
                 .unwrap()
-                .retain(|_, sid| sid != &session_id);
+                .retain(|_, sid| sid != session_id);
             // Clean up topic_sessions entries pointing to this session
             // (prevents stale thread routing to dead fork sessions).
             self.topic_sessions
                 .lock()
                 .unwrap()
-                .retain(|_, sid| sid != &session_id);
-            // Mark the SessionRecord as stopped in persistent state.
-            // This is the centralized path — all shutdown/cleanup flows converge here,
-            // so the SessionRecord is always kept in sync with the actual process state.
-            {
-                let mut ps = self.persistent_state.lock().await;
-                if let Some(record) = ps.sessions.get_mut(&session_id) {
-                    record.is_running = false;
-                    record.current_name = None;
-                }
-                if let Err(e) = ps.save_for_repo(&self.repo_name) {
-                    tracing::warn!(
-                        "Failed to save persistent state after cleanup for session {}: {}",
-                        session_id,
-                        e
-                    );
-                }
-            }
+                .retain(|_, sid| sid != session_id);
         }
         // Clear pending questions (prevents stale questions after crash/shutdown)
         {
@@ -1060,6 +1054,34 @@ impl DaemonState {
                     parent_lead: None,
                 },
             ));
+        }
+
+        // Session records and optional dead-coworker worktree unbinding are persisted
+        // together to avoid duplicate writes during shutdown/death cleanup.
+        if clear_worktree_binding || removed_session_id.is_some() {
+            let mut ps = self.persistent_state.lock().await;
+            let mut changed = false;
+
+            if let Some(session_id) = removed_session_id {
+                // Mark the SessionRecord as stopped in persistent state.
+                if let Some(record) = ps.sessions.get_mut(&session_id) {
+                    record.is_running = false;
+                    record.current_name = None;
+                    changed = true;
+                }
+            }
+
+            if clear_worktree_binding && ps.worktree_registry.unbind_coworker(name) {
+                changed = true;
+            }
+
+            if changed && let Err(e) = ps.save_for_repo(&self.repo_name) {
+                tracing::warn!(
+                    "Failed to save persistent state after cleanup for coworker '{}': {}",
+                    name,
+                    e
+                );
+            }
         }
     }
 
@@ -2156,26 +2178,12 @@ impl DaemonState {
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
-    /// Covers `AssignAndSpawn` (fresh spawns), `NudgeSessionWithCallbacks`, and
-    /// `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
+    /// Covers `AssignAndSpawn` (fresh spawns), `SpawnSession`, `NudgeSessionWithCallbacks`,
+    /// and `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
     pub(crate) fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
-        for effect in effects {
-            match effect {
-                effects::Effect::AssignAndSpawn { task_id, .. } => {
-                    self.mark_task_spawn_in_flight(task_id);
-                    debug!("Marked task !{} as in-flight spawn", task_id);
-                }
-                effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
-                | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
-                    for sub_effect in on_success {
-                        if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
-                            self.mark_task_spawn_in_flight(task_id);
-                            debug!("Marked task !{} as in-flight assignment", task_id);
-                        }
-                    }
-                }
-                _ => {}
-            }
+        for task_id in effects::extract_claimed_task_ids_from_effects(effects) {
+            self.mark_task_spawn_in_flight(&task_id);
+            debug!("Marked task !{} as in-flight spawn", task_id);
         }
     }
 
@@ -3736,7 +3744,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // This includes releasing the name back to NamePool and cleaning
                     // up session reverse maps (name_to_session, session_to_name,
                     // task_to_session).
-                    state.cleanup_coworker_state(&name).await;
+                    // Clean up all transient state and release dead coworker worktree
+                    // binding so immediate respawn can continue.
+                    state.cleanup_dead_coworker_state(&name).await;
 
                     // Only clear session_id when the resume itself failed
                     // (session died within 30s of a resume spawn). This means

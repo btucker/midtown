@@ -1301,6 +1301,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     // 1. AssignAndSpawn (Case 2 fresh spawns)
     // 2. NudgeCoworkerWithCallbacks with RecordTaskAssignment (Case 2 nudges)
     // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (Case 1 owned spawns)
+    // 4. SpawnSession (session-centric recovery/retry path)
     let effects = vec![
         effects::Effect::nudge_session_with_callbacks(
             "sess-pleasant-1",
@@ -1336,6 +1337,21 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             }],
             on_failure: vec![],
         },
+        effects::Effect::SpawnSession {
+            session_id: "sess-amsterdam-1".to_string(),
+            task_id: "876".to_string(),
+            working_dir: "/tmp/worktree-876".into(),
+            initial_prompt: "resume task".to_string(),
+            preferred_name: Some("amsterdam".to_string()),
+            is_reviewer: false,
+            resume: true,
+            config: Box::new(crate::launch::LaunchConfig::coworker(
+                "amsterdam".to_string(),
+                "test-repo".to_string(),
+                crate::launch::SessionMode::Resume,
+                Some("resume task".to_string()),
+            )),
+        },
     ];
 
     // Extract task IDs that should be in-flight (mirror the logic in
@@ -1344,6 +1360,9 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     for effect in &effects {
         match effect {
             effects::Effect::AssignAndSpawn { task_id, .. } => {
+                in_flight_tasks.insert(task_id.clone());
+            }
+            effects::Effect::SpawnSession { task_id, .. } => {
                 in_flight_tasks.insert(task_id.clone());
             }
             effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
@@ -1369,6 +1388,10 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     assert!(
         in_flight_tasks.contains("875"),
         "SpawnCoworkerWithCallbacks with RecordTaskAssignment should be tracked"
+    );
+    assert!(
+        in_flight_tasks.contains("876"),
+        "SpawnSession should be tracked"
     );
 }
 
@@ -1674,6 +1697,108 @@ async fn test_cleanup_coworker_state_records_stop_time() {
         state.coworker_stop_times.read().unwrap().contains_key(name),
         "stop time should be recorded after cleanup"
     );
+}
+
+#[tokio::test]
+async fn test_cleanup_dead_coworker_unbinds_worktree() {
+    let (state, _tmp, _guard) = make_cleanup_test_state();
+    let worktree_id = "task-2046-fix-svelte-5-state-unsafe-mutation".to_string();
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(),
+                task_id: Some("2046".to_string()),
+                current_coworker: Some("riverside".to_string()),
+                pr_number: Some(2046),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .expect("register worktree");
+    }
+
+    {
+        let ps = state.persistent_state.lock().await;
+        assert_eq!(
+            ps.worktree_registry
+                .get(&worktree_id)
+                .expect("worktree exists")
+                .current_coworker,
+            Some("riverside".to_string())
+        );
+        assert!(
+            ps.worktree_registry.get_by_coworker("riverside").is_some(),
+            "riverside should initially be bound"
+        );
+    }
+
+    state.cleanup_dead_coworker_state("riverside").await;
+
+    {
+        let ps = state.persistent_state.lock().await;
+        assert_eq!(
+            ps.worktree_registry
+                .get(&worktree_id)
+                .expect("worktree exists")
+                .current_coworker,
+            None
+        );
+        assert!(
+            ps.worktree_registry.get_by_coworker("riverside").is_none(),
+            "worktree binding should be cleared for dead coworker"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_dead_coworker_without_session_id_clears_binding() {
+    let (state, _tmp, _guard) = make_cleanup_test_state();
+    let worktree_id = "task-2047-cleanup-no-session".to_string();
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(),
+                task_id: Some("2047".to_string()),
+                current_coworker: Some("riverside".to_string()),
+                pr_number: Some(2047),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .expect("register worktree");
+    }
+
+    // No session entry is intentionally recorded for this coworker name.
+    assert!(
+        state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .get("riverside")
+            .is_none(),
+        "precondition: no name_to_session mapping"
+    );
+
+    state.cleanup_dead_coworker_state("riverside").await;
+
+    {
+        let ps = state.persistent_state.lock().await;
+        assert_eq!(
+            ps.worktree_registry
+                .get(&worktree_id)
+                .expect("worktree exists")
+                .current_coworker,
+            None
+        );
+        assert!(
+            ps.worktree_registry.get_by_coworker("riverside").is_none(),
+            "binding should be cleared even without session map entry"
+        );
+    }
 }
 
 // ============================================================================

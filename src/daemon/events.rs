@@ -101,7 +101,7 @@ pub async fn evaluate_tick(
             // - Tasks without sessions: apply orphan recovery filtering, fresh spawn
             let session_effects = super::dispatch::dispatch_via_sessions(snap, state);
             let claimed_ids =
-                super::dispatch::extract_claimed_task_ids_from_effects(&session_effects);
+                super::effects::extract_claimed_task_ids_from_effects(&session_effects);
             effects.extend(session_effects);
             // Orphan recovery removed — dispatch_via_sessions handles all in_progress tasks.
             effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
@@ -307,12 +307,14 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
             Effect::SpawnCoworkerWithCallbacks { config, .. } => Some(config.name.to_lowercase()),
             Effect::AssignAndSpawn { config, .. } => Some(config.name.to_lowercase()),
             Effect::ResumeCoworker { name, .. } => Some(name.to_lowercase()),
+            Effect::SpawnSession { config, .. } => Some(config.name.to_lowercase()),
             _ => None,
         };
 
         // Extract task ID if this is a task-related spawn
         let task_id = match &effect {
             Effect::AssignAndSpawn { task_id, .. } => Some(task_id.clone()),
+            Effect::SpawnSession { task_id, .. } => Some(task_id.clone()),
             Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                 // Look for RecordTaskAssignment in on_success callbacks
                 on_success.iter().find_map(|e| {
