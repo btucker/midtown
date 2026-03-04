@@ -292,7 +292,7 @@ fn test_no_dual_spawn_for_stopped_session_task() {
 
     // Run dispatch_via_sessions first (as events.rs does)
     let session_effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
-    let session_claimed_ids = extract_claimed_task_ids_from_effects(&session_effects);
+    let session_claimed_ids = effects::extract_claimed_task_ids_from_effects(&session_effects);
 
     // Run check_and_recover_orphans with the same task
     let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {

@@ -460,16 +460,25 @@ fn get_pending_tasks_without_owners_with_grace_for_repo(
     repo_name: &str,
     grace_secs: u64,
 ) -> Vec<Task> {
+    let all_tasks = read_tasks_for_repo(Some(repo_name));
+    filter_pending_tasks_without_owners(&all_tasks, grace_secs)
+}
+
+/// Filter pending tasks without owners from a pre-read task list.
+///
+/// Used by `collect_world_snapshot()` to derive all task views from a single
+/// disk read, avoiding TOCTOU races where concurrent writers (Lead/coworker
+/// processes) modify task files between separate reads.
+pub fn filter_pending_tasks_without_owners(all_tasks: &[Task], grace_secs: u64) -> Vec<Task> {
     let now = std::time::SystemTime::now();
     let grace = std::time::Duration::from_secs(grace_secs);
-    let all_tasks = read_tasks_for_repo(Some(repo_name));
     all_tasks
         .iter()
         .filter(|t| {
             t.status == TaskStatus::Pending
                 && t.owner.is_none()
                 && !is_within_grace_period(t, now, grace)
-                && !has_unresolved_blockers(t, &all_tasks)
+                && !has_unresolved_blockers(t, all_tasks)
         })
         .cloned()
         .collect()

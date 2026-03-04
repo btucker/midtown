@@ -703,8 +703,38 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // but state.repo_name is set correctly at startup. Using cwd-based
     // task reads causes the daemon to read from the wrong task directory
     // (or "default") and miss pending tasks, preventing dispatch (see #1288).
-    let in_progress_tasks =
-        crate::tasks::get_in_progress_tasks_with_subjects_for_repo(&state.repo_name);
+    //
+    // Read the task list ONCE and derive all views from it. Multiple
+    // independent reads create TOCTOU races where concurrent writers
+    // (Lead/coworker processes) can modify a task file between reads,
+    // causing the same task to appear in both in_progress_tasks AND
+    // pending_tasks_without_owners — bypassing the dispatch exclusion set
+    // and leading to duplicate task assignment.
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let in_progress_tasks: Vec<(String, String, String)> = all_tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.subject.clone(),
+                t.owner.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let pending_tasks_with_owners: Vec<(String, String, String)> = all_tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::Pending && t.owner.is_some())
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.subject.clone(),
+                t.owner.clone().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let pending_tasks_without_owners =
+        crate::tasks::filter_pending_tasks_without_owners(&all_tasks, 45);
     let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
 
     // Coworker → task assignments (for nudge/spawn loop prevention in dispatch)
@@ -715,12 +745,6 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .map(|(coworker, assignment)| (coworker.clone(), assignment.task_id.clone()))
             .collect()
     };
-
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
-    let pending_tasks_with_owners =
-        crate::tasks::get_pending_tasks_with_owners_for_repo(&state.repo_name);
-    let pending_tasks_without_owners =
-        crate::tasks::get_pending_tasks_without_owners_for_repo(&state.repo_name);
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
     // task-to-thread, task-to-message, and channel-lead mappings
