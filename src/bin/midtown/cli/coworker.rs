@@ -197,15 +197,16 @@ pub fn handle_screenshot(
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
-    let webserver_scheme = if github {
+    let (webserver_scheme, external_url) = if github {
         let config = midtown::config::GlobalConfig::load();
-        if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
+        let scheme = if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
             Some("https")
         } else {
             Some("http")
-        }
+        };
+        (scheme, config.webserver.external_url.clone())
     } else {
-        None
+        (None, None)
     };
 
     save_screenshot_locally(
@@ -216,6 +217,7 @@ pub fn handle_screenshot(
         &screenshots_dir,
         webserver_scheme,
         &repo,
+        external_url.as_deref(),
     )
 }
 
@@ -227,7 +229,10 @@ pub fn handle_screenshot(
 /// filename and copies the screenshot to the provided directory.
 ///
 /// When `webserver_scheme` is `Some("http")` or `Some("https")`, returns GitHub-compatible
-/// markdown image syntax using the webserver's screenshot endpoint.
+/// markdown image syntax using the webserver's screenshot endpoint. If `external_url` is
+/// provided (e.g. `https://macbook-pro.taile2dd2b.ts.net:47022`), it is used as the base
+/// URL instead of constructing from localhost.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
     ext: &str,
@@ -236,6 +241,7 @@ pub(crate) fn save_screenshot_locally(
     screenshots_dir: &std::path::Path,
     webserver_scheme: Option<&str>,
     repo: &str,
+    external_url: Option<&str>,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
@@ -262,7 +268,6 @@ pub(crate) fn save_screenshot_locally(
     eprintln!("Screenshot saved: {}", dest_path.display());
 
     if let Some(scheme) = webserver_scheme {
-        let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
         // Encode characters unsafe in URL path segments while preserving - . _ ~
         const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
             .remove(b'-')
@@ -270,9 +275,15 @@ pub(crate) fn save_screenshot_locally(
             .remove(b'_')
             .remove(b'~');
         let encoded_repo = percent_encoding::utf8_percent_encode(repo, PATH_SEGMENT);
+        let base = if let Some(ext_url) = external_url {
+            ext_url.trim_end_matches('/').to_string()
+        } else {
+            let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
+            format!("{}://localhost:{}", scheme, port)
+        };
         let url = format!(
-            "{}://localhost:{}/api/projects/{}/screenshots/{}",
-            scheme, port, encoded_repo, filename
+            "{}/api/projects/{}/screenshots/{}",
+            base, encoded_repo, filename
         );
         let alt = if before {
             "before"
