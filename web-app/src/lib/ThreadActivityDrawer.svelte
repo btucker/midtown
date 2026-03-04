@@ -1,6 +1,9 @@
 <script>
   /**
-   * ThreadActivityDrawer — terminal-styled slide-up drawer above the thread reply input.
+   * ThreadActivityDrawer — slide-up drawer above the thread reply input showing tool call activity.
+   *
+   * Styled to match the channel activity strip (Channel.svelte) — uses theme colors,
+   * muted-foreground text, and bouncing dots for the thinking state.
    *
    * Props:
    *   channelName    — the channel whose tool items to display (e.g. "web")
@@ -11,6 +14,7 @@
    * Click again or press Escape to collapse back to the compact view.
    */
   import { agentToolItems, threadToolItems } from './store.js'
+  import { AVENUE_COLORS } from './messageUtils.js'
   import { onDestroy } from 'svelte'
   import { slide } from 'svelte/transition'
 
@@ -176,7 +180,7 @@
 {#if isVisible}
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
   <div
-    class="activity-drawer border-t border-[#333] {expanded ? 'expanded' : ''}"
+    class="activity-drawer border-t border-border {expanded ? 'expanded' : ''}"
     class:cursor-pointer={merged.length > 0}
     data-testid="thread-activity-drawer"
     onclick={merged.length > 0 ? toggleExpanded : undefined}
@@ -190,14 +194,14 @@
     {#if merged.length > 0}
       <!-- Header bar with chevron and count -->
       <div class="flex items-center justify-between px-3 py-1 select-none">
-        <span class="text-[0.68rem] text-[#666] font-mono">
+        <span class="text-[0.72rem] text-muted-foreground/50 font-mono">
           {#if expanded}
             {merged.length} tool call{merged.length !== 1 ? 's' : ''}
           {:else if hiddenCount > 0}
             +{hiddenCount} more
           {/if}
         </span>
-        <span class="text-[0.68rem] text-[#555] transition-transform duration-150" class:rotate-180={expanded}>
+        <span class="text-[0.72rem] text-muted-foreground/40 transition-transform duration-150" class:rotate-180={expanded}>
           ▾
         </span>
       </div>
@@ -211,26 +215,29 @@
     >
       {#each displayItems as entry (entry.item.item_id)}
         {@const dimmed = expanded && completedAt.has(entry.item.item_id)}
-        <div class="flex items-center gap-[0.4em] py-[1px]" class:opacity-45={dimmed}>
-          <span class="flex-shrink-0 select-none text-[0.78rem] leading-[1.35]">
+        <div class="flex items-center gap-[6px] py-[1px]" class:opacity-45={dimmed}>
+          <span class="flex-shrink-0 select-none text-[0.82rem] leading-[1.35] text-muted-foreground/60">
             {#if entry.status === 'error'}
-              <span class="text-red-400">✗</span>
+              <span class="text-destructive">✗</span>
             {:else if entry.status === 'ok'}
-              <span class="text-[#5faf5f]">✓</span>
+              ✓
             {:else}
-              <span class="text-[#4a8a4a]">›</span>
+              ›
             {/if}
           </span>
           <span
-            class="font-mono text-[0.78rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-red-400' : entry.status === 'ok' ? 'text-[#8fbf8f]' : 'text-[#5faf5f]'}"
+            class="font-mono text-[0.82rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-destructive' : 'text-muted-foreground'}"
           >{describeItem(entry.item)}</span>
         </div>
       {/each}
       {#if thinking}
-        <!-- Thinking indicator: shown alongside history when waiting for new tool calls -->
-        <div class="flex items-center gap-[0.4em] py-[1px]">
-          <span class="text-[#4a6a4a] select-none flex-shrink-0 text-[0.78rem]">›</span>
-          <span class="font-mono text-[0.78rem] leading-[1.35] text-[#4a6a4a] thinking-blink">...</span>
+        <!-- Thinking indicator: bouncing dots matching the channel activity strip -->
+        <div class="flex items-center gap-[6px] py-[1px]">
+          <span class="typing-dots flex gap-[3px] items-center">
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+          </span>
         </div>
       {/if}
     </div>
@@ -238,29 +245,20 @@
 {/if}
 
 <style>
-  @keyframes thinking-blink {
-    0%, 100% { opacity: 0.35; }
-    50% { opacity: 0.9; }
-  }
-
-  .thinking-blink {
-    animation: thinking-blink 1.2s infinite ease-in-out;
-  }
-
   .activity-drawer {
-    background: #1a1a1a;
+    background: hsl(var(--card));
     transition: max-height 0.2s ease;
   }
 
   .activity-drawer:hover {
-    background: #1e1e1e;
+    background: hsl(var(--accent));
   }
 
   .activity-drawer.expanded {
-    background: #181818;
+    background: hsl(var(--card));
   }
 
   .activity-drawer.expanded:hover {
-    background: #181818;
+    background: hsl(var(--card));
   }
 </style>
