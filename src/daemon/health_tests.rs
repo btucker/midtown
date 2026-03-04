@@ -3182,3 +3182,276 @@ fn test_dead_reviewer_respawn_inherits_task_channel() {
         channel_name
     );
 }
+
+// ── State GC tests ──────────────────────────────────────────────────────
+
+fn make_session(
+    session_id: &str,
+    is_running: bool,
+    is_reviewer: bool,
+    resume_on_startup: bool,
+    last_active: chrono::DateTime<chrono::Utc>,
+    task_id: Option<&str>,
+) -> crate::daemon::state::SessionRecord {
+    crate::daemon::state::SessionRecord {
+        session_id: session_id.to_string(),
+        is_running,
+        is_reviewer,
+        resume_on_startup,
+        last_active,
+        task_id: task_id.map(|s| s.to_string()),
+        initial_prompt: Some("test prompt".to_string()),
+        coworker_type: if is_reviewer {
+            "reviewer".to_string()
+        } else {
+            "dev".to_string()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn state_gc_prunes_dead_reviewer_sessions_immediately() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead reviewer session (just stopped, 1 minute ago)
+    sessions.insert(
+        "reviewer-1".to_string(),
+        make_session(
+            "reviewer-1",
+            false,
+            true,
+            false,
+            now - chrono::Duration::minutes(1),
+            None,
+        ),
+    );
+    // Running dev session (should be kept)
+    sessions.insert(
+        "dev-1".to_string(),
+        make_session("dev-1", true, false, true, now, Some("42")),
+    );
+
+    let active_session_ids = HashSet::from(["dev-1".to_string()]);
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &active_session_ids,
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1, "should produce exactly one GC effect");
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            strip_prompt_session_ids,
+            ..
+        } => {
+            assert_eq!(dead_session_ids, &vec!["reviewer-1".to_string()]);
+            assert!(
+                strip_prompt_session_ids.is_empty(),
+                "running session should not be stripped"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+#[test]
+fn state_gc_prunes_stale_dead_sessions_past_retention() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead dev session, 48 hours old, resume_on_startup=false
+    sessions.insert(
+        "dead-old".to_string(),
+        make_session(
+            "dead-old",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(48),
+            Some("10"),
+        ),
+    );
+    // Dead dev session, 1 hour old, resume_on_startup=false (within retention)
+    sessions.insert(
+        "dead-recent".to_string(),
+        make_session(
+            "dead-recent",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(1),
+            Some("11"),
+        ),
+    );
+    // Dead dev session, 48 hours old, resume_on_startup=true (should be kept)
+    sessions.insert(
+        "dead-resumable".to_string(),
+        make_session(
+            "dead-resumable",
+            false,
+            false,
+            true,
+            now - chrono::Duration::hours(48),
+            Some("12"),
+        ),
+    );
+
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            strip_prompt_session_ids,
+            ..
+        } => {
+            assert_eq!(dead_session_ids, &vec!["dead-old".to_string()]);
+            // dead-recent and dead-resumable survive, but should have prompt stripped
+            assert_eq!(
+                strip_prompt_session_ids.len(),
+                2,
+                "should strip prompts from surviving stopped sessions"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+#[test]
+fn state_gc_strips_prompts_from_stopped_sessions() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Stopped session within retention, has initial_prompt
+    sessions.insert(
+        "stopped-1".to_string(),
+        make_session(
+            "stopped-1",
+            false,
+            false,
+            true,
+            now - chrono::Duration::hours(1),
+            None,
+        ),
+    );
+    // Running session with initial_prompt (should NOT be stripped)
+    sessions.insert(
+        "running-1".to_string(),
+        make_session("running-1", true, false, true, now, None),
+    );
+
+    let active_session_ids = HashSet::from(["running-1".to_string()]);
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &active_session_ids,
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            strip_prompt_session_ids,
+            ..
+        } => {
+            assert!(dead_session_ids.is_empty());
+            assert_eq!(strip_prompt_session_ids, &vec!["stopped-1".to_string()]);
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+#[test]
+fn state_gc_prunes_orphaned_task_metadata() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Running session referencing task "42"
+    sessions.insert(
+        "dev-1".to_string(),
+        make_session("dev-1", true, false, true, now, Some("42")),
+    );
+
+    let active_session_ids = HashSet::from(["dev-1".to_string()]);
+
+    // Task metadata keys: "42" (referenced by session), "99" (orphaned), "100" (in active tasks)
+    let task_metadata_keys = HashSet::from(["42".to_string(), "99".to_string(), "100".to_string()]);
+    let active_task_ids = HashSet::from(["42".to_string(), "100".to_string()]);
+
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &active_session_ids,
+        &task_metadata_keys,
+        &active_task_ids,
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            orphaned_task_ids, ..
+        } => {
+            assert_eq!(orphaned_task_ids, &vec!["99".to_string()]);
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+#[test]
+fn state_gc_no_effect_when_nothing_to_clean() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Only running sessions, no stale metadata
+    sessions.insert(
+        "dev-1".to_string(),
+        make_session("dev-1", true, false, true, now, Some("42")),
+    );
+
+    let active_session_ids = HashSet::from(["dev-1".to_string()]);
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &active_session_ids,
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert!(
+        effects.is_empty(),
+        "should produce no effects when nothing to clean"
+    );
+}

@@ -1462,6 +1462,113 @@ pub(super) fn check_for_stale_worktrees(
     effects
 }
 
+/// Garbage-collect stale daemon persistent state.
+///
+/// Examines session records, task metadata maps, and worktree registry entries
+/// to identify data that can be pruned. Returns a single `GarbageCollectState`
+/// effect that performs the cleanup atomically.
+///
+/// **Session pruning:**
+/// - Sessions where `is_running=false` AND `resume_on_startup=false` AND
+///   `last_active` older than `retention_period` are removed entirely.
+/// - Reviewer sessions (`is_reviewer=true`) that are stopped are removed
+///   immediately (no retention wait) since they're never resumed.
+///
+/// **Prompt stripping:**
+/// - Sessions where `is_running=false` have `initial_prompt` stripped. The prompt
+///   is only needed for restart/clear of running sessions.
+///
+/// **Task metadata pruning:**
+/// - Entries in task_channel, task_model, task_plan, task_execution_skill,
+///   task_thread_id, and task_message_id are pruned when their task_id doesn't
+///   appear in any session record or active task.
+///
+pub(super) fn check_for_state_gc(
+    sessions: &std::collections::HashMap<String, crate::daemon::state::SessionRecord>,
+    active_session_ids: &std::collections::HashSet<String>,
+    task_metadata_keys: &std::collections::HashSet<String>,
+    active_task_ids: &std::collections::HashSet<String>,
+    retention_period: chrono::Duration,
+) -> Vec<Effect> {
+    let now = chrono::Utc::now();
+
+    let mut dead_session_ids = Vec::new();
+    let mut strip_prompt_session_ids = Vec::new();
+
+    // Collect task IDs referenced by sessions that will survive GC
+    let mut surviving_task_ids = std::collections::HashSet::new();
+
+    for (session_id, record) in sessions {
+        // Skip running sessions entirely
+        if record.is_running || active_session_ids.contains(session_id) {
+            if let Some(ref tid) = record.task_id {
+                surviving_task_ids.insert(tid.clone());
+            }
+            continue;
+        }
+
+        // Dead reviewer sessions: prune immediately (ephemeral, never resumed)
+        if record.is_reviewer {
+            dead_session_ids.push(session_id.clone());
+            continue;
+        }
+
+        // Dead non-reviewer sessions: check retention
+        let age = now.signed_duration_since(record.last_active);
+        if !record.resume_on_startup && age >= retention_period {
+            dead_session_ids.push(session_id.clone());
+            continue;
+        }
+
+        // Surviving stopped session: strip prompt if present
+        if let Some(ref tid) = record.task_id {
+            surviving_task_ids.insert(tid.clone());
+        }
+        if record.initial_prompt.is_some() {
+            strip_prompt_session_ids.push(session_id.clone());
+        }
+    }
+
+    // Orphaned task metadata: keys that aren't referenced by any surviving
+    // session or any active task in the task list
+    let mut orphaned_task_ids: Vec<String> = task_metadata_keys
+        .iter()
+        .filter(|tid| !surviving_task_ids.contains(*tid) && !active_task_ids.contains(*tid))
+        .cloned()
+        .collect();
+    orphaned_task_ids.sort(); // deterministic ordering for tests
+
+    // Stale worktree registry entries are handled by check_for_stale_worktrees()
+    // which runs on the same tick. No duplicate cleanup needed here.
+    let stale_registry_ids = Vec::new();
+
+    if dead_session_ids.is_empty()
+        && strip_prompt_session_ids.is_empty()
+        && orphaned_task_ids.is_empty()
+        && stale_registry_ids.is_empty()
+    {
+        return vec![];
+    }
+
+    if !dead_session_ids.is_empty() {
+        info!(
+            "State GC: scheduling removal of {} dead session(s) ({} reviewer)",
+            dead_session_ids.len(),
+            dead_session_ids
+                .iter()
+                .filter(|sid| sessions.get(*sid).map(|r| r.is_reviewer).unwrap_or(false))
+                .count()
+        );
+    }
+
+    vec![Effect::GarbageCollectState {
+        dead_session_ids,
+        strip_prompt_session_ids,
+        orphaned_task_ids,
+        stale_registry_ids,
+    }]
+}
+
 /// Build the effects needed to respawn a reviewer for a given PR.
 ///
 /// Shared by `check_and_restart_stuck_reviewers` and

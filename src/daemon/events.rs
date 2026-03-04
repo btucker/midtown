@@ -147,7 +147,7 @@ pub async fn evaluate_tick(
             // that webhooks may have missed (no API calls, pure snapshot comparison)
             effects.extend(super::pr::collect_pr_task_link_effects(snap));
 
-            // Clean up stale worktrees (completed tasks older than retention period)
+            // Clean up stale worktrees and daemon state (completed tasks older than retention period)
             {
                 let daemon_config = crate::config::get_project_daemon_config(&state.repo_name);
                 let retention_hours = daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
@@ -157,6 +157,27 @@ pub async fn evaluate_tick(
                     effects.extend(super::health::check_for_stale_worktrees(
                         &snap.worktree_registry,
                         &snap.coworkers.active_names,
+                        retention_period,
+                    ));
+
+                    // State GC: prune dead sessions, strip prompts, clean orphaned metadata
+                    let task_metadata_keys: std::collections::HashSet<String> = snap
+                        .task_channel
+                        .keys()
+                        .chain(snap.task_model_map.keys())
+                        .chain(snap.task_plan_map.keys())
+                        .chain(snap.task_execution_skill_map.keys())
+                        .chain(snap.task_thread_id_map.keys())
+                        .chain(snap.task_message_id_map.keys())
+                        .cloned()
+                        .collect();
+                    let active_task_ids: std::collections::HashSet<String> =
+                        snap.all_tasks.iter().map(|t| t.id.clone()).collect();
+                    effects.extend(super::health::check_for_state_gc(
+                        &snap.sessions,
+                        &snap.coworkers.active_session_ids,
+                        &task_metadata_keys,
+                        &active_task_ids,
                         retention_period,
                     ));
                 }
