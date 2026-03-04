@@ -541,6 +541,8 @@
   .sidebar-scroll {
     flex: 1;
     overflow-y: auto;
+    overflow-y: overlay;
+    scrollbar-width: thin;
   }
 
   /* Unified channel tab bar */

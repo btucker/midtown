@@ -1487,8 +1487,8 @@ fn test_dm_tool_edit_renders_diff() {
 
     let md = render_dm_tool_blocks(&events);
     assert!(
-        md.contains("`edit src/main.rs`"),
-        "should show file path: {md}"
+        md.contains("## src/main.rs"),
+        "should show file path as header: {md}"
     );
     assert!(md.contains("```diff"), "should have diff code block: {md}");
     assert!(
@@ -1498,6 +1498,42 @@ fn test_dm_tool_edit_renders_diff() {
     assert!(
         md.contains("+ println!(\"world\")"),
         "should show new line: {md}"
+    );
+}
+
+#[test]
+fn test_dm_tool_todo_write_renders_checkboxes() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": "tc_1",
+                "name": "TodoWrite",
+                "input": {
+                    "todos": [
+                        {"content": "Fix the login bug", "status": "completed"},
+                        {"content": "Add tests for auth", "status": "in_progress"},
+                        {"content": "Update docs", "status": "pending"}
+                    ]
+                }
+            }]
+        }),
+        session_id: None,
+        extra: json!(null),
+    }];
+
+    let md = render_dm_tool_blocks(&events);
+    assert!(
+        md.contains("- [x] Fix the login bug"),
+        "completed should be checked: {md}"
+    );
+    assert!(
+        md.contains("- [ ] Add tests for auth"),
+        "in_progress should be unchecked: {md}"
+    );
+    assert!(
+        md.contains("- [ ] Update docs"),
+        "pending should be unchecked: {md}"
     );
 }
 

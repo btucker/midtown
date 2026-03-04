@@ -313,7 +313,6 @@ fn render_tool_call_markdown(
                 .get("file_path")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            md.push_str(&format!("`edit {path}`"));
             let old = input
                 .get("old_string")
                 .and_then(|v| v.as_str())
@@ -323,7 +322,7 @@ fn render_tool_call_markdown(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if !old.is_empty() || !new.is_empty() {
-                md.push_str("\n```diff\n");
+                md.push_str(&format!("```diff\n## {path}\n"));
                 let budget = MAX_DM_EDIT_DIFF_BYTES / 2;
                 for line in truncate_str(old, budget).lines() {
                     md.push_str(&format!("- {line}\n"));
@@ -332,6 +331,32 @@ fn render_tool_call_markdown(
                     md.push_str(&format!("+ {line}\n"));
                 }
                 md.push_str("```");
+            } else {
+                md.push_str(&format!("`edit {path}`"));
+            }
+            append_error_output(&mut md, result);
+        }
+        "TodoWrite" => {
+            if let Some(todos) = input.get("todos").and_then(|v| v.as_array()) {
+                for todo in todos {
+                    let content = todo.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                    let status = todo
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("pending");
+                    let checkbox = if status == "completed" {
+                        "- [x]"
+                    } else {
+                        "- [ ]"
+                    };
+                    md.push_str(&format!("{checkbox} {content}\n"));
+                }
+                // Remove trailing newline
+                if md.ends_with('\n') {
+                    md.pop();
+                }
+            } else {
+                md.push_str("`todo: update`");
             }
             append_error_output(&mut md, result);
         }
