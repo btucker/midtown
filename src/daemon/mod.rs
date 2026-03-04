@@ -1057,6 +1057,7 @@ impl DaemonState {
                     channel,
                     has_dedicated_session: false,
                     owner: None,
+                    parent_lead: None,
                 },
             ));
         }

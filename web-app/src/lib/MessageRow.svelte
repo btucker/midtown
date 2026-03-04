@@ -3,6 +3,7 @@
   import { renderContent } from './markdown.js'
   import { getApiBase, selectDm } from './api.js'
   import { activeProject, coworkers } from './store.js'
+  import GitFork from '@lucide/svelte/icons/git-fork'
 
   const AVATAR_SIZE = '2.4rem'
   const AVATAR_GAP = '0.5rem'
@@ -19,6 +20,7 @@
     channelName = undefined,
     threadParentId = undefined,
     isDedicatedSession = false,
+    forkParentLead = undefined,
     class: extraClass = '',
     children = undefined,
   } = $props()
@@ -38,6 +40,12 @@
   function avatarLetter(name) {
     return (name || '?')[0].toUpperCase()
   }
+
+  // When in a dedicated fork session with a known parent lead, display the
+  // parent lead's name/color instead of the fork session's "fork-XXXX" name.
+  let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead)
+  let displayName = $derived(isForkWithParent ? forkParentLead : msg.from)
+  let displayColor = $derived(getSenderColor(displayName, senderOverrides, channelName))
 
   const coworkerNames = $derived(new Set($coworkers.map(cw => cw.name)))
 
@@ -93,30 +101,32 @@
     >
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
-        style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {getSenderColor(msg.from, senderOverrides, channelName)}"
-      >{avatarLetter(msg.from)}</div>
-      {#if isDedicatedSession}
+        style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {displayColor}"
+      >{avatarLetter(displayName)}</div>
+      {#if isForkWithParent}
         <div
-          class="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-primary border-2 border-background"
-          title="Running in a dedicated thread session"
-        ></div>
+          class="absolute -bottom-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-background border border-border"
+          title="Fork of {forkParentLead}"
+        >
+          <GitFork size={10} class="text-muted-foreground" />
+        </div>
       {/if}
     </div>
     <!-- Header + content -->
     <div class="flex-1 min-w-0">
       <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-baseline gap-3">
-        {#if coworkerNames.has(msg.from)}
+        {#if coworkerNames.has(displayName)}
           <button
             class="font-mono font-semibold text-[1rem] text-foreground bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
             data-testid="message-sender"
-            onclick={() => selectDm(msg.from)}
-            title="Open DM with {msg.from}"
-          >{msg.from}</button>
+            onclick={() => selectDm(displayName)}
+            title="Open DM with {displayName}"
+          >{displayName}</button>
         {:else}
           <span
             class="font-mono font-semibold text-[1rem] text-foreground"
             data-testid="message-sender"
-          >{msg.from}</span>
+          >{displayName}</span>
         {/if}
         {#if permalinkUrl}
           <a

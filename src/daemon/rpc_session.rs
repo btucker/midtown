@@ -1622,13 +1622,17 @@ pub(super) async fn handle_session_fork(
             // fork path so the "Dedicated session" indicator appears regardless
             // of how the fork was created.
             if let Some(ref ch) = fork_channel {
-                let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
+                let s2n = state.session_to_name.lock().unwrap();
+                let owner = s2n.get(&sid).cloned();
+                let parent_lead = s2n.get(calling_session_id).cloned();
+                drop(s2n);
                 state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
                     web::ThreadOwnershipData {
                         thread_parent_id: thread_parent_id.to_string(),
                         channel: ch.clone(),
                         has_dedicated_session: true,
                         owner,
+                        parent_lead,
                     },
                 ));
             }
@@ -1728,12 +1732,16 @@ pub(super) async fn handle_session_fork_thread(
             }
 
             // Broadcast ownership change to web clients
-            let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
+            let s2n = state.session_to_name.lock().unwrap();
+            let owner = s2n.get(&sid).cloned();
+            let parent_lead = s2n.get(&lead_session_id).cloned();
+            drop(s2n);
             state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
                 thread_parent_id: thread_parent_id.to_string(),
                 channel: channel.to_string(),
                 has_dedicated_session: true,
                 owner,
+                parent_lead,
             }));
 
             debug!(
@@ -1809,6 +1817,7 @@ pub(super) async fn handle_session_unfork_thread(
             channel: channel.to_string(),
             has_dedicated_session: false,
             owner: None,
+            parent_lead: None,
         }));
         return Response::error(
             id,
@@ -1860,12 +1869,22 @@ pub(super) async fn handle_session_thread_ownership(
     let has_dedicated = fork_session_id.is_some();
     let owner =
         fork_session_id.and_then(|sid| state.session_to_name.lock().unwrap().get(&sid).cloned());
+    // Resolve the parent channel lead's name for display in the thread panel.
+    let parent_lead = if has_dedicated {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .get(channel)
+            .and_then(|sid| state.session_to_name.lock().unwrap().get(sid).cloned())
+    } else {
+        None
+    };
 
     state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
         thread_parent_id: thread_parent_id.to_string(),
         channel: channel.to_string(),
         has_dedicated_session: has_dedicated,
         owner,
+        parent_lead,
     }));
 
     Response::success(

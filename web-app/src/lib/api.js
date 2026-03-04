@@ -25,6 +25,7 @@ import {
   deepLinkMsgId,
   threadOwnership,
   threadForkOwners,
+  threadForkParents,
   showArchivedChannels,
   trackedThreads,
   threadUnreadCounts,
@@ -824,7 +825,7 @@ export function handleUpdate(update) {
       fetchChannels(get(showArchivedChannels))
       break
     case 'thread_ownership': {
-      const { thread_parent_id, has_dedicated_session, owner } = update.data
+      const { thread_parent_id, has_dedicated_session, owner, parent_lead } = update.data
       threadOwnership.update((map) => ({
         ...map,
         [thread_parent_id]: has_dedicated_session,
@@ -836,6 +837,16 @@ export function handleUpdate(update) {
         threadForkOwners.update((m) => ({ ...m, [thread_parent_id]: owner }))
       } else if (!has_dedicated_session) {
         threadForkOwners.update((m) => {
+          const updated = { ...m }
+          delete updated[thread_parent_id]
+          return updated
+        })
+      }
+      // Track the parent channel lead's name for fork display.
+      if (has_dedicated_session && parent_lead) {
+        threadForkParents.update((m) => ({ ...m, [thread_parent_id]: parent_lead }))
+      } else if (!has_dedicated_session) {
+        threadForkParents.update((m) => {
           const updated = { ...m }
           delete updated[thread_parent_id]
           return updated

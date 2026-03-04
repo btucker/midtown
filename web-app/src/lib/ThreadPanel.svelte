@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, activeProject } from './store.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, activeProject } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -113,6 +113,13 @@
     $threadData?.parentMessage?.id
       ? ($threadOwnership[$threadData.parentMessage.id] ?? false)
       : false
+  )
+  // The parent channel lead's name for the active fork (e.g., "web").
+  // Used to display fork messages with the parent lead's name/color.
+  let forkParentLead = $derived(
+    $threadData?.parentMessage?.id
+      ? ($threadForkParents[$threadData.parentMessage.id] ?? null)
+      : null
   )
   let forkPending = $state(false)
 
@@ -585,6 +592,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
+            {forkParentLead}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}
@@ -804,6 +812,7 @@
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
+            {forkParentLead}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
             {#if isAction(msg) && !hasMermaid(msg.content)}

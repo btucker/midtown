@@ -142,6 +142,11 @@ export const threadOwnership = writable({})
 // Populated from tool_activity events; used to color-code thread activity dots.
 export const threadForkOwners = writable({})
 
+// Thread fork parent leads: { [threadParentId]: parentLeadName }
+// Tracks the parent channel lead's name for each fork session. Used to display
+// fork messages with the parent lead's name and color instead of "fork-XXXX".
+export const threadForkParents = writable({})
+
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)
