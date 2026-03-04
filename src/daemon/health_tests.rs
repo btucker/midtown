@@ -2932,3 +2932,59 @@ fn check_for_usage_limits_marks_all_limited_coworker_profiles() {
         marked
     );
 }
+
+// ── check_for_stale_notes tests ──────────────────────────────────────────
+
+#[test]
+fn test_stale_notes_skips_channels_without_leads() {
+    use std::collections::HashMap;
+    let mut snap = empty_snap();
+    snap.stale_channel_notes =
+        HashMap::from([("orphan-channel".to_string(), vec!["old-note".to_string()])]);
+    snap.channel_lead_sessions = HashMap::new();
+
+    let effects = check_for_stale_notes(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should skip channels without a lead session"
+    );
+}
+
+#[test]
+fn test_stale_notes_skips_channels_on_cooldown() {
+    use std::collections::{HashMap, HashSet};
+    let mut snap = empty_snap();
+    snap.stale_channel_notes = HashMap::from([("dev".to_string(), vec!["stale-note".to_string()])]);
+    snap.channel_lead_sessions = HashMap::from([("dev".to_string(), "sess-dev-lead".to_string())]);
+    snap.note_staleness_cooldown_channels = HashSet::from(["dev".to_string()]);
+
+    let effects = check_for_stale_notes(&snap);
+    assert!(effects.is_empty(), "Should skip channels on cooldown");
+}
+
+#[test]
+fn test_stale_notes_emits_nudge_and_cooldown_effects() {
+    use std::collections::{HashMap, HashSet};
+    let mut snap = empty_snap();
+    snap.stale_channel_notes = HashMap::from([(
+        "dev".to_string(),
+        vec!["old-note".to_string(), "ancient-note".to_string()],
+    )]);
+    snap.channel_lead_sessions = HashMap::from([("dev".to_string(), "sess-dev-lead".to_string())]);
+    snap.note_staleness_cooldown_channels = HashSet::new();
+
+    let effects = check_for_stale_notes(&snap);
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should emit NudgeChannelLead + RecordCooldown"
+    );
+    assert!(
+        matches!(&effects[0], Effect::NudgeChannelLead { channel_name, .. } if channel_name == "dev"),
+        "First effect should be NudgeChannelLead for 'dev'"
+    );
+    assert!(
+        matches!(&effects[1], Effect::RecordCooldown { category, key } if category == "note_staleness" && key == "dev"),
+        "Second effect should be RecordCooldown for note_staleness/dev"
+    );
+}

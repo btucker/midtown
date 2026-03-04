@@ -367,7 +367,7 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub archived_channels: HashSet<String>,
     /// Stale channel notes: maps channel name → list of stale note names.
-    /// Populated during snapshot collection for `NoteReviewTick`.
+    /// Empty by default; populated in `run_tick()` only for `NoteReviewTick` (hourly).
     #[serde(default)]
     pub stale_channel_notes: HashMap<String, Vec<String>>,
     /// Recent channel messages for debugging context.
@@ -928,8 +928,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
-    // Stale channel notes: NOT populated on every tick (hot path).
-    // Only populated for NoteReviewTick in check_for_stale_notes().
+    // Stale channel notes: populated in run_tick() only for NoteReviewTick (hourly).
     let stale_channel_notes = HashMap::new();
 
     // These debug fields are NOT populated during tick collection (hot path).

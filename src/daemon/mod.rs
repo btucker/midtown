@@ -2658,6 +2658,14 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
             crate::github_rate_limit::GitHubRateLimit::fetch().await;
     }
 
+    // For NoteReviewTick, populate stale channel notes (hourly, not on hot path)
+    if matches!(event, events::DaemonEvent::NoteReviewTick) {
+        let base_dir = crate::paths::projects_dir_for_repo(&snap.repo_name);
+        let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
+        snap.stale_channel_notes =
+            crate::channel::find_stale_notes(&base_dir, snap.now_utc, threshold);
+    }
+
     let tick_effects = events::evaluate_tick(event, &snap, state).await;
     effects::execute_effects(tick_effects, state).await;
 }

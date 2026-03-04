@@ -1597,14 +1597,9 @@ fn shutdown_effect(name: &str, session_id: Option<&String>, reason: String) -> E
 /// Note: This function does filesystem I/O (reads note files from disk).
 /// It's called only from the low-frequency `NoteReviewTick` (once per hour).
 pub fn check_for_stale_notes(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    let base_dir = crate::paths::projects_dir_for_repo(&snap.repo_name);
-    let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
-    let now = chrono::Utc::now();
-    let stale_by_channel = crate::channel::find_stale_notes(&base_dir, now, threshold);
-
     let mut effects = Vec::new();
 
-    for (channel_name, stale_notes) in &stale_by_channel {
+    for (channel_name, stale_notes) in &snap.stale_channel_notes {
         // Only nudge channels that have a channel lead session
         if !snap.channel_lead_sessions.contains_key(channel_name) {
             continue;
