@@ -3340,20 +3340,23 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let mut task_handled = false;
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
                         // Look up task context for workflow event routing.
+                        // File I/O (read_task_for_repo) happens before acquiring the
+                        // async mutex to avoid blocking other tasks that need the lock.
                         let (task_channel, task_event_ctx) = if let Some(task_id) =
                             crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title)
                         {
-                            let ps = state.persistent_state.lock().await;
-                            let channel = ps.task_channel.get(&task_id.to_string()).cloned();
+                            let task_id_str = task_id.to_string();
                             let task = crate::tasks::read_task_for_repo(
-                                &task_id.to_string(),
+                                &task_id_str,
                                 &state.repo_name,
                             );
+                            let ps = state.persistent_state.lock().await;
+                            let channel = ps.task_channel.get(&task_id_str).cloned();
                             let ctx = dispatch::TaskEventContext {
                                 subject: task.as_ref().map(|t| t.subject.clone()),
                                 description: task.and_then(|t| t.description),
-                                thread_id: ps.task_thread_id.get(&task_id.to_string()).cloned(),
-                                message_id: ps.task_message_id.get(&task_id.to_string()).cloned(),
+                                thread_id: ps.task_thread_id.get(&task_id_str).cloned(),
+                                message_id: ps.task_message_id.get(&task_id_str).cloned(),
                             };
                             (channel, Some(ctx))
                         } else {

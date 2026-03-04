@@ -400,6 +400,7 @@ pub(super) async fn handle_task_create(
     let msg = task_announcement_message(effective_channel, &author, subject, thread_id);
     let announcement_message_id = msg.id.clone();
     let mut event_message_id = None;
+    let mut event_thread_id = thread_id.map(|t| t.to_string());
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
             event_message_id = Some(announcement_message_id.clone());
@@ -412,7 +413,10 @@ pub(super) async fn handle_task_create(
             // the task announcement thread.
             if !ps.task_thread_id.contains_key(&task_id) {
                 ps.task_thread_id
-                    .insert(task_id.clone(), announcement_message_id);
+                    .insert(task_id.clone(), announcement_message_id.clone());
+                // Also use the effective thread_id for the workflow event so
+                // scripts can post into the task's thread.
+                event_thread_id = Some(announcement_message_id);
             }
             if let Err(e) = ps.save_for_repo(&repo_name) {
                 warn!("Failed to save task message_id mapping: {}", e);
@@ -442,7 +446,7 @@ pub(super) async fn handle_task_create(
             task_id: task_id.clone(),
             subject: subject.to_string(),
             description: description_for_event,
-            thread_id: thread_id.map(|t| t.to_string()),
+            thread_id: event_thread_id,
             message_id: event_message_id,
         },
     );
