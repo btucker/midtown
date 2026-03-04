@@ -667,6 +667,13 @@ impl DaemonClient {
         self.send("pr.review", Some(serde_json::json!({ "pr": pr_number })))
     }
 
+    pub fn pr_review_post(&self, pr_number: u64, body: &str) -> Result<Response, String> {
+        self.send(
+            "pr.review-post",
+            Some(serde_json::json!({ "pr": pr_number, "body": body })),
+        )
+    }
+
     pub fn pr_merge(&self, pr_number: u64) -> Result<Response, String> {
         self.send("pr.merge", Some(serde_json::json!({ "pr": pr_number })))
     }

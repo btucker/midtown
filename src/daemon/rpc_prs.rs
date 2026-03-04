@@ -941,6 +941,115 @@ async fn fetch_pr_for_merge(
     })
 }
 
+// ============================================================================
+// PR review post handler
+// ============================================================================
+
+/// Handle `pr.review-post` RPC method — update the placeholder comment with final review.
+///
+/// Called by the reviewer agent via `midtown pr review post --pr <N> --body-file <path>`.
+/// The daemon:
+/// 1. Looks up the placeholder comment ID from the `PrReviewerAssignment`
+/// 2. Falls back to API lookup via `pr_in_progress_placeholder_comment_id()` if needed
+/// 3. Constructs the final body with frontmatter and footer
+/// 4. Updates the comment via `UpdatePrComment` effect
+pub(super) async fn handle_pr_review_post(
+    id: RequestId,
+    pr_number: u64,
+    body: &str,
+    state: &DaemonState,
+) -> Response {
+    info!("Review post requested for PR #{}", pr_number);
+
+    // Step 1: Look up the reviewer name and placeholder comment ID
+    let (reviewer_name, placeholder_comment_id) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.github.pr_reviewers.get(&pr_number) {
+            Some(assignment) => (
+                assignment.reviewer.clone(),
+                assignment.placeholder_comment_id,
+            ),
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!("No reviewer assignment found for PR #{}", pr_number),
+                    ),
+                );
+            }
+        }
+    };
+
+    // Step 2: Resolve the comment ID (assignment field, then API fallback)
+    let comment_id = if let Some(cid) = placeholder_comment_id {
+        cid
+    } else {
+        // Fallback: search the PR comments for the placeholder
+        let pr_num = pr_number;
+        let fallback_id = tokio::task::spawn_blocking(move || {
+            super::pr::pr_in_progress_placeholder_comment_id(pr_num)
+        })
+        .await
+        .ok()
+        .flatten();
+
+        match fallback_id {
+            Some(cid) => cid,
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No placeholder comment found for PR #{} — cannot update",
+                            pr_number
+                        ),
+                    ),
+                );
+            }
+        }
+    };
+
+    // Step 3: Construct the final body with frontmatter and footer
+    let final_body = format!(
+        "<!-- midtown: {} -->\n\n{}\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+        reviewer_name, body
+    );
+
+    // Step 4: Execute UpdatePrComment effect
+    let repo_full_name = state.get_repo_full_name(
+        state
+            .all_repo_paths
+            .first()
+            .expect("at least one repo path"),
+    );
+
+    let effects = vec![super::effects::Effect::UpdatePrComment {
+        comment_id,
+        repo_full_name,
+        new_body: final_body,
+    }];
+
+    super::effects::execute_effects(effects, state).await;
+
+    // Clear the placeholder cache since the comment has been updated
+    {
+        let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+        cache.remove(&pr_number);
+    }
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "message": format!(
+                "Review posted for PR #{} (comment {})",
+                pr_number, comment_id
+            )
+        }),
+    )
+}
+
 #[path = "rpc_prs_tests.rs"]
 #[cfg(test)]
 mod tests;

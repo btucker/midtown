@@ -221,6 +221,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "auth.switch"
             | "auth.pool-toggle"
             | "pr.review"
+            | "pr.review-post"
             | "pr.merge"
     );
 
@@ -419,6 +420,17 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 return Response::error(request.id, RpcError::invalid_params());
             };
             super::rpc_prs::handle_pr_merge(request.id, pr_number, state).await
+        }
+
+        "pr.review-post" => {
+            let Some(pr_number) = params.u64_param("pr") else {
+                return Response::error(request.id, RpcError::invalid_params());
+            };
+            let body = match params.str_param("body") {
+                Some(b) => b,
+                None => return Response::error(request.id, RpcError::invalid_params()),
+            };
+            super::rpc_prs::handle_pr_review_post(request.id, pr_number, body, state).await
         }
 
         "coworkers.status" => super::rpc_coworker::handle_coworkers_status(request.id, state).await,

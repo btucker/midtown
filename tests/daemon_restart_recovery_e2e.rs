@@ -48,6 +48,7 @@ fn test_reviewer_assignments_preserved_after_restart() {
             source: AssignmentSource::Webhook,
             webhook_event_id: None,
             restart_count: 0,
+            placeholder_comment_id: None,
         },
     );
     github_state.pr_reviewers.insert(
@@ -60,6 +61,7 @@ fn test_reviewer_assignments_preserved_after_restart() {
             source: AssignmentSource::PollingFallback,
             webhook_event_id: None,
             restart_count: 0,
+            placeholder_comment_id: None,
         },
     );
 
@@ -278,6 +280,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             source: AssignmentSource::Webhook,
             webhook_event_id: None,
             restart_count: 0,
+            placeholder_comment_id: None,
         },
     );
     github_state.pr_reviewers.insert(
@@ -290,6 +293,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             source: AssignmentSource::PollingFallback,
             webhook_event_id: None,
             restart_count: 0,
+            placeholder_comment_id: None,
         },
     );
 

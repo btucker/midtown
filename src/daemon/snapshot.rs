@@ -857,8 +857,13 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // Collect placeholder comment IDs for assigned PRs that haven't been reviewed yet.
-    // Uses a cache with 120-second TTL for negative results to minimize API calls.
-    // Positive results are kept until the reviewer completes (cache entry removed elsewhere).
+    //
+    // Three-tier lookup for each assigned PR:
+    // 1. Check `PrReviewerAssignment.placeholder_comment_id` (set when daemon posts the comment)
+    // 2. Check the in-memory TTL cache (120s for both positive and negative results)
+    // 3. Fall back to API lookup via `pr_in_progress_placeholder_comment_id()`
+    //
+    // Tier 1 eliminates most API calls for daemon-posted placeholders.
     const PLACEHOLDER_CACHE_TTL_SECS: u64 = 120;
     let reviewer_in_progress_comment_ids: HashMap<u64, u64> = {
         let assigned_unreviewed_prs: Vec<u64> = reviewer_pr_assignments
@@ -867,9 +872,29 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
+        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition)
+        let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
+            let ps = state.persistent_state.lock().await;
+            assigned_unreviewed_prs
+                .iter()
+                .filter_map(|&pr| {
+                    ps.github
+                        .pr_reviewers
+                        .get(&pr)
+                        .map(|a| (pr, a.placeholder_comment_id))
+                })
+                .collect()
+        };
+
         let mut result = HashMap::new();
         for pr_number in assigned_unreviewed_prs {
-            // Check cache first
+            // Tier 1: Check stored placeholder_comment_id from the assignment
+            if let Some(Some(stored_id)) = stored_placeholder_ids.get(&pr_number) {
+                result.insert(pr_number, *stored_id);
+                continue;
+            }
+
+            // Tier 2: Check in-memory cache
             let cached = {
                 let cache = state.reviewer_placeholder_cache.lock().unwrap();
                 cache.get(&pr_number).copied()
@@ -882,7 +907,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                     id // Use cached result within TTL
                 }
                 _ => {
-                    // Cache miss or expired: fetch from GitHub
+                    // Tier 3: Cache miss or expired — fetch from GitHub
                     let id = crate::daemon::pr::pr_in_progress_placeholder_comment_id(pr_number);
                     {
                         let mut cache = state.reviewer_placeholder_cache.lock().unwrap();

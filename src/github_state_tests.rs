@@ -695,3 +695,61 @@ fn test_review_comment_ids_serialize_roundtrip() {
     assert_eq!(loaded.get_review_comment_ids(99), &[2001]);
     assert!(loaded.get_review_comment_ids(1).is_empty());
 }
+
+#[test]
+fn test_placeholder_comment_id_defaults_to_none() {
+    let mut state = GitHubState::default();
+    state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+
+    // New assignments should have placeholder_comment_id = None
+    let assignment = state.pr_reviewers.get(&42).unwrap();
+    assert!(assignment.placeholder_comment_id.is_none());
+}
+
+#[test]
+fn test_placeholder_comment_id_roundtrip() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("github-state.json");
+
+    let mut state = GitHubState::default();
+    state.assign_reviewer(42, "lexington", AssignmentSource::PollingFallback);
+    state
+        .pr_reviewers
+        .get_mut(&42)
+        .unwrap()
+        .placeholder_comment_id = Some(12345);
+    state.save(&path).unwrap();
+
+    let loaded = GitHubState::load(&path).unwrap();
+    assert_eq!(
+        loaded.pr_reviewers.get(&42).unwrap().placeholder_comment_id,
+        Some(12345)
+    );
+}
+
+#[test]
+fn test_placeholder_comment_id_backward_compat() {
+    // Simulate loading a JSON file that predates the placeholder_comment_id field
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("github-state.json");
+
+    let json = r#"{
+        "pr_reviewers": {
+            "42": {
+                "pr_number": 42,
+                "reviewer": "lexington",
+                "assigned_at": "2025-01-01T00:00:00Z",
+                "source": "PollingFallback",
+                "restart_count": 0
+            }
+        },
+        "reviewed_prs": [],
+        "pr_last_webhook_event": {}
+    }"#;
+    std::fs::write(&path, json).unwrap();
+
+    let loaded = GitHubState::load(&path).unwrap();
+    let assignment = loaded.pr_reviewers.get(&42).unwrap();
+    assert!(assignment.placeholder_comment_id.is_none());
+    assert_eq!(assignment.reviewer, "lexington");
+}
