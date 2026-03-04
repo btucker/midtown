@@ -2605,6 +2605,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         crate::config::ReviewMode::Local | crate::config::ReviewMode::Both
     );
 
+    // Build channel routing context once (single lock acquisition) for all PRs.
+    let pr_ctx = {
+        let ps = state.persistent_state.lock().await;
+        PrContext::routing_only(&ps)
+    };
+
     for pr in prs {
         let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
         if pr_number == 0 {
@@ -2959,13 +2965,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // Route reviewer to the task's topic channel so `midtown channel post`
         // defaults to the right channel (via MIDTOWN_CHANNEL env var).
-        {
-            let ps = state.persistent_state.lock().await;
-            let pr_task_map = ps.github.pr_to_task_map();
-            if let Some(task_id) = pr_task_map.get(&pr_number) {
-                config.channel = ps.task_channel.get(task_id).cloned();
-            }
-        }
+        config.channel = pr_ctx.get_channel(pr_number);
 
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),

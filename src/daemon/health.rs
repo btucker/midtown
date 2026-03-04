@@ -467,17 +467,12 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
 
         // Emit a workflow event so channel scripts can react to the stuck reviewer.
         // Channel notification is handled by the workflow script's coworker.stuck handler.
-        // Look up the PR's task and channel so the event is routed correctly.
         let reviewer_task_id = snap
             .pr
             .pr_task_associations
             .get(&restart.pr_number)
             .cloned();
-        let reviewer_channel = reviewer_task_id
-            .as_deref()
-            .and_then(|id| snap.task_channel.get(id))
-            .cloned()
-            .unwrap_or_else(|| snap.repo_name.clone());
+        let reviewer_channel = snap.channel_for_pr_or_default(restart.pr_number);
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
                 channel: reviewer_channel,
@@ -1528,14 +1523,8 @@ fn build_reviewer_respawn_effects(
     );
     config.working_dir = Some(wt_path.clone());
 
-    // Route reviewer to the task's topic channel (same lookup pattern
-    // used in check_and_restart_stuck_reviewers for workflow events).
-    config.channel = snap
-        .pr
-        .pr_task_associations
-        .get(&pr_number)
-        .and_then(|task_id| snap.task_channel.get(task_id))
-        .cloned();
+    // Route reviewer to the task's topic channel.
+    config.channel = snap.channel_for_pr(pr_number);
 
     effects.push(Effect::EnsureWorktree {
         worktree_id: worktree_id.clone(),
