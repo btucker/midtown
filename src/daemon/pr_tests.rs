@@ -3189,6 +3189,18 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
     }
 }
 
+/// Helper: install a minimal workflow.py in the test state's project root.
+///
+/// Creates `.midtown/workflow.py` so that `workflow_script_for_channel()` returns
+/// `Some(...)` and `pr_action_to_effects` takes the script-authoritative path
+/// (RecordPrNudge + EmitWorkflowEvent only) instead of the inline-effects fallback.
+fn install_workflow_script(state: &DaemonState) {
+    let project_root = state.all_repo_paths.first().expect("need a repo path");
+    let script_dir = project_root.join(".midtown");
+    std::fs::create_dir_all(&script_dir).expect("create .midtown dir");
+    std::fs::write(script_dir.join("workflow.py"), "# test stub\n").expect("write workflow.py");
+}
+
 /// Helper: extract EmitWorkflowEvent effects from an effect list.
 fn extract_workflow_events(effects: &[Effect]) -> Vec<&crate::workflow::WorkflowEvent> {
     effects
@@ -3203,11 +3215,14 @@ fn extract_workflow_events(effects: &[Effect]) -> Vec<&crate::workflow::Workflow
         .collect()
 }
 
-/// Gate !1902: PrApproved workflow event is suppressed while reviewer is active.
+/// Gate !1902, !2003: PrApproved is fully suppressed while reviewer is active.
 ///
 /// When a GitHub approved review arrives but the reviewer coworker is still working,
-/// the PrApproved event must NOT be emitted. This keeps the workflow script contract
-/// clean: "pr.approved = safe to merge".
+/// NO effects are emitted — neither the workflow event nor inline effects (NudgeSession,
+/// RecordPrNudge). This early return happens before the script-authoritative check,
+/// so the behavior is the same regardless of workflow script presence. The Approved
+/// cooldown is NOT recorded, allowing should_nudge() to pass on the next tick after
+/// the reviewer finishes.
 #[test]
 fn pr_approved_suppressed_while_reviewer_active() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
@@ -3227,21 +3242,25 @@ fn pr_approved_suppressed_while_reviewer_active() {
         &ctx,
     );
 
-    let workflow_events = extract_workflow_events(&effects);
     assert!(
-        workflow_events.is_empty(),
-        "PrApproved should NOT be emitted while reviewer is active, got: {:?}",
-        workflow_events
+        effects.is_empty(),
+        "All effects should be suppressed while reviewer is active (no workflow event, \
+         no inline effects, no cooldown recording), got: {:?}",
+        effects
     );
 }
 
-/// Gate !1902: PrApproved workflow event IS emitted when no reviewer is active.
+/// Gate !1902, !2003: PrApproved emits only RecordPrNudge + EmitWorkflowEvent
+/// when workflow script is present.
 ///
 /// Once the reviewer has finished (assignment cleared, not in reviewing phase),
-/// the PrApproved event should fire normally.
+/// the PrApproved event fires. With a workflow script, the script is authoritative:
+/// only cooldown tracking and the workflow event are emitted — no inline
+/// NudgeSession/PostToChannel effects.
 #[test]
 fn pr_approved_emitted_when_no_reviewer_active() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
+    install_workflow_script(&state);
 
     let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
     // has_active_reviewer defaults to false
@@ -3258,12 +3277,19 @@ fn pr_approved_emitted_when_no_reviewer_active() {
         &ctx,
     );
 
-    let workflow_events = extract_workflow_events(&effects);
+    // Script-authoritative: exactly RecordPrNudge + EmitWorkflowEvent, no inline effects
     assert_eq!(
-        workflow_events.len(),
-        1,
-        "PrApproved should be emitted when no reviewer is active"
+        effects.len(),
+        2,
+        "Should emit exactly RecordPrNudge + EmitWorkflowEvent, got: {:?}",
+        effects
     );
+    assert!(
+        matches!(effects[0], Effect::RecordPrNudge { pr_number: 42, .. }),
+        "First effect should be RecordPrNudge"
+    );
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(workflow_events.len(), 1);
     assert!(
         matches!(
             workflow_events[0],
@@ -3273,12 +3299,15 @@ fn pr_approved_emitted_when_no_reviewer_active() {
     );
 }
 
-/// Gate !1902: Other workflow events (e.g., CiFailed) are NOT affected by the reviewer gate.
+/// Gate !1902, !2003: Non-Approved events are unaffected by the reviewer gate.
 ///
 /// The has_active_reviewer flag only gates PrApproved, not other event types.
+/// With a workflow script, CiFailed still emits RecordPrNudge + EmitWorkflowEvent
+/// (script-authoritative path) even when a reviewer is active.
 #[test]
 fn non_approved_events_unaffected_by_reviewer_gate() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
+    install_workflow_script(&state);
 
     let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
     ctx.has_active_reviewer = true;
@@ -3295,12 +3324,19 @@ fn non_approved_events_unaffected_by_reviewer_gate() {
         &ctx,
     );
 
-    let workflow_events = extract_workflow_events(&effects);
+    // Script-authoritative: exactly RecordPrNudge + EmitWorkflowEvent, no inline effects
     assert_eq!(
-        workflow_events.len(),
-        1,
-        "CiFailed should be emitted regardless of reviewer state"
+        effects.len(),
+        2,
+        "Should emit exactly RecordPrNudge + EmitWorkflowEvent, got: {:?}",
+        effects
     );
+    assert!(
+        matches!(effects[0], Effect::RecordPrNudge { pr_number: 42, .. }),
+        "First effect should be RecordPrNudge"
+    );
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(workflow_events.len(), 1);
     assert!(
         matches!(
             workflow_events[0],
@@ -3310,19 +3346,23 @@ fn non_approved_events_unaffected_by_reviewer_gate() {
     );
 }
 
-/// Gate !1902: Full suppression → cooldown → clear → re-emit flow.
+/// Gate !1902, !2003: Full suppression → clear → re-emit flow.
 ///
-/// Verifies the Codex review fix: when PrApproved is suppressed due to active
-/// reviewer, the nudge cooldown is recorded. After clearing the cooldown (as
-/// happens when the reviewer finishes), the next tick successfully emits PrApproved.
+/// When PrApproved is suppressed due to active reviewer, NO effects are
+/// emitted — including no RecordPrNudge. This means no cooldown is recorded
+/// during suppression. If a cooldown exists from a prior approval (before the
+/// reviewer started), the review-complete path clears it. After the reviewer
+/// finishes and the cooldown is cleared, the next tick successfully emits
+/// PrApproved via the script-authoritative path.
 #[test]
 fn pr_approved_re_emitted_after_reviewer_clears() {
     use crate::daemon::trackers::PrIssueTracker;
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
+    install_workflow_script(&state);
     let pr_number = 42;
 
-    // Step 1: Reviewer is active → PrApproved suppressed
+    // Step 1: Reviewer is active → PrApproved fully suppressed (no effects at all)
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
     ctx.has_active_reviewer = true;
 
@@ -3338,16 +3378,17 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
         &ctx,
     );
     assert!(
-        extract_workflow_events(&effects).is_empty(),
-        "PrApproved should be suppressed while reviewer is active"
+        effects.is_empty(),
+        "All effects should be suppressed while reviewer is active"
     );
 
-    // Step 2: Simulate effect execution — nudge cooldown recorded
+    // Step 2: Simulate a pre-existing cooldown from a prior approval that
+    // fired before the reviewer started. The review-complete path clears this.
     let mut tracker = PrIssueTracker::new();
     tracker.record_nudge(pr_number, PrIssueType::Approved);
     assert!(
         !tracker.should_nudge(pr_number, PrIssueType::Approved),
-        "Nudge should be on cooldown after recording"
+        "Nudge should be on cooldown from prior approval"
     );
 
     // Step 3: Reviewer finishes → clear nudge cooldown (as done in review-complete path)
@@ -3357,7 +3398,7 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
         "Nudge should be unblocked after clearing cooldown"
     );
 
-    // Step 4: Next tick — reviewer cleared, PrApproved fires
+    // Step 4: Next tick — reviewer cleared, PrApproved fires via script-authoritative path
     let mut ctx_cleared = make_pr_context_with_channel(pr_number, "100", "daemon-core");
     ctx_cleared.has_active_reviewer = false;
 
@@ -3372,11 +3413,69 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
         &state,
         &ctx_cleared,
     );
+
+    // Script-authoritative: exactly RecordPrNudge + EmitWorkflowEvent
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should emit exactly RecordPrNudge + EmitWorkflowEvent, got: {:?}",
+        effects
+    );
+    assert!(
+        matches!(effects[0], Effect::RecordPrNudge { pr_number: 42, .. }),
+        "First effect should be RecordPrNudge"
+    );
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(workflow_events.len(), 1);
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
+        ),
+        "Event should be PrApproved for PR #42"
+    );
+}
+
+/// !2003, !2019: Fallback path — without a workflow script, inline effects are
+/// preserved alongside the workflow event.
+///
+/// When no `workflow.py` exists, `pr_action_to_effects` falls through to the
+/// inline-effects path (NudgeSession + RecordPrNudge) and appends the workflow
+/// event. This preserves backward compatibility for projects that haven't
+/// adopted workflow scripts.
+#[test]
+fn fallback_inline_effects_without_workflow_script() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    // No install_workflow_script() — deliberately testing the no-script fallback
+
+    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "broadway".to_string(),
+            message: "PR #42 — approved".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::Approved,
+        &state,
+        &ctx,
+    );
+
+    // Without a script: inline NudgeSession effect fires AND workflow event is appended
+    let has_nudge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }));
+    assert!(
+        has_nudge,
+        "Fallback path should produce NudgeSessionWithCallbacks when no workflow script exists"
+    );
+
     let workflow_events = extract_workflow_events(&effects);
     assert_eq!(
         workflow_events.len(),
         1,
-        "PrApproved should fire after reviewer clears"
+        "Workflow event should still be appended in fallback path"
     );
     assert!(
         matches!(
