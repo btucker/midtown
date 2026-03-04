@@ -31,6 +31,30 @@ pub struct ProfileState {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
+/// Summary of what a garbage collection pass cleaned up.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct GcResult {
+    /// Number of dead session records removed.
+    pub sessions_removed: usize,
+    /// Number of sessions whose `initial_prompt` was stripped.
+    pub prompts_stripped: usize,
+    /// Number of orphaned task metadata entries pruned.
+    pub orphaned_tasks_pruned: usize,
+    /// Number of stale worktree registry entries removed.
+    pub registry_entries_removed: usize,
+}
+
+impl GcResult {
+    /// Returns true if any cleanup was performed.
+    pub fn has_changes(&self) -> bool {
+        self.sessions_removed
+            + self.prompts_stripped
+            + self.orphaned_tasks_pruned
+            + self.registry_entries_removed
+            > 0
+    }
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -287,6 +311,61 @@ impl DaemonPersistentState {
             self.profile_pool_state.len()
         );
         Ok(())
+    }
+
+    /// Apply garbage collection mutations to this state in-place.
+    ///
+    /// Removes dead sessions, strips `initial_prompt` from stopped sessions,
+    /// prunes orphaned task metadata map entries, and removes stale worktree
+    /// registry entries. Returns a summary of what was cleaned up.
+    ///
+    /// This is a pure mutation method — no I/O. The caller is responsible
+    /// for saving state and logging after calling this.
+    pub fn apply_gc(
+        &mut self,
+        dead_session_ids: &[String],
+        strip_prompt_session_ids: &[String],
+        orphaned_task_ids: &[String],
+        stale_registry_ids: &[String],
+    ) -> GcResult {
+        let mut result = GcResult::default();
+
+        // 1. Remove dead sessions entirely
+        for sid in dead_session_ids {
+            if self.sessions.remove(sid).is_some() {
+                result.sessions_removed += 1;
+            }
+        }
+
+        // 2. Strip initial_prompt from stopped sessions
+        for sid in strip_prompt_session_ids {
+            if let Some(record) = self.sessions.get_mut(sid)
+                && record.initial_prompt.is_some()
+            {
+                record.initial_prompt = None;
+                result.prompts_stripped += 1;
+            }
+        }
+
+        // 3. Prune orphaned task metadata maps
+        for task_id in orphaned_task_ids {
+            self.task_channel.remove(task_id);
+            self.task_model.remove(task_id);
+            self.task_plan.remove(task_id);
+            self.task_execution_skill.remove(task_id);
+            self.task_thread_id.remove(task_id);
+            self.task_message_id.remove(task_id);
+            result.orphaned_tasks_pruned += 1;
+        }
+
+        // 4. Remove stale worktree registry entries
+        for wt_id in stale_registry_ids {
+            if self.worktree_registry.remove_worktree(wt_id).is_some() {
+                result.registry_entries_removed += 1;
+            }
+        }
+
+        result
     }
 
     /// Migrate from legacy separate files into the unified format.

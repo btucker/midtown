@@ -882,3 +882,187 @@ fn profile_state_default_is_not_limited() {
     assert!(state.usage_limit_reset_at.is_none());
     assert!(state.last_used_at.is_none());
 }
+
+// ── apply_gc tests ───────────────────────────────────────────────────────
+
+fn make_gc_session(session_id: &str, task_id: Option<&str>, has_prompt: bool) -> SessionRecord {
+    SessionRecord {
+        session_id: session_id.to_string(),
+        task_id: task_id.map(|s| s.to_string()),
+        initial_prompt: if has_prompt {
+            Some("test prompt data".to_string())
+        } else {
+            None
+        },
+        coworker_type: "dev".to_string(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn apply_gc_removes_dead_sessions() {
+    let mut state = DaemonPersistentState::default();
+    state
+        .sessions
+        .insert("dead-1".to_string(), make_gc_session("dead-1", None, true));
+    state
+        .sessions
+        .insert("dead-2".to_string(), make_gc_session("dead-2", None, false));
+    state.sessions.insert(
+        "alive-1".to_string(),
+        make_gc_session("alive-1", None, true),
+    );
+
+    let result = state.apply_gc(&["dead-1".to_string(), "dead-2".to_string()], &[], &[], &[]);
+
+    assert_eq!(result.sessions_removed, 2);
+    assert_eq!(state.sessions.len(), 1);
+    assert!(state.sessions.contains_key("alive-1"));
+}
+
+#[test]
+fn apply_gc_strips_prompts() {
+    let mut state = DaemonPersistentState::default();
+    state.sessions.insert(
+        "with-prompt".to_string(),
+        make_gc_session("with-prompt", None, true),
+    );
+    state.sessions.insert(
+        "no-prompt".to_string(),
+        make_gc_session("no-prompt", None, false),
+    );
+
+    let result = state.apply_gc(
+        &[],
+        &["with-prompt".to_string(), "no-prompt".to_string()],
+        &[],
+        &[],
+    );
+
+    assert_eq!(result.prompts_stripped, 1); // only the one that had a prompt
+    assert!(
+        state
+            .sessions
+            .get("with-prompt")
+            .unwrap()
+            .initial_prompt
+            .is_none()
+    );
+}
+
+#[test]
+fn apply_gc_prunes_orphaned_task_metadata() {
+    let mut state = DaemonPersistentState::default();
+    state
+        .task_channel
+        .insert("orphan-1".to_string(), "auth".to_string());
+    state
+        .task_model
+        .insert("orphan-1".to_string(), "opus".to_string());
+    state
+        .task_plan
+        .insert("orphan-1".to_string(), "/path".to_string());
+    state
+        .task_execution_skill
+        .insert("orphan-1".to_string(), "subagent".to_string());
+    state
+        .task_thread_id
+        .insert("orphan-1".to_string(), "thread-1".to_string());
+    state
+        .task_message_id
+        .insert("orphan-1".to_string(), "msg-1".to_string());
+
+    // Also add a surviving task to make sure it's not touched
+    state
+        .task_channel
+        .insert("alive-1".to_string(), "frontend".to_string());
+
+    let result = state.apply_gc(&[], &[], &["orphan-1".to_string()], &[]);
+
+    assert_eq!(result.orphaned_tasks_pruned, 1);
+    assert!(!state.task_channel.contains_key("orphan-1"));
+    assert!(!state.task_model.contains_key("orphan-1"));
+    assert!(!state.task_plan.contains_key("orphan-1"));
+    assert!(!state.task_execution_skill.contains_key("orphan-1"));
+    assert!(!state.task_thread_id.contains_key("orphan-1"));
+    assert!(!state.task_message_id.contains_key("orphan-1"));
+    // Alive task untouched
+    assert_eq!(
+        state.task_channel.get("alive-1"),
+        Some(&"frontend".to_string())
+    );
+}
+
+#[test]
+fn apply_gc_has_changes_reports_correctly() {
+    let empty = GcResult::default();
+    assert!(!empty.has_changes());
+
+    let with_removal = GcResult {
+        sessions_removed: 1,
+        ..Default::default()
+    };
+    assert!(with_removal.has_changes());
+
+    let with_strip = GcResult {
+        prompts_stripped: 1,
+        ..Default::default()
+    };
+    assert!(with_strip.has_changes());
+}
+
+#[test]
+fn apply_gc_no_op_returns_empty_result() {
+    let mut state = DaemonPersistentState::default();
+    state
+        .sessions
+        .insert("s1".to_string(), make_gc_session("s1", Some("42"), true));
+
+    let result = state.apply_gc(&[], &[], &[], &[]);
+
+    assert!(!result.has_changes());
+    assert_eq!(state.sessions.len(), 1); // untouched
+}
+
+#[test]
+fn apply_gc_combined_operations() {
+    let mut state = DaemonPersistentState::default();
+
+    // Session to remove
+    state.sessions.insert(
+        "dead".to_string(),
+        make_gc_session("dead", Some("old-task"), true),
+    );
+    // Session to strip prompt
+    state.sessions.insert(
+        "stopped".to_string(),
+        make_gc_session("stopped", Some("active-task"), true),
+    );
+    // Orphaned task metadata
+    state
+        .task_channel
+        .insert("old-task".to_string(), "backend".to_string());
+
+    let result = state.apply_gc(
+        &["dead".to_string()],
+        &["stopped".to_string()],
+        &["old-task".to_string()],
+        &[],
+    );
+
+    assert_eq!(result.sessions_removed, 1);
+    assert_eq!(result.prompts_stripped, 1);
+    assert_eq!(result.orphaned_tasks_pruned, 1);
+    assert!(result.has_changes());
+
+    assert!(!state.sessions.contains_key("dead"));
+    assert!(
+        state
+            .sessions
+            .get("stopped")
+            .unwrap()
+            .initial_prompt
+            .is_none()
+    );
+    assert!(!state.task_channel.contains_key("old-task"));
+}

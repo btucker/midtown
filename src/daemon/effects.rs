@@ -1832,70 +1832,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 orphaned_task_ids,
                 stale_registry_ids,
             } => {
-                let mut total_removed = 0usize;
-                let mut total_stripped = 0usize;
-                let mut total_orphaned = 0usize;
-                let mut total_registry = 0usize;
-
-                {
+                let result = {
                     let mut ps = state.persistent_state.lock().await;
+                    let result = ps.apply_gc(
+                        &dead_session_ids,
+                        &strip_prompt_session_ids,
+                        &orphaned_task_ids,
+                        &stale_registry_ids,
+                    );
 
-                    // 1. Remove dead sessions entirely
-                    for sid in &dead_session_ids {
-                        if ps.sessions.remove(sid).is_some() {
-                            total_removed += 1;
-                        }
-                    }
-
-                    // 2. Strip initial_prompt from stopped sessions
-                    for sid in &strip_prompt_session_ids {
-                        if let Some(record) = ps.sessions.get_mut(sid)
-                            && record.initial_prompt.is_some()
-                        {
-                            record.initial_prompt = None;
-                            total_stripped += 1;
-                        }
-                    }
-
-                    // 3. Prune orphaned task metadata maps
-                    for task_id in &orphaned_task_ids {
-                        ps.task_channel.remove(task_id);
-                        ps.task_model.remove(task_id);
-                        ps.task_plan.remove(task_id);
-                        ps.task_execution_skill.remove(task_id);
-                        ps.task_thread_id.remove(task_id);
-                        ps.task_message_id.remove(task_id);
-                        total_orphaned += 1;
-                    }
-
-                    // 4. Remove stale worktree registry entries (directory cleanup
-                    //    is handled by CleanupStaleWorktree — this only removes
-                    //    registry entries whose directories are already gone)
-                    for wt_id in &stale_registry_ids {
-                        if ps.worktree_registry.remove_worktree(wt_id).is_some() {
-                            total_registry += 1;
-                        }
-                    }
-
-                    if total_removed + total_stripped + total_orphaned + total_registry > 0
+                    if result.has_changes()
                         && let Err(e) = ps.save_for_repo(&state.repo_name)
                     {
                         warn!("Failed to save daemon state after GC: {}", e);
                     }
-                }
+                    result
+                };
 
-                if total_removed + total_stripped + total_orphaned + total_registry > 0 {
+                if result.has_changes() {
                     info!(
                         "State GC: removed {} dead sessions, stripped {} prompts, \
                          pruned {} orphaned task entries, removed {} stale registry entries",
-                        total_removed, total_stripped, total_orphaned, total_registry
+                        result.sessions_removed,
+                        result.prompts_stripped,
+                        result.orphaned_tasks_pruned,
+                        result.registry_entries_removed
                     );
 
                     // Post to ops channel
                     let mut msg = crate::message::Message::system(format!(
                         "🧹 State GC: removed {} dead session(s), stripped {} prompt(s), \
                          pruned {} orphaned task entries, removed {} stale registry entries",
-                        total_removed, total_stripped, total_orphaned, total_registry
+                        result.sessions_removed,
+                        result.prompts_stripped,
+                        result.orphaned_tasks_pruned,
+                        result.registry_entries_removed
                     ));
                     msg.channel = Some(OPS_CHANNEL.to_string());
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
