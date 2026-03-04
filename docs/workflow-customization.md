@@ -280,16 +280,18 @@ A coworker finished its current turn and is now idle.
 {
   "type": "coworker.idle",
   "channel": "proj-auth",
-  "task_id": "42",
-  "coworker": "lexington"
+  "coworker": "lexington",
+  "task_id": "42"
 }
 ```
+
+> `task_id` is **optional** — omitted entirely when the coworker had no associated task. Always use `event.get("task_id")` instead of `event["task_id"]`.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `channel` | string | yes | Channel |
-| `task_id` | string | optional | Task the coworker was working on (omitted if none) |
 | `coworker` | string | yes | Coworker name |
+| `task_id` | string | optional | Task the coworker was working on (omitted if none) |
 
 #### `coworker.stuck`
 
@@ -299,16 +301,17 @@ The daemon detected that a coworker appears stuck (no progress for an extended p
 {
   "type": "coworker.stuck",
   "channel": "proj-auth",
-  "task_id": "42",
   "coworker": "lexington"
 }
 ```
 
+> `task_id` is optional — shown in `coworker.idle` above, omitted here to demonstrate the optional case.
+
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `channel` | string | yes | Channel |
-| `task_id` | string | optional | Task the coworker was working on (omitted if none) |
 | `coworker` | string | yes | Coworker name |
+| `task_id` | string | optional | Task the coworker was working on (omitted if none) |
 
 #### `coworker.message`
 
@@ -318,7 +321,6 @@ A coworker posted a message to the channel.
 {
   "type": "coworker.message",
   "channel": "proj-auth",
-  "task_id": "42",
   "coworker": "lexington",
   "message": "Found the root cause in auth.rs"
 }
@@ -384,7 +386,7 @@ Post a message to a channel.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `message` | `str` | (required) | Message text |
-| `channel` | `str` | event's channel | Target channel (defaults to daemon's default) |
+| `channel` | `str` | event's channel | Target channel (defaults to the event's channel when omitted) |
 | `sender` | `str` | repo name | Display name for the message author |
 | `thread_parent_id` | `str` | `None` | Post as a thread reply under this message ID |
 
@@ -463,9 +465,7 @@ Spawn a new coworker session.
 | `resume` | `bool` | `False` | Resume the most-recently-stopped session instead |
 
 ```python
-rpc.spawn_coworker(
-    prompt="Please review PR #123. Use the code-review skill."
-)
+rpc.spawn_coworker(prompt="Run the full test suite and report results")
 ```
 
 #### `rpc.nudge_coworker(name, message, *, sender=None)`
@@ -484,6 +484,27 @@ rpc.nudge_coworker(
     "PR #123 is approved — please merge when ready"
 )
 ```
+
+### PR
+
+#### `rpc.spawn_reviewer(pr_number)`
+
+Request the daemon to spawn a reviewer for a pull request. The daemon handles all reviewer setup: worktree creation, name selection, assignment tracking, and launch configuration. The workflow script controls *when* to spawn — the daemon controls *how*.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pr_number` | `int` | (required) | GitHub PR number to review |
+
+Returns a dict with a `"message"` key describing the outcome. Safe to call if a reviewer is already assigned (no-op).
+
+```python
+try:
+    rpc.spawn_reviewer(event["pr_number"])
+except Exception as exc:
+    rpc.post_to_channel(f"⚠️ Failed to spawn reviewer: {exc}")
+```
+
+> **Note:** Prefer `spawn_reviewer()` over `spawn_coworker(prompt="Review PR #...")` for PR reviews. `spawn_reviewer()` integrates with the daemon's reviewer assignment tracking, worktree management, and deduplication.
 
 ### Daemon
 
@@ -651,7 +672,7 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
             f"PR #{event['pr_number']} opened by {event['coworker']} — "
             "skipping auto-review (human review required for docs)"
         )
-        # No rpc.spawn_coworker() call → no reviewer spawned
+        # No rpc.spawn_reviewer() call → no reviewer spawned
 
     elif event["type"] == "pr.approved":
         author = event.get("coworker", "")
@@ -737,9 +758,7 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
             f"PR #{pr} opened by {coworker} — requires senior review "
             f"({', '.join(SENIOR_REVIEWERS)})"
         )
-        rpc.spawn_coworker(
-            prompt=f"Review PR #{pr} opened by {coworker}."
-        )
+        rpc.spawn_reviewer(pr)
 
     elif event["type"] == "pr.approved" and task_id:
         task_data = state.get("tasks", {}).get(task_id, {})
@@ -791,9 +810,7 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
         rpc.post_to_channel(
             f"PR #{event['pr_number']} opened by {event['coworker']}"
         )
-        rpc.spawn_coworker(
-            prompt=f"Review PR #{event['pr_number']} by {event['coworker']}."
-        )
+        rpc.spawn_reviewer(event["pr_number"])
 
     elif event["type"] == "pr.approved":
         task_id = event.get("task_id")
@@ -948,7 +965,7 @@ If your script has a bug, the daemon posts the error to the channel:
 Check the daemon logs for more detail:
 
 ```bash
-tail -f ~/.local/state/midtown/<repo>/daemon.log | grep workflow
+tail -f ~/.midtown/projects/<repo>/logs/daemon.log | grep workflow
 ```
 
 ---
