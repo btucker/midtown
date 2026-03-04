@@ -1511,15 +1511,15 @@ pub(super) async fn handle_session_fork(
             }),
         ),
         Ok((sid, false, fork_channel)) => {
-            // Send nudge to the fresh fork. If the caller provided an initial
-            // message, use that; otherwise fall back to fork_initial_framing
-            // only when the fork is for a channel lead (the framing text says
-            // "channel lead for #..."). Without a nudge the fork session sits
-            // idle forever with no initial message to act on.
+            // Send nudge to the fresh fork. Priority:
+            // 1. Explicit --initial-message from the caller
+            // 2. Look up the parent message content by thread_parent_id and
+            //    include it (with fork_initial_framing for channel leads)
+            // 3. Bare fork_initial_framing for channel leads (no parent found)
             //
-            // Check channel-lead status up front so we don't need try_lock()
-            // inside a sync closure — .lock().await is correct in async context
-            // and avoids non-deterministic framing on lock contention.
+            // Without a nudge the fork session sits idle forever with no
+            // initial message to act on — this was the root cause of "forks
+            // not working".
             let is_channel_lead = {
                 let ps_guard = state.persistent_state.lock().await;
                 ps_guard
@@ -1528,20 +1528,66 @@ pub(super) async fn handle_session_fork(
                     .map(|r| r.coworker_type == "channel-lead")
                     .unwrap_or(false)
             };
-            let nudge_message = initial_message.map(String::from).or_else(|| {
-                fork_channel.as_ref().and_then(|ch| {
-                    // Only use channel-lead framing when the caller IS a channel
-                    // lead. When the main lead forks, repo_name is the fallback
-                    // channel — sending "You are a channel lead for #midtown" is
-                    // misleading. In that case we skip the framing; the fork
-                    // still starts (it just has no initial nudge text).
-                    if is_channel_lead {
-                        Some(super::rpc_channel::fork_initial_framing(ch))
-                    } else {
-                        None
+            let nudge_message = if let Some(msg) = initial_message {
+                Some(msg.to_string())
+            } else {
+                // Look up the parent message content as fallback context.
+                let parent_content = if let Some(ref ch) = fork_channel {
+                    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                    match crate::channel::Channel::new(&base_dir, ch) {
+                        Ok(channel) => {
+                            match channel.find_message_by_id_async(thread_parent_id).await {
+                                Ok(Some(msg)) => Some((msg.from, msg.content)),
+                                Ok(None) => {
+                                    debug!(
+                                        "Parent message {} not found in channel {}",
+                                        thread_parent_id, ch
+                                    );
+                                    None
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to look up parent message {}: {}",
+                                        thread_parent_id, e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to open channel {} for parent message lookup: {}",
+                                ch, e
+                            );
+                            None
+                        }
                     }
-                })
-            });
+                } else {
+                    None
+                };
+
+                match (is_channel_lead, parent_content) {
+                    // Channel lead + parent message: framing + quoted message
+                    (true, Some((from, content))) => {
+                        let framing = fork_channel
+                            .as_ref()
+                            .map(|ch| super::rpc_channel::fork_initial_framing(ch))
+                            .unwrap_or_default();
+                        Some(format!("{framing}\n\n{from} wrote:\n> {content}"))
+                    }
+                    // Non-channel-lead + parent message: just the message context
+                    (false, Some((from, content))) => Some(format!(
+                        "The following message needs investigation:\n\n\
+                             {from} wrote:\n> {content}"
+                    )),
+                    // Channel lead, no parent found: bare framing
+                    (true, None) => fork_channel
+                        .as_ref()
+                        .map(|ch| super::rpc_channel::fork_initial_framing(ch)),
+                    // Non-channel-lead, no parent: no nudge
+                    (false, None) => None,
+                }
+            };
             if let Some(message) = nudge_message {
                 let nudge = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
