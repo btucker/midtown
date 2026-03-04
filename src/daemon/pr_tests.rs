@@ -4325,3 +4325,95 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
         on_success
     );
 }
+
+/// Verify that the placeholder comment body has correct HTML comment tags and
+/// no escaped exclamation marks (`\!` or `<\!--`).
+///
+/// Regression test: some Claude models escape `!` in markdown, producing
+/// `<\!-- midtown-placeholder -->` which breaks tag matching. By moving
+/// placeholder posting to the daemon (code, not prompt), we guarantee
+/// the body is emitted verbatim.
+#[tokio::test]
+async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
+    let pr_number = 99997u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "york/test-tags",
+        "title": "Test tags [Midtown !301]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["york".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        Some(&branch_owners),
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    // Extract the PostPrComment body from on_success
+    let body = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success.iter().find_map(|s| {
+                    if let Effect::PostPrComment { body, .. } = s {
+                        Some(body.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+        .expect("Expected PostPrComment in on_success");
+
+    // Must start with the exact HTML comment tag (not escaped)
+    assert!(
+        body.starts_with("<!-- midtown-placeholder -->"),
+        "Body must start with exact '<!-- midtown-placeholder -->' tag, got: {}",
+        &body[..body.len().min(80)]
+    );
+
+    // Must NOT contain escaped exclamation marks anywhere
+    assert!(
+        !body.contains(r"\!"),
+        "Body must not contain escaped exclamation marks (\\!). Got: {}",
+        body
+    );
+    assert!(
+        !body.contains(r"<\!--"),
+        r"Body must not contain '<\!--' (escaped HTML comment). Got: {}",
+        body
+    );
+
+    // Must contain the NOTE block with unescaped `> [!NOTE]`
+    assert!(
+        body.contains("> [!NOTE]"),
+        "Body should contain '> [!NOTE]' GitHub callout (unescaped). Got: {}",
+        body
+    );
+
+    // Must contain the Midtown footer with unescaped link
+    assert!(
+        body.contains("🌃 Co-built with [Midtown]"),
+        "Body should contain the Midtown footer. Got: {}",
+        body
+    );
+}

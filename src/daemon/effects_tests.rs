@@ -1,5 +1,6 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
+use crate::github_state::AssignmentSource;
 
 fn mk_session_record(
     session_id: &str,
@@ -1523,5 +1524,152 @@ fn test_dm_separator_produced_for_reviewer_session() {
             assert!(message.contains("Review PR"));
         }
         other => panic!("expected PostSystemMessage, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PostPrComment effect execution tests
+// ---------------------------------------------------------------------------
+
+/// Verify that executing a PostPrComment effect calls `gh pr comment`,
+/// parses the comment ID from stdout, and stores it on the assignment.
+///
+/// This is an E2E test for the placeholder posting flow — the daemon posts
+/// the comment (not the reviewer agent) to avoid prompt-compliance issues
+/// like escaped `!` characters.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_stores_comment_id_on_assignment() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-test");
+
+    // Pre-assign a reviewer so post_pr_comment can store the comment ID
+    let pr_number = 42u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "park", AssignmentSource::Webhook);
+    }
+
+    // Mock `gh` to output a comment URL (like real `gh pr comment` does)
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+    std::fs::write(
+        &mock_gh_script,
+        "#!/bin/bash\necho 'https://github.com/btucker/midtown/pull/42#issuecomment-98765'",
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    // Execute the PostPrComment effect
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "park".to_string(),
+        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by park..."
+            .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Verify the comment ID was parsed and stored on the assignment
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps
+            .github
+            .pr_reviewers
+            .get(&pr_number)
+            .expect("assignment should still exist");
+        assert_eq!(
+            assignment.placeholder_comment_id,
+            Some(98765),
+            "Should parse comment ID 98765 from the issuecomment URL"
+        );
+    }
+
+    // Verify the placeholder cache was populated
+    {
+        let cache = state.reviewer_placeholder_cache.lock().unwrap();
+        let (cached_id, _instant) = cache.get(&pr_number).expect("cache should be populated");
+        assert_eq!(
+            *cached_id,
+            Some(98765),
+            "Placeholder cache should contain the comment ID"
+        );
+    }
+}
+
+/// Verify that `post_pr_comment` handles a bare numeric URL format
+/// (not just `issuecomment-<id>`).
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_parses_bare_numeric_url() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-bare");
+
+    let pr_number = 55u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "madison", AssignmentSource::PollingFallback);
+    }
+
+    // Mock gh to output just a URL ending in a bare number
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+    std::fs::write(
+        &mock_gh_script,
+        "#!/bin/bash\necho 'https://github.com/btucker/midtown/issues/55/comments/11223'",
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "madison".to_string(),
+        body: "<!-- midtown-placeholder -->\nReview in progress...".to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps.github.pr_reviewers.get(&pr_number).unwrap();
+        assert_eq!(
+            assignment.placeholder_comment_id,
+            Some(11223),
+            "Should parse comment ID 11223 from the bare numeric URL"
+        );
     }
 }
