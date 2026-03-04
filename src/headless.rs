@@ -734,7 +734,7 @@ struct CodexLaunchPlan {
 enum CodexPostAction {
     None,
     DispatchPendingTurns,
-    /// Stale thread detected on `thread/resume` — retry with fresh `thread/start`.
+    /// Stale thread detected on `thread/resume` or `thread/fork` — retry with fresh `thread/start`.
     RetryThreadStart,
 }
 
@@ -1844,7 +1844,7 @@ impl HeadlessSession {
 
     /// Send only `thread/start` to the Codex app-server without re-sending `initialize`.
     ///
-    /// Used by `RetryThreadStart` when a stale thread is detected on resume.
+    /// Used by `RetryThreadStart` when a stale thread is detected on resume or fork.
     /// The process-level `initialize` handshake was already completed on first launch;
     /// only a new thread needs to be started.
     async fn codex_retry_thread_start(&mut self) -> std::io::Result<()> {

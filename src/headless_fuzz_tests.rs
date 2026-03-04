@@ -45,6 +45,7 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
         prop_oneof![
             Just("thread/start".to_string()),
             Just("thread/resume".to_string()),
+            Just("thread/fork".to_string()),
         ],
         any::<bool>(),
     )
