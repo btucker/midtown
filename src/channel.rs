@@ -1751,14 +1751,14 @@ impl ChannelRouter {
             });
         }
 
-        // Open new channel
+        // Open new channel and attempt the write before caching. Sending first
+        // ensures that a transient write failure (ENOSPC, lock timeout) doesn't
+        // cache the channel as "seen" — the next successful send will still
+        // report is_new: true so callers can emit channel_list_changed.
+        // Channel::new() is idempotent (create_dir_all), so retries are safe.
         let channel = Channel::new(&self.base_dir, channel_name)?;
-        // Cache the channel before attempting send - the Channel itself is valid
-        // even if the subsequent write fails (filesystem error, permissions, etc).
-        // The Channel holds no mutable state, so caching a channel that failed
-        // a write is safe - the next send() will retry the write.
-        channels.insert(channel_name.to_string(), channel.clone());
         channel.send(message)?;
+        channels.insert(channel_name.to_string(), channel);
         Ok(SendResult {
             channel_name: channel_name.to_string(),
             is_new: true,
