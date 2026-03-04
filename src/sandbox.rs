@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 /// - All additional repo directories (multi-repo projects)
 /// - Additional configured paths from `[sandbox].allowed_paths` (global + project)
 /// - `~/.midtown/projects/<project>/` (project-scoped daemon state, channel logs, worktrees)
+/// - `~/.midtown/auth/` (auth profile dirs used as CLAUDE_CONFIG_DIR / CODEX_HOME)
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
 /// - `~/.local/state/midtown/<project>/` (project-scoped daemon socket, runtime state)
@@ -110,6 +111,10 @@ pub fn writable_dirs(
             .to_string_lossy()
             .to_string(),
     );
+    // Auth profile directories live under ~/.midtown/auth/ and are set as
+    // CLAUDE_CONFIG_DIR or CODEX_HOME. Claude Code writes session data, project
+    // settings, and tasks there — blocking writes causes immediate process death.
+    dirs.push(home.join(".midtown/auth").to_string_lossy().to_string());
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
 

@@ -159,9 +159,13 @@ pub fn process_lead_output(
 
 /// Process coworker output and generate DM channel posting effects.
 ///
-/// For each coworker session that produced text output, posts the aggregated text
-/// to the coworker's DM channel (`dm-<name>`). This mirrors how channel leads
-/// stream their output to topic channels.
+/// DM channels are a complete stream of the agent — text AND tool calls.
+/// All content uses `auto_output: false` because DM channels echo everything
+/// (there's no distinction between "auto" and "explicit" output).
+///
+/// For each coworker session, posts:
+/// - Text output (assistant prose)
+/// - Fully rendered tool calls with details (diffs, command output, etc.)
 ///
 /// `coworker_names` is the set of active coworker session names (excluding the
 /// main lead, channel leads, and fork-bound sessions).
@@ -173,19 +177,230 @@ pub fn process_coworker_output(
 
     for name in coworker_names {
         if let Some(coworker_events) = events.get(name.as_str()) {
+            let dm_channel = format!("dm-{}", name);
+
+            // Post text output (assistant prose).
             let trimmed = extract_assistant_text(coworker_events).trim().to_string();
             if !trimmed.is_empty() {
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
                     message: trimmed,
-                    channel: Some(format!("dm-{}", name)),
-                    auto_output: true,
+                    channel: Some(dm_channel.clone()),
+                    auto_output: false,
+                });
+            }
+
+            // Post fully rendered tool calls so DM channels show the complete agent stream.
+            let tool_md = render_dm_tool_blocks(coworker_events);
+            if !tool_md.is_empty() {
+                effects.push(Effect::PostToChannel {
+                    sender: name.clone(),
+                    message: tool_md,
+                    channel: Some(dm_channel),
+                    auto_output: false,
                 });
             }
         }
     }
 
     effects
+}
+
+/// Maximum bytes for tool result output in DM channel messages.
+/// More generous than the 256-byte limit used for RPC/WebSocket activity items.
+const MAX_DM_TOOL_OUTPUT_BYTES: usize = 4096;
+
+/// Maximum bytes for edit diff content (old + new strings combined).
+const MAX_DM_EDIT_DIFF_BYTES: usize = 2048;
+
+/// Render tool calls and results from stream events as rich markdown for DM channels.
+///
+/// Extracts `tool_use` blocks from Assistant events and `tool_result` blocks from
+/// User events, pairs them by `call_id`, and renders each as a markdown block:
+///
+/// - **Bash**: command in code span + output in fenced code block
+/// - **Edit**: file path + diff in fenced diff block
+/// - **Other tools**: semantic header in code span + error output if failed
+///
+/// Returns a single string with all tool blocks separated by blank lines.
+fn render_dm_tool_blocks(events: &[StreamEvent]) -> String {
+    // Collect tool results keyed by call_id.
+    let mut results: HashMap<String, (String, bool)> = HashMap::new();
+    for event in events {
+        if let StreamEvent::User { message, .. } = event
+            && let Some(content) = message.get("content")
+            && let Some(arr) = content.as_array()
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    let call_id = block
+                        .get("tool_use_id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let output = extract_dm_tool_result(block);
+                    results.insert(call_id, (output, is_error));
+                }
+            }
+        }
+    }
+
+    // Render tool calls with their results.
+    let mut blocks = Vec::new();
+    for event in events {
+        if let StreamEvent::Assistant { message, .. } = event
+            && let Some(content) = message.get("content")
+            && let Some(arr) = content.as_array()
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let call_id = block
+                        .get("id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let result = results.get(&call_id);
+
+                    let md = render_tool_call_markdown(name, &input, result);
+                    if !md.is_empty() {
+                        blocks.push(md);
+                    }
+                }
+            }
+        }
+    }
+
+    blocks.join("\n\n")
+}
+
+/// Render a single tool call as a markdown block.
+///
+/// Returns markdown with the tool action and relevant details:
+/// - Bash: full command + output code block
+/// - Edit: file path + diff showing old→new changes
+/// - Other: semantic header + error output (if any)
+fn render_tool_call_markdown(
+    name: &str,
+    input: &serde_json::Value,
+    result: Option<&(String, bool)>,
+) -> String {
+    let mut md = String::new();
+
+    match name {
+        "Bash" => {
+            let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            md.push_str(&format!("`$ {command}`"));
+            if let Some((output, is_error)) = result {
+                if *is_error {
+                    md.push_str(" **✗**");
+                }
+                if !output.is_empty() {
+                    md.push_str("\n```\n");
+                    md.push_str(truncate_str(output, MAX_DM_TOOL_OUTPUT_BYTES));
+                    md.push_str("\n```");
+                }
+            }
+        }
+        "Edit" | "MultiEdit" => {
+            let path = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            md.push_str(&format!("`edit {path}`"));
+            let old = input
+                .get("old_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let new = input
+                .get("new_string")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !old.is_empty() || !new.is_empty() {
+                md.push_str("\n```diff\n");
+                let budget = MAX_DM_EDIT_DIFF_BYTES / 2;
+                for line in truncate_str(old, budget).lines() {
+                    md.push_str(&format!("- {line}\n"));
+                }
+                for line in truncate_str(new, budget).lines() {
+                    md.push_str(&format!("+ {line}\n"));
+                }
+                md.push_str("```");
+            }
+            append_error_output(&mut md, result);
+        }
+        _ => {
+            let header = crate::universal_events::claude::semantic_header(name, input);
+            md.push_str(&format!("`{header}`"));
+            // Show error output for non-Bash tools.
+            append_error_output(&mut md, result);
+        }
+    }
+
+    md
+}
+
+/// Append error output from a tool result to a markdown string.
+fn append_error_output(md: &mut String, result: Option<&(String, bool)>) {
+    if let Some((output, true)) = result {
+        md.push_str(" **✗**");
+        if !output.is_empty() {
+            md.push_str("\n```\n");
+            md.push_str(truncate_str(output, MAX_DM_TOOL_OUTPUT_BYTES));
+            md.push_str("\n```");
+        }
+    }
+}
+
+/// Extract tool result text content with a generous size limit for DM channels.
+fn extract_dm_tool_result(block: &serde_json::Value) -> String {
+    let full = match block.get("content") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|item| {
+                if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    item.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    };
+    if full.len() > MAX_DM_TOOL_OUTPUT_BYTES {
+        let boundary = full.floor_char_boundary(MAX_DM_TOOL_OUTPUT_BYTES);
+        full[..boundary].to_string()
+    } else {
+        full
+    }
+}
+
+/// Coerce a JSON value to a String (handles string, number, bool).
+fn json_value_as_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// Truncate a string to at most `max_bytes` at a char boundary.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        s
+    } else {
+        let boundary = s.floor_char_boundary(max_bytes);
+        &s[..boundary]
+    }
 }
 
 /// Process lead and channel lead stream events and generate universal event broadcast effects.

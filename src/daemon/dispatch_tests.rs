@@ -3257,7 +3257,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
     );
 
     // Extract claimed task IDs as events.rs does after the fix
-    let excluded_ids = extract_claimed_task_ids_from_effects(&orphan_effects);
+    let excluded_ids = effects::extract_claimed_task_ids_from_effects(&orphan_effects);
     assert!(
         excluded_ids.contains("1420"),
         "Orphan recovery should claim task !1420"
@@ -4031,7 +4031,7 @@ fn test_dispatch_via_sessions_respects_cooldown() {
 #[test]
 fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     // Integration test: verifies that when dispatch_via_sessions recovers a task,
-    // that task ID flows through extract_claimed_task_ids_from_effects and is
+    // that task ID flows through effects::extract_claimed_task_ids_from_effects and is
     // excluded from spawn_for_pending_tasks_excluding, preventing double-spawning.
     //
     // Scenario: Task !42 is in_progress (stopped session) AND also appears as
@@ -4088,7 +4088,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     );
 
     // Step 2: Extract claimed IDs (as events.rs does)
-    let session_claimed_ids = extract_claimed_task_ids_from_effects(&session_effects);
+    let session_claimed_ids = effects::extract_claimed_task_ids_from_effects(&session_effects);
     assert!(
         session_claimed_ids.contains("42"),
         "Session dispatch should claim task !42"

@@ -38,11 +38,16 @@ fn test_writable_dirs_includes_config_dirs() {
     let has_midtown_project = dirs
         .iter()
         .any(|d| d.contains(".midtown/projects/test-project"));
+    let has_midtown_auth = dirs.iter().any(|d| d.contains(".midtown/auth"));
     let has_claude = dirs.iter().any(|d| d.ends_with(".claude"));
     let has_codex = dirs.iter().any(|d| d.ends_with(".codex"));
     assert!(
         has_midtown_project,
         "Should include ~/.midtown/projects/test-project"
+    );
+    assert!(
+        has_midtown_auth,
+        "Should include ~/.midtown/auth (CLAUDE_CONFIG_DIR / CODEX_HOME profile dirs)"
     );
     assert!(has_claude, "Should include ~/.claude");
     assert!(has_codex, "Should include ~/.codex");
@@ -410,6 +415,129 @@ fn test_sandbox_exec_real_profile_allows_project_writes() {
     let _ = std::fs::remove_file(&profile_path);
 }
 
+/// Smoke test: verify that Claude/Codex can actually start inside the sandbox.
+///
+/// Runs `<binary> --version` inside a sandbox-exec profile built from the
+/// real `writable_dirs()` output. This catches environment issues that
+/// structural tests miss: missing writable dirs for config/session storage,
+/// binary resolution failures, env var problems, etc.
+///
+/// Doesn't require valid auth — `--version` exits before auth checks.
+#[test]
+#[cfg(target_os = "macos")]
+fn test_claude_launches_inside_sandbox() {
+    if !can_sandbox() {
+        eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+        return;
+    }
+    // Check if claude binary is available
+    if std::process::Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("Skipping test: claude binary not found on PATH");
+        return;
+    }
+
+    let project = tempfile::TempDir::new().expect("create project dir");
+    let real_project = project.path().canonicalize().expect("canonicalize");
+    let writable = writable_dirs(&real_project, &[], &[], "test-project");
+    let profile = generate_macos_profile(&writable);
+    let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+    let (ok, stderr) = run_sandboxed(&profile_path, "claude", &["--version"]);
+    assert!(
+        ok,
+        "claude --version should succeed inside sandbox. stderr: {}",
+        stderr
+    );
+
+    let _ = std::fs::remove_file(&profile_path);
+}
+
+/// Same smoke test for Codex.
+#[test]
+#[cfg(target_os = "macos")]
+fn test_codex_launches_inside_sandbox() {
+    if !can_sandbox() {
+        eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+        return;
+    }
+    if std::process::Command::new("codex")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("Skipping test: codex binary not found on PATH");
+        return;
+    }
+
+    let project = tempfile::TempDir::new().expect("create project dir");
+    let real_project = project.path().canonicalize().expect("canonicalize");
+    let writable = writable_dirs(&real_project, &[], &[], "test-project");
+    let profile = generate_macos_profile(&writable);
+    let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+    let (ok, stderr) = run_sandboxed(&profile_path, "codex", &["--version"]);
+    assert!(
+        ok,
+        "codex --version should succeed inside sandbox. stderr: {}",
+        stderr
+    );
+
+    let _ = std::fs::remove_file(&profile_path);
+}
+
+/// Verify that auth profile directories are actually writable inside the sandbox.
+///
+/// Goes beyond the structural `test_auth_profile_dirs_are_sandbox_writable` test
+/// by doing a real sandbox-exec write to the auth profile directory. This catches
+/// canonicalization mismatches (e.g., symlinks) that structural path comparison misses.
+#[test]
+#[cfg(target_os = "macos")]
+fn test_sandbox_exec_allows_auth_profile_writes() {
+    if !can_sandbox() {
+        eprintln!("Skipping test: already inside a sandbox (nesting not allowed)");
+        return;
+    }
+
+    let project = tempfile::TempDir::new().expect("create project dir");
+    let real_project = project.path().canonicalize().expect("canonicalize");
+    let writable = writable_dirs(&real_project, &[], &[], "test-project");
+    let profile = generate_macos_profile(&writable);
+    let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
+
+    // Test that we can write to the Claude auth profile directory
+    let claude_profile_dir =
+        crate::auth::current_profile_dir_for(crate::auth::AuthProvider::Claude);
+    std::fs::create_dir_all(&claude_profile_dir).ok();
+    let test_file = claude_profile_dir.join(".sandbox-write-test");
+    let (ok, stderr) = run_sandboxed(
+        &profile_path,
+        "sh",
+        &[
+            "-c",
+            &format!(
+                "echo test > '{}' && rm '{}'",
+                test_file.display(),
+                test_file.display()
+            ),
+        ],
+    );
+    assert!(
+        ok,
+        "Write to Claude auth profile dir ({:?}) should succeed inside sandbox. stderr: {}",
+        claude_profile_dir, stderr
+    );
+
+    let _ = std::fs::remove_file(&profile_path);
+}
+
 #[test]
 fn test_writable_dirs_includes_configured_paths() {
     let configured = vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()];
@@ -499,6 +627,80 @@ fn test_writable_dirs_accepts_valid_project_names() {
     let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "CamelCase123");
     // Double dots in filenames are valid — only bare ".." is a traversal component
     let _ = writable_dirs(Path::new("/home/user/project"), &[], &[], "foo..bar");
+}
+
+#[test]
+/// Verify the cross-cutting invariant: every auth profile directory that
+/// launch.rs sets as CLAUDE_CONFIG_DIR or CODEX_HOME must fall under a
+/// sandbox-writable path. Without this, spawned Claude/Codex processes
+/// can't write to their own config directory and die immediately.
+///
+/// This test catches drift between auth path resolution (auth.rs) and
+/// sandbox allowlisting (sandbox.rs) — the exact class of bug where
+/// adding ~/.midtown/auth/ profiles broke coworker spawns.
+fn test_auth_profile_dirs_are_sandbox_writable() {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+    let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "test-project");
+
+    // For each provider that uses a config dir env var, resolve the profile
+    // directory the same way launch.rs does and verify it's writable.
+    for provider in [
+        crate::auth::AuthProvider::Claude,
+        crate::auth::AuthProvider::Codex,
+    ] {
+        let profile_dir = crate::auth::current_profile_dir_for(provider);
+
+        // The profile dir must be a subpath of at least one writable dir.
+        // Canonicalize both sides to handle symlinks (sandbox-exec uses real paths).
+        let profile_str = profile_dir
+            .canonicalize()
+            .unwrap_or_else(|_| profile_dir.clone())
+            .to_string_lossy()
+            .to_string();
+
+        let is_writable = dirs.iter().any(|writable_dir| {
+            // Canonicalize the writable dir too, but it may not exist on disk
+            // (e.g. /home/user/project in a test). Fall back to the raw string.
+            let canonical = Path::new(writable_dir)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(writable_dir))
+                .to_string_lossy()
+                .to_string();
+            profile_str.starts_with(&canonical)
+        });
+
+        assert!(
+            is_writable,
+            "{:?} profile dir {:?} is not under any sandbox writable directory.\n\
+             Writable dirs: {:?}\n\
+             This means {} processes would fail to write session/config data \
+             and die immediately after spawn.",
+            provider,
+            profile_dir,
+            dirs,
+            provider.env_var()
+        );
+    }
+
+    // Also verify the common parent (~/.midtown/auth/) is writable,
+    // so future profiles added under it are automatically covered.
+    let auth_base = home.join(".midtown").join("auth");
+    let auth_str = auth_base
+        .canonicalize()
+        .unwrap_or_else(|_| auth_base.clone())
+        .to_string_lossy()
+        .to_string();
+    assert!(
+        dirs.iter().any(|d| {
+            let canonical = Path::new(d)
+                .canonicalize()
+                .unwrap_or_else(|_| PathBuf::from(d))
+                .to_string_lossy()
+                .to_string();
+            auth_str.starts_with(&canonical)
+        }),
+        "~/.midtown/auth/ should be under a sandbox-writable path"
+    );
 }
 
 #[test]
