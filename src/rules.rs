@@ -429,10 +429,6 @@ pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<Shutdo
 // Detection types and functions
 // ---------------------------------------------------------------------------
 
-// Re-export pane detection functions for backward compatibility.
-// The implementation lives in the `pane_detection` module.
-pub use crate::pane_detection::has_usage_limit_pattern;
-
 /// Decision output for usage limit expiry check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum UsageLimitExpiryDecision {
