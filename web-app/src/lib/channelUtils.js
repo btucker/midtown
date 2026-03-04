@@ -327,13 +327,13 @@ export function resolveMessageTapAction({ isWideScreen, msg, isInteractiveContro
   if (isInteractiveControl) return null
   // External links (no internal dataset) should follow their href normally
   if (link && link.isExternal) return null
+  // PR links always open GitHub (checked before task — PR wins when both are present)
+  if (link?.dataset?.pr) {
+    return { type: 'open_pr', prNum: link.dataset.pr }
+  }
   // Task links open the task's thread (with task card)
   if (link?.dataset?.task) {
     return { type: 'open_task', taskId: link.dataset.task }
-  }
-  // PR links always open GitHub
-  if (link?.dataset?.pr) {
-    return { type: 'open_pr', prNum: link.dataset.pr }
   }
   // All other taps open the message's thread
   return { type: 'open_thread' }

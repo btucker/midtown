@@ -548,16 +548,14 @@ describe('resolveMessageTapAction', () => {
 
   it('PR link takes precedence — never opens a task thread', () => {
     // A link could theoretically have both data-pr and data-task.
-    // PR behavior must win — PR links always open GitHub.
+    // PR behavior must win — PR links always open GitHub (!2027 invariant).
     const result = resolveMessageTapAction({
       isWideScreen: false,
       msg: topLevelMsg,
       isInteractiveControl: false,
       link: internalLink({ pr: '42', task: '7' }),
     })
-    // data-task is checked first in the code, so when both are present
-    // the task branch fires. This test documents current behavior.
-    expect(result).toEqual({ type: 'open_task', taskId: '7' })
+    expect(result).toEqual({ type: 'open_pr', prNum: '42' })
   })
 
   // ── Task link handling ──
