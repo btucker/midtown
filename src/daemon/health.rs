@@ -1588,6 +1588,52 @@ fn shutdown_effect(name: &str, session_id: Option<&String>, reason: String) -> E
     }
 }
 
+/// Check for stale notes across all channels and nudge channel leads.
+///
+/// Scans channel note directories for notes with stale `reviewed_at` frontmatter
+/// and emits `NudgeChannelLead` effects. Uses the pre-evaluated cooldown set
+/// from the snapshot to avoid repeated nudges within a 24-hour window.
+///
+/// Note: This function does filesystem I/O (reads note files from disk).
+/// It's called only from the low-frequency `NoteReviewTick` (once per hour).
+pub fn check_for_stale_notes(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for (channel_name, stale_notes) in &snap.stale_channel_notes {
+        // Only nudge channels that have a channel lead session
+        if !snap.channel_lead_sessions.contains_key(channel_name) {
+            continue;
+        }
+
+        // Skip if recently nudged (pre-evaluated cooldown)
+        if snap.note_staleness_cooldown_channels.contains(channel_name) {
+            continue;
+        }
+
+        // Build the nudge message listing stale notes
+        let note_list: Vec<String> = stale_notes
+            .iter()
+            .map(|name| format!("  - {}", name))
+            .collect();
+
+        let message = format!(
+            "These notes haven't been reviewed in 3+ days:\n{}\n\n\
+             Review each one — confirm it's still accurate with \
+             `midtown notes review <path>`, or delete it if no longer relevant.\n\
+             Bias toward deleting notes that are outdated or redundant.",
+            note_list.join("\n")
+        );
+
+        effects.push(Effect::nudge_channel_lead(channel_name.clone(), message));
+        effects.push(Effect::RecordCooldown {
+            category: "note_staleness".to_string(),
+            key: channel_name.clone(),
+        });
+    }
+
+    effects
+}
+
 #[path = "health_tests.rs"]
 #[cfg(test)]
 mod tests;

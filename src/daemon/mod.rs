@@ -2668,6 +2668,14 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
             crate::github_rate_limit::GitHubRateLimit::fetch().await;
     }
 
+    // For NoteReviewTick, populate stale channel notes (hourly, not on hot path)
+    if matches!(event, events::DaemonEvent::NoteReviewTick) {
+        let base_dir = crate::paths::projects_dir_for_repo(&snap.repo_name);
+        let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
+        snap.stale_channel_notes =
+            crate::channel::find_stale_notes(&base_dir, snap.now_utc, threshold);
+    }
+
     let tick_effects = events::evaluate_tick(event, &snap, state).await;
     effects::execute_effects(tick_effects, state).await;
 }
@@ -3095,6 +3103,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let mut gh_token_refresh_interval = tokio::time::interval(std::time::Duration::from_secs(300));
     // Skip the first tick (token was just fetched at startup)
     gh_token_refresh_interval.tick().await;
+
+    // Timer for periodic note staleness review (every hour)
+    let mut note_review_interval = interval(NOTE_REVIEW_CHECK_INTERVAL);
+    // Skip the first tick (which fires immediately)
+    note_review_interval.tick().await;
 
     // Timer for periodic channel rotation
     let mut channel_rotation_interval = interval(CHANNEL_ROTATION_CHECK_INTERVAL);
@@ -3928,6 +3941,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Runs every 2 minutes to monitor API consumption for adaptive throttling.
             _ = rate_limit_check_interval.tick() => {
                 run_tick(&events::DaemonEvent::RateLimitCheckTick, &state).await;
+            }
+
+            // Periodic note staleness review: check for stale notes and nudge leads.
+            _ = note_review_interval.tick() => {
+                run_tick(&events::DaemonEvent::NoteReviewTick, &state).await;
             }
 
             // Periodic GH_TOKEN refresh: re-run `gh auth token` to pick up

@@ -56,7 +56,7 @@ pub mod rpc;
 pub mod worktree;
 
 // Channel management subsystem (nux)
-mod channel;
+pub mod channel;
 mod cursor;
 mod message;
 

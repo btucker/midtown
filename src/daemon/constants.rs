@@ -239,6 +239,18 @@ pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user"
 /// Senders that are considered "system" (not coworkers) for channel post handling.
 pub(super) const SYSTEM_SENDERS: &[&str] = &["github", "midtown", "system", "GitHub"];
 
+/// How often to check for stale notes (1 hour).
+///
+/// Note staleness checks are inexpensive (reads frontmatter from note files)
+/// and only nudge leads when notes haven't been reviewed in 3+ days.
+pub(super) const NOTE_REVIEW_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Cooldown between note staleness nudges for the same channel (24 hours).
+///
+/// Once a channel lead is nudged about stale notes, don't repeat for a day.
+/// This prevents spam while ensuring notes get reviewed eventually.
+pub(super) const NOTE_STALENESS_NUDGE_COOLDOWN_SECS: u64 = 86400;
+
 /// All valid coworker names for @mention detection.
 pub(super) const COWORKER_NAMES: &[&str] = &[
     "lexington",

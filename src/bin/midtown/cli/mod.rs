@@ -9,6 +9,7 @@ pub mod e2e;
 mod headed_wrapper;
 mod hooks;
 mod lead;
+mod notes;
 mod pr;
 mod response;
 mod session;
@@ -56,6 +57,7 @@ pub use e2e::E2eCommand;
 pub use headed_wrapper::HeadedWrapperCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
+pub use notes::NotesCommand;
 pub use pr::PrCommand;
 pub use response::Response;
 pub use session::SessionCommand;
@@ -240,6 +242,11 @@ pub fn handle_coworker_screenshot(
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.
 pub fn handle_config(cmd: &ConfigCommand) -> Result<Response, String> {
     config::handle(cmd)
+}
+
+/// Handle `midtown notes` subcommands (review, list) — no daemon required.
+pub fn handle_notes(cmd: &NotesCommand) -> Result<Response, String> {
+    notes::handle(cmd)
 }
 
 /// Handle `midtown update` — check for and install the latest release.

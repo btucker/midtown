@@ -50,7 +50,7 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 ### Names Reflect Actual Responsibility
 
-`SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment). Name components for what they do, not their historical origin.
+`SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment), `NoteReviewTick` (note staleness review). Name components for what they do, not their historical origin.
 
 ## Key Patterns
 
@@ -252,6 +252,8 @@ Note: `route_mentions()` is intentionally disabled for topic channels — user `
 **System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`.
 
 **Domain context from notes:** The `{domain_context}` variable is populated by `load_channel_notes()` in `src/channel.rs`, which reads all `.md` files from `channels/<name>/notes/`, concatenates them with filename-derived headers, and caps total size at 100 KB. This is called at all 4 channel lead spawn sites (3 in `effects.rs`, 1 in `cli/lead.rs`) so that channel leads always start with their accumulated domain knowledge. Insight nudges include a reminder to save important knowledge to notes, completing the feedback loop.
+
+**Note staleness review:** `NoteReviewTick` fires hourly (`NOTE_REVIEW_CHECK_INTERVAL`). In `run_tick()`, the snapshot is enriched with `stale_channel_notes` (via `find_stale_notes()` in `channel.rs`) only for this tick — not on the hot path. The pure decision function `check_for_stale_notes()` in `health.rs` reads `snap.stale_channel_notes` and `snap.note_staleness_cooldown_channels` to emit `NudgeChannelLead` + `RecordCooldown` effects for channels with stale notes (reviewed_at > 72h or missing). Cooldown is 24h per channel (`NOTE_STALENESS_NUDGE_COOLDOWN_SECS`). Notes in archived or DM channels are skipped. CLI: `midtown notes review <path>` stamps `reviewed_at` in YAML frontmatter; `midtown notes list [--channel] [--stale]` lists notes with staleness status.
 
 **Hard tool restrictions:** Channel leads have code-modification tools (`Edit`, `Write`, `NotebookEdit`) blocked at the CLI level via `--disallowedTools`, enforced by `channel_lead_disallowed_tools()` in `src/launch.rs`. This is a hard enforcement mechanism that the LLM cannot bypass — the Claude Code CLI rejects these tool calls before execution. `Bash` is intentionally *not* blocked because channel leads need it for coordination commands (`midtown task create`, `midtown channel post`, etc.). The soft system prompt instruction in `channel-lead.md` ("Do NOT use Edit, Write, or Bash to modify code") remains as behavioral guidance for Bash usage. When channel leads fork into thread-specific sessions, the fork inherits the same `disallowed_tools` via `create_fork_session()` in `rpc_session.rs` (conditional on the parent being a channel lead). Non-channel-lead forks (e.g., coworker forks) receive no tool restrictions. The `HeadlessConfig.disallowed_tools` field carries the restriction list through `build_claude_headless_args()` in `platform.rs`. Note: Codex does not support `disallowed_tools`, so when the provider is Codex, the hard tool restrictions are skipped and enforcement relies solely on the prompt-based instruction in `channel-lead.md` ("Do NOT use Edit, Write, NotebookEdit, or Bash to modify code").
 

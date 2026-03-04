@@ -131,6 +131,8 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -289,6 +291,8 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = maybe_nudge_usage_limit_expiry(&snap);
@@ -474,6 +478,8 @@ fn test_check_for_usage_limits_with_reset_time() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -586,6 +592,8 @@ fn test_check_for_usage_limits_already_scheduled() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_for_usage_limits(&snap);
@@ -733,6 +741,8 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     }
 }
 
@@ -1647,6 +1657,8 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);
@@ -1767,6 +1779,8 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         stale_working_dir_sessions: std::collections::HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
     };
 
     let effects = check_and_shutdown_idle_coworkers(&snap);
@@ -2930,5 +2944,61 @@ fn check_for_usage_limits_marks_all_limited_coworker_profiles() {
         2,
         "Should emit exactly 2 MarkProfileLimited effects, got: {:#?}",
         marked
+    );
+}
+
+// ── check_for_stale_notes tests ──────────────────────────────────────────
+
+#[test]
+fn test_stale_notes_skips_channels_without_leads() {
+    use std::collections::HashMap;
+    let mut snap = empty_snap();
+    snap.stale_channel_notes =
+        HashMap::from([("orphan-channel".to_string(), vec!["old-note".to_string()])]);
+    snap.channel_lead_sessions = HashMap::new();
+
+    let effects = check_for_stale_notes(&snap);
+    assert!(
+        effects.is_empty(),
+        "Should skip channels without a lead session"
+    );
+}
+
+#[test]
+fn test_stale_notes_skips_channels_on_cooldown() {
+    use std::collections::{HashMap, HashSet};
+    let mut snap = empty_snap();
+    snap.stale_channel_notes = HashMap::from([("dev".to_string(), vec!["stale-note".to_string()])]);
+    snap.channel_lead_sessions = HashMap::from([("dev".to_string(), "sess-dev-lead".to_string())]);
+    snap.note_staleness_cooldown_channels = HashSet::from(["dev".to_string()]);
+
+    let effects = check_for_stale_notes(&snap);
+    assert!(effects.is_empty(), "Should skip channels on cooldown");
+}
+
+#[test]
+fn test_stale_notes_emits_nudge_and_cooldown_effects() {
+    use std::collections::{HashMap, HashSet};
+    let mut snap = empty_snap();
+    snap.stale_channel_notes = HashMap::from([(
+        "dev".to_string(),
+        vec!["old-note".to_string(), "ancient-note".to_string()],
+    )]);
+    snap.channel_lead_sessions = HashMap::from([("dev".to_string(), "sess-dev-lead".to_string())]);
+    snap.note_staleness_cooldown_channels = HashSet::new();
+
+    let effects = check_for_stale_notes(&snap);
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should emit NudgeChannelLead + RecordCooldown"
+    );
+    assert!(
+        matches!(&effects[0], Effect::NudgeChannelLead { channel_name, .. } if channel_name == "dev"),
+        "First effect should be NudgeChannelLead for 'dev'"
+    );
+    assert!(
+        matches!(&effects[1], Effect::RecordCooldown { category, key } if category == "note_staleness" && key == "dev"),
+        "Second effect should be RecordCooldown for note_staleness/dev"
     );
 }

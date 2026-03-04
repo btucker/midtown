@@ -376,6 +376,10 @@ pub struct WorldSnapshot {
     /// and to prevent duplicate channel-lead recovery for archived topics.
     #[serde(default)]
     pub archived_channels: HashSet<String>,
+    /// Stale channel notes: maps channel name → list of stale note names.
+    /// Empty by default; populated in `run_tick()` only for `NoteReviewTick` (hourly).
+    #[serde(default)]
+    pub stale_channel_notes: HashMap<String, Vec<String>>,
     /// Recent channel messages for debugging context.
     /// Includes the last N messages from the channel log.
     pub channel_messages: Vec<Message>,
@@ -443,6 +447,11 @@ pub struct WorldSnapshot {
     /// Pre-evaluated from `state.cooldowns` over all known coworker names.
     #[serde(default)]
     pub spawn_failure_cooldown_names: HashSet<String>,
+    /// Channels that have been recently nudged about stale notes.
+    /// Pre-evaluated from `state.cooldowns` so `check_for_stale_notes` stays pure.
+    #[serde(default)]
+    pub note_staleness_cooldown_channels: HashSet<String>,
+
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
     /// by session ID) so decision functions stay pure.
@@ -926,13 +935,16 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
 
     // ── Channel state ──────────────────────────────────────────────────
+    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
     let archived_channels: HashSet<String> = {
-        let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
         crate::channel::Channel::list_archived(&base_dir)
             .unwrap_or_default()
             .into_iter()
             .collect()
     };
+
+    // Stale channel notes: populated in run_tick() only for NoteReviewTick (hourly).
+    let stale_channel_notes = HashMap::new();
 
     // These debug fields are NOT populated during tick collection (hot path).
     // They are only populated on-demand via `with_debug_context()` when
@@ -1046,6 +1058,24 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .cloned()
             .collect();
         (orphan_active, session_active, on_cooldown)
+    };
+
+    // Pre-evaluate note staleness cooldowns for all channels with leads
+    let note_staleness_cooldown_channels: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        channel_lead_sessions
+            .keys()
+            .filter(|ch| {
+                !cooldowns.check(
+                    "note_staleness",
+                    ch,
+                    std::time::Duration::from_secs(
+                        crate::daemon::constants::NOTE_STALENESS_NUDGE_COOLDOWN_SECS,
+                    ),
+                )
+            })
+            .cloned()
+            .collect()
     };
 
     // ── Session-centric fields ───────────────────────────────────────────
@@ -1188,6 +1218,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         channel_lead_sessions,
         coworkers_with_unblocked_deps,
         archived_channels,
+        stale_channel_notes,
         channel_messages,
         daemon_logs,
         tasks_with_worktrees,
@@ -1209,6 +1240,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         orphan_spawn_cooldown_active,
         session_dispatch_cooldown_active,
         spawn_failure_cooldown_names,
+        note_staleness_cooldown_channels,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1253,6 +1285,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         channel_lead_sessions: HashMap::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),
+        stale_channel_notes: HashMap::new(),
         channel_messages: vec![],
         daemon_logs: vec![],
         tasks_with_worktrees: HashSet::new(),
@@ -1274,6 +1307,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         orphan_spawn_cooldown_active: false,
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
+        note_staleness_cooldown_channels: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
