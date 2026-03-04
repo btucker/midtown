@@ -3387,6 +3387,59 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
     );
 }
 
+/// !2003: HandoffToCoworker effects are preserved even when a workflow event exists.
+///
+/// When the action is HandoffToCoworker (idle coworker available for session handoff),
+/// the script-authoritative early return is skipped because rpc.nudge_coworker()
+/// cannot replicate handoff behavior (spawning assignee, task reassignment).
+/// The handoff effects should fire alongside the workflow event.
+#[test]
+fn handoff_to_coworker_preserved_with_workflow_channel() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+
+    let effects = pr_action_to_effects(
+        crate::rules::PrAction::HandoffToCoworker {
+            assignee: "lexington".to_string(),
+            original_author: "broadway".to_string(),
+            pr_number: 42,
+            branch: "broadway/fix-auth".to_string(),
+            session_id: "sess-123".to_string(),
+            message: "PR #42 — changes requested".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::ChangesRequested,
+        &state,
+        &ctx,
+    );
+
+    // Should have SpawnCoworkerWithCallbacks (the handoff effect)
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn,
+        "HandoffToCoworker should produce SpawnCoworkerWithCallbacks even with workflow channel"
+    );
+
+    // Should also have the workflow event
+    let workflow_events = extract_workflow_events(&effects);
+    assert_eq!(
+        workflow_events.len(),
+        1,
+        "Workflow event should be emitted alongside handoff effects"
+    );
+    assert!(
+        matches!(
+            workflow_events[0],
+            crate::workflow::WorkflowEvent::PrChangesRequested { pr_number: 42, .. }
+        ),
+        "Event should be PrChangesRequested for PR #42"
+    );
+}
+
 /// Gate !1902: has_cached_review bypass — PrApproved is NOT suppressed when the
 /// review is already cached, even if get_reviewer() still returns Some.
 ///

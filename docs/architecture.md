@@ -414,7 +414,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Pre-gate — Reviewer active**: Before the three gates, the RPC handler checks `get_reviewer(pr_number)`. If a reviewer coworker is still assigned, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
 
-**Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the same reviewer check in `pr_action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), `PrApproved` is suppressed so workflow scripts don't prematurely nudge the author to merge. The `Approved` nudge cooldown is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
+**Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the reviewer check in `pr_action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), both the workflow event AND inline effects are suppressed — no nudge is sent and no cooldown is recorded. The `Approved` nudge cooldown (if any prior one existed) is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
 
 ## Worktree Lifecycle
 
@@ -611,7 +611,9 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
 
 ## Workflow Script System
 
-Each channel can have a `workflow.py` script that customizes how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](../sdk/python/).
+Each channel can have a `workflow.py` script that controls how the daemon responds to domain events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](../sdk/python/).
+
+**Authoritative for PR lifecycle**: For the 5 PR lifecycle events (`pr.approved`, `pr.changes_requested`, `pr.ci_failed`, `pr.ci_passed`, `pr.conflict`), the workflow script is the **sole authority** when a channel + task association exists. The daemon emits cooldown tracking (`RecordPrNudge`) and the workflow event — the script handles nudging via `rpc.nudge_coworker()`. This means overriding `pr.approved` in a channel's `workflow.py` fully controls what happens when a PR is approved. For PRs without channel/task associations, the daemon's compiled-in inline effects are preserved as a fallback.
 
 ### Script Resolution
 
@@ -622,7 +624,7 @@ Each channel can have a `workflow.py` script that customizes how the daemon resp
 3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
 
-If no script is found, the daemon falls back to its compiled-in default behavior. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
+If no script is found, or if a PR has no channel/task association, the daemon falls back to its compiled-in inline effects. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
 
 ### Invocation
 
@@ -659,7 +661,7 @@ if __name__ == "__main__":
 
 ### Reference Implementation
 
-`sdk/python/midtown/default_workflow.py` is the reference implementation that replicates the compiled-in PR lifecycle. Copy it to start customizing:
+`sdk/python/midtown/default_workflow.py` is the reference implementation that **drives** the PR lifecycle for task-linked PRs. The daemon delegates PR nudging to this script when a channel + task association exists. Copy it to start customizing:
 
 ```bash
 mkdir -p .midtown/channels/<channel>

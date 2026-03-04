@@ -150,8 +150,9 @@ struct PrContext {
     /// this holds the session_id for resume.
     task_session_id: Option<String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
-    /// Used to suppress `PrApproved` workflow events while a reviewer is still working,
-    /// so the workflow script contract remains: "pr.approved = safe to merge".
+    /// Used to suppress both `PrApproved` workflow events AND inline nudge effects
+    /// while a reviewer is still working, so the contract remains:
+    /// "pr.approved = safe to merge".
     has_active_reviewer: bool,
 }
 
@@ -1262,14 +1263,22 @@ async fn collect_green_with_feedback_effects(
 
 /// Convert a `PrAction` decision into a list of `Effect`s to execute.
 ///
-/// Translates the pure decision from `rules::decide_pr_issue_action_with_handoff` (or similar)
-/// into concrete effects. Uses `SpawnCoworkerWithCallbacks` for spawn actions so
-/// that follow-up effects (broadcast update, channel message, session cleanup)
-/// only happen on success, with a fallback message on failure.
+/// For the 5 PR lifecycle events with workflow script counterparts (approved,
+/// changes_requested, ci_failed, ci_passed, conflict), the workflow script is
+/// **authoritative** when a channel + task association exists AND a workflow
+/// script is configured. Only cooldown tracking (`RecordPrNudge`) and the
+/// workflow event are emitted — the script handles nudging via
+/// `rpc.nudge_coworker()`. This makes PR lifecycle behavior fully customizable
+/// through project or channel `workflow.py` overrides.
 ///
-/// Also gates `PrApproved` workflow events: when `ctx.has_active_reviewer` is true,
-/// the `PrApproved` event is suppressed to keep the workflow script contract clean
-/// ("pr.approved = safe to merge"). See !1902.
+/// When no workflow script exists, the original inline effects fire alongside
+/// the workflow event (preserving pre-script behavior). When a script is added,
+/// inline effects are removed and the script takes over cleanly.
+///
+/// Gates `PrApproved` events: when `ctx.has_active_reviewer` is true, both the
+/// workflow event and inline effects are suppressed. The Approved cooldown is
+/// cleared when the reviewer finishes (see `collect_reviewer_effects`),
+/// allowing re-evaluation on the next tick. See !1902.
 fn pr_action_to_effects(
     action: crate::rules::PrAction,
     pr_number: u64,
@@ -1283,6 +1292,110 @@ fn pr_action_to_effects(
     // Look up topic channel for this PR's task (falls back to main if not found)
     let channel = ctx.get_channel(pr_number);
 
+    // Build the workflow event for this issue type (if task-linked with a channel).
+    // This is computed upfront so it can be emitted in both the script-authoritative
+    // path and the fallback inline-effects path.
+    let workflow_event = if let (Some(channel_name), Some(task_id)) =
+        (&channel, ctx.pr_task_associations.get(&pr_number))
+    {
+        match issue_type {
+            PrIssueType::Approved if ctx.has_active_reviewer => {
+                // Suppress while a reviewer is still working. Neither inline effects
+                // nor the workflow event fire — no cooldown is recorded either, so
+                // should_nudge() will pass on the next tick after the reviewer
+                // finishes and the Approved cooldown is cleared.
+                debug!(
+                    "PR #{}: suppressing PrApproved — reviewer still active",
+                    pr_number
+                );
+                return vec![];
+            }
+            PrIssueType::Approved => Some(crate::workflow::WorkflowEvent::PrApproved {
+                channel: channel_name.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            PrIssueType::ChangesRequested => {
+                Some(crate::workflow::WorkflowEvent::PrChangesRequested {
+                    channel: channel_name.clone(),
+                    task_id: task_id.clone(),
+                    pr_number,
+                })
+            }
+            PrIssueType::MergeConflict => Some(crate::workflow::WorkflowEvent::PrConflict {
+                channel: channel_name.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            PrIssueType::CiFailed => Some(crate::workflow::WorkflowEvent::PrCiFailed {
+                channel: channel_name.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+                check_name: None,
+            }),
+            PrIssueType::GreenWithFeedback => Some(crate::workflow::WorkflowEvent::PrCiPassed {
+                channel: channel_name.clone(),
+                task_id: task_id.clone(),
+                pr_number,
+            }),
+            // These issue types don't have workflow event counterparts.
+            PrIssueType::ReviewComment | PrIssueType::ReviewComplete | PrIssueType::NeedsReview => {
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // When a workflow script exists AND we have a workflow event, the script is
+    // authoritative for simple nudge actions (NudgeOwner, SpawnOwner, PostToChannel):
+    // emit only cooldown tracking + the event. The script handles nudging via
+    // rpc.nudge_coworker().
+    //
+    // HandoffToCoworker is excluded: it involves spawning a different coworker with
+    // session context and task reassignment, which rpc.nudge_coworker() cannot
+    // replicate. Those effects fire alongside the workflow event instead.
+    if let Some(ref event) = workflow_event {
+        let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
+
+        if !is_handoff {
+            let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+            let has_script = channel.as_ref().is_some_and(|ch| {
+                crate::paths::workflow_script_for_channel(ch, &project_root, &state.repo_name)
+                    .is_some()
+            });
+
+            if has_script {
+                // Script is authoritative — emit cooldown tracking + event only.
+                // This fires even for Skip actions so the script's state machine
+                // stays in sync.
+                return vec![
+                    Effect::RecordPrNudge {
+                        pr_number,
+                        issue_type,
+                    },
+                    Effect::EmitWorkflowEvent(event.clone()),
+                ];
+            }
+        }
+    }
+
+    // Skip actions: no inline effects. Still emit the workflow event if one was
+    // built so the script's state machine stays in sync (the event is a no-op
+    // if no script is configured).
+    if let PrAction::Skip { reason } = &action {
+        debug!("{}", reason);
+        let mut effects = Vec::new();
+        if let Some(event) = workflow_event {
+            effects.push(Effect::EmitWorkflowEvent(event));
+        }
+        return effects;
+    }
+
+    // Fallback: inline effects for issue types without workflow events
+    // (ReviewComment, ReviewComplete, NeedsReview), PRs without channel/task
+    // associations, or channels without a configured workflow script.
+    // When a workflow event exists, it's appended alongside inline effects.
     let mut effects = match action {
         PrAction::NudgeOwner { owner, message } => {
             vec![Effect::nudge_session_with_callbacks(
@@ -1410,64 +1523,13 @@ fn pr_action_to_effects(
                 },
             ]
         }
-        PrAction::Skip { reason } => {
-            debug!("{}", reason);
-            vec![]
-        }
+        PrAction::Skip { .. } => unreachable!(), // handled above
     };
 
-    // Emit a workflow event for PR issue conditions on task-linked PRs in a channel.
-    // Fires alongside the existing action effects so workflow scripts can respond to
-    // PR lifecycle events (approval, CI, conflicts) without modifying core logic.
-    if let (Some(channel), Some(task_id)) = (&channel, ctx.pr_task_associations.get(&pr_number)) {
-        let pr_event = match issue_type {
-            PrIssueType::Approved if ctx.has_active_reviewer => {
-                // Suppress PrApproved while a reviewer is still working.
-                // The event will be re-evaluated on the next tick or when the
-                // reviewer session ends / assignment clears. This keeps the
-                // workflow script contract clean: "pr.approved = safe to merge".
-                debug!(
-                    "PR #{}: suppressing PrApproved — reviewer still active",
-                    pr_number
-                );
-                None
-            }
-            PrIssueType::Approved => Some(crate::workflow::WorkflowEvent::PrApproved {
-                channel: channel.clone(),
-                task_id: task_id.clone(),
-                pr_number,
-            }),
-            PrIssueType::ChangesRequested => {
-                Some(crate::workflow::WorkflowEvent::PrChangesRequested {
-                    channel: channel.clone(),
-                    task_id: task_id.clone(),
-                    pr_number,
-                })
-            }
-            PrIssueType::MergeConflict => Some(crate::workflow::WorkflowEvent::PrConflict {
-                channel: channel.clone(),
-                task_id: task_id.clone(),
-                pr_number,
-            }),
-            PrIssueType::CiFailed => Some(crate::workflow::WorkflowEvent::PrCiFailed {
-                channel: channel.clone(),
-                task_id: task_id.clone(),
-                pr_number,
-                check_name: None,
-            }),
-            PrIssueType::GreenWithFeedback => Some(crate::workflow::WorkflowEvent::PrCiPassed {
-                channel: channel.clone(),
-                task_id: task_id.clone(),
-                pr_number,
-            }),
-            // These issue types don't have direct WorkflowEvent counterparts.
-            PrIssueType::ReviewComment | PrIssueType::ReviewComplete | PrIssueType::NeedsReview => {
-                None
-            }
-        };
-        if let Some(event) = pr_event {
-            effects.push(Effect::EmitWorkflowEvent(event));
-        }
+    // Append workflow event alongside inline effects (no-op if no script exists,
+    // but keeps event emission consistent for observability and future script setup).
+    if let Some(event) = workflow_event {
+        effects.push(Effect::EmitWorkflowEvent(event));
     }
 
     effects
@@ -2623,11 +2685,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 }
             }
 
-            // Clear the Approved nudge cooldown so the next tick re-evaluates PrApproved.
-            // When the reviewer was active, PrApproved was suppressed (!1902) but
-            // RecordPrNudge still fired (the author still got nudged about the approval).
-            // Without clearing, the 600s cooldown blocks re-entry into pr_action_to_effects,
-            // delaying the PrApproved event even after the reviewer finishes.
+            // Clear any Approved nudge cooldown so the next tick re-evaluates PrApproved.
+            // When the reviewer was active, pr_action_to_effects suppressed both the
+            // workflow event AND inline effects (!1902, !2003). If a prior approval
+            // recorded a cooldown before the reviewer started, clear it here so the
+            // workflow script's PrApproved event can fire on the next tick.
             {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 if tracker.has_nudge(pr_number, PrIssueType::Approved) {
