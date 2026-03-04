@@ -71,10 +71,11 @@
       segments.push({ width: 70, color: ownerColor })
       segments.push({ width: 20, color: reviewerColor })
     } else {
-      // Fix phase: dev (70%) + review (20%) complete, author filling 10%
+      // Fix phase: dev (70%) + review (20%) complete, fix segment not filled
+      // (coworker progress is cumulative and not reset between phases, so we
+      // can't derive fix-specific progress from it — show 90% until task completes)
       segments.push({ width: 70, color: ownerColor })
       segments.push({ width: 20, color: reviewerColor })
-      segments.push({ width: (cwProgress / 100) * 10, color: ownerColor })
     }
     return segments
   }
@@ -126,8 +127,8 @@
             >{reviewer[0].toUpperCase()}<span class="chip-badge"><Search size={11} strokeWidth={2.5} fill="white" style="transform: scaleX(-1)" /></span></button>
           {/if}
         </div>
-        {#if isActive && (hasProgress || reviewer)}
-          {@const segments = lifecycleSegments(cw?.progress ?? 100, reviewer, reviewPosted, getSenderColor(task.owner), reviewer ? getSenderColor(reviewer) : null)}
+        {#if isActive && hasProgress && task.owner}
+          {@const segments = lifecycleSegments(cw?.progress ?? 0, reviewer, reviewPosted, getSenderColor(task.owner), reviewer ? getSenderColor(reviewer) : null)}
           {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
           <div class="flex items-center gap-1.5 pr-0.5">
             <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
