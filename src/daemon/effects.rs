@@ -338,8 +338,7 @@ pub enum Effect {
     CleanupStaleWorktree { worktree_id: String },
     /// Garbage-collect stale daemon persistent state in a single batch.
     ///
-    /// Removes dead session records older than the retention period,
-    /// strips `initial_prompt` from non-running sessions, and prunes
+    /// Removes dead session records older than the retention period and prunes
     /// orphaned task metadata map entries (task_channel, task_model,
     /// task_plan, task_execution_skill, task_thread_id, task_message_id).
     ///
@@ -347,12 +346,8 @@ pub enum Effect {
     GarbageCollectState {
         /// Session IDs to remove entirely (dead + past retention).
         dead_session_ids: Vec<String>,
-        /// Session IDs to strip `initial_prompt` from (stopped but within retention).
-        strip_prompt_session_ids: Vec<String>,
         /// Orphaned task IDs to remove from metadata maps.
         orphaned_task_ids: Vec<String>,
-        /// Stale worktree registry entries to remove (no session, no coworker, past retention).
-        stale_registry_ids: Vec<String>,
     },
     /// Ensure a task-based worktree exists at the specified path.
     ///
@@ -1828,18 +1823,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::GarbageCollectState {
                 dead_session_ids,
-                strip_prompt_session_ids,
                 orphaned_task_ids,
-                stale_registry_ids,
             } => {
                 let result = {
                     let mut ps = state.persistent_state.lock().await;
-                    let result = ps.apply_gc(
-                        &dead_session_ids,
-                        &strip_prompt_session_ids,
-                        &orphaned_task_ids,
-                        &stale_registry_ids,
-                    );
+                    let result = ps.apply_gc(&dead_session_ids, &orphaned_task_ids);
 
                     if result.has_changes()
                         && let Err(e) = ps.save_for_repo(&state.repo_name)
@@ -1851,22 +1839,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 if result.has_changes() {
                     info!(
-                        "State GC: removed {} dead sessions, stripped {} prompts, \
-                         pruned {} orphaned task entries, removed {} stale registry entries",
-                        result.sessions_removed,
-                        result.prompts_stripped,
-                        result.orphaned_tasks_pruned,
-                        result.registry_entries_removed
+                        "State GC: removed {} dead sessions, \
+                         pruned {} orphaned task entries",
+                        result.sessions_removed, result.orphaned_tasks_pruned,
                     );
 
                     // Post to ops channel
                     let mut msg = crate::message::Message::system(format!(
-                        "🧹 State GC: removed {} dead session(s), stripped {} prompt(s), \
-                         pruned {} orphaned task entries, removed {} stale registry entries",
-                        result.sessions_removed,
-                        result.prompts_stripped,
-                        result.orphaned_tasks_pruned,
-                        result.registry_entries_removed
+                        "🧹 State GC: removed {} dead session(s), \
+                         pruned {} orphaned task entries",
+                        result.sessions_removed, result.orphaned_tasks_pruned,
                     ));
                     msg.channel = Some(OPS_CHANNEL.to_string());
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {

@@ -1464,25 +1464,25 @@ pub(super) fn check_for_stale_worktrees(
 
 /// Garbage-collect stale daemon persistent state.
 ///
-/// Examines session records, task metadata maps, and worktree registry entries
-/// to identify data that can be pruned. Returns a single `GarbageCollectState`
-/// effect that performs the cleanup atomically.
+/// Examines session records and task metadata maps to identify data that can
+/// be pruned. Returns a single `GarbageCollectState` effect that performs the
+/// cleanup atomically.
 ///
 /// **Session pruning:**
-/// - Sessions where `is_running=false` AND `resume_on_startup=false` AND
-///   `last_active` older than `retention_period` are removed entirely.
 /// - Reviewer sessions (`is_reviewer=true`) that are stopped are removed
 ///   immediately (no retention wait) since they're never resumed.
-///
-/// **Prompt stripping:**
-/// - Sessions where `is_running=false` have `initial_prompt` stripped. The prompt
-///   is only needed for restart/clear of running sessions.
+/// - Non-reviewer sessions where `is_running=false` AND `resume_on_startup=false`
+///   AND `last_active` older than `retention_period` are removed entirely
+///   (including their `initial_prompt`, which is dropped with the whole record).
 ///
 /// **Task metadata pruning:**
 /// - Entries in task_channel, task_model, task_plan, task_execution_skill,
 ///   task_thread_id, and task_message_id are pruned when their task_id doesn't
-///   appear in any session record or active task.
+///   appear in any surviving session record or active task.
 ///
+/// **Note:** `initial_prompt` is intentionally preserved on stopped sessions
+/// within the retention window because `session.clear` uses it to restart
+/// sessions with their original context.
 pub(super) fn check_for_state_gc(
     sessions: &std::collections::HashMap<String, crate::daemon::state::SessionRecord>,
     active_session_ids: &std::collections::HashSet<String>,
@@ -1493,7 +1493,6 @@ pub(super) fn check_for_state_gc(
     let now = chrono::Utc::now();
 
     let mut dead_session_ids = Vec::new();
-    let mut strip_prompt_session_ids = Vec::new();
 
     // Collect task IDs referenced by sessions that will survive GC
     let mut surviving_task_ids = std::collections::HashSet::new();
@@ -1520,12 +1519,9 @@ pub(super) fn check_for_state_gc(
             continue;
         }
 
-        // Surviving stopped session: strip prompt if present
+        // Surviving stopped session: preserve for session.clear
         if let Some(ref tid) = record.task_id {
             surviving_task_ids.insert(tid.clone());
-        }
-        if record.initial_prompt.is_some() {
-            strip_prompt_session_ids.push(session_id.clone());
         }
     }
 
@@ -1538,15 +1534,7 @@ pub(super) fn check_for_state_gc(
         .collect();
     orphaned_task_ids.sort(); // deterministic ordering for tests
 
-    // Stale worktree registry entries are handled by check_for_stale_worktrees()
-    // which runs on the same tick. No duplicate cleanup needed here.
-    let stale_registry_ids = Vec::new();
-
-    if dead_session_ids.is_empty()
-        && strip_prompt_session_ids.is_empty()
-        && orphaned_task_ids.is_empty()
-        && stale_registry_ids.is_empty()
-    {
+    if dead_session_ids.is_empty() && orphaned_task_ids.is_empty() {
         return vec![];
     }
 
@@ -1563,9 +1551,7 @@ pub(super) fn check_for_state_gc(
 
     vec![Effect::GarbageCollectState {
         dead_session_ids,
-        strip_prompt_session_ids,
         orphaned_task_ids,
-        stale_registry_ids,
     }]
 }
 

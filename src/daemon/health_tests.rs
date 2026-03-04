@@ -3249,15 +3249,9 @@ fn state_gc_prunes_dead_reviewer_sessions_immediately() {
     assert_eq!(effects.len(), 1, "should produce exactly one GC effect");
     match &effects[0] {
         Effect::GarbageCollectState {
-            dead_session_ids,
-            strip_prompt_session_ids,
-            ..
+            dead_session_ids, ..
         } => {
             assert_eq!(dead_session_ids, &vec!["reviewer-1".to_string()]);
-            assert!(
-                strip_prompt_session_ids.is_empty(),
-                "running session should not be stripped"
-            );
         }
         other => panic!("Expected GarbageCollectState, got {:?}", other),
     }
@@ -3320,30 +3314,24 @@ fn state_gc_prunes_stale_dead_sessions_past_retention() {
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::GarbageCollectState {
-            dead_session_ids,
-            strip_prompt_session_ids,
-            ..
+            dead_session_ids, ..
         } => {
             assert_eq!(dead_session_ids, &vec!["dead-old".to_string()]);
-            // dead-recent and dead-resumable survive, but should have prompt stripped
-            assert_eq!(
-                strip_prompt_session_ids.len(),
-                2,
-                "should strip prompts from surviving stopped sessions"
-            );
+            // dead-recent and dead-resumable survive — prompts preserved for session.clear
         }
         other => panic!("Expected GarbageCollectState, got {:?}", other),
     }
 }
 
 #[test]
-fn state_gc_strips_prompts_from_stopped_sessions() {
+fn state_gc_preserves_initial_prompt_on_stopped_sessions() {
     use std::collections::{HashMap, HashSet};
 
     let now = chrono::Utc::now();
     let mut sessions = HashMap::new();
 
-    // Stopped session within retention, has initial_prompt
+    // Stopped session within retention, has initial_prompt — should NOT be pruned
+    // because session.clear needs the prompt to restart with original context
     sessions.insert(
         "stopped-1".to_string(),
         make_session(
@@ -3355,7 +3343,7 @@ fn state_gc_strips_prompts_from_stopped_sessions() {
             None,
         ),
     );
-    // Running session with initial_prompt (should NOT be stripped)
+    // Running session (should be kept)
     sessions.insert(
         "running-1".to_string(),
         make_session("running-1", true, false, true, now, None),
@@ -3372,18 +3360,12 @@ fn state_gc_strips_prompts_from_stopped_sessions() {
         retention,
     );
 
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::GarbageCollectState {
-            dead_session_ids,
-            strip_prompt_session_ids,
-            ..
-        } => {
-            assert!(dead_session_ids.is_empty());
-            assert_eq!(strip_prompt_session_ids, &vec!["stopped-1".to_string()]);
-        }
-        other => panic!("Expected GarbageCollectState, got {:?}", other),
-    }
+    // No effects: stopped-1 is within retention and not a reviewer,
+    // running-1 is active — nothing to GC
+    assert!(
+        effects.is_empty(),
+        "should produce no effects — stopped session is within retention"
+    );
 }
 
 #[test]
@@ -3454,4 +3436,67 @@ fn state_gc_no_effect_when_nothing_to_clean() {
         effects.is_empty(),
         "should produce no effects when nothing to clean"
     );
+}
+
+#[test]
+fn state_gc_works_with_zero_retention_period() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead reviewer session — should still be pruned even with zero retention
+    sessions.insert(
+        "reviewer-1".to_string(),
+        make_session(
+            "reviewer-1",
+            false,
+            true,
+            false,
+            now - chrono::Duration::minutes(1),
+            None,
+        ),
+    );
+    // Dead non-reviewer session, 1 minute old — zero retention means prune immediately
+    sessions.insert(
+        "dead-dev".to_string(),
+        make_session(
+            "dead-dev",
+            false,
+            false,
+            false,
+            now - chrono::Duration::minutes(1),
+            Some("99"),
+        ),
+    );
+
+    // Orphaned metadata for task "99" (session is being pruned)
+    let task_metadata_keys = HashSet::from(["99".to_string()]);
+    let retention = chrono::Duration::hours(0); // zero retention
+
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &task_metadata_keys,
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(
+        effects.len(),
+        1,
+        "should produce GC effect even with zero retention"
+    );
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            orphaned_task_ids,
+        } => {
+            assert_eq!(dead_session_ids.len(), 2, "both sessions should be pruned");
+            assert!(dead_session_ids.contains(&"reviewer-1".to_string()));
+            assert!(dead_session_ids.contains(&"dead-dev".to_string()));
+            assert_eq!(orphaned_task_ids, &vec!["99".to_string()]);
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
 }

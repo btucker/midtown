@@ -913,41 +913,11 @@ fn apply_gc_removes_dead_sessions() {
         make_gc_session("alive-1", None, true),
     );
 
-    let result = state.apply_gc(&["dead-1".to_string(), "dead-2".to_string()], &[], &[], &[]);
+    let result = state.apply_gc(&["dead-1".to_string(), "dead-2".to_string()], &[]);
 
     assert_eq!(result.sessions_removed, 2);
     assert_eq!(state.sessions.len(), 1);
     assert!(state.sessions.contains_key("alive-1"));
-}
-
-#[test]
-fn apply_gc_strips_prompts() {
-    let mut state = DaemonPersistentState::default();
-    state.sessions.insert(
-        "with-prompt".to_string(),
-        make_gc_session("with-prompt", None, true),
-    );
-    state.sessions.insert(
-        "no-prompt".to_string(),
-        make_gc_session("no-prompt", None, false),
-    );
-
-    let result = state.apply_gc(
-        &[],
-        &["with-prompt".to_string(), "no-prompt".to_string()],
-        &[],
-        &[],
-    );
-
-    assert_eq!(result.prompts_stripped, 1); // only the one that had a prompt
-    assert!(
-        state
-            .sessions
-            .get("with-prompt")
-            .unwrap()
-            .initial_prompt
-            .is_none()
-    );
 }
 
 #[test]
@@ -977,7 +947,7 @@ fn apply_gc_prunes_orphaned_task_metadata() {
         .task_channel
         .insert("alive-1".to_string(), "frontend".to_string());
 
-    let result = state.apply_gc(&[], &[], &["orphan-1".to_string()], &[]);
+    let result = state.apply_gc(&[], &["orphan-1".to_string()]);
 
     assert_eq!(result.orphaned_tasks_pruned, 1);
     assert!(!state.task_channel.contains_key("orphan-1"));
@@ -1004,11 +974,11 @@ fn apply_gc_has_changes_reports_correctly() {
     };
     assert!(with_removal.has_changes());
 
-    let with_strip = GcResult {
-        prompts_stripped: 1,
+    let with_prune = GcResult {
+        orphaned_tasks_pruned: 1,
         ..Default::default()
     };
-    assert!(with_strip.has_changes());
+    assert!(with_prune.has_changes());
 }
 
 #[test]
@@ -1018,7 +988,7 @@ fn apply_gc_no_op_returns_empty_result() {
         .sessions
         .insert("s1".to_string(), make_gc_session("s1", Some("42"), true));
 
-    let result = state.apply_gc(&[], &[], &[], &[]);
+    let result = state.apply_gc(&[], &[]);
 
     assert!(!result.has_changes());
     assert_eq!(state.sessions.len(), 1); // untouched
@@ -1033,36 +1003,31 @@ fn apply_gc_combined_operations() {
         "dead".to_string(),
         make_gc_session("dead", Some("old-task"), true),
     );
-    // Session to strip prompt
+    // Surviving session (not in dead list)
     state.sessions.insert(
-        "stopped".to_string(),
-        make_gc_session("stopped", Some("active-task"), true),
+        "alive".to_string(),
+        make_gc_session("alive", Some("active-task"), true),
     );
     // Orphaned task metadata
     state
         .task_channel
         .insert("old-task".to_string(), "backend".to_string());
 
-    let result = state.apply_gc(
-        &["dead".to_string()],
-        &["stopped".to_string()],
-        &["old-task".to_string()],
-        &[],
-    );
+    let result = state.apply_gc(&["dead".to_string()], &["old-task".to_string()]);
 
     assert_eq!(result.sessions_removed, 1);
-    assert_eq!(result.prompts_stripped, 1);
     assert_eq!(result.orphaned_tasks_pruned, 1);
     assert!(result.has_changes());
 
     assert!(!state.sessions.contains_key("dead"));
+    // Surviving session preserved with initial_prompt intact
     assert!(
         state
             .sessions
-            .get("stopped")
+            .get("alive")
             .unwrap()
             .initial_prompt
-            .is_none()
+            .is_some()
     );
     assert!(!state.task_channel.contains_key("old-task"));
 }

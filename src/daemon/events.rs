@@ -151,7 +151,7 @@ pub async fn evaluate_tick(
             {
                 let daemon_config = crate::config::get_project_daemon_config(&state.repo_name);
                 let retention_hours = daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
-                // Skip cleanup if retention is set to 0
+                // Skip worktree directory cleanup if retention is set to 0
                 if retention_hours > 0 {
                     let retention_period = chrono::Duration::hours(retention_hours as i64);
                     effects.extend(super::health::check_for_stale_worktrees(
@@ -159,28 +159,31 @@ pub async fn evaluate_tick(
                         &snap.coworkers.active_names,
                         retention_period,
                     ));
-
-                    // State GC: prune dead sessions, strip prompts, clean orphaned metadata
-                    let task_metadata_keys: std::collections::HashSet<String> = snap
-                        .task_channel
-                        .keys()
-                        .chain(snap.task_model_map.keys())
-                        .chain(snap.task_plan_map.keys())
-                        .chain(snap.task_execution_skill_map.keys())
-                        .chain(snap.task_thread_id_map.keys())
-                        .chain(snap.task_message_id_map.keys())
-                        .cloned()
-                        .collect();
-                    let active_task_ids: std::collections::HashSet<String> =
-                        snap.all_tasks.iter().map(|t| t.id.clone()).collect();
-                    effects.extend(super::health::check_for_state_gc(
-                        &snap.sessions,
-                        &snap.coworkers.active_session_ids,
-                        &task_metadata_keys,
-                        &active_task_ids,
-                        retention_period,
-                    ));
                 }
+
+                // State GC always runs: reviewer session pruning is immediate (no retention),
+                // and orphaned metadata cleanup is independent of worktree retention.
+                // Non-reviewer dead sessions use retention_hours (defaulting to 24h).
+                let gc_retention = chrono::Duration::hours(retention_hours as i64);
+                let task_metadata_keys: std::collections::HashSet<String> = snap
+                    .task_channel
+                    .keys()
+                    .chain(snap.task_model_map.keys())
+                    .chain(snap.task_plan_map.keys())
+                    .chain(snap.task_execution_skill_map.keys())
+                    .chain(snap.task_thread_id_map.keys())
+                    .chain(snap.task_message_id_map.keys())
+                    .cloned()
+                    .collect();
+                let active_task_ids: std::collections::HashSet<String> =
+                    snap.all_tasks.iter().map(|t| t.id.clone()).collect();
+                effects.extend(super::health::check_for_state_gc(
+                    &snap.sessions,
+                    &snap.coworkers.active_session_ids,
+                    &task_metadata_keys,
+                    &active_task_ids,
+                    gc_retention,
+                ));
             }
 
             // Reconcile orphaned PRs: nudge lead for reviewed + CI green PRs with no active task
