@@ -3055,9 +3055,12 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
 
 /// Invoke the channel's workflow script for a `WorkflowEvent`.
 ///
-/// Resolves the script path using the 4-level priority order in `paths.rs`, then
-/// spawns `uv run <script> --event <json> --state <state_file> --socket <socket>`
-/// with a 30-second timeout. If no script is found, returns immediately (no-op).
+/// Tries the persistent sidecar first (fast path: ~5-20ms per event). If the
+/// script doesn't support sidecar mode or the sidecar is in backoff, falls back
+/// to the subprocess-per-event model (~300-800ms per event).
+///
+/// Resolves the script path using the 4-level priority order in `paths.rs`.
+/// If no script is found, returns immediately (no-op).
 ///
 /// On non-zero exit or I/O failure the script's stderr is posted to the event's
 /// channel as a system message so workflow errors surface in the chat log.
@@ -3086,12 +3089,64 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
     };
 
     let state_file = crate::paths::workflow_state_file(&channel, &state.repo_name);
+
+    // Fast path: try the persistent sidecar.
+    match state
+        .workflow_sidecar
+        .send_event(&script, &event_json, &state_file)
+        .await
+    {
+        Ok(true) => {
+            debug!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: delivered via sidecar"
+            );
+            return;
+        }
+        Ok(false) => {
+            // Script doesn't support sidecar mode or sidecar is in backoff.
+            // Fall through to subprocess.
+            debug!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: sidecar unavailable, falling back to subprocess"
+            );
+        }
+        Err(e) => {
+            // Sidecar delivered the event but the handler returned an error.
+            warn!(
+                channel = %channel,
+                script = %script.display(),
+                "invoke_workflow_script: sidecar error: {}",
+                e
+            );
+            post_workflow_error(state, &channel, &script, &e).await;
+            return;
+        }
+    }
+
+    // Slow path: subprocess-per-event fallback.
+    invoke_workflow_script_subprocess(state, &channel, &script, &event_json, &state_file).await;
+}
+
+/// Subprocess-per-event fallback for `invoke_workflow_script`.
+///
+/// Spawns `uv run <script> --event <json> --state <state_file> --socket <socket>`
+/// with a 30-second timeout.
+async fn invoke_workflow_script_subprocess(
+    state: &DaemonState,
+    channel: &str,
+    script: &std::path::Path,
+    event_json: &str,
+    state_file: &std::path::Path,
+) {
     let socket = &state.socket_path;
 
     debug!(
         channel = %channel,
         script = %script.display(),
-        "invoke_workflow_script: spawning uv run"
+        "invoke_workflow_script: spawning uv run (subprocess)"
     );
 
     let child = tokio::process::Command::new("uv")
@@ -3099,7 +3154,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
             "run",
             script.to_str().unwrap_or_default(),
             "--event",
-            &event_json,
+            event_json,
             "--state",
             state_file.to_str().unwrap_or_default(),
             "--socket",
@@ -3121,7 +3176,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
                 "invoke_workflow_script: failed to spawn uv: {}",
                 e
             );
-            post_workflow_error(state, &channel, &script, &format!("spawn error: {e}")).await;
+            post_workflow_error(state, channel, script, &format!("spawn error: {e}")).await;
             return;
         }
     };
@@ -3141,8 +3196,8 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
             );
             post_workflow_error(
                 state,
-                &channel,
-                &script,
+                channel,
+                script,
                 "workflow script timed out after 30s",
             )
             .await;
@@ -3154,7 +3209,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
                 "invoke_workflow_script: wait_with_output error: {}",
                 e
             );
-            post_workflow_error(state, &channel, &script, &format!("I/O error: {e}")).await;
+            post_workflow_error(state, channel, script, &format!("I/O error: {e}")).await;
         }
         Ok(Ok(output)) => {
             if !output.status.success() {
@@ -3171,7 +3226,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
                 } else {
                     format!("exited with {}: {}", output.status, stderr)
                 };
-                post_workflow_error(state, &channel, &script, &detail).await;
+                post_workflow_error(state, channel, script, &detail).await;
             } else {
                 debug!(
                     channel = %channel,

@@ -28,6 +28,7 @@ mod rpc_session;
 mod rpc_status;
 mod rpc_task;
 pub(crate) mod sessions;
+pub(crate) mod sidecar;
 pub mod snapshot;
 mod startup;
 pub(crate) mod state;
@@ -722,6 +723,12 @@ pub(crate) struct DaemonState {
     /// Ephemeral — not persisted across daemon restarts. Entries are added
     /// on spawn and removed in `cleanup_coworker_state`.
     pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
+    /// Manages persistent workflow sidecar processes.
+    ///
+    /// Instead of spawning `uv run workflow.py` per event (~300-800ms overhead),
+    /// sidecars keep a Python process alive and receive events via stdin.
+    /// Falls back to subprocess-per-event when the script doesn't support sidecar mode.
+    pub(crate) workflow_sidecar: sidecar::WorkflowSidecarManager,
 }
 
 impl DaemonState {
@@ -1354,6 +1361,8 @@ impl DaemonState {
             }
         }
 
+        let workflow_sidecar = sidecar::WorkflowSidecarManager::new(socket_path.clone());
+
         Ok(Self {
             coworkers,
             channel_router,
@@ -1411,6 +1420,7 @@ impl DaemonState {
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
+            workflow_sidecar,
         })
     }
 
@@ -3489,6 +3499,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
             _ = session_drain_interval.tick() => {
+                // Check workflow sidecar health (non-blocking: just try_wait on child PIDs).
+                state.workflow_sidecar.check_health().await;
+
                 let (events, stopped, stderr_by_name) = state.session_manager.drain_events().await;
 
                 // Update health state from SessionManager (used by snapshot for decision functions)
@@ -3943,6 +3956,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             e
         );
     }
+
+    // Shut down workflow sidecars
+    info!("Shutting down workflow sidecars...");
+    state.workflow_sidecar.shutdown_all().await;
 
     // Mark all sessions to be detached (not killed) on drop
     // CRITICAL: Always detach even if persistence failed above - sessions should

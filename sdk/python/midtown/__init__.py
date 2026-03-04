@@ -1,10 +1,10 @@
 """Midtown Python SDK.
 
-Provides the ``run()`` entry point for workflow scripts and the
-``MidtownRPC`` client for calling the daemon's JSON-RPC API over a
+Provides the ``run()`` and ``run_loop()`` entry points for workflow scripts
+and the ``MidtownRPC`` client for calling the daemon's JSON-RPC API over a
 Unix socket.
 
-Typical usage in a ``workflow.py``::
+**Single-shot mode** (``run()``)::
 
     from midtown import run, MidtownRPC
 
@@ -14,6 +14,20 @@ Typical usage in a ``workflow.py``::
 
     if __name__ == "__main__":
         run(handle)
+
+**Persistent sidecar mode** (``run_loop()``)::
+
+    from midtown import run_loop, MidtownRPC
+
+    def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:
+        if event["type"] == "coworker.idle":
+            rpc.post_to_channel(f"{event['coworker']} finished — looking for more work")
+
+    if __name__ == "__main__":
+        run_loop(handle)
+
+The persistent mode reads newline-delimited JSON events from stdin and keeps
+the process alive, avoiding the ~300-800ms Python startup overhead per event.
 """
 
 from __future__ import annotations
@@ -338,7 +352,50 @@ class MidtownRPC:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_state(state_path: Path) -> dict:
+    """Load workflow state from disk, returning empty dict if absent."""
+    if state_path.exists():
+        try:
+            return json.loads(state_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(
+                f"midtown: failed to load state from {state_path}: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    return {}
+
+
+def _persist_state(state: dict, state_path: Path) -> None:
+    """Atomically persist workflow state to disk (temp file + rename)."""
+    state_dir = state_path.parent
+    state_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp_path, state_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        print(
+            f"midtown: failed to save state to {state_path}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Entry point — single-shot mode
 # ---------------------------------------------------------------------------
 
 
@@ -347,12 +404,22 @@ def run(
 ) -> None:
     """Parse CLI args, load state, call *handler*, then save state.
 
-    This is the standard entry point for workflow scripts.  The daemon
-    invokes the script as::
+    Supports two modes, selected automatically by the daemon:
+
+    **Single-shot mode** (default)::
 
         uv run workflow.py --event '{"type":"pr.opened",...}' \\
             --state /path/to/workflow-state.json \\
             --socket /path/to/daemon.sock
+
+    **Persistent sidecar mode** (when ``--sidecar`` is passed)::
+
+        uv run workflow.py --sidecar
+
+    In sidecar mode the script stays alive, reading events from stdin.
+    Existing workflow scripts work without changes — the daemon tries
+    sidecar mode first and falls back to single-shot if the script
+    doesn't respond with ``{"ready":true}``.
 
     The handler receives:
 
@@ -368,6 +435,12 @@ def run(
     handler:
         Callable with signature ``(event, rpc, state) -> None``.
     """
+    # Check for sidecar mode early (before argparse, which would reject
+    # unknown args or fail on missing --event).
+    if "--sidecar" in sys.argv:
+        run_loop(handler)
+        return
+
     parser = argparse.ArgumentParser(description="Midtown workflow script runner")
     parser.add_argument(
         "--event",
@@ -393,44 +466,90 @@ def run(
         print(f"midtown: failed to parse --event JSON: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # Load state (empty dict if file doesn't exist yet)
     state_path = Path(args.state)
-    if state_path.exists():
-        try:
-            state: dict = json.loads(state_path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            print(
-                f"midtown: failed to load state from {state_path}: {exc}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    else:
-        state = {}
-
+    state = _load_state(state_path)
     rpc = MidtownRPC(args.socket)
 
-    # Invoke handler
     handler(event, rpc, state)
 
-    # Persist state atomically: write to a temp file next to the target,
-    # then rename.  This prevents partial writes from corrupting state.
-    state_dir = state_path.parent
-    state_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+    _persist_state(state, state_path)
+
+
+# ---------------------------------------------------------------------------
+# Entry point — persistent sidecar mode
+# ---------------------------------------------------------------------------
+
+
+def run_loop(
+    handler: Callable[[dict, MidtownRPC, dict], None],
+) -> None:
+    """Run as a long-lived sidecar, reading events from stdin.
+
+    The daemon spawns the script once and sends newline-delimited JSON
+    messages on stdin.  Each message is an envelope::
+
+        {"event": {...}, "state_file": "/path/to/state.json", "socket": "/path/to/daemon.sock"}
+
+    For each message the SDK:
+
+    1. Decodes the event from the envelope.
+    2. Loads state from ``state_file`` (if it exists).
+    3. Creates an :class:`MidtownRPC` client from ``socket``.
+    4. Calls ``handler(event, rpc, state)``.
+    5. Persists state back to ``state_file``.
+    6. Writes ``{"ok": true}`` to stdout to acknowledge processing.
+
+    On handler errors, writes ``{"ok": false, "error": "..."}`` to stdout
+    so the daemon knows the event failed without killing the sidecar.
+
+    The process exits cleanly when stdin is closed (daemon shutdown).
+
+    Parameters
+    ----------
+    handler:
+        Callable with signature ``(event, rpc, state) -> None``.
+    """
+    # Signal readiness to the daemon so it knows imports are done.
+    sys.stdout.write('{"ready":true}\n')
+    sys.stdout.flush()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
         try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp_path, state_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as exc:
-        print(
-            f"midtown: failed to save state to {state_path}: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+            envelope = json.loads(line)
+        except json.JSONDecodeError as exc:
+            _write_response(ok=False, error=f"invalid JSON: {exc}")
+            continue
+
+        event = envelope.get("event")
+        state_file = envelope.get("state_file", "")
+        socket_path = envelope.get("socket", "")
+
+        if not event or not isinstance(event, dict):
+            _write_response(ok=False, error="missing or invalid 'event' in envelope")
+            continue
+
+        state_path = Path(state_file) if state_file else None
+        state = _load_state(state_path) if state_path else {}
+        rpc = MidtownRPC(socket_path)
+
+        try:
+            handler(event, rpc, state)
+            if state_path:
+                _persist_state(state, state_path)
+            _write_response(ok=True)
+        except Exception as exc:
+            # Don't crash the sidecar on handler errors — report and continue.
+            _write_response(ok=False, error=str(exc))
+
+
+def _write_response(*, ok: bool, error: str | None = None) -> None:
+    """Write a JSON ack/nack line to stdout for the daemon."""
+    resp: dict[str, Any] = {"ok": ok}
+    if error is not None:
+        resp["error"] = error
+    sys.stdout.write(json.dumps(resp, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
