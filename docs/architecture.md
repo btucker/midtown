@@ -604,10 +604,9 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
     → channel JSONL file + WebSocket broadcast
 ```
 
-- **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`.
+- **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`. This includes reviewer sessions — their output streams to DM channels alongside regular coworkers.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
-- **Task separator**: A `PostSystemMessage` separator (e.g., "─── Task !42: Fix auth bug ───") is posted to `dm-<name>` to visually delineate task boundaries. This happens in three paths: (1) `SpawnSession` for non-reviewer session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions skip DM separators since they are ephemeral PR-scoped sessions.
-- **Reviewer exclusion**: Reviewer sessions do not stream output to DM channels and do not receive DM separators, keeping the DM channel system focused on persistent dev coworkers.
+- **Task separator**: A `PostSystemMessage` separator is posted to `dm-<name>` to visually delineate task boundaries. For regular coworkers this uses the format "─── Task !42: Fix auth bug ───" and happens in three paths: (1) `SpawnSession` when a session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions receive a PR-based separator (e.g., "─── Reviewing PR #42 ───") in their `SpawnCoworkerWithCallbacks` `on_success` effects.
 
 ## Workflow Script System
 
@@ -727,6 +726,7 @@ When a channel is created, archived, unarchived, or renamed, the daemon broadcas
 - **RPC handlers** (`rpc_channel.rs`): `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — broadcast after successful operation. Create checks `already_exists` to avoid spurious broadcasts from idempotent `Channel::create()`.
 - **REST API** (`web.rs`): `POST /api/channels` — broadcast after creation, with the same `already_exists` guard.
 - **Effects system** (`effects.rs`): `Effect::CreateChannel`, `Effect::ArchiveChannel`, `Effect::MergeChannels` — broadcast after successful execution. Each has an idempotency guard to prevent duplicate broadcasts from repeated ticks.
+- **Lazy channel creation** (`mod.rs`): `send_and_broadcast_async()` broadcasts `channel_list_changed("created")` when `ChannelRouter::send()` returns `is_new = true`, indicating the channel was lazily opened for the first time. This covers DM channels (`dm-<name>`) and any other channels auto-created by the first `PostToChannel`/`PostSystemMessage` write.
 
 **Web app handling** (`api.js`): The `channel_list_changed` WebSocket event triggers `fetchChannels()` to re-fetch the full channel list from the REST API (source of truth), rather than optimistically updating client-side state.
 

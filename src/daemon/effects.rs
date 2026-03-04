@@ -45,26 +45,21 @@ fn build_resume_handoff_prompt(
 
 /// Build a DM separator `PostSystemMessage` for a newly spawned session.
 ///
-/// Returns `Some(Effect::PostSystemMessage)` targeting `dm-<name>` for non-reviewer
-/// sessions, or `None` for reviewer sessions (which are ephemeral and don't have
-/// DM channels).
+/// Returns a `PostSystemMessage` effect targeting `dm-<name>` with a task header
+/// (e.g., "─── Task !42: Fix auth bug ───") to visually delineate task boundaries.
 pub(super) fn build_dm_separator_effect(
     name: &str,
     task_id: &str,
     task_subject: Option<&str>,
-    is_reviewer: bool,
-) -> Option<Effect> {
-    if is_reviewer {
-        return None;
-    }
+) -> Effect {
     let separator = match task_subject {
         Some(subject) => format!("─── Task !{}: {} ───", task_id, subject),
         None => format!("─── Task !{} ───", task_id),
     };
-    Some(Effect::PostSystemMessage {
+    Effect::PostSystemMessage {
         message: separator,
         channel: Some(format!("dm-{}", name)),
-    })
+    }
 }
 
 /// A side effect that the daemon should execute.
@@ -1272,10 +1267,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_success,
                 on_failure,
             } => {
-                // NOTE: No DM separator is posted here. This effect is used for
-                // orphan recovery (respawning a crashed coworker for the same task).
-                // The initial separator was already posted by AssignAndSpawn or
-                // SpawnSession when the task was first assigned.
+                // DM separators are posted by the caller in on_success effects,
+                // not here. For task-based spawns the separator was posted by
+                // AssignAndSpawn or SpawnSession; for reviewer spawns it is
+                // included directly in the on_success vector (see pr.rs).
                 //
                 // Extract task IDs from on_success RecordTaskAssignment effects
                 // to clear their in-flight markers after the spawn completes.
@@ -1368,14 +1363,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             .into_iter()
                             .find(|t| t.id == task_id)
                             .map(|t| t.subject);
-                        if let Some(separator_effect) = build_dm_separator_effect(
+                        let separator_effect = build_dm_separator_effect(
                             &owner,
                             &task_id,
                             task_subject.as_deref().filter(|s| !s.is_empty()),
-                            false,
-                        ) {
-                            Box::pin(execute_effects(vec![separator_effect], state)).await;
-                        }
+                        );
+                        Box::pin(execute_effects(vec![separator_effect], state)).await;
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
@@ -2478,22 +2471,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
 
                         // Post session separator to the coworker's DM channel.
-                        // Reviewers are ephemeral PR-scoped sessions — skip DM
-                        // separators (and the task file scan) entirely.
-                        if !is_reviewer {
+                        // Post a DM separator so the user sees a task header in
+                        // the coworker's DM channel (applies to all sessions
+                        // including reviewers).
+                        {
                             let task_subject =
                                 crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
                                     .into_iter()
                                     .find(|t| t.id == task_id)
                                     .map(|t| t.subject);
-                            if let Some(separator_effect) = build_dm_separator_effect(
-                                &name,
-                                &task_id,
-                                task_subject.as_deref(),
-                                is_reviewer,
-                            ) {
-                                Box::pin(execute_effects(vec![separator_effect], state)).await;
-                            }
+                            let separator_effect =
+                                build_dm_separator_effect(&name, &task_id, task_subject.as_deref());
+                            Box::pin(execute_effects(vec![separator_effect], state)).await;
                         }
 
                         state.broadcast_coworker_update(&name, "running", None);

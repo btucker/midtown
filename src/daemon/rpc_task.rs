@@ -714,11 +714,8 @@ pub(super) async fn handle_task_claim(
     } else {
         Some(task_subject.as_str())
     };
-    if let Some(separator_effect) =
-        super::effects::build_dm_separator_effect(from, task_id, subject_opt, false)
-    {
-        super::effects::execute_effects(vec![separator_effect], state).await;
-    }
+    let separator_effect = super::effects::build_dm_separator_effect(from, task_id, subject_opt);
+    super::effects::execute_effects(vec![separator_effect], state).await;
 
     info!("Task claim: {} claimed task !{} directly", from, task_id);
 

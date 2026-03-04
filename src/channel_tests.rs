@@ -2268,3 +2268,63 @@ async fn test_contains_message_id_delegates_to_find() {
         "should not find missing message"
     );
 }
+
+// ============================================================================
+// SendResult.is_new tests
+// ============================================================================
+
+#[test]
+fn test_channel_router_send_returns_is_new_for_first_message() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+    // First message to a new channel should report is_new = true
+    let msg1 = Message::for_channel("dm-park", "park", "Hello", MessageType::Text);
+    let result1 = router.send(&msg1).unwrap();
+    assert!(result1.is_new, "first send to dm-park should be new");
+    assert_eq!(result1.channel_name, "dm-park");
+
+    // Second message to the same channel should report is_new = false
+    let msg2 = Message::for_channel("dm-park", "park", "World", MessageType::Text);
+    let result2 = router.send(&msg2).unwrap();
+    assert!(!result2.is_new, "second send to dm-park should not be new");
+    assert_eq!(result2.channel_name, "dm-park");
+}
+
+#[test]
+fn test_channel_router_send_returns_is_new_per_channel() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+    // First message to dm-park → new
+    let msg1 = Message::for_channel("dm-park", "park", "Hello", MessageType::Text);
+    let r1 = router.send(&msg1).unwrap();
+    assert!(r1.is_new);
+
+    // First message to dm-madison → also new
+    let msg2 = Message::for_channel("dm-madison", "madison", "Hi", MessageType::Text);
+    let r2 = router.send(&msg2).unwrap();
+    assert!(r2.is_new);
+
+    // Second message to dm-park → not new
+    let msg3 = Message::for_channel("dm-park", "park", "Again", MessageType::Text);
+    let r3 = router.send(&msg3).unwrap();
+    assert!(!r3.is_new);
+}
+
+#[test]
+fn test_channel_router_send_default_channel_reports_is_new() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "midtown");
+
+    // First message with no channel (uses default) → new
+    let msg1 = Message::text("agent1", "Hello");
+    let r1 = router.send(&msg1).unwrap();
+    assert!(r1.is_new);
+    assert_eq!(r1.channel_name, "midtown");
+
+    // Second message to default → not new
+    let msg2 = Message::text("agent1", "World");
+    let r2 = router.send(&msg2).unwrap();
+    assert!(!r2.is_new);
+}

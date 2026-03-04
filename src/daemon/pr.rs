@@ -3002,6 +3002,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
                 channel: Some(OPS_CHANNEL.to_string()),
             },
+            // DM separator so the reviewer's output streams to dm-<name>
+            Effect::PostSystemMessage {
+                message: format!("─── Reviewing PR #{} ───", pr_number),
+                channel: Some(format!("dm-{}", reviewer_name)),
+            },
         ];
 
         // Warn the PR author not to enable auto-merge while the review is in progress.

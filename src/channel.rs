@@ -1667,12 +1667,32 @@ pub fn load_channel_notes(base_dir: &Path, channel_name: &str) -> String {
 ///
 /// // Send to main channel (uses default repo name)
 /// let msg1 = Message::text("agent1", "Hello");
-/// router.send(&msg1).unwrap();
+/// let result1 = router.send(&msg1).unwrap();
+/// assert!(result1.is_new, "first message to a channel reports is_new");
+///
+/// // Second send to the same channel is not new
+/// let msg1b = Message::text("agent1", "Again");
+/// let result1b = router.send(&msg1b).unwrap();
+/// assert!(!result1b.is_new, "subsequent sends are not new");
 ///
 /// // Send to a topic channel (lazy-opens "pr-42" channel)
 /// let msg2 = Message::for_channel("pr-42", "agent1", "Review feedback", midtown::MessageType::Text);
-/// router.send(&msg2).unwrap();
+/// let result2 = router.send(&msg2).unwrap();
+/// assert!(result2.is_new, "first message to a new channel reports is_new");
 /// ```
+/// Result of a [`ChannelRouter::send`] operation.
+///
+/// Indicates the resolved channel name and whether the channel was newly opened
+/// (first message routed to it in this process). Callers use `is_new` to broadcast
+/// a `channel_list_changed` WebSocket event so the frontend discovers the channel
+/// without waiting for the next polling cycle.
+pub struct SendResult {
+    /// The resolved channel name (explicit from the message, or the router's default).
+    pub channel_name: String,
+    /// `true` if this send lazily opened the channel for the first time.
+    pub is_new: bool,
+}
+
 pub struct ChannelRouter {
     /// Base directory for all channels
     base_dir: PathBuf,
@@ -1703,7 +1723,12 @@ impl ChannelRouter {
     ///
     /// If the message's channel is None or empty, uses the default channel name.
     /// Channels are opened lazily on first use and cached for subsequent sends.
-    pub fn send(&self, message: &Message) -> Result<()> {
+    ///
+    /// Returns the resolved channel name and whether this was the first message
+    /// routed through this channel (i.e., the channel was newly opened and cached).
+    /// Callers can use `is_new` to broadcast a `channel_list_changed` event so
+    /// WebSocket clients discover the channel immediately.
+    pub fn send(&self, message: &Message) -> Result<SendResult> {
         // Use the message's channel if set, otherwise use the router's default channel
         let channel_name = message
             .channel
@@ -1714,7 +1739,11 @@ impl ChannelRouter {
         {
             let channels = self.channels.lock().unwrap();
             if let Some(channel) = channels.get(channel_name) {
-                return channel.send(message);
+                channel.send(message)?;
+                return Ok(SendResult {
+                    channel_name: channel_name.to_string(),
+                    is_new: false,
+                });
             }
         }
 
@@ -1722,17 +1751,25 @@ impl ChannelRouter {
         let mut channels = self.channels.lock().unwrap();
         // Double-check after acquiring exclusive lock (another thread may have opened it)
         if let Some(channel) = channels.get(channel_name) {
-            return channel.send(message);
+            channel.send(message)?;
+            return Ok(SendResult {
+                channel_name: channel_name.to_string(),
+                is_new: false,
+            });
         }
 
-        // Open new channel
+        // Open new channel and attempt the write before caching. Sending first
+        // ensures that a transient write failure (ENOSPC, lock timeout) doesn't
+        // cache the channel as "seen" — the next successful send will still
+        // report is_new: true so callers can emit channel_list_changed.
+        // Channel::new() is idempotent (create_dir_all), so retries are safe.
         let channel = Channel::new(&self.base_dir, channel_name)?;
-        // Cache the channel before attempting send - the Channel itself is valid
-        // even if the subsequent write fails (filesystem error, permissions, etc).
-        // The Channel holds no mutable state, so caching a channel that failed
-        // a write is safe - the next send() will retry the write.
-        channels.insert(channel_name.to_string(), channel.clone());
-        channel.send(message)
+        channel.send(message)?;
+        channels.insert(channel_name.to_string(), channel);
+        Ok(SendResult {
+            channel_name: channel_name.to_string(),
+            is_new: true,
+        })
     }
 
     /// Get or create a channel by name.

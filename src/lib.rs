@@ -169,7 +169,7 @@ pub mod test_utils;
 #[cfg(test)]
 mod lib_tests;
 
-pub use channel::{Channel, ChannelInfo, ChannelRouter, load_channel_notes};
+pub use channel::{Channel, ChannelInfo, ChannelRouter, SendResult, load_channel_notes};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType};

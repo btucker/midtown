@@ -2242,8 +2242,8 @@ impl DaemonState {
         let msg = message.clone();
         let write_result = tokio::task::spawn_blocking(move || router.send(&msg)).await;
 
-        match write_result {
-            Ok(Ok(())) => {}
+        let send_result = match write_result {
+            Ok(Ok(result)) => result,
             Ok(Err(e)) => return Err(e),
             Err(e) => {
                 return Err(crate::Error::InvalidMessage(format!(
@@ -2251,6 +2251,16 @@ impl DaemonState {
                     e
                 )));
             }
+        };
+
+        // If the channel was newly created (first message routed to it), notify
+        // WebSocket clients so the frontend adds it to the sidebar immediately
+        // instead of waiting for the next fetchChannels() poll.
+        if send_result.is_new {
+            self.broadcast_web_update(web::channel_list_changed(
+                "created",
+                &send_result.channel_name,
+            ));
         }
 
         self.broadcast_web_update(web::channel_message_update(message));
@@ -3621,15 +3631,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
 
                     // Build coworker name set: all active session names minus lead,
-                    // channel leads, fork-bound sessions, and reviewers.
-                    // Reviewers are ephemeral PR-scoped sessions that shouldn't
-                    // have DM channels or streaming output.
-                    let reviewer_names: std::collections::HashSet<&str> = ps
-                        .sessions
-                        .values()
-                        .filter(|r| r.is_reviewer && r.is_running)
-                        .filter_map(|r| r.current_name.as_deref())
-                        .collect();
+                    // channel leads, and fork-bound sessions. Reviewers are included
+                    // so their output streams to dm-<name> channels — users expect to
+                    // see reviewer activity in DM channels alongside regular coworkers.
                     let coworker_names: std::collections::HashSet<String> = state
                         .name_to_session
                         .lock()
@@ -3639,7 +3643,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             *name != &state.repo_name
                                 && !ps.channel_lead_sessions.contains_key(*name)
                                 && !fork_bound_channels.contains_key(*name)
-                                && !reviewer_names.contains(name.as_str())
                         })
                         .cloned()
                         .collect();
