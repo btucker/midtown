@@ -132,11 +132,17 @@ pub(crate) async fn handle_kanban_data(id: RequestId, state: &DaemonState) -> Re
 /// current (microsecond latency). The TUI polls this at 1–2s to keep the
 /// coworker status panel up-to-date without delay.
 ///
-/// Returns: coworkers, max_coworkers, lead_working, tool_activity, channel_leads.
+/// Returns: coworkers, max_coworkers, lead_working, tool_activity,
+///          channel_leads, channel_leads_working.
 pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
     let (coworkers_data, channel_lead_names) = build_coworkers_data(state, &[]).await;
 
-    let lead_working = is_lead_actively_working(state);
+    // Read health once for both main-lead and per-channel-lead activity checks
+    let health_guard = state.headless_health.read().unwrap();
+    let lead_working = is_lead_health_active(&health_guard, &state.repo_name);
+    let channel_leads_working = build_channel_leads_working(&health_guard, &channel_lead_names);
+    drop(health_guard);
+
     let tool_activity = collect_tool_activity(state);
     let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
 
@@ -148,6 +154,7 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
             "lead_working": lead_working,
             "tool_activity": tool_activity,
             "channel_leads": channel_leads,
+            "channel_leads_working": channel_leads_working,
         }),
     )
 }
@@ -340,22 +347,8 @@ const KANBAN_CACHE_TTL: Duration = Duration::from_secs(60);
 /// lead is considered idle (waiting for user input, between turns, etc.).
 const LEAD_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Check whether the headless lead session is actively working by examining
-/// the `last_event_at` timestamp from `headless_health`.
-///
-/// Returns `true` only when the lead session is alive AND has received a
-/// stream event within `LEAD_ACTIVITY_TIMEOUT`. This distinguishes "actively
-/// computing" from "running but idle at the prompt".
-fn is_lead_actively_working(state: &DaemonState) -> bool {
-    let health_guard = state.headless_health.read().unwrap();
-    is_lead_health_active(&health_guard, &state.repo_name)
-}
-
 /// Core lead-activity lookup: checks both the canonical repo-name key and the
 /// legacy "lead" key, returning true if either session is actively working.
-///
-/// Extracted from `is_lead_actively_working` so it can be unit-tested
-/// without a full `DaemonState`.
 pub(crate) fn is_lead_health_active(
     health: &std::collections::HashMap<String, ProcessHealth>,
     repo_name: &str,
@@ -379,6 +372,25 @@ fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
         let elapsed = (Utc::now() - ts).num_seconds();
         elapsed >= 0 && elapsed < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64
     })
+}
+
+/// Build a map of channel name → active-working boolean for all registered
+/// channel leads, using the same `is_session_actively_working()` logic that
+/// drives the main lead's `lead_working` flag.
+///
+/// Channel lead sessions are named after their channel (e.g., "web"), so
+/// looking up `health.get(channel_name)` finds the right entry.
+pub(crate) fn build_channel_leads_working(
+    health: &HashMap<String, ProcessHealth>,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    channel_lead_names
+        .iter()
+        .map(|name| {
+            let active = is_session_actively_working(health.get(name.as_str()));
+            (name.clone(), serde_json::Value::Bool(active))
+        })
+        .collect()
 }
 
 /// Collect recent tool call/result items per agent as a JSON value for the RPC response.
