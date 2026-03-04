@@ -14,19 +14,17 @@
    * Click again or press Escape to collapse back to the compact view.
    */
   import { agentToolItems, threadToolItems, threadForkOwners } from './store.js'
-  import { AVENUE_COLORS, getAvenueColor } from './avenue-colors.js'
+  import { getForkOwnerColor } from './avenue-colors.js'
   import { onDestroy } from 'svelte'
   import { slide } from 'svelte/transition'
 
   let { channelName, threadParentId = null, thinking = false } = $props()
 
   // Use the fork owner's avenue color for thinking dots instead of hardcoded lead gold.
-  // Falls back to lead color when no fork owner is known (channel lead handling the thread).
-  let dotColor = $derived(
-    threadParentId && $threadForkOwners[threadParentId]
-      ? getAvenueColor($threadForkOwners[threadParentId], AVENUE_COLORS.lead)
-      : AVENUE_COLORS.lead
-  )
+  // getForkOwnerColor extracts the avenue prefix from compound fork session names
+  // (e.g., "park-discuss-ab12" → "park" → park's cyan) and falls back to lead gold
+  // for non-avenue prefixes (channel leads, anonymous forks, unknown owners).
+  let dotColor = $derived(getForkOwnerColor($threadForkOwners[threadParentId]))
 
   const AGE_OUT_MS = 3000
   const MAX_VISIBLE = 10

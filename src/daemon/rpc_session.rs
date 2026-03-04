@@ -1552,11 +1552,13 @@ pub(super) async fn handle_session_fork(
             // fork path so the "Dedicated session" indicator appears regardless
             // of how the fork was created.
             if let Some(ref ch) = fork_channel {
+                let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
                 state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
                     web::ThreadOwnershipData {
                         thread_parent_id: thread_parent_id.to_string(),
                         channel: ch.clone(),
                         has_dedicated_session: true,
+                        owner,
                     },
                 ));
             }
@@ -1656,10 +1658,12 @@ pub(super) async fn handle_session_fork_thread(
             }
 
             // Broadcast ownership change to web clients
+            let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
             state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
                 thread_parent_id: thread_parent_id.to_string(),
                 channel: channel.to_string(),
                 has_dedicated_session: true,
+                owner,
             }));
 
             debug!(
@@ -1734,6 +1738,7 @@ pub(super) async fn handle_session_unfork_thread(
             thread_parent_id: thread_parent_id.to_string(),
             channel: channel.to_string(),
             has_dedicated_session: false,
+            owner: None,
         }));
         return Response::error(
             id,
@@ -1775,18 +1780,22 @@ pub(super) async fn handle_session_thread_ownership(
     channel: &str,
     state: &DaemonState,
 ) -> Response {
-    let has_dedicated = state
+    let fork_session_id = state
         .topic_sessions
         .lock()
         .unwrap()
         .get(thread_parent_id)
         .filter(|s| s.as_str() != "pending")
-        .is_some();
+        .cloned();
+    let has_dedicated = fork_session_id.is_some();
+    let owner =
+        fork_session_id.and_then(|sid| state.session_to_name.lock().unwrap().get(&sid).cloned());
 
     state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
         thread_parent_id: thread_parent_id.to_string(),
         channel: channel.to_string(),
         has_dedicated_session: has_dedicated,
+        owner,
     }));
 
     Response::success(
