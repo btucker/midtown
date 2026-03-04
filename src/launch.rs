@@ -263,13 +263,16 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// Tools that channel leads (and their forks) are not allowed to use.
 ///
 /// Channel leads are coordinators and domain experts — they scope work and create
-/// tasks, but never implement code. This list is passed as `--disallowedTools` to
-/// the Claude CLI, providing hard enforcement that the LLM cannot bypass.
+/// tasks, but never implement code. For Claude/z.ai providers, this list is passed
+/// as `--disallowedTools` to the CLI, providing hard enforcement that the LLM
+/// cannot bypass. For Codex, `disallowed_tools` is not supported, so enforcement
+/// relies on the prompt-based instruction in `channel-lead.md`.
 ///
 /// Note: `Bash` is intentionally NOT included because channel leads need it for
 /// coordination commands (`midtown task create`, `midtown channel post`, etc.).
 /// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
-/// modify code", which is sufficient since Edit/Write are hard-blocked here.
+/// modify code", which is sufficient since Edit/Write are hard-blocked for
+/// Claude/z.ai and prompt-restricted for Codex.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
     ["Edit", "Write", "NotebookEdit"]
         .iter()
