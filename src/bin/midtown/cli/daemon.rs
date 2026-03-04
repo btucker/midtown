@@ -941,7 +941,7 @@ pub fn handle_stop() -> Result<Response, String> {
         messages.push("Daemon was not running".to_string());
     }
 
-    // Step 3: Kill any orphaned `gh webhook forward` processes.
+    // Step 2: Kill any orphaned `gh webhook forward` processes.
     // The daemon's SIGTERM handler should have already stopped these, but
     // if the daemon exited uncleanly they may be left behind.
     kill_orphaned_webhook_forwarders(&mut messages);

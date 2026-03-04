@@ -1,9 +1,0 @@
-layout {
-    // Channel pane (terminal running midtown chat)
-    pane size="35%" {
-        command "midtown"
-        args "chat"
-    }
-    // Lead pane (primary workspace)
-    pane size="65%" focus=true
-}
