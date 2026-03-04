@@ -701,6 +701,8 @@ The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum:
 
 **Serialization contract:** Events are serialized as JSON objects with a `"type"` discriminant (dotted name), a `"channel"` field (always present), and event-specific fields. `task_id` is a `String` matching `Task { id: String }` in `src/tasks.rs`. Optional fields (`task_id` on coworker events, `check_name` on `pr.ci_failed`) are **omitted entirely** when absent — not serialized as `null` — following the `#[serde(skip_serializing_if = "Option::is_none")]` pattern used throughout the codebase. Python scripts should use `event.get("task_id")` to test presence.
 
+**Task event enrichment:** Task lifecycle events (`task.created`, `task.assigned`, `task.completed`) include `subject`, `description`, `thread_id`, and `message_id` fields. `thread_id` and `message_id` let workflow scripts post responses into the correct Slack/IRC thread. For `task.created`, `thread_id` defaults to the announcement message ID when no explicit `--thread-id` is given, so scripts always have a thread to reply in. Message events (`coworker.message`, `channel.message`) include `thread_id` and `message_id`. The pure decision functions in `dispatch.rs` obtain thread/message context via `WorldSnapshot.task_thread_id_map` and `WorldSnapshot.task_message_id_map` (populated from `DaemonPersistentState`). The webhook path in `mod.rs` passes context through `dispatch::TaskEventContext`.
+
 **Accessors:** `WorkflowEvent::channel() -> &str` and `WorkflowEvent::task_id() -> Option<&str>` provide typed access without deserializing JSON.
 
 ## Headed Intercom RPC

@@ -145,6 +145,7 @@ fn task_completed_effects(
     channel_message: String,
     channel: Option<String>,
     coworker: Option<String>,
+    ctx: TaskEventContext,
 ) -> Vec<Effect> {
     let mut effects = vec![
         Effect::CompleteTask {
@@ -177,6 +178,10 @@ fn task_completed_effects(
                 channel: ch,
                 task_id: task_id.to_string(),
                 coworker,
+                subject: task_subject.to_string(),
+                description: ctx.description,
+                thread_id: ctx.thread_id,
+                message_id: ctx.message_id,
             },
         ));
     }
@@ -2156,6 +2161,10 @@ fn dispatch_unowned_pending_tasks(
                         channel: ch.clone(),
                         task_id: task.id.clone(),
                         coworker: coworker_name.clone(),
+                        subject: task.subject.clone(),
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
                 ));
             }
@@ -2214,6 +2223,10 @@ fn dispatch_unowned_pending_tasks(
                         channel: ch.clone(),
                         task_id: task.id.clone(),
                         coworker: coworker_name.clone(),
+                        subject: task.subject.clone(),
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
                 ));
             }
@@ -2246,26 +2259,42 @@ fn dispatch_unowned_pending_tasks(
 /// 3. Post a notification to the channel
 ///
 /// Returns an empty vector if no task ID is found in the title.
+/// Context for enriching task workflow events with thread/message/description data.
+#[derive(Default)]
+pub(super) struct TaskEventContext {
+    pub subject: Option<String>,
+    pub description: Option<String>,
+    pub thread_id: Option<String>,
+    pub message_id: Option<String>,
+}
+
 pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
     repo_name: &str,
     channel: Option<String>,
+    ctx: Option<TaskEventContext>,
 ) -> Vec<Effect> {
     let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
         return vec![];
     };
 
+    let mut ctx = ctx.unwrap_or_default();
+
+    // Use the actual task subject when available; fall back to PR title.
+    let task_subject = ctx.subject.take().unwrap_or_else(|| pr_title.to_string());
+
     let mut effects = task_completed_effects(
         &task_id.to_string(),
         repo_name,
-        pr_title,
+        &task_subject,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",
             task_id, pr_number
         ),
         channel.clone(),
         None,
+        ctx,
     );
 
     // Emit PrMerged alongside task completion when channel is known.
@@ -2322,6 +2351,12 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     ),
                     task_channel,
                     task.owner.clone(),
+                    TaskEventContext {
+                        subject: None,
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
+                    },
                 ));
             }
         } else {
@@ -2363,6 +2398,12 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     ),
                     task_channel,
                     task.owner.clone(),
+                    TaskEventContext {
+                        subject: None,
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
+                    },
                 ));
             }
         }

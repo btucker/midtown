@@ -8,6 +8,9 @@ fn test_task_created_type_field() {
         channel: "proj-workflows".into(),
         task_id: "42".into(),
         subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "task.created");
@@ -19,6 +22,10 @@ fn test_task_assigned_type_field() {
         channel: "proj-workflows".into(),
         task_id: "42".into(),
         coworker: "lexington".into(),
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "task.assigned");
@@ -30,6 +37,10 @@ fn test_task_completed_type_field() {
         channel: "proj-workflows".into(),
         task_id: "42".into(),
         coworker: Some("lexington".into()),
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "task.completed");
@@ -143,6 +154,8 @@ fn test_coworker_message_type_field() {
         task_id: Some("42".into()),
         coworker: "lexington".into(),
         message: "PR is ready".into(),
+        thread_id: None,
+        message_id: "msg-123".into(),
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "coworker.message");
@@ -154,6 +167,8 @@ fn test_channel_message_type_field() {
         channel: "proj-workflows".into(),
         sender: "user".into(),
         message: "Looks good".into(),
+        thread_id: None,
+        message_id: "msg-456".into(),
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "channel.message");
@@ -250,6 +265,8 @@ fn test_channel_message_no_task_id_key() {
         channel: "proj-workflows".into(),
         sender: "user".into(),
         message: "hey".into(),
+        thread_id: None,
+        message_id: "msg-789".into(),
     };
     let json: serde_json::Value = serde_json::to_value(&event).unwrap();
     assert!(json.get("task_id").is_none());
@@ -263,6 +280,9 @@ fn test_channel_accessor_task_created() {
         channel: "my-channel".into(),
         task_id: "1".into(),
         subject: "foo".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     assert_eq!(event.channel(), "my-channel");
 }
@@ -281,6 +301,8 @@ fn test_channel_accessor_channel_message() {
         channel: "general".into(),
         sender: "user".into(),
         message: "hello".into(),
+        thread_id: None,
+        message_id: "msg-abc".into(),
     };
     assert_eq!(event.channel(), "general");
 }
@@ -293,6 +315,9 @@ fn test_task_id_present_for_task_event() {
         channel: "proj-workflows".into(),
         task_id: "42".into(),
         subject: "foo".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     assert_eq!(event.task_id(), Some("42"));
 }
@@ -321,6 +346,8 @@ fn test_task_id_absent_for_channel_message() {
         channel: "proj-workflows".into(),
         sender: "user".into(),
         message: "hey".into(),
+        thread_id: None,
+        message_id: "msg-def".into(),
     };
     assert_eq!(event.task_id(), None);
 }
@@ -351,6 +378,124 @@ fn test_task_id_optional_for_task_completed_with_coworker() {
         channel: "proj-workflows".into(),
         task_id: "42".into(),
         coworker: Some("lexington".into()),
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
     };
     assert_eq!(event.task_id(), Some("42"));
+}
+
+// ── New field serialization tests ────────────────────────────────────────────
+
+#[test]
+fn test_task_created_optional_fields_present() {
+    let event = WorkflowEvent::TaskCreated {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        subject: "Add auth".into(),
+        description: Some("Implement OAuth2 flow".into()),
+        thread_id: Some("thread-123".into()),
+        message_id: Some("msg-456".into()),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["description"], "Implement OAuth2 flow");
+    assert_eq!(json["thread_id"], "thread-123");
+    assert_eq!(json["message_id"], "msg-456");
+}
+
+#[test]
+fn test_task_created_optional_fields_absent() {
+    let event = WorkflowEvent::TaskCreated {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    // None fields should be omitted entirely
+    assert!(json.get("description").is_none());
+    assert!(json.get("thread_id").is_none());
+    assert!(json.get("message_id").is_none());
+}
+
+#[test]
+fn test_task_assigned_includes_subject_and_context() {
+    let event = WorkflowEvent::TaskAssigned {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        coworker: "lexington".into(),
+        subject: "Add auth endpoint".into(),
+        description: Some("Build the /api/auth endpoint".into()),
+        thread_id: Some("thread-789".into()),
+        message_id: Some("msg-012".into()),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["subject"], "Add auth endpoint");
+    assert_eq!(json["description"], "Build the /api/auth endpoint");
+    assert_eq!(json["thread_id"], "thread-789");
+    assert_eq!(json["message_id"], "msg-012");
+}
+
+#[test]
+fn test_task_completed_includes_subject_and_context() {
+    let event = WorkflowEvent::TaskCompleted {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        coworker: Some("lexington".into()),
+        subject: "Add auth endpoint".into(),
+        description: None,
+        thread_id: Some("thread-abc".into()),
+        message_id: None,
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["subject"], "Add auth endpoint");
+    assert!(json.get("description").is_none());
+    assert_eq!(json["thread_id"], "thread-abc");
+    assert!(json.get("message_id").is_none());
+}
+
+#[test]
+fn test_channel_message_includes_thread_and_message_id() {
+    let event = WorkflowEvent::ChannelMessage {
+        channel: "proj-workflows".into(),
+        sender: "user".into(),
+        message: "Looks good".into(),
+        thread_id: Some("thread-parent".into()),
+        message_id: "msg-reply".into(),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["thread_id"], "thread-parent");
+    assert_eq!(json["message_id"], "msg-reply");
+}
+
+#[test]
+fn test_channel_message_thread_id_absent_when_none() {
+    let event = WorkflowEvent::ChannelMessage {
+        channel: "proj-workflows".into(),
+        sender: "user".into(),
+        message: "Looks good".into(),
+        thread_id: None,
+        message_id: "msg-top".into(),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert!(json.get("thread_id").is_none());
+    assert_eq!(json["message_id"], "msg-top");
+}
+
+#[test]
+fn test_coworker_message_includes_thread_and_message_id() {
+    let event = WorkflowEvent::CoworkerMessage {
+        channel: "proj-workflows".into(),
+        task_id: Some("42".into()),
+        coworker: "lexington".into(),
+        message: "PR is ready".into(),
+        thread_id: Some("thread-task".into()),
+        message_id: "msg-cw".into(),
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["thread_id"], "thread-task");
+    assert_eq!(json["message_id"], "msg-cw");
 }

@@ -398,18 +398,25 @@ pub(super) async fn handle_task_create(
     // message exists, so storing the ID would create an orphan thread root.
     let author = task_created_message_author(effective_channel, state.default_channel_name());
     let msg = task_announcement_message(effective_channel, &author, subject, thread_id);
-    let message_id = msg.id.clone();
+    let announcement_message_id = msg.id.clone();
+    let mut event_message_id = None;
+    let mut event_thread_id = thread_id.map(|t| t.to_string());
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
+            event_message_id = Some(announcement_message_id.clone());
             let mut ps = state.persistent_state.lock().await;
             ps.task_message_id
-                .insert(task_id.clone(), message_id.clone());
+                .insert(task_id.clone(), announcement_message_id.clone());
             // Default task_thread_id to the announcement message ID when no
             // explicit --thread-id was provided. This ensures SpawnSession
             // picks up a bound_thread_id so coworker messages auto-route to
             // the task announcement thread.
             if !ps.task_thread_id.contains_key(&task_id) {
-                ps.task_thread_id.insert(task_id.clone(), message_id);
+                ps.task_thread_id
+                    .insert(task_id.clone(), announcement_message_id.clone());
+                // Also use the effective thread_id for the workflow event so
+                // scripts can post into the task's thread.
+                event_thread_id = Some(announcement_message_id);
             }
             if let Err(e) = ps.save_for_repo(&repo_name) {
                 warn!("Failed to save task message_id mapping: {}", e);
@@ -428,11 +435,19 @@ pub(super) async fn handle_task_create(
             subject: subject.to_string(),
         },
     };
+    let description_for_event = if description.is_empty() {
+        None
+    } else {
+        Some(description.to_string())
+    };
     let workflow_effect = crate::daemon::effects::Effect::EmitWorkflowEvent(
         crate::workflow::WorkflowEvent::TaskCreated {
             channel: effective_channel.to_string(),
             task_id: task_id.clone(),
             subject: subject.to_string(),
+            description: description_for_event,
+            thread_id: event_thread_id,
+            message_id: event_message_id,
         },
     );
     crate::daemon::effects::execute_effects(vec![nudge_effect, workflow_effect], state).await;

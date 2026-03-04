@@ -280,6 +280,8 @@ pub(super) async fn handle_channel_post(
                 task_id,
                 coworker: from.to_string(),
                 message: content.clone(),
+                thread_id: msg.thread_parent_id.clone(),
+                message_id: msg.id.clone(),
             },
         );
         crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
@@ -293,6 +295,8 @@ pub(super) async fn handle_channel_post(
                 channel: channel_name.to_string(),
                 sender: from.to_string(),
                 message: content.clone(),
+                thread_id: msg.thread_parent_id.clone(),
+                message_id: msg.id.clone(),
             },
         );
         crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
