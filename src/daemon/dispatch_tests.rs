@@ -3099,6 +3099,100 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
 }
 
 #[test]
+fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let mut tasks_with_open_prs = HashMap::new();
+    tasks_with_open_prs.insert("2050".to_string(), 2100u64);
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2050".to_string(),
+            subject: "Handle Svelte state handling".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        pr: snapshot::SnapshotPrState {
+            tasks_with_open_prs,
+            ..Default::default()
+        },
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::AssignAndSpawn { .. }
+                | Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnSession { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Task !2050 should be skipped because it has an open PR in tasks_with_open_prs, got effects: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let mut github_open_pr_task_ids = HashMap::new();
+    github_open_pr_task_ids.insert("2051".to_string(), 2101u64);
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2051".to_string(),
+            subject: "Handle Svelte cache invalidation".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        pr: snapshot::SnapshotPrState {
+            github_open_pr_task_ids,
+            ..Default::default()
+        },
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::AssignAndSpawn { .. }
+                | Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnSession { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Task !2051 should be skipped because it has an open PR via title-match map, got effects: {:?}",
+        effects
+    );
+}
+
+#[test]
 fn test_orphan_recovery_marks_task_in_flight() {
     // Regression test: Orphan recovery must include RecordTaskAssignment in on_success
     // to prevent task dispatch from double-assigning the task while the recovered

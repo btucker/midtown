@@ -422,6 +422,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
     config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
@@ -439,6 +440,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         channel: None,
         auth_profile_dir: None,
         auth_provider: crate::auth::AuthProvider::Claude,
+        escalation_target: None,
         persisted_initial_prompt: None,
     };
 
