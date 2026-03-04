@@ -1,5 +1,7 @@
 <script>
-  import { kanbanData, coworkers, repoStatus } from './store.js'
+  import { kanbanData, coworkers, repoStatus, repoStatuses, channels, activeChannel, daemonStatus } from './store.js'
+  import { openTaskThread } from './api.js'
+  import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { renderContent } from './markdown.js'
   import TaskRow from './TaskRow.svelte'
 
@@ -25,6 +27,32 @@
 
   // Render description markdown once reactively
   const descriptionHtml = $derived(task.description ? renderContent(task.description) : '')
+
+  function handleDescriptionClick(e) {
+    const target = e.target
+    if (target.classList.contains('channel-link')) {
+      e.preventDefault()
+      const name = target.dataset.channel
+      if ($channels.some((ch) => ch.name === name)) {
+        $activeChannel = name
+      }
+    } else if (target.classList.contains('task-link')) {
+      e.preventDefault()
+      const taskId = target.dataset.task
+      const tasks = $daemonStatus?.tasks || []
+      const found = tasks.find((t) => String(t.id) === String(taskId))
+      if (found) {
+        openTaskThread(found, found.channel || $activeChannel)
+      }
+    } else if (target.classList.contains('pr-link')) {
+      e.preventDefault()
+      const prNum = target.dataset.pr
+      const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
+      if (url) window.open(url, '_blank', 'noopener')
+    } else if (target.classList.contains('coworker-link')) {
+      e.preventDefault()
+    }
+  }
 </script>
 
 <div class="task-card" data-testid="task-card">
@@ -52,7 +80,9 @@
         <span class="disclosure-triangle">▶</span>
         <span>Description</span>
       </summary>
-      <div class="task-description mt-1.5">
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="task-description mt-1.5" onclick={handleDescriptionClick}>
         {@html descriptionHtml}
       </div>
     </details>
@@ -122,6 +152,30 @@
 
   .task-description :global(a) {
     color: hsl(var(--link-default));
+  }
+
+  .task-description :global(a.task-link) {
+    color: hsl(var(--link-task));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .task-description :global(a.pr-link) {
+    color: hsl(var(--link-pr));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .task-description :global(a.channel-link) {
+    color: hsl(var(--link-default));
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .task-description :global(a.coworker-link) {
+    color: hsl(var(--link-coworker));
+    font-weight: 600;
+    cursor: pointer;
   }
 
   .task-description :global(strong) {
