@@ -219,8 +219,10 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
             # already reviewed or assigned, this is a safe no-op.
             try:
                 rpc.spawn_reviewer(pr_number)
-            except Exception:
-                pass  # Polling backstop will retry on the next tick
+            except Exception as exc:
+                rpc.post_to_channel(
+                    f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
+                )
 
     elif event_type == "pr.approved" and pr_number:
         # The reviewer approved.  Nudge the PR author so they can decide to merge.
@@ -274,8 +276,10 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         # spawn_reviewer is a safe no-op if a reviewer is already assigned.
         try:
             rpc.spawn_reviewer(pr_number)
-        except Exception:
-            pass
+        except Exception as exc:
+            rpc.post_to_channel(
+                f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
+            )
 
     elif event_type == "task.created":
         # A new task arrived — kick off immediate dispatch so it starts right

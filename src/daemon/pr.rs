@@ -3,8 +3,7 @@
 //! This module runs in the background to:
 //! - Poll open PRs for merge conflicts, CI failures, and review status
 //! - Nudge PR authors when approved (author-driven merge decisions)
-//! - Spawn reviewer coworkers for unreviewed PRs
-//! - Process pending review spawns from webhook-triggered delays
+//! - Spawn reviewer coworkers for unreviewed PRs (via polling backstop)
 //! - Nudge PR owners when their PR receives comments
 
 use std::collections::{HashMap, HashSet};
@@ -2570,7 +2569,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // When polling, defer to webhooks if one recently handled this PR.
         // This prevents polling from spawning a duplicate reviewer when the
-        // webhook path already queued a pending spawn for the same PR.
+        // webhook already triggered reviewer spawning via the workflow script.
         if source == crate::github_state::AssignmentSource::PollingFallback {
             let ps = state.persistent_state.lock().await;
             if ps
