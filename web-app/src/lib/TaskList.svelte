@@ -84,7 +84,7 @@
   }
 </script>
 
-<div class="task-list">
+<div class="flex flex-col gap-0.5 py-1 pb-1.5">
   {#each channelTasks as task}
     {@const isActive = task.status === 'in_progress'}
     {@const isBlocked = task.blocked_by?.length > 0}
@@ -94,23 +94,21 @@
     {@const reviewer = reviewInfo?.reviewer}
     {@const reviewPosted = reviewInfo?.reviewPosted}
     <button
-      class="task-row"
-      class:active={isActive}
-      class:blocked={isBlocked}
+      class="flex items-stretch gap-1.5 pr-2 py-[5px] border-none bg-transparent cursor-pointer rounded-[5px] transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground hover:bg-sidebar-accent {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
       onclick={() => handleTaskClick(task)}
     >
-      <span class="status-bar" style="background: {statusBarColor(task, cw)}"></span>
-      <div class="task-content">
-        <div class="task-top-line">
-          <span class="task-id">!{task.id}</span>
-          <span class="task-subject">{task.subject}</span>
+      <span class="w-[3px] rounded-sm flex-shrink-0" style="background: {statusBarColor(task, cw)}"></span>
+      <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
+        <div class="flex items-center gap-1.5">
+          <span class="flex-shrink-0 font-semibold {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
+          <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{task.subject}</span>
           {#if isBlocked}
-            <span class="blocked-badge" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
+            <span class="flex-shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
           {/if}
           {#if task.owner}
             {@const ownerGlow = isActive && (!reviewer || reviewPosted)}
             <button
-              class="owner-chip"
+              class="avatar-chip"
               class:glowing={ownerGlow}
               style="background-color: {getSenderColor(task.owner)}{ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
               title="{task.owner}{cw?.phase ? ` · ${cw.phase}` : ''}"
@@ -120,7 +118,7 @@
           {#if reviewer}
             {@const reviewerGlow = isActive && !reviewPosted}
             <button
-              class="reviewer-chip"
+              class="avatar-chip"
               class:glowing={reviewerGlow}
               style="background-color: {getSenderColor(reviewer)}{reviewerGlow ? `; --glow-color: ${getSenderColor(reviewer)}` : ''}"
               title="{reviewer} · {reviewPosted ? 'reviewed' : 'reviewing'}"
@@ -131,16 +129,16 @@
         {#if isActive && (hasProgress || reviewer)}
           {@const segments = lifecycleSegments(cw?.progress ?? 100, reviewer, reviewPosted, getSenderColor(task.owner), reviewer ? getSenderColor(reviewer) : null)}
           {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
-          <div class="progress-row">
-            <div class="progress-track">
+          <div class="flex items-center gap-1.5 pr-0.5">
+            <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
               {#each segments as seg}
                 <div
-                  class="progress-fill"
+                  class="h-full transition-[width] duration-500 ease-in-out"
                   style="width: {seg.width}%; background: {seg.color}"
                 ></div>
               {/each}
             </div>
-            <span class="progress-label">{totalPct}%</span>
+            <span class="flex-shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{totalPct}%</span>
           </div>
         {/if}
       </div>
@@ -148,96 +146,12 @@
   {/each}
 
   {#if channelTasks.length === 0}
-    <div class="empty">No active tasks</div>
+    <div class="px-3 py-2 text-[0.72rem] text-muted-foreground italic text-center">No active tasks</div>
   {/if}
 </div>
 
 <style>
-  .task-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 4px 0 6px;
-  }
-
-  .task-row {
-    display: flex;
-    align-items: stretch;
-    gap: 6px;
-    padding: 5px 8px 5px 0;
-    border: none;
-    background: transparent;
-    cursor: pointer;
-    border-radius: 5px;
-    transition: background 0.1s;
-    text-align: left;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
-    line-height: 1.3;
-    color: hsl(var(--muted-foreground));
-  }
-
-  .task-row:hover {
-    background: hsl(var(--sidebar-accent));
-  }
-
-  .task-row.active {
-    color: hsl(var(--sidebar-foreground));
-  }
-
-  .status-bar {
-    width: 3px;
-    border-radius: 2px;
-    flex-shrink: 0;
-  }
-
-  .task-row.active .status-bar {
-  }
-
-  .task-content {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .task-top-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .task-id {
-    flex-shrink: 0;
-    font-weight: 600;
-    opacity: 0.6;
-  }
-
-  .task-row.active .task-id {
-    opacity: 0.8;
-  }
-
-  .task-subject {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .blocked-badge {
-    flex-shrink: 0;
-    font-size: 0.62rem;
-    color: hsl(var(--status-amber));
-    opacity: 0.85;
-  }
-
-  .task-row.blocked {
-    opacity: 0.65;
-  }
-
-  .owner-chip {
+  .avatar-chip {
     position: relative;
     flex-shrink: 0;
     width: 16px;
@@ -257,6 +171,10 @@
     cursor: pointer;
   }
 
+  .avatar-chip:hover {
+    opacity: 0.85;
+  }
+
   .chip-badge {
     position: absolute;
     bottom: -4px;
@@ -267,71 +185,7 @@
     color: hsl(var(--sidebar-foreground));
   }
 
-
-  .owner-chip:hover {
-    opacity: 0.85;
-  }
-
   .glowing {
     box-shadow: 0 0 6px 1px var(--glow-color);
-  }
-
-  .reviewer-chip {
-    position: relative;
-    flex-shrink: 0;
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    border: none;
-    padding: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.55rem;
-    font-weight: 700;
-    font-family: var(--font-sans);
-    color: white;
-    line-height: 1;
-    cursor: pointer;
-  }
-
-  .reviewer-chip:hover {
-    opacity: 0.85;
-  }
-
-  .progress-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding-right: 2px;
-  }
-
-  .progress-track {
-    flex: 1;
-    height: 3px;
-    background: hsl(var(--sidebar-accent));
-    border-radius: 2px;
-    overflow: hidden;
-    display: flex;
-  }
-
-  .progress-fill {
-    height: 100%;
-    transition: width 0.5s ease;
-  }
-
-  .progress-label {
-    flex-shrink: 0;
-    font-size: 0.6rem;
-    color: hsl(var(--accent-teal));
-    font-variant-numeric: tabular-nums;
-  }
-
-  .empty {
-    padding: 8px 12px;
-    font-size: 0.72rem;
-    color: hsl(var(--muted-foreground));
-    font-style: italic;
-    text-align: center;
   }
 </style>
