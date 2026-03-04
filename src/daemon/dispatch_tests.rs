@@ -4483,6 +4483,80 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
 }
 
 #[test]
+fn test_build_task_completion_effects_uses_task_subject_over_pr_title() {
+    let ctx = super::TaskEventContext {
+        subject: Some("Add auth endpoint".to_string()),
+        description: Some("Implement OAuth".to_string()),
+        thread_id: Some("T123".to_string()),
+        message_id: Some("M456".to_string()),
+    };
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        Some("proj-auth".to_string()),
+        Some(ctx),
+    );
+
+    let task_completed = effects.iter().find_map(|e| {
+        if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::TaskCompleted {
+            subject,
+            description,
+            thread_id,
+            message_id,
+            ..
+        }) = e
+        {
+            Some((
+                subject.clone(),
+                description.clone(),
+                thread_id.clone(),
+                message_id.clone(),
+            ))
+        } else {
+            None
+        }
+    });
+    let (subject, description, thread_id, message_id) =
+        task_completed.expect("Should emit TaskCompleted");
+    assert_eq!(
+        subject, "Add auth endpoint",
+        "Should use task subject, not PR title"
+    );
+    assert_eq!(description.unwrap(), "Implement OAuth");
+    assert_eq!(thread_id.unwrap(), "T123");
+    assert_eq!(message_id.unwrap(), "M456");
+}
+
+#[test]
+fn test_build_task_completion_effects_falls_back_to_pr_title() {
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        Some("proj-auth".to_string()),
+        None,
+    );
+
+    let subject = effects.iter().find_map(|e| {
+        if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::TaskCompleted {
+            subject,
+            ..
+        }) = e
+        {
+            Some(subject.clone())
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        subject.unwrap(),
+        "feat: Add auth endpoint [Midtown #42]",
+        "Should fall back to PR title when no task subject in context"
+    );
+}
+
+#[test]
 fn test_build_task_completion_effects_no_workflow_event_without_channel() {
     let effects = build_task_completion_effects(
         "feat: Add auth endpoint [Midtown #42]",

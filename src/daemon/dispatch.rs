@@ -2264,6 +2264,7 @@ fn dispatch_unowned_pending_tasks(
 /// Returns an empty vector if no task ID is found in the title.
 /// Context for enriching task workflow events with thread/message/description data.
 pub(super) struct TaskEventContext {
+    pub subject: Option<String>,
     pub description: Option<String>,
     pub thread_id: Option<String>,
     pub message_id: Option<String>,
@@ -2280,15 +2281,18 @@ pub(super) fn build_task_completion_effects(
         return vec![];
     };
 
-    let (description, thread_id, message_id) = match ctx {
-        Some(c) => (c.description, c.thread_id, c.message_id),
-        None => (None, None, None),
+    let (subject, description, thread_id, message_id) = match ctx {
+        Some(c) => (c.subject, c.description, c.thread_id, c.message_id),
+        None => (None, None, None, None),
     };
+
+    // Use the actual task subject when available; fall back to PR title.
+    let task_subject = subject.as_deref().unwrap_or(pr_title);
 
     let mut effects = task_completed_effects(
         &task_id.to_string(),
         repo_name,
-        pr_title,
+        task_subject,
         description,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",

@@ -3350,6 +3350,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 &state.repo_name,
                             );
                             let ctx = dispatch::TaskEventContext {
+                                subject: task.as_ref().map(|t| t.subject.clone()),
                                 description: task.and_then(|t| t.description),
                                 thread_id: ps.task_thread_id.get(&task_id.to_string()).cloned(),
                                 message_id: ps.task_message_id.get(&task_id.to_string()).cloned(),
