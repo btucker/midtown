@@ -682,16 +682,22 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
         return Ok(false);
     }
 
-    // Check if already migrated (new structure exists)
-    let new_projects_dir = projects_dir_for_repo(repo);
+    // Check if already migrated (new structure exists).
+    //
+    // IMPORTANT: Build migration target paths directly from `base` instead of
+    // calling helper accessors like `projects_dir_for_repo()`. Those helpers
+    // call `auto_migrate()`, which would re-enter this function recursively.
+    let new_projects_dir = base.join("projects").join(repo);
     if new_projects_dir.exists() && new_projects_dir.join("channel.jsonl").exists() {
         return Ok(false);
     }
 
-    // Create new directories
+    // Create new directories (direct paths; avoid helper recursion)
+    let new_worktrees_dir = new_projects_dir.join("worktrees");
+    let new_lead_dir = base.join("lead").join(repo);
     std::fs::create_dir_all(&new_projects_dir)?;
-    std::fs::create_dir_all(worktrees_dir_for_repo(repo))?;
-    std::fs::create_dir_all(lead_dir_for_repo(repo))?;
+    std::fs::create_dir_all(&new_worktrees_dir)?;
+    std::fs::create_dir_all(&new_lead_dir)?;
 
     // Migrate project files
     let project_files = [
@@ -712,7 +718,7 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
 
     // Migrate worktrees directory (era-1 → task-based worktrees)
     let old_worktrees = old_repo_dir.join("worktrees");
-    let new_worktrees = worktrees_dir_for_repo(repo);
+    let new_worktrees = new_worktrees_dir;
     if old_worktrees.exists() {
         // Move each worktree directory, then repair git metadata
         let mut moved_paths = Vec::new();
@@ -743,15 +749,14 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
     }
 
     // Migrate lead session files
-    let lead_dir = lead_dir_for_repo(repo);
     let old_session_file = old_repo_dir.join("lead-session-id");
-    let new_session_file = lead_dir.join("session-id");
+    let new_session_file = new_lead_dir.join("session-id");
     if old_session_file.exists() && !new_session_file.exists() {
         std::fs::rename(&old_session_file, &new_session_file)?;
     }
 
     let old_initialized = old_repo_dir.join("lead-initialized");
-    let new_initialized = lead_dir.join("lead-initialized");
+    let new_initialized = new_lead_dir.join("lead-initialized");
     if old_initialized.exists() && !new_initialized.exists() {
         std::fs::rename(&old_initialized, &new_initialized)?;
     }

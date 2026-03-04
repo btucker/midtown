@@ -208,6 +208,53 @@ fn test_migrate_returns_false_when_nothing_to_migrate() {
 }
 
 #[test]
+fn test_migrate_directory_structure_moves_old_layout_without_recursion() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-recursive-migration-repo";
+    let old_repo_dir = tmp.path().join(repo);
+    fs::create_dir_all(old_repo_dir.join("logs")).unwrap();
+    fs::create_dir_all(old_repo_dir.join("worktrees").join("task-42")).unwrap();
+    fs::write(old_repo_dir.join("channel.jsonl"), "[]\n").unwrap();
+    fs::write(old_repo_dir.join("lead-session-id"), "session-123\n").unwrap();
+    fs::write(
+        old_repo_dir
+            .join("worktrees")
+            .join("task-42")
+            .join("README.md"),
+        "hello\n",
+    )
+    .unwrap();
+
+    let result = migrate_directory_structure(repo);
+    assert!(result.is_ok(), "migration should succeed");
+    assert!(result.unwrap(), "migration should report changes");
+
+    let new_projects_dir = tmp.path().join("projects").join(repo);
+    assert!(
+        new_projects_dir.join("channel.jsonl").exists(),
+        "channel file should move to projects/<repo>"
+    );
+    assert!(
+        new_projects_dir
+            .join("worktrees")
+            .join("task-42")
+            .join("README.md")
+            .exists(),
+        "worktree should move to projects/<repo>/worktrees"
+    );
+    assert!(
+        tmp.path()
+            .join("lead")
+            .join(repo)
+            .join("session-id")
+            .exists(),
+        "lead session id should move to lead/<repo>/session-id"
+    );
+}
+
+#[test]
 fn test_migrate_worktree_paths_moves_worktrees_dir() {
     let tmp = tempfile::TempDir::new().unwrap();
     let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
