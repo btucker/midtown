@@ -1,8 +1,7 @@
 //! PR data handler for the `prs.status` RPC method.
 //!
 //! Contains the `prs.status` RPC handler, the `PrsCache`, and all
-//! GraphQL/PR-formatting logic. Extracted from `rpc_kanban.rs` as part of
-//! splitting the old `kanban.data` RPC into two concerns:
+//! GraphQL/PR-formatting logic for the web UI kanban board.
 //!
 //! - `prs.status` (this module): GitHub PR data, cached for 60s.
 //! - `coworkers.status` (rpc_coworker.rs): live local coworker state, no cache.
@@ -493,9 +492,7 @@ fn pr_ci_status(checks: &[serde_json::Value]) -> &'static str {
 /// Thread-safe TTL cache for PR GraphQL data.
 ///
 /// Stores the PR response (open PRs, merged PRs, repos) keyed by a hash of
-/// repo paths. Unlike the old `KanbanCache`, this cache does NOT include
-/// coworker state in its key — coworker data is now served separately via
-/// `coworkers.status`.
+/// repo paths. Coworker data is served separately via `coworkers.status`.
 ///
 /// The cache expires after `PRS_CACHE_TTL` (60s) and avoids expensive GraphQL
 /// queries on every RPC call.

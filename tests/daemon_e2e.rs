@@ -1027,59 +1027,6 @@ fn test_daemon_rpc_reminder_lifecycle() {
     );
 }
 
-/// Test that kanban.data RPC returns expected structure.
-///
-/// The kanban endpoint provides data for the web UI's kanban board view,
-/// including open PRs, merged PRs, and repository information.
-#[test]
-#[ignore] // Requires built binary
-fn test_daemon_rpc_kanban_data_returns_structure() {
-    let mut fixture = match create_daemon_fixture() {
-        Some(f) => f,
-        None => return,
-    };
-
-    if !fixture.start_daemon() {
-        return;
-    }
-
-    let response = fixture.rpc_call("kanban.data", None);
-    assert!(
-        response.is_some(),
-        "Should receive response from kanban.data"
-    );
-
-    let response = response.unwrap();
-    assert!(
-        response["error"].is_null(),
-        "kanban.data should not return an error: {:?}",
-        response["error"]
-    );
-
-    let result = &response["result"];
-
-    // Kanban data returns PR-centric data for the board view
-    assert!(result.is_object(), "kanban.data should return an object");
-
-    // Should have prs array (open PRs for the kanban columns)
-    assert!(
-        result["prs"].is_array(),
-        "kanban.data should contain prs array"
-    );
-
-    // Should have merged_prs array (for the Done column)
-    assert!(
-        result["merged_prs"].is_array(),
-        "kanban.data should contain merged_prs array"
-    );
-
-    // Should have repos array (repository metadata)
-    assert!(
-        result["repos"].is_array(),
-        "kanban.data should contain repos array"
-    );
-}
-
 /// Test that coworker.spawn returns a valid JSON-RPC response.
 ///
 /// In test environment without a terminal session, spawn will fail, but should

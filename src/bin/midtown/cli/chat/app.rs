@@ -1057,7 +1057,7 @@ impl App {
         self.tasks = fetch_tasks();
     }
 
-    /// Refresh kanban board data (PRs via kanban.data RPC).
+    /// Refresh PR board data (PRs via prs.status RPC).
     ///
     /// Tasks are refreshed separately by `refresh_tasks`.
     /// Coworker status is refreshed separately by `refresh_coworker_status`.

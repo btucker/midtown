@@ -253,8 +253,8 @@ class MidtownRPC:
         return self._call("task.done", {"id": task_id})
 
     def list_tasks(self) -> Any:
-        """Return the current task list (kanban data)."""
-        return self._call("kanban.data")
+        """Return the current PR and task data for the board."""
+        return self._call("prs.status")
 
     # ------------------------------------------------------------------
     # Coworker methods

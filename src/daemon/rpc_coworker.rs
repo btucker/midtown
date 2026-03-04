@@ -4,12 +4,18 @@
 //! nudge, and asking. Also handles the `coworkers.status` method which
 //! returns live in-memory coworker state for the TUI at 1-2s poll intervals.
 
+use std::collections::HashMap;
+use std::time::Duration;
+
+use chrono::Utc;
 use tracing::{debug, error, info, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
 
+use super::DaemonState;
 use super::constants::*;
-use super::{DaemonState, effects, snapshot};
+use super::snapshot::ProcessHealth;
+use super::{effects, snapshot};
 
 // ============================================================================
 // Handlers
@@ -243,7 +249,7 @@ pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> 
         .coworkers
         .list()
         .iter()
-        .filter(|cw| !super::rpc_kanban::is_project_lead(&cw.name, &state.repo_name))
+        .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.repo_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
@@ -358,7 +364,7 @@ pub(super) async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
         // Project lead must remain available for user interaction; ignore idle
         // self-reports instead of sending it on break.
-        if super::rpc_kanban::is_project_lead(name, &state.repo_name) {
+        if super::helpers::is_project_lead(name, &state.repo_name) {
             info!(
                 "Project lead {} reported idle; keeping lead session active",
                 name
@@ -806,20 +812,255 @@ fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
 // coworkers.status handler
 // ============================================================================
 
-/// Handle `coworkers.status` RPC method.
+/// Handle `coworkers.status` RPC method — returns live coworker state.
 ///
-/// Returns live in-memory coworker state — no GraphQL, no cache.
-/// Delegates to `rpc_kanban::build_coworkers_data` for the actual data
-/// assembly, then adds lead activity and tool activity on top.
+/// This is a lightweight endpoint with no GraphQL queries and no caching.
+/// It reads directly from in-memory daemon state so responses are always
+/// current (microsecond latency). The TUI polls this at 1–2s to keep the
+/// coworker status panel up-to-date without delay.
 ///
-/// Response fields:
-/// - `coworkers`: active non-idle coworkers with phase, task_id, pr_number, health, etc.
-/// - `max_coworkers`: configured coworker limit
-/// - `lead_working`: whether the headless lead session is actively computing
-/// - `tool_activity`: recent tool call/result items per agent
-/// - `channel_leads`: names of active channel lead sessions
+/// Returns: coworkers, max_coworkers, lead_working, tool_activity,
+///          channel_leads, channel_leads_working.
 pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
-    super::rpc_kanban::handle_coworkers_status(id, state).await
+    let (coworkers_data, channel_lead_names) = build_coworkers_data(state).await;
+
+    // Read health once for both main-lead and per-channel-lead activity checks
+    let health_guard = state.headless_health.read().unwrap();
+    let lead_working = is_lead_health_active(&health_guard, &state.repo_name);
+    let channel_leads_working = build_channel_leads_working(&health_guard, &channel_lead_names);
+    drop(health_guard);
+
+    let tool_activity = collect_tool_activity(state);
+    let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "coworkers": coworkers_data,
+            "max_coworkers": state.max_coworkers,
+            "lead_working": lead_working,
+            "tool_activity": tool_activity,
+            "channel_leads": channel_leads,
+            "channel_leads_working": channel_leads_working,
+        }),
+    )
+}
+
+// ============================================================================
+// coworkers.status helpers
+// ============================================================================
+
+/// Build the coworker data array from daemon state.
+///
+/// Returns `(coworkers_data, channel_lead_names)`.
+async fn build_coworkers_data(
+    state: &DaemonState,
+) -> (Vec<serde_json::Value>, std::collections::HashSet<String>) {
+    // Get reviewer assignments, worktree registry, and channel lead names from persistent state
+    // (best-effort via try_lock)
+    let (reviewer_assignments, worktree_pr_map, channel_lead_names): (
+        HashMap<u64, crate::github_state::PrReviewerAssignment>,
+        HashMap<String, u64>,
+        std::collections::HashSet<String>,
+    ) = state
+        .persistent_state
+        .try_lock()
+        .map(|ps| {
+            let assignments = ps.github.active_assignments();
+            // Build coworker -> PR map from worktree registry (for reviewers)
+            let wt_map: HashMap<String, u64> = ps
+                .worktree_registry
+                .all_assignments()
+                .iter()
+                .filter_map(|(_, assignment)| {
+                    let coworker = assignment.current_coworker.as_ref()?;
+                    let pr_number = assignment.pr_number?;
+                    Some((coworker.clone(), pr_number))
+                })
+                .collect();
+            let cl_names = ps.channel_lead_names();
+            (assignments, wt_map, cl_names)
+        })
+        .unwrap_or_default();
+
+    // Build reviewer -> PR number map from reviewer_assignments
+    let reviewer_pr_map: HashMap<String, u64> = reviewer_assignments
+        .iter()
+        .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
+        .collect();
+
+    let active_coworkers = state.coworkers.list();
+    let coworker_records = state.coworker_records.read().await;
+
+    // Read tasks to get explicit PR associations (task !1151)
+    let all_tasks = crate::tasks::read_tasks();
+    let task_pr_map: HashMap<u32, u64> = all_tasks
+        .iter()
+        .filter_map(|task| {
+            let task_id: u32 = task.id.parse().ok()?;
+            let pr = task.pr?;
+            Some((task_id, pr))
+        })
+        .collect();
+
+    // Clone health data to avoid holding the lock across await
+    let health_snapshot: HashMap<String, ProcessHealth> = {
+        let health_guard = state.headless_health.read().unwrap();
+        health_guard.clone()
+    };
+
+    let coworkers_data = active_coworkers
+        .iter()
+        .filter_map(|cw| {
+            // Skip channel lead sessions — they are scoped to a specific topic
+            // channel and must not appear in the general coworker status panel.
+            // The lead session itself is also excluded: it uses either the legacy
+            // "lead" name or the canonical repo name (e.g., "midtown").
+            if is_channel_lead(&cw.name, &channel_lead_names)
+                || super::helpers::is_project_lead(&cw.name, &state.repo_name)
+            {
+                return None;
+            }
+
+            // Get coworker's workflow state from records
+            let record = coworker_records.get(&cw.name);
+            let workflow_phase = record.and_then(|r| r.workflow_phase);
+            let task_id = record.and_then(|r| r.task_id);
+
+            // Skip idle coworkers (phase = Idle or Completed)
+            if matches!(
+                workflow_phase,
+                Some(crate::coworker_state::WorkflowPhase::Idle)
+                    | Some(crate::coworker_state::WorkflowPhase::Completed)
+            ) {
+                return None;
+            }
+
+            // Get health status
+            let health = health_snapshot.get(&cw.name);
+            let health_color = if let Some(h) = health {
+                if !h.is_alive {
+                    "red" // dead
+                } else if h.has_usage_limit || h.has_api_error {
+                    "yellow" // degraded
+                } else {
+                    "green" // healthy
+                }
+            } else {
+                "green" // default healthy
+            };
+
+            // Find PR number for this coworker, trying sources in priority order:
+            // 1. Explicit task.pr field (task !1151) - most authoritative
+            // 2. GitHub reviewer assignment (for review tasks)
+            // 3. Worktree registry (for reviewers when reviewer_pr_map is empty)
+            let pr_number = task_id
+                .and_then(|tid| task_pr_map.get(&tid).copied())
+                .or_else(|| reviewer_pr_map.get(&cw.name).copied())
+                .or_else(|| worktree_pr_map.get(&cw.name).copied());
+
+            Some(serde_json::json!({
+                "name": cw.name,
+                "task_id": task_id,
+                "phase": workflow_phase.map(|p| p.abbreviation()),
+                "status": cw.status.to_string(),
+                "pr_number": pr_number,
+                "health": health_color,
+                "provider": cw.provider.as_str(),
+                "profile": cw.profile,
+                "progress": record.and_then(|r| r.progress),
+                "time_estimate": record.and_then(|r| r.format_time_remaining()),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    (coworkers_data, channel_lead_names)
+}
+
+/// Returns true if the coworker name identifies a channel lead session.
+///
+/// Channel leads are tracked in `DaemonPersistentState::channel_lead_sessions`.
+/// They are scoped to a specific topic channel and must not appear in the
+/// general coworker status list.
+pub(crate) fn is_channel_lead(
+    name: &str,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> bool {
+    channel_lead_names.contains(name)
+}
+
+/// Timeout for considering the lead session "actively working".
+///
+/// If the last stream event from the lead session is older than this, the
+/// lead is considered idle (waiting for user input, between turns, etc.).
+const LEAD_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Core lead-activity lookup: checks both the canonical repo-name key and the
+/// legacy "lead" key, returning true if either session is actively working.
+pub(crate) fn is_lead_health_active(
+    health: &HashMap<String, ProcessHealth>,
+    repo_name: &str,
+) -> bool {
+    // Check both keys: modern sessions use repo_name, legacy use "lead".
+    // Either being active counts — handles stale entries or in-flight transitions.
+    is_session_actively_working(health.get(repo_name))
+        || is_session_actively_working(health.get("lead"))
+}
+
+/// Core logic for activity detection: returns `true` when a session is alive
+/// and has received a stream event within `LEAD_ACTIVITY_TIMEOUT`.
+fn is_session_actively_working(health: Option<&ProcessHealth>) -> bool {
+    let Some(h) = health else {
+        return false;
+    };
+    if !h.is_alive {
+        return false;
+    }
+    h.last_event_at.is_some_and(|ts| {
+        let elapsed = (Utc::now() - ts).num_seconds();
+        elapsed >= 0 && elapsed < LEAD_ACTIVITY_TIMEOUT.as_secs() as i64
+    })
+}
+
+/// Build a map of channel name → active-working boolean for all registered
+/// channel leads, using the same `is_session_actively_working()` logic that
+/// drives the main lead's `lead_working` flag.
+///
+/// Channel lead sessions are named after their channel (e.g., "web"), so
+/// looking up `health.get(channel_name)` finds the right entry.
+pub(crate) fn build_channel_leads_working(
+    health: &HashMap<String, ProcessHealth>,
+    channel_lead_names: &std::collections::HashSet<String>,
+) -> serde_json::Map<String, serde_json::Value> {
+    channel_lead_names
+        .iter()
+        .map(|name| {
+            let active = is_session_actively_working(health.get(name.as_str()));
+            (name.clone(), serde_json::Value::Bool(active))
+        })
+        .collect()
+}
+
+/// Collect recent tool call/result items per agent as a JSON value for the RPC response.
+///
+/// Returns a JSON object mapping agent name → array of serialized `UniversalItem`s.
+/// This is live state — never cached — so the TUI always sees the latest activity.
+fn collect_tool_activity(state: &DaemonState) -> serde_json::Value {
+    let tool_map = state.recent_tool_items.read().unwrap();
+    serialize_tool_activity(&tool_map)
+}
+
+/// Serialize a tool activity map to a JSON object.
+///
+/// Separated from `collect_tool_activity` for testability without `DaemonState`.
+fn serialize_tool_activity(
+    tool_map: &HashMap<String, Vec<crate::universal_events::UniversalItem>>,
+) -> serde_json::Value {
+    let obj: serde_json::Map<String, serde_json::Value> = tool_map
+        .iter()
+        .filter_map(|(agent, items)| serde_json::to_value(items).ok().map(|v| (agent.clone(), v)))
+        .collect();
+    serde_json::Value::Object(obj)
 }
 
 #[path = "rpc_coworker_tests.rs"]

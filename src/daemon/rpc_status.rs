@@ -140,7 +140,7 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         .coworkers
         .list()
         .iter()
-        .filter(|cw| !super::rpc_kanban::is_project_lead(&cw.name, &state.repo_name))
+        .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.repo_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();

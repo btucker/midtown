@@ -9,8 +9,7 @@
 //! - `rpc_headless` — one-shot execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_insight` — insight reporting and deduplication
-//! - `rpc_kanban` — kanban board data (legacy combined endpoint)
-//! - `rpc_prs` — PR data for kanban board (`prs.status`)
+//! - `rpc_prs` — PR data and operations (`prs.status`, `pr.review`, `pr.merge`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
 //! - `rpc_status` — daemon status overview
@@ -207,7 +206,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
 
     // Methods that must bypass the RPC idempotency cache fall into two categories:
     //
-    // 1. Read methods with their own domain-specific caching (kanban.data, prs.status,
+    // 1. Read methods with their own domain-specific caching (prs.status,
     //    coworkers.status) — the idempotency cache would shadow their own TTL caches
     //    because the web server reuses id=1 for repeated polls.
     //
@@ -217,8 +216,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     //    would incorrectly return the first call's cached response without executing.
     let skip_rpc_cache = matches!(
         request_method.as_str(),
-        "kanban.data"
-            | "prs.status"
+        "prs.status"
             | "coworkers.status"
             | "auth.switch"
             | "auth.pool-toggle"
@@ -248,7 +246,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Error responses are NOT cached so that clients can retry after transient
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
-    // Methods with domain-specific caching (e.g., kanban.data) are excluded.
+    // Methods with domain-specific caching (e.g., prs.status) are excluded.
     if !skip_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(
@@ -404,10 +402,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_coworker::handle_lead_spawn(request.id, state, provider).await
         }
 
-        // ---- Status / kanban ----
+        // ---- Status / PRs ----
         "status" => super::rpc_status::handle_status(request.id, state).await,
-
-        "kanban.data" => super::rpc_kanban::handle_kanban_data(request.id, state).await,
 
         "prs.status" => super::rpc_prs::handle_prs_status(request.id, state).await,
 
