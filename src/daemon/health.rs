@@ -11,8 +11,6 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
-use crate::daemon_messages;
-
 use super::constants::*;
 use super::effects::Effect;
 use super::helpers::format_task_prompt;
@@ -164,14 +162,14 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
         // was actually posted before shutting down. All other coworkers can be shut
         // down normally.
         let reviewer_pr = snap.reviewer.reviewer_pr_assignments.get(name).copied();
-        let (should_shutdown, shutdown_msg) = if let Some(pr) = reviewer_pr {
+        let should_shutdown = if let Some(pr) = reviewer_pr {
             // Check if review was actually posted (from snapshot, no API call)
             if snap.reviewer.reviewed_prs.contains(&pr) {
                 info!(
                     "Sending reviewer {} on a break (review verified for PR #{})",
                     name, pr
                 );
-                (true, daemon_messages::break_review_complete(name, pr))
+                true
             } else {
                 warn!(
                     "Reviewer {} is idle but no review found for PR #{} - keeping alive",
@@ -186,17 +184,17 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                 });
-                (false, String::new())
+                false
             }
         } else if snap.pr.coworkers_with_merged_prs.contains(name) {
             info!("Sending idle coworker {} on a break (PR merged)", name);
-            (true, daemon_messages::break_work_merged(name))
+            true
         } else {
             info!(
                 "Sending idle coworker {} on a break (idle for 90+ seconds)",
                 name
             );
-            (true, daemon_messages::break_idle(name))
+            true
         };
 
         if !should_shutdown {
@@ -222,12 +220,8 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             },
         ));
 
-        // Post to ops channel, broadcast status, and shut down
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: shutdown_msg,
-            channel: Some(OPS_CHANNEL.to_string()),
-        });
+        // Broadcast status and shut down. Channel notification is handled
+        // by the workflow script's coworker.idle handler.
         effects.push(Effect::BroadcastCoworkerUpdate {
             name: name.clone(),
             status: "stopped".to_string(),
@@ -393,16 +387,8 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             ),
         ));
         effects.push(Effect::SpawnCoworker(config));
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🔄 Restarted stuck coworker {} (no events for {}s) — resuming task !{}",
-                restart.name,
-                COWORKER_STUCK_DURATION.as_secs(),
-                restart.task_id
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-        });
+        // Channel notification is handled by the workflow script's
+        // coworker.stuck handler (via the EmitWorkflowEvent above).
     }
 
     effects
@@ -480,6 +466,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
         ));
 
         // Emit a workflow event so channel scripts can react to the stuck reviewer.
+        // Channel notification is handled by the workflow script's coworker.stuck handler.
         // Look up the PR's task and channel so the event is routed correctly.
         let reviewer_task_id = snap
             .pr
@@ -498,19 +485,6 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
                 coworker: restart.name.clone(),
             },
         ));
-
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🔄 Restarted stuck reviewer {} for PR #{} (no events for {}s, attempt {}/{})",
-                restart.name,
-                restart.pr_number,
-                effective_duration.as_secs(),
-                new_restart_count,
-                MAX_REVIEWER_RESTARTS,
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-        });
     }
 
     // Check for reviewers that have hit the restart limit and emit escalation warnings.
