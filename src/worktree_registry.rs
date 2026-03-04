@@ -484,6 +484,51 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_unbind_coworker_removes_all_bindings() {
+        let mut registry = WorktreeRegistry::new();
+
+        let assignment_a = WorktreeAssignment {
+            worktree_id: "task-42-add-auth".to_string(),
+            branch_name: "task-42-add-auth".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("Broadway".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        let assignment_b = WorktreeAssignment {
+            worktree_id: "task-43-fix-logout".to_string(),
+            branch_name: "task-43-fix-logout".to_string(),
+            task_id: Some("43".to_string()),
+            current_coworker: Some("broadway".to_string()),
+            pr_number: None,
+            created_at: Utc::now(),
+            completed_at: None,
+        };
+
+        registry.assign_worktree(assignment_a).unwrap();
+        registry.assign_worktree(assignment_b).unwrap();
+
+        assert!(registry.unbind_coworker("broadway"));
+        assert!(registry.get_by_coworker("broadway").is_none());
+        assert!(
+            registry
+                .get("task-42-add-auth")
+                .unwrap()
+                .current_coworker
+                .is_none()
+        );
+        assert!(
+            registry
+                .get("task-43-fix-logout")
+                .unwrap()
+                .current_coworker
+                .is_none()
+        );
+    }
+
+    #[test]
     fn test_registry_bind_prevents_collision() {
         let mut registry = WorktreeRegistry::new();
 
