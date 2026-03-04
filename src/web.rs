@@ -238,6 +238,10 @@ pub struct ThreadOwnershipData {
     pub channel: String,
     /// Whether the thread now has a dedicated (forked) session
     pub has_dedicated_session: bool,
+    /// The fork session name (e.g., "park-discuss-ab12"). Present when a fork
+    /// is active; the frontend extracts the avenue prefix to color-code activity dots.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

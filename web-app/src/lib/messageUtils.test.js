@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { getSenderColor, AVENUE_COLORS, dateChanged, getPermalinkUrl } from './messageUtils.js'
+import { getAvenueColor, getForkOwnerColor } from './avenue-colors.js'
 
 describe('getSenderColor', () => {
   it('returns gold for sender matching channel name (channel lead rule)', () => {
@@ -152,5 +153,39 @@ describe('getPermalinkUrl', () => {
   it('returns empty string when msgId is missing', () => {
     expect(getPermalinkUrl('myproject', 'web', null)).toBe('')
     expect(getPermalinkUrl('myproject', 'web', '')).toBe('')
+  })
+})
+
+describe('getForkOwnerColor', () => {
+  it('returns coworker avenue color for coworker fork session names', () => {
+    // Fork name format: "{caller}-{slug}-{tid}" e.g. "park-discuss-ab12"
+    expect(getForkOwnerColor('park-discuss-ab12')).toBe(AVENUE_COLORS.park)
+    expect(getForkOwnerColor('madison-fix-bug-cd34')).toBe(AVENUE_COLORS.madison)
+    expect(getForkOwnerColor('amsterdam-review-ef56')).toBe(AVENUE_COLORS.amsterdam)
+  })
+
+  it('returns lead gold for anonymous fork names (no caller prefix)', () => {
+    // Fork name format: "fork-{tid}" e.g. "fork-abcdefgh"
+    expect(getForkOwnerColor('fork-abcdefgh')).toBe(AVENUE_COLORS.lead)
+    expect(getForkOwnerColor('fork-discuss-ab12')).toBe(AVENUE_COLORS.lead)
+  })
+
+  it('returns lead gold for channel lead fork names (non-avenue prefix)', () => {
+    // Channel leads are named after channels, not avenues
+    expect(getForkOwnerColor('web-discuss-ab12')).toBe(AVENUE_COLORS.lead)
+    expect(getForkOwnerColor('design-review-cd34')).toBe(AVENUE_COLORS.lead)
+  })
+
+  it('returns lead gold for null/undefined/empty input', () => {
+    expect(getForkOwnerColor(null)).toBe(AVENUE_COLORS.lead)
+    expect(getForkOwnerColor(undefined)).toBe(AVENUE_COLORS.lead)
+    expect(getForkOwnerColor('')).toBe(AVENUE_COLORS.lead)
+  })
+
+  it('returns lead gold for bare avenue names (no hyphen)', () => {
+    // If the backend sends just "park" without compound fork name format,
+    // getForkOwnerColor should still resolve the avenue color
+    expect(getForkOwnerColor('park')).toBe(AVENUE_COLORS.park)
+    expect(getForkOwnerColor('lead')).toBe(AVENUE_COLORS.lead)
   })
 })

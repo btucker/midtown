@@ -13,12 +13,18 @@
    * Click the drawer to expand it into a scrollable panel showing the full tool call history.
    * Click again or press Escape to collapse back to the compact view.
    */
-  import { agentToolItems, threadToolItems } from './store.js'
-  import { AVENUE_COLORS } from './messageUtils.js'
+  import { agentToolItems, threadToolItems, threadForkOwners } from './store.js'
+  import { getForkOwnerColor } from './avenue-colors.js'
   import { onDestroy } from 'svelte'
   import { slide } from 'svelte/transition'
 
   let { channelName, threadParentId = null, thinking = false } = $props()
+
+  // Use the fork owner's avenue color for thinking dots instead of hardcoded lead gold.
+  // getForkOwnerColor extracts the avenue prefix from compound fork session names
+  // (e.g., "park-discuss-ab12" → "park" → park's cyan) and falls back to lead gold
+  // for non-avenue prefixes (channel leads, anonymous forks, unknown owners).
+  let dotColor = $derived(getForkOwnerColor($threadForkOwners[threadParentId]))
 
   const AGE_OUT_MS = 3000
   const MAX_VISIBLE = 10
@@ -234,9 +240,9 @@
         <!-- Thinking indicator: bouncing dots matching the channel activity strip -->
         <div class="flex items-center gap-[6px] py-[1px]">
           <span class="typing-dots flex gap-[3px] items-center">
-            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
-            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
-            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {AVENUE_COLORS.lead}"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {dotColor}"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {dotColor}"></span>
+            <span class="dot w-[5px] h-[5px] rounded-full" style="background-color: {dotColor}"></span>
           </span>
         </div>
       {/if}

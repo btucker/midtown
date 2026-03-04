@@ -1056,6 +1056,7 @@ impl DaemonState {
                     thread_parent_id: thread_id,
                     channel,
                     has_dedicated_session: false,
+                    owner: None,
                 },
             ));
         }

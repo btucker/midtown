@@ -137,6 +137,11 @@ export const deepLinkMsgId = writable(null)
 // true = dedicated session (fork active), false/missing = channel lead handles
 export const threadOwnership = writable({})
 
+// Thread fork owners: { [threadParentId]: agentName }
+// Tracks which agent (coworker/lead) owns each thread's fork session.
+// Populated from tool_activity events; used to color-code thread activity dots.
+export const threadForkOwners = writable({})
+
 // Viewport width tracking for responsive breakpoints
 // true when viewport > 1024px (wide desktop layout)
 export const isWideScreen = writable(false)

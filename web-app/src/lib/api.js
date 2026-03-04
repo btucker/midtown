@@ -24,6 +24,7 @@ import {
   threadData,
   deepLinkMsgId,
   threadOwnership,
+  threadForkOwners,
   showArchivedChannels,
   trackedThreads,
   threadUnreadCounts,
@@ -215,6 +216,7 @@ export function switchProject(projectName, webhookPort) {
   agentClearTimeouts.forEach((t) => clearTimeout(t))
   agentClearTimeouts.clear()
   threadOwners.clear()
+  threadForkOwners.set({})
   agentToolItems.set({})
   threadToolItems.set({})
   threadData.set(null)
@@ -616,6 +618,9 @@ export function handleUpdate(update) {
           const timeout = setTimeout(() => {
             agentClearTimeouts.delete(threadClearKey)
             threadOwners.delete(msg.thread_parent_id)
+            // Note: threadForkOwners is NOT cleared here — the fork owner
+            // persists as long as the fork exists. It's only cleared when
+            // a thread_ownership event with has_dedicated_session=false arrives.
             threadToolItems.update((byThread) => {
               const updated = { ...byThread }
               delete updated[msg.thread_parent_id]
@@ -781,6 +786,7 @@ export function handleUpdate(update) {
         // Track which fork session owns this thread's tool items
         if (update.data.agent_name) {
           threadOwners.set(threadId, update.data.agent_name)
+          threadForkOwners.update((m) => ({ ...m, [threadId]: update.data.agent_name }))
         }
         if (agentClearTimeouts.has(`thread:${threadId}`)) {
           clearTimeout(agentClearTimeouts.get(`thread:${threadId}`))
@@ -818,11 +824,23 @@ export function handleUpdate(update) {
       fetchChannels(get(showArchivedChannels))
       break
     case 'thread_ownership': {
-      const { thread_parent_id, has_dedicated_session } = update.data
+      const { thread_parent_id, has_dedicated_session, owner } = update.data
       threadOwnership.update((map) => ({
         ...map,
         [thread_parent_id]: has_dedicated_session,
       }))
+      // Populate or clear the fork owner for activity dot coloring.
+      // When a fork is created, `owner` carries the fork session name
+      // (e.g., "park-discuss-ab12"); when destroyed, clear the entry.
+      if (has_dedicated_session && owner) {
+        threadForkOwners.update((m) => ({ ...m, [thread_parent_id]: owner }))
+      } else if (!has_dedicated_session) {
+        threadForkOwners.update((m) => {
+          const updated = { ...m }
+          delete updated[thread_parent_id]
+          return updated
+        })
+      }
       break
     }
     case 'error':

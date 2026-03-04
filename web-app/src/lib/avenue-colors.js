@@ -31,3 +31,13 @@ export const AVENUE_COLORS = {
 export function getAvenueColor(name, fallback = '#d0d0d0') {
   return AVENUE_COLORS[name?.toLowerCase()] || fallback
 }
+
+// Extract the avenue color for a fork session owner.
+// Fork session names are compound: "{caller}-{slug}-{tid}" (e.g., "park-discuss-ab12")
+// or "fork-{tid}" for anonymous forks. Extract the first segment and look it up.
+// Falls back to lead gold for non-avenue prefixes (channel leads, anonymous forks).
+export function getForkOwnerColor(forkName) {
+  if (!forkName) return AVENUE_COLORS.lead
+  const prefix = forkName.split('-')[0].toLowerCase()
+  return AVENUE_COLORS[prefix] || AVENUE_COLORS.lead
+}
