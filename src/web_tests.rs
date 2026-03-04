@@ -935,8 +935,12 @@ fn test_validate_channel_name_rejects_main_channel() {
 
 // --- api_get_screenshot tests ---
 
+/// Tests the string-level guard (first defense layer) which rejects filenames
+/// containing `..`, `/`, or `\` before any filesystem access occurs.
+/// The canonicalize containment check (second layer) is tested separately
+/// in `test_api_get_screenshot_canonicalize_containment`.
 #[tokio::test]
-async fn test_api_get_screenshot_rejects_path_traversal() {
+async fn test_api_get_screenshot_string_guard_rejects_traversal_patterns() {
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
