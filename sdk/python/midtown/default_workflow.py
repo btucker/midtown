@@ -53,9 +53,11 @@ Side effects
 * ``pr.merged``          — complete the associated task
 * ``coworker.idle``      — call ``daemon.check-pending`` so pending tasks start immediately;
                            also advance ``in_progress`` tasks to ``merged`` and call
-                           ``complete_task`` so the daemon unblocks downstream tasks
+                           ``complete_task`` so the daemon unblocks downstream tasks;
+                           post a break notification to the channel
                            (side-effect only; no registered transition in ``TRANSITIONS``)
-* ``coworker.stuck``     — post a warning to the channel
+* ``coworker.stuck``     — post a restart notification to the channel (the daemon
+                           handles the actual restart; this script owns the message)
 
 Events with no registered transitions and no explicit side-effect handler
 (``channel.message``, ``coworker.message``, ``timer.tick``, etc.) are silently
@@ -291,12 +293,18 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
                 wf.task_completed()  # type: ignore[attr-defined]  # injected by Machine
                 _save_task(state, task_id, wf)
                 rpc.complete_task(task_id)
+        # Post a break notification so the channel knows the coworker is
+        # shutting down.  The daemon handles the actual shutdown mechanism;
+        # this script owns the user-facing message.
+        rpc.post_to_channel(f"☕ Letting {coworker} take a break")
 
     elif event_type == "coworker.stuck":
+        # The daemon detects stuck coworkers and restarts them automatically.
+        # This handler owns the user-facing channel notification.
         rpc.post_to_channel(
-            f"⚠️ {coworker} appears stuck"
+            f"🔄 {coworker} appears stuck"
             + (f" on task !{task_id}" if task_id else "")
-            + " — may need intervention"
+            + " — restarting"
         )
 
     # timer.tick and other events are deliberately handled by state transitions
