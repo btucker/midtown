@@ -2188,9 +2188,10 @@ pub fn handle_register_session() -> Result<Response, String> {
 
     let lead_uuid = find_newest_dir(&tasks_dir)?;
 
-    // Save to ~/.midtown/lead/<repo>/session-id
-    let lead_dir = midtown::paths::lead_dir_for_repo(&repo_name);
-    fs::create_dir_all(&lead_dir).map_err(|e| format!("Failed to create lead directory: {}", e))?;
+    // Save lead session ID to the project directory
+    let project_dir = midtown::paths::lead_dir_for_repo(&repo_name);
+    fs::create_dir_all(&project_dir)
+        .map_err(|e| format!("Failed to create project directory: {}", e))?;
 
     let session_file = midtown::paths::lead_session_file_for_repo(&repo_name);
     fs::write(&session_file, &lead_uuid)

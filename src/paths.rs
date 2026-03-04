@@ -9,31 +9,30 @@
 //!
 //! ```text
 //! ~/.midtown/
-//! ├── config.toml           # Global configuration
-//! ├── agents/               # Custom agent prompts
-//! ├── lead/                 # Lead session data by project
-//! │   └── <repo>/
-//! │       └── session-id    # Lead's Claude session ID
-//! └── projects/             # Project-specific runtime data
+//! ├── config.toml                    # Global configuration (read-only in sandbox)
+//! ├── agents/                        # Custom agent prompts (read-only in sandbox)
+//! └── projects/                      # Project-specific runtime data
 //!     └── <repo>/
-//!         ├── worktrees/    # Task-based worktrees (named by branch slug)
-//!         │   ├── lead/     # Lead worktree
-//!         │   └── <slug>/   # e.g., task-42-add-auth-endpoint
-//!         ├── coworkers/    # Legacy coworker worktrees (named by coworker)
-//!         │   └── <name>/   # Individual worktree
-//!         ├── workflow.py             # Project-level default workflow script (local, optional)
-//!         ├── channels/     # Per-channel directories
-//!         │   └── <name>/   # e.g., "midtown", "features"
+//!         ├── lead-session-id        # Lead's Claude session ID
+//!         ├── lead-system-prompt.txt # Lead's system prompt for attach resumption
+//!         ├── worktrees/             # Task-based worktrees (named by branch slug)
+//!         │   ├── lead/              # Lead worktree
+//!         │   └── <slug>/            # e.g., task-42-add-auth-endpoint
+//!         ├── coworkers/             # Legacy coworker worktrees (named by coworker)
+//!         │   └── <name>/            # Individual worktree
+//!         ├── workflow.py            # Project-level default workflow script (local, optional)
+//!         ├── channels/              # Per-channel directories
+//!         │   └── <name>/            # e.g., "midtown", "features"
 //!         │       ├── history/current.jsonl  # Active message log
 //!         │       ├── history/YYYY-MM-DD.jsonl # Rotated daily archives
 //!         │       ├── notes/                 # Channel lead knowledge files
 //!         │       ├── cursors/               # Per-agent read cursors
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Persistent workflow state between invocations
-//!         ├── logs/         # Daemon logs
-//!         ├── daemon.pid    # Daemon PID file
-//!         ├── screenshots/  # Screenshots for PR embedding (UUID-named)
-//!         └── assets/       # Coworker-generated screenshots and videos
+//!         ├── logs/                  # Daemon logs
+//!         ├── daemon.pid             # Daemon PID file
+//!         ├── screenshots/           # Screenshots for PR embedding (UUID-named)
+//!         └── assets/                # Coworker-generated screenshots and videos
 //! ```
 //!
 //! ## Workflow Scripts
@@ -348,31 +347,33 @@ pub fn lead_worktree_path(repo: &str) -> PathBuf {
 
 /// Get the lead directory for a specific repository.
 ///
-/// Returns `~/.midtown/lead/<repo>/`.
+/// Returns `~/.midtown/projects/<repo>/`.
 ///
-/// This is where Lead session data is stored.
+/// Lead session data now lives in the project directory alongside other
+/// project-specific state. This eliminates the separate `~/.midtown/lead/`
+/// directory, so the sandbox only needs `~/.midtown/projects/{project}/`.
 ///
-/// Automatically migrates from old directory structure on first access.
+/// Automatically migrates from old directory structures on first access.
 pub fn lead_dir_for_repo(repo: &str) -> PathBuf {
-    auto_migrate(repo);
-    midtown_base_dir().join("lead").join(repo)
+    migrate_lead_to_project(repo);
+    projects_dir_for_repo(repo)
 }
 
 /// Get the lead system prompt file path for a specific repository.
 ///
-/// Returns `~/.midtown/lead/<repo>/system-prompt.txt`.
+/// Returns `~/.midtown/projects/<repo>/lead-system-prompt.txt`.
 ///
 /// This file stores the lead's system prompt (lead.md + common.md)
 /// so it can be re-applied when attaching to a headless lead session.
 pub fn lead_system_prompt_file(repo: &str) -> PathBuf {
-    lead_dir_for_repo(repo).join("system-prompt.txt")
+    lead_dir_for_repo(repo).join("lead-system-prompt.txt")
 }
 
 /// Get the Lead session ID file path for a specific repository.
 ///
-/// Returns `~/.midtown/lead/<repo>/session-id`.
+/// Returns `~/.midtown/projects/<repo>/lead-session-id`.
 pub fn lead_session_file_for_repo(repo: &str) -> PathBuf {
-    lead_dir_for_repo(repo).join("session-id")
+    lead_dir_for_repo(repo).join("lead-session-id")
 }
 
 /// Get the Lead session ID file path for the current repository.
@@ -694,10 +695,8 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
 
     // Create new directories (direct paths; avoid helper recursion)
     let new_worktrees_dir = new_projects_dir.join("worktrees");
-    let new_lead_dir = base.join("lead").join(repo);
     std::fs::create_dir_all(&new_projects_dir)?;
     std::fs::create_dir_all(&new_worktrees_dir)?;
-    std::fs::create_dir_all(&new_lead_dir)?;
 
     // Migrate project files
     let project_files = [
@@ -748,15 +747,17 @@ pub fn migrate_directory_structure(repo: &str) -> std::io::Result<bool> {
         let _ = std::fs::remove_dir(&old_worktrees);
     }
 
-    // Migrate lead session files
+    // Migrate lead session files directly into the project directory.
+    // These were previously at `<repo>/lead-session-id` and now live at
+    // `projects/<repo>/lead-session-id` (no separate lead/ directory).
     let old_session_file = old_repo_dir.join("lead-session-id");
-    let new_session_file = new_lead_dir.join("session-id");
+    let new_session_file = new_projects_dir.join("lead-session-id");
     if old_session_file.exists() && !new_session_file.exists() {
         std::fs::rename(&old_session_file, &new_session_file)?;
     }
 
     let old_initialized = old_repo_dir.join("lead-initialized");
-    let new_initialized = new_lead_dir.join("lead-initialized");
+    let new_initialized = new_projects_dir.join("lead-initialized");
     if old_initialized.exists() && !new_initialized.exists() {
         std::fs::rename(&old_initialized, &new_initialized)?;
     }
@@ -847,6 +848,88 @@ pub fn do_migrate_worktree_paths(repo: &str) -> std::io::Result<bool> {
         let old_coworkers_parent = base.join("coworkers");
         let _ = fs::remove_dir(&old_coworkers_parent);
     }
+
+    Ok(migrated_any)
+}
+
+/// Migrate lead session data from `~/.midtown/lead/<repo>/` into
+/// `~/.midtown/projects/<repo>/` (era 3).
+///
+/// Moves:
+/// - `lead/<repo>/session-id` → `projects/<repo>/lead-session-id`
+/// - `lead/<repo>/system-prompt.txt` → `projects/<repo>/lead-system-prompt.txt`
+/// - Any other files in `lead/<repo>/` → `projects/<repo>/lead-<filename>`
+///
+/// Idempotent — only runs once per session per repo.
+pub fn migrate_lead_to_project(repo: &str) {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static MIGRATED_LEAD: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let migrated = MIGRATED_LEAD.get_or_init(|| Mutex::new(HashSet::new()));
+
+    {
+        let guard = migrated.lock().unwrap();
+        if guard.contains(repo) {
+            return;
+        }
+    }
+
+    match do_migrate_lead_to_project(repo) {
+        Ok(_) => {
+            let mut guard = migrated.lock().unwrap();
+            guard.insert(repo.to_string());
+        }
+        Err(e) => {
+            tracing::warn!("Failed to migrate lead data for {}: {}", repo, e);
+        }
+    }
+}
+
+/// Perform the actual migration of lead data into the project directory.
+///
+/// Returns `Ok(true)` if any migration was performed, `Ok(false)` if nothing to migrate.
+pub fn do_migrate_lead_to_project(repo: &str) -> std::io::Result<bool> {
+    let base = midtown_base_dir();
+    let old_lead_dir = base.join("lead").join(repo);
+
+    if !old_lead_dir.exists() {
+        return Ok(false);
+    }
+
+    // Ensure target project directory exists (avoid calling projects_dir_for_repo
+    // which would recurse through auto_migrate).
+    let projects_dir = base.join("projects").join(repo);
+    fs::create_dir_all(&projects_dir)?;
+
+    let mut migrated_any = false;
+
+    // Migrate known files with lead- prefix
+    let migrations = [
+        ("session-id", "lead-session-id"),
+        ("system-prompt.txt", "lead-system-prompt.txt"),
+        ("lead-initialized", "lead-initialized"),
+    ];
+
+    for (old_name, new_name) in &migrations {
+        let old_path = old_lead_dir.join(old_name);
+        let new_path = projects_dir.join(new_name);
+        if old_path.exists() && !new_path.exists() {
+            fs::rename(&old_path, &new_path)?;
+            tracing::info!(
+                "Migrated lead file: {} -> {}",
+                old_path.display(),
+                new_path.display()
+            );
+            migrated_any = true;
+        }
+    }
+
+    // Clean up empty lead directory and parent
+    let _ = fs::remove_dir(&old_lead_dir);
+    let lead_parent = base.join("lead");
+    let _ = fs::remove_dir(&lead_parent);
 
     Ok(migrated_any)
 }

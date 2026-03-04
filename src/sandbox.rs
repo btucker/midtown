@@ -16,16 +16,17 @@ use std::path::{Path, PathBuf};
 /// - Primary repo directory
 /// - All additional repo directories (multi-repo projects)
 /// - Additional configured paths from `[sandbox].allowed_paths` (global + project)
-/// - `~/.midtown` (daemon state, channel logs, worktrees)
+/// - `~/.midtown/projects/<project>/` (project-scoped daemon state, channel logs, worktrees)
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
-/// - `~/.local/state/midtown` (daemon socket, runtime state)
+/// - `~/.local/state/midtown/<project>/` (project-scoped daemon socket, runtime state)
 /// - Main repo `.git/` directory (when primary_repo is a git worktree)
 /// - `/tmp` and platform-specific temp directories
 pub fn writable_dirs(
     primary_repo: &Path,
     additional_repos: &[PathBuf],
     configured_paths: &[String],
+    project_name: &str,
 ) -> Vec<String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
 
@@ -90,14 +91,23 @@ pub fn writable_dirs(
         }
     }
 
-    // Midtown state and config directories
-    dirs.push(home.join(".midtown").to_string_lossy().to_string());
+    // Midtown project-scoped state directory.
+    // Only the current project's data is writable — prevents cross-project writes.
+    // Global config (~/.midtown/config.toml) and agents (~/.midtown/agents/) remain
+    // readable (sandbox only restricts writes).
+    dirs.push(
+        home.join(".midtown/projects")
+            .join(project_name)
+            .to_string_lossy()
+            .to_string(),
+    );
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
 
-    // XDG state directory (daemon socket, runtime state)
+    // XDG state directory — project-scoped (daemon socket, runtime state)
     dirs.push(
         home.join(".local/state/midtown")
+            .join(project_name)
             .to_string_lossy()
             .to_string(),
     );
@@ -300,14 +310,19 @@ mod tests {
 
     #[test]
     fn test_writable_dirs_includes_primary_repo() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "test-project");
         assert!(dirs.contains(&"/home/user/project".to_string()));
     }
 
     #[test]
     fn test_writable_dirs_includes_additional_repos() {
         let additional = vec![PathBuf::from("/home/user/lib")];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &additional, &[]);
+        let dirs = writable_dirs(
+            Path::new("/home/user/project"),
+            &additional,
+            &[],
+            "test-project",
+        );
         assert!(dirs.contains(&"/home/user/project".to_string()));
         assert!(dirs.contains(&"/home/user/lib".to_string()));
     }
@@ -315,25 +330,73 @@ mod tests {
     #[test]
     fn test_writable_dirs_deduplicates() {
         let additional = vec![PathBuf::from("/home/user/project")];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &additional, &[]);
+        let dirs = writable_dirs(
+            Path::new("/home/user/project"),
+            &additional,
+            &[],
+            "test-project",
+        );
         let count = dirs.iter().filter(|d| *d == "/home/user/project").count();
         assert_eq!(count, 1, "Primary repo should not be duplicated");
     }
 
     #[test]
     fn test_writable_dirs_includes_config_dirs() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
-        let has_midtown = dirs.iter().any(|d| d.ends_with(".midtown"));
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "test-project");
+        let has_midtown_project = dirs
+            .iter()
+            .any(|d| d.contains(".midtown/projects/test-project"));
         let has_claude = dirs.iter().any(|d| d.ends_with(".claude"));
         let has_codex = dirs.iter().any(|d| d.ends_with(".codex"));
-        assert!(has_midtown, "Should include ~/.midtown");
+        assert!(
+            has_midtown_project,
+            "Should include ~/.midtown/projects/test-project"
+        );
         assert!(has_claude, "Should include ~/.claude");
         assert!(has_codex, "Should include ~/.codex");
     }
 
     #[test]
+    fn test_writable_dirs_scoped_to_project() {
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "my-project");
+        // Should include project-scoped midtown path
+        let has_scoped = dirs
+            .iter()
+            .any(|d| d.contains(".midtown/projects/my-project"));
+        assert!(
+            has_scoped,
+            "Should include project-scoped ~/.midtown/projects/my-project"
+        );
+        // Should NOT include the broad ~/.midtown path
+        let has_broad = dirs.iter().any(|d| d.ends_with(".midtown"));
+        assert!(!has_broad, "Should NOT include broad ~/.midtown");
+    }
+
+    #[test]
+    fn test_writable_dirs_state_dir_scoped_to_project() {
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "my-project");
+        let has_scoped_state = dirs
+            .iter()
+            .any(|d| d.contains(".local/state/midtown/my-project"));
+        assert!(
+            has_scoped_state,
+            "Should include project-scoped state dir; dirs: {:?}",
+            dirs
+        );
+        // Should NOT include the broad state dir
+        let has_broad_state = dirs
+            .iter()
+            .any(|d| d.ends_with(".local/state/midtown") || d.ends_with("state/midtown"));
+        assert!(
+            !has_broad_state,
+            "Should NOT include broad state dir; dirs: {:?}",
+            dirs
+        );
+    }
+
+    #[test]
     fn test_writable_dirs_includes_tmp() {
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[]);
+        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &[], "test-project");
         assert!(dirs.contains(&"/tmp".to_string()));
     }
 
@@ -353,7 +416,7 @@ mod tests {
         )
         .expect("write .git file");
 
-        let dirs = writable_dirs(&worktree, &[], &[]);
+        let dirs = writable_dirs(&worktree, &[], &[], "test-project");
         let main_git = main_git_dir.canonicalize().unwrap_or(main_git_dir);
         assert!(
             dirs.iter()
@@ -625,7 +688,7 @@ mod tests {
         }
         let project = tempfile::TempDir::new().expect("create project dir");
         let real_project = project.path().canonicalize().expect("canonicalize");
-        let writable = writable_dirs(&real_project, &[], &[]);
+        let writable = writable_dirs(&real_project, &[], &[], "test-project");
         let profile = generate_macos_profile(&writable);
         let profile_path = write_profile_to_tempfile(&profile).expect("write profile");
 
@@ -659,7 +722,12 @@ mod tests {
     #[test]
     fn test_writable_dirs_includes_configured_paths() {
         let configured = vec!["~/.cargo".to_string(), "/opt/toolchain".to_string()];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+        let dirs = writable_dirs(
+            Path::new("/home/user/project"),
+            &[],
+            &configured,
+            "test-project",
+        );
 
         // Check that configured paths are expanded and included
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
@@ -682,7 +750,12 @@ mod tests {
             "~/.cargo".to_string(), // duplicate
             "/opt/toolchain".to_string(),
         ];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+        let dirs = writable_dirs(
+            Path::new("/home/user/project"),
+            &[],
+            &configured,
+            "test-project",
+        );
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
         let cargo_path = home.join(".cargo").to_string_lossy().to_string();
@@ -693,7 +766,12 @@ mod tests {
     #[test]
     fn test_writable_dirs_expands_tilde() {
         let configured = vec!["~/.cargo".to_string()];
-        let dirs = writable_dirs(Path::new("/home/user/project"), &[], &configured);
+        let dirs = writable_dirs(
+            Path::new("/home/user/project"),
+            &[],
+            &configured,
+            "test-project",
+        );
 
         // Should not contain the literal "~/.cargo", should be expanded
         assert!(

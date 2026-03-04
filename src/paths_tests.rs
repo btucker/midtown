@@ -54,18 +54,38 @@ fn test_legacy_coworkers_dir_for_repo() {
 #[test]
 fn test_lead_dir_for_repo() {
     let path = lead_dir_for_repo("myproject");
-    assert!(path.to_string_lossy().contains(".midtown"));
-    assert!(path.to_string_lossy().contains("lead"));
-    assert!(path.to_string_lossy().ends_with("myproject"));
+    let s = path.to_string_lossy();
+    assert!(s.contains(".midtown"), "should be under .midtown: {s}");
+    assert!(
+        s.contains("projects/myproject"),
+        "should be under projects/<repo>: {s}"
+    );
 }
 
 #[test]
 fn test_lead_session_file_for_repo() {
     let path = lead_session_file_for_repo("myproject");
-    assert!(path.to_string_lossy().contains(".midtown"));
-    assert!(path.to_string_lossy().contains("lead"));
-    assert!(path.to_string_lossy().contains("myproject"));
-    assert!(path.to_string_lossy().ends_with("session-id"));
+    let s = path.to_string_lossy();
+    assert!(s.contains(".midtown"), "should be under .midtown: {s}");
+    assert!(
+        s.contains("projects/myproject"),
+        "should be under projects/<repo>: {s}"
+    );
+    assert!(
+        s.ends_with("lead-session-id"),
+        "should end with lead-session-id: {s}"
+    );
+}
+
+#[test]
+fn test_lead_session_file_not_under_lead_dir() {
+    let path = lead_session_file_for_repo("myproject");
+    let s = path.to_string_lossy();
+    // Should NOT be under the old ~/.midtown/lead/ directory
+    assert!(
+        !s.contains("/lead/myproject"),
+        "should NOT be under old lead/<repo> path: {s}"
+    );
 }
 
 #[test]
@@ -250,12 +270,8 @@ fn test_migrate_directory_structure_moves_old_layout_without_recursion() {
         "logs should move to projects/<repo>"
     );
     assert!(
-        tmp.path()
-            .join("lead")
-            .join(repo)
-            .join("session-id")
-            .exists(),
-        "lead session id should move to lead/<repo>/session-id"
+        new_projects_dir.join("lead-session-id").exists(),
+        "lead session id should move to projects/<repo>/lead-session-id"
     );
 }
 
@@ -394,6 +410,94 @@ fn test_migrate_worktree_paths_propagates_rename_error() {
     assert!(!result.unwrap()); // No migration happened — new path already exists
     // Old content should still be in place
     assert!(old_worktrees.join("some-task").exists());
+}
+
+// ── migrate_lead_to_project ────────────────────────────────────────────
+
+#[test]
+fn test_migrate_lead_to_project_moves_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create old-style lead directory with files
+    let old_lead_dir = tmp.path().join("lead").join(repo);
+    fs::create_dir_all(&old_lead_dir).unwrap();
+    fs::write(old_lead_dir.join("session-id"), "session-123").unwrap();
+    fs::write(old_lead_dir.join("system-prompt.txt"), "# System Prompt").unwrap();
+    fs::write(old_lead_dir.join("lead-initialized"), "").unwrap();
+
+    // Ensure project dir exists
+    let projects_dir = tmp.path().join("projects").join(repo);
+    fs::create_dir_all(&projects_dir).unwrap();
+
+    // Run migration
+    let result = do_migrate_lead_to_project(repo);
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "should have migrated");
+
+    // Verify files moved to project directory
+    assert!(
+        projects_dir.join("lead-session-id").exists(),
+        "session-id should move to projects/<repo>/lead-session-id"
+    );
+    assert_eq!(
+        fs::read_to_string(projects_dir.join("lead-session-id")).unwrap(),
+        "session-123"
+    );
+    assert!(
+        projects_dir.join("lead-system-prompt.txt").exists(),
+        "system-prompt.txt should move to projects/<repo>/lead-system-prompt.txt"
+    );
+    assert!(
+        projects_dir.join("lead-initialized").exists(),
+        "lead-initialized should move to projects/<repo>/lead-initialized"
+    );
+
+    // Old lead directory should be cleaned up
+    assert!(!old_lead_dir.exists(), "old lead dir should be removed");
+}
+
+#[test]
+fn test_migrate_lead_to_project_idempotent() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // No old lead dir exists
+    let result = do_migrate_lead_to_project(repo);
+    assert!(result.is_ok());
+    assert!(!result.unwrap(), "nothing to migrate");
+}
+
+#[test]
+fn test_migrate_lead_to_project_skips_if_target_exists() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+
+    // Create old lead dir with session-id
+    let old_lead_dir = tmp.path().join("lead").join(repo);
+    fs::create_dir_all(&old_lead_dir).unwrap();
+    fs::write(old_lead_dir.join("session-id"), "old-session").unwrap();
+
+    // Create target file already in project dir
+    let projects_dir = tmp.path().join("projects").join(repo);
+    fs::create_dir_all(&projects_dir).unwrap();
+    fs::write(projects_dir.join("lead-session-id"), "new-session").unwrap();
+
+    let result = do_migrate_lead_to_project(repo);
+    assert!(result.is_ok());
+
+    // Target file should NOT be overwritten
+    assert_eq!(
+        fs::read_to_string(projects_dir.join("lead-session-id")).unwrap(),
+        "new-session",
+        "existing file should not be overwritten"
+    );
 }
 
 // ── workflow_script_for_channel ────────────────────────────────────────

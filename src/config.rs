@@ -3080,6 +3080,7 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
             Path::new("/home/user/project"),
             &[],
             &sandbox_config.allowed_paths,
+            "test-project",
         );
 
         // Verify the configured paths are included and expanded
@@ -3096,10 +3097,11 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
             "Should include /opt/toolchain"
         );
 
-        // Verify standard paths are also included
+        // Verify standard paths are also included (project-scoped)
         assert!(
-            dirs.iter().any(|d| d.ends_with(".midtown")),
-            "Should include ~/.midtown"
+            dirs.iter()
+                .any(|d| d.contains(".midtown/projects/test-project")),
+            "Should include ~/.midtown/projects/test-project"
         );
         assert!(
             dirs.iter().any(|d| d.ends_with(".claude")),

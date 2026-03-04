@@ -68,9 +68,9 @@ fn test_lead_system_prompt_file_path() {
     let prompt_file = paths::lead_system_prompt_file("myrepo");
     let expected = temp_dir
         .path()
-        .join("lead")
+        .join("projects")
         .join("myrepo")
-        .join("system-prompt.txt");
+        .join("lead-system-prompt.txt");
 
     assert_eq!(prompt_file, expected);
 }
