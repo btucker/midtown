@@ -42,7 +42,11 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
         proptest::collection::vec(ascii_string(24), 0..4),
         prop::option::of(ascii_string(64)),
         ascii_string(24),
-        ascii_string(24),
+        prop_oneof![
+            Just("thread/start".to_string()),
+            Just("thread/resume".to_string()),
+        ],
+        any::<bool>(),
     )
         .prop_map(
             |(
@@ -54,6 +58,7 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
                 latest_agent_message,
                 model,
                 start_phase,
+                retried_fresh_start,
             )| {
                 CodexProtocolState {
                     initialized: true,
@@ -74,11 +79,8 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
                     cwd: None,
                     system_prompt: String::new(),
                     output_schema: None,
-                    start_phase: if start_phase.is_empty() {
-                        "thread/start".to_string()
-                    } else {
-                        start_phase
-                    },
+                    start_phase,
+                    retried_fresh_start,
                 }
             },
         )
@@ -361,6 +363,7 @@ proptest! {
             system_prompt: String::new(),
             output_schema: None,
             start_phase: "thread/start".to_string(),
+            retried_fresh_start: false,
         };
         let mut session_id: Option<String> = None;
 

@@ -43,6 +43,7 @@ fn test_codex_state() -> CodexProtocolState {
         system_prompt: String::new(),
         output_schema: None,
         start_phase: "thread/start".to_string(),
+        retried_fresh_start: false,
     }
 }
 
@@ -713,4 +714,121 @@ fn test_codex_thread_init_request_disables_tools_when_allow_tools_false() {
     assert_eq!(method, "thread/start");
     assert_eq!(params["approvalPolicy"], "never");
     assert_eq!(params["sandbox"], "read-only");
+}
+
+// ── Stale thread retry tests ─────────────────────────────────────────
+
+#[test]
+fn test_is_stale_codex_thread_error_detects_rollout_missing() {
+    assert!(is_stale_codex_thread_error(
+        "no rollout found for thread id abc-123"
+    ));
+}
+
+#[test]
+fn test_is_stale_codex_thread_error_case_insensitive() {
+    assert!(is_stale_codex_thread_error(
+        "No Rollout Found For Thread Id xyz"
+    ));
+}
+
+#[test]
+fn test_is_stale_codex_thread_error_ignores_generic_errors() {
+    assert!(!is_stale_codex_thread_error("network timeout"));
+    assert!(!is_stale_codex_thread_error("start failed"));
+}
+
+#[test]
+fn test_codex_translate_stale_resume_triggers_retry() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/resume".to_string();
+    state.resume_thread_id = Some("stale-thread-123".to_string());
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "no rollout found for thread id stale-thread-123" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Should NOT emit an error event — swallowed for retry.
+    assert!(event.is_none());
+    assert_eq!(post_action, CodexPostAction::RetryThreadStart);
+    // State should be ready for a fresh thread/start (initialized stays true
+    // because the process-level initialize handshake was already completed).
+    assert!(state.initialized);
+    assert!(state.start_request_id.is_none());
+    assert!(state.resume_thread_id.is_none());
+    assert!(state.retried_fresh_start);
+}
+
+#[test]
+fn test_codex_translate_stale_resume_only_retries_once() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/resume".to_string();
+    state.resume_thread_id = Some("stale-thread-123".to_string());
+    state.retried_fresh_start = true; // Already retried once.
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "no rollout found for thread id stale-thread-123" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Second time: should NOT retry — emit the error normally.
+    assert!(event.is_some());
+    assert_ne!(post_action, CodexPostAction::RetryThreadStart);
+    match event {
+        Some(StreamEvent::Result {
+            is_error, result, ..
+        }) => {
+            assert!(is_error);
+            assert!(result.unwrap().contains("no rollout found"));
+        }
+        _ => panic!("Expected error result event on second stale-thread attempt"),
+    }
+}
+
+#[test]
+fn test_codex_translate_non_resume_stale_error_not_retried() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/start".to_string(); // Not a resume.
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "no rollout found for thread id stale-thread-123" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Should NOT retry — this wasn't a resume.
+    assert!(event.is_some());
+    assert_ne!(post_action, CodexPostAction::RetryThreadStart);
+}
+
+#[test]
+fn test_codex_translate_resume_generic_error_not_retried() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/resume".to_string();
+    state.resume_thread_id = Some("thread-123".to_string());
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "some other error" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Generic resume errors should NOT trigger retry.
+    assert!(event.is_some());
+    assert_ne!(post_action, CodexPostAction::RetryThreadStart);
 }
