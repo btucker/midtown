@@ -9,20 +9,31 @@
   // Build the set of thread IDs already represented by tasks
   const taskThreadIds = $derived(getTaskThreadIds($kanbanData))
 
-  // Cleanup callback: permanently remove task-backed threads from stores
-  function cleanupTaskBacked(ids) {
-    trackedThreads.update((t) => {
-      const next = { ...t }
-      for (const id of ids) delete next[id]
-      return next
-    })
-    dismissedThreads.update((s) => new Set([...s, ...ids]))
-  }
-
-  // Threads for this channel, filtered and sorted
+  // Threads for this channel, filtered and sorted.
+  // Pass null for cleanupFn — cleanup is deferred to $effect below to avoid
+  // mutating state inside $derived (Svelte 5 forbids this).
   const channelThreads = $derived(
-    getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds, cleanupTaskBacked)
+    getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds, null)
   )
+
+  // Deferred cleanup: permanently remove task-backed threads from stores.
+  // Runs as an $effect so the store mutation happens outside of $derived.
+  $effect(() => {
+    const toClean = []
+    for (const [id, entry] of Object.entries($trackedThreads)) {
+      if (entry.channelName === channelName && taskThreadIds.has(id)) {
+        toClean.push(id)
+      }
+    }
+    if (toClean.length > 0) {
+      trackedThreads.update((t) => {
+        const next = { ...t }
+        for (const id of toClean) delete next[id]
+        return next
+      })
+      dismissedThreads.update((s) => new Set([...s, ...toClean]))
+    }
+  })
 
   function handleClick(thread) {
     // Try to find the parent message in the channel's message store

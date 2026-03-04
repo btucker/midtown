@@ -7,8 +7,9 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, activeProject } from './store.js'
-  import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses } from './store.js'
+  import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
+  import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
   import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
@@ -17,7 +18,7 @@
   import MessageRow from './MessageRow.svelte'
   import DayDivider from './DayDivider.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
-  import TaskCard from './TaskCard.svelte'
+  import TaskRow from './TaskRow.svelte'
   import DiffView from './DiffView.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
 
@@ -303,6 +304,45 @@
     return () => mql.removeEventListener('change', onChange)
   })
 
+  // Handle clicks on PR links, task links, channel links in thread messages
+  function handleThreadLinkClick(e) {
+    const target = e.target
+    if (target.classList.contains('pr-link')) {
+      e.preventDefault()
+      const prNum = target.dataset.pr
+      const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
+      if (url) window.open(url, '_blank', 'noopener')
+    } else if (target.classList.contains('task-link')) {
+      e.preventDefault()
+      const taskId = target.dataset.task
+      const tasks = $daemonStatus?.tasks || []
+      const task = tasks.find((t) => String(t.id) === String(taskId))
+      if (task) openTaskThread(task, task.channel || $activeChannel)
+    } else if (target.classList.contains('channel-link')) {
+      e.preventDefault()
+      const name = target.dataset.channel
+      if ($channelsStore.some((ch) => ch.name === name)) $activeChannel = name
+    } else if (target.classList.contains('coworker-link')) {
+      e.preventDefault()
+      const name = target.dataset.coworker
+      if (name) selectDm(name)
+    }
+  }
+
+  $effect(() => {
+    const el = desktopScrollArea
+    if (!el) return
+    el.addEventListener('click', handleThreadLinkClick)
+    return () => el.removeEventListener('click', handleThreadLinkClick)
+  })
+
+  $effect(() => {
+    const el = mobileScrollArea
+    if (!el) return
+    el.addEventListener('click', handleThreadLinkClick)
+    return () => el.removeEventListener('click', handleThreadLinkClick)
+  })
+
   // Derive the active elements based on viewport
   let scrollArea = $derived(isDesktop ? desktopScrollArea : mobileScrollArea)
   let textareaEl = $derived(isDesktop ? desktopTextareaEl : mobileTextareaEl)
@@ -478,7 +518,7 @@
       <!-- Task cards at top (above parent message) -->
       {#if $threadData.tasks?.length > 0}
         {#each $threadData.tasks as task}
-          <TaskCard {task} />
+          <TaskRow {task} variant="card" />
         {/each}
       {/if}
 
@@ -697,7 +737,7 @@
       <!-- Task cards at top -->
       {#if $threadData.tasks?.length > 0}
         {#each $threadData.tasks as task}
-          <TaskCard {task} />
+          <TaskRow {task} variant="card" />
         {/each}
       {/if}
 
