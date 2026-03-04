@@ -49,7 +49,8 @@ Side effects
 * ``pr.changes_requested``— nudge author: please address review feedback
 * ``pr.ci_failed``       — nudge author: CI failed, please investigate
 * ``pr.conflict``        — nudge author: merge conflict, please rebase
-* ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge
+* ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge;
+                           retry reviewer spawn (gated by PR_REVIEW_DELAY_SECS age check)
 * ``pr.merged``          — complete the associated task
 * ``coworker.idle``      — call ``daemon.check-pending`` so pending tasks start immediately;
                            also advance ``in_progress`` tasks to ``merged`` and call
@@ -66,6 +67,8 @@ ignored because the machine is created with ``ignore_invalid_triggers=True``.
 
 from __future__ import annotations
 
+import time
+
 from transitions import Machine
 
 from midtown import MidtownRPC, run
@@ -73,6 +76,11 @@ from midtown import MidtownRPC, run
 # ---------------------------------------------------------------------------
 # State machine definition
 # ---------------------------------------------------------------------------
+
+#: Minimum age (in seconds) a PR must reach before a reviewer is spawned.
+#: Matches the daemon's ``PR_REVIEW_DELAY_SECS`` constant — gives the author
+#: time to mark the PR as draft or add final context after opening.
+PR_REVIEW_DELAY_SECS = 45
 
 STATES = ["pending", "in_progress", "in_review", "approved", "merged"]
 
@@ -184,6 +192,7 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         extra: dict = {}
         if event_type == "pr.opened" and coworker:
             extra["pr_author"] = coworker
+            extra["pr_opened_at"] = time.time()
         elif event_type == "task.assigned" and coworker:
             extra["coworker"] = coworker
 
@@ -276,12 +285,21 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         # Retry reviewer spawn when CI passes — the initial spawn (on pr.opened)
         # may have been blocked by coworker limits or other transient conditions.
         # spawn_reviewer is a safe no-op if a reviewer is already assigned.
-        try:
-            rpc.spawn_reviewer(pr_number)
-        except Exception as exc:
-            rpc.post_to_channel(
-                f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
-            )
+        #
+        # Gate: only spawn if the PR is old enough.  Without this, a pr.ci_passed
+        # event arriving shortly after pr.opened could bypass the review delay,
+        # spawning a reviewer before the author has time to mark the PR as draft.
+        pr_opened_at = _get_task_data(state, task_id or "").get("pr_opened_at")
+        pr_age = time.time() - pr_opened_at if pr_opened_at is not None else None
+        if pr_age is not None and pr_age < PR_REVIEW_DELAY_SECS:
+            pass  # Too soon — the polling backstop will pick it up later
+        else:
+            try:
+                rpc.spawn_reviewer(pr_number)
+            except Exception as exc:
+                rpc.post_to_channel(
+                    f"⚠️ Failed to spawn reviewer for PR #{pr_number}: {exc}"
+                )
 
     elif event_type == "task.created":
         # A new task arrived — kick off immediate dispatch so it starts right
