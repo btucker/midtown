@@ -142,7 +142,7 @@
       {#if children}
         {@render children()}
       {:else}
-        <div class="break-words {isDimSender(msg.from, dimSenders) || msg.auto_output ? 'text-muted-foreground' : 'text-foreground'}">
+        <div class="break-words {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">
           {@html renderContent(msg.content || '', getApiBase())}
         </div>
       {/if}
@@ -173,7 +173,7 @@
       {#if children}
         {@render children()}
       {:else}
-        <div class="break-words {isDimSender(msg.from, dimSenders) || msg.auto_output ? 'text-muted-foreground' : 'text-foreground'}">
+        <div class="break-words {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">
           {@html renderContent(msg.content || '', getApiBase())}
         </div>
       {/if}

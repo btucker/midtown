@@ -1198,15 +1198,4 @@
     margin-right: 0;
   }
 
-  /* Auto-output messages: dimmed text + subtle left border to distinguish
-     streamed session output from explicit channel posts */
-  .auto-output {
-    border-left: 2px solid hsl(var(--muted-foreground) / 0.2);
-    padding-left: 16px;
-  }
-
-  .auto-output :global(.message-text),
-  .auto-output :global(.action-text) {
-    color: hsl(var(--muted-foreground));
-  }
 </style>

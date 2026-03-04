@@ -894,14 +894,4 @@
     100% { background-color: transparent; }
   }
 
-  /* Auto-output messages: dimmed text + subtle left border */
-  :global(.auto-output) {
-    border-left: 2px solid hsl(var(--muted-foreground) / 0.2);
-    padding-left: 16px;
-  }
-
-  :global(.auto-output .message-text),
-  :global(.auto-output .action-text) {
-    color: hsl(var(--muted-foreground));
-  }
 </style>
