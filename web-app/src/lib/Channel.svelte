@@ -28,6 +28,7 @@
   let formWrapperElement = $state(null)
   let channelItemsActive = $state(false)
   let channelItemsActiveTimeout = null
+  let channelItemsActiveVersion = 0  // version counter to discard stale microtasks
   let topSentinel = $state(null)
   let topObserver = null
 
@@ -87,20 +88,33 @@
   //  - stale counts (issue: window grows unbounded on revisit)
   //  - DOM flash (issue: renderStartIndex starts at 0 then jumps)
   let prevRenderChannel = null
+  let renderVersion = 0  // version counter to discard stale microtasks
+  // Shadow of renderStartIndex set synchronously so the "only fires once"
+  // guard works even before the deferred write executes.
+  let pendingRenderStartIndex = 0
   $effect(() => {
     const ch = $activeChannel
     const len = channelMessages.length
     if (ch !== prevRenderChannel) {
-      // Channel switch — position at tail using current message count
+      // Channel switch — position at tail using current message count.
       prevRenderChannel = ch
-      // Defer state write to avoid state_unsafe_mutation during derived evaluation
+      const version = ++renderVersion
       const newIndex = Math.max(0, len - INITIAL_WINDOW_SIZE)
-      queueMicrotask(() => { renderStartIndex = newIndex })
-    } else if (len > 0 && renderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
+      pendingRenderStartIndex = newIndex
+      queueMicrotask(() => {
+        if (version !== renderVersion) return
+        renderStartIndex = newIndex
+      })
+    } else if (len > 0 && pendingRenderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
       // Same channel, history just loaded (was empty, now has messages).
-      // Only fires once: after this, renderStartIndex > 0 so guard fails.
+      // Only fires once: after this, pendingRenderStartIndex > 0 so guard fails.
+      const version = ++renderVersion
       const newIndex = len - INITIAL_WINDOW_SIZE
-      queueMicrotask(() => { renderStartIndex = newIndex })
+      pendingRenderStartIndex = newIndex
+      queueMicrotask(() => {
+        if (version !== renderVersion) return
+        renderStartIndex = newIndex
+      })
     }
     // New messages on current channel: no-op. visibleMessages is an
     // open-ended slice so new messages at the end render automatically.
@@ -120,14 +134,16 @@
     }
     if (prevChannel !== ch) {
       const draft = channelDrafts.get(ch)
-      // Defer state writes to avoid state_unsafe_mutation during derived evaluation
+      // Defer state writes to avoid state_unsafe_mutation during derived evaluation.
+      // resizeTextarea must run after the state writes so the textarea height reflects
+      // the restored draft content, not the stale empty value.
       queueMicrotask(() => {
         inputText = draft?.text ?? ''
         pendingFile = draft?.file ?? null
+        tick().then(() => resizeTextarea())
       })
     }
     prevChannel = ch
-    tick().then(() => resizeTextarea())
   })
 
   function isNewMessage(channelName, index) {
@@ -507,16 +523,26 @@
       clearTimeout(channelItemsActiveTimeout)
       channelItemsActiveTimeout = null
     }
+    // Version counter prevents stale microtasks from overwriting newer state.
+    // Each effect run increments the version; the microtask only writes if its
+    // captured version still matches, discarding writes from superseded runs.
+    const version = ++channelItemsActiveVersion
     if (items.length > 0) {
       // Defer state write to avoid state_unsafe_mutation — channelItemsActive
       // feeds $derived showDots which is read during the same flush cycle
-      queueMicrotask(() => { channelItemsActive = true })
+      queueMicrotask(() => {
+        if (version !== channelItemsActiveVersion) return
+        channelItemsActive = true
+      })
       channelItemsActiveTimeout = setTimeout(() => {
         channelItemsActive = false
         channelItemsActiveTimeout = null
       }, 8000)
     } else {
-      queueMicrotask(() => { channelItemsActive = false })
+      queueMicrotask(() => {
+        if (version !== channelItemsActiveVersion) return
+        channelItemsActive = false
+      })
     }
   })
 
