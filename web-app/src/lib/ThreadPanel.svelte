@@ -117,18 +117,10 @@
   let forkPending = $state(false)
 
   // Clear forkPending when ownership state updates.
-  // Uses a version counter to prevent stale microtasks from overwriting a
-  // synchronous `forkPending = true` set by a subsequent handleForkToggle call.
-  let forkPendingVersion = 0
   $effect(() => {
     if ($threadData?.parentMessage?.id) {
       const _ownership = $threadOwnership[$threadData.parentMessage.id]
-      // Defer state write to avoid state_unsafe_mutation during derived evaluation
-      const version = ++forkPendingVersion
-      queueMicrotask(() => {
-        if (version !== forkPendingVersion) return
-        forkPending = false
-      })
+      untrack(() => { forkPending = false })
     }
   })
 
@@ -136,7 +128,6 @@
 
   function handleForkToggle() {
     if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
-    forkPendingVersion++  // invalidate any pending microtask that would clear forkPending
     forkPending = true
     forkError = null
     const onError = (msg) => {
@@ -165,8 +156,7 @@
   // Clear thinking when the thread is closed or switched to a different thread.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
-    // Defer state write to avoid state_unsafe_mutation during derived evaluation
-    queueMicrotask(() => { thinking = false })
+    untrack(() => { thinking = false })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
@@ -185,14 +175,10 @@
       }
     }
     if (prevThreadId !== tid) {
-      // Defer state write to avoid state_unsafe_mutation during derived evaluation.
-      // resizeTextarea must run after the state write so the textarea height reflects
-      // the restored draft content, not the stale empty value.
       const draft = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
-      queueMicrotask(() => {
-        replyText = draft
-        tick().then(() => resizeTextarea())
-      })
+      untrack(() => { replyText = draft })
+      // resizeTextarea must run after the DOM reflects the new draft content
+      tick().then(() => resizeTextarea())
     }
     prevThreadId = tid
   })
@@ -212,8 +198,7 @@
     const items = threadItems.length > 0 ? threadItems : channelItems
     const hasInProgress = items.some((item) => item.status === 'InProgress')
     if (hasInProgress) {
-      // Defer state write to avoid state_unsafe_mutation during derived evaluation
-      queueMicrotask(() => { thinking = false })
+      untrack(() => { thinking = false })
       if (thinkingTimeout) {
         clearTimeout(thinkingTimeout)
         thinkingTimeout = null
@@ -378,7 +363,7 @@
         el.scrollIntoView({ behavior: 'smooth', block: 'center' })
         el.classList.add('deep-link-highlight')
         setTimeout(() => el.classList.remove('deep-link-highlight'), 2000)
-        deepLinkMsgId.set(null)
+        untrack(() => deepLinkMsgId.set(null))
       }
     })
   })
@@ -386,10 +371,10 @@
   // Focus textarea only when a *new* thread opens — not on every message append.
   // Uses currentThreadId (stable thread identity) instead of $threadData to avoid
   // re-firing when the message array grows.
-  let lastFocusedThreadId = $state(null)
+  let lastFocusedThreadId = null
   $effect(() => {
     const threadId = currentThreadId
-    const lastId = untrack(() => lastFocusedThreadId)
+    const lastId = lastFocusedThreadId
     if (threadId && threadId !== lastId && textareaEl) {
       lastFocusedThreadId = threadId
       tick().then(() => textareaEl.focus())
