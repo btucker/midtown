@@ -834,14 +834,18 @@ fn codex_translate_event(
             .and_then(|e| e.get("message"))
             .and_then(|m| m.as_str())
         {
-            // Stale thread on resume: retry with fresh thread/start instead of
-            // surfacing the error to the daemon (which would take ~30s to restart).
+            // Stale thread on resume or fork: retry with fresh thread/start instead
+            // of surfacing the error to the daemon (which would take ~30s to restart).
+            // thread/fork can also hit stale errors when the parent thread has expired.
             if is_start_response
-                && state.start_phase == "thread/resume"
+                && (state.start_phase == "thread/resume" || state.start_phase == "thread/fork")
                 && is_stale_codex_thread_error(msg)
                 && !state.retried_fresh_start
             {
-                warn!("Codex thread/resume got stale thread error — retrying with thread/start");
+                warn!(
+                    "Codex {} got stale thread error — retrying with thread/start",
+                    state.start_phase
+                );
                 // Don't clear initialized — the process-level initialize handshake
                 // already completed. codex_retry_thread_start() sends only thread/start.
                 state.start_request_id = None;
@@ -1100,15 +1104,18 @@ fn codex_translate_event(
 
 /// Check if an error message indicates a stale/expired Codex thread.
 ///
-/// Codex threads expire after a period of inactivity. Resuming returns errors like:
+/// Codex threads expire after a period of inactivity. Resuming or forking
+/// returns errors like:
 /// - "no rollout found for thread id <id>"
+/// - "thread not found" / "thread_not_found"
 ///
 /// Detected early in `codex_translate_event` so we can retry with `thread/start`
 /// instead of going through the slow health-check → restart cycle (~30s → ~2s).
 fn is_stale_codex_thread_error(error_msg: &str) -> bool {
-    error_msg
-        .to_lowercase()
-        .contains("no rollout found for thread id")
+    let lowercase = error_msg.to_lowercase();
+    lowercase.contains("no rollout found for thread id")
+        || lowercase.contains("thread not found")
+        || lowercase.contains("thread_not_found")
 }
 
 fn codex_thread_init_request(

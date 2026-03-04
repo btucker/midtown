@@ -797,7 +797,7 @@ fn test_codex_translate_stale_resume_only_retries_once() {
 #[test]
 fn test_codex_translate_non_resume_stale_error_not_retried() {
     let mut state = test_codex_state();
-    state.start_phase = "thread/start".to_string(); // Not a resume.
+    state.start_phase = "thread/start".to_string(); // Not a resume or fork.
     let mut session_id = None;
 
     let parsed = serde_json::json!({
@@ -808,7 +808,7 @@ fn test_codex_translate_non_resume_stale_error_not_retried() {
 
     let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
 
-    // Should NOT retry — this wasn't a resume.
+    // Should NOT retry — this was a fresh start, not a resume or fork.
     assert!(event.is_some());
     assert_ne!(post_action, CodexPostAction::RetryThreadStart);
 }
@@ -829,6 +829,77 @@ fn test_codex_translate_resume_generic_error_not_retried() {
     let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
 
     // Generic resume errors should NOT trigger retry.
+    assert!(event.is_some());
+    assert_ne!(post_action, CodexPostAction::RetryThreadStart);
+}
+
+// ── Fork stale thread retry tests ───────────────────────────────────
+
+#[test]
+fn test_is_stale_codex_thread_error_detects_thread_not_found() {
+    assert!(is_stale_codex_thread_error("thread not found"));
+    assert!(is_stale_codex_thread_error("Thread Not Found"));
+    assert!(is_stale_codex_thread_error("thread_not_found"));
+}
+
+#[test]
+fn test_codex_translate_stale_fork_triggers_retry() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/fork".to_string();
+    state.resume_thread_id = Some("parent-thread-123".to_string());
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "no rollout found for thread id parent-thread-123" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Fork with stale parent should trigger retry, just like resume.
+    assert!(event.is_none());
+    assert_eq!(post_action, CodexPostAction::RetryThreadStart);
+    assert!(state.retried_fresh_start);
+    assert!(state.resume_thread_id.is_none());
+}
+
+#[test]
+fn test_codex_translate_stale_fork_thread_not_found_triggers_retry() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/fork".to_string();
+    state.resume_thread_id = Some("parent-thread-456".to_string());
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "thread not found" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    assert!(event.is_none());
+    assert_eq!(post_action, CodexPostAction::RetryThreadStart);
+}
+
+#[test]
+fn test_codex_translate_stale_fork_only_retries_once() {
+    let mut state = test_codex_state();
+    state.start_phase = "thread/fork".to_string();
+    state.resume_thread_id = Some("parent-thread-123".to_string());
+    state.retried_fresh_start = true; // Already retried once.
+    let mut session_id = None;
+
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 42,
+        "error": { "message": "no rollout found for thread id parent-thread-123" }
+    });
+
+    let (event, post_action) = codex_translate_event(&parsed, &mut state, &mut session_id);
+
+    // Second time: should NOT retry — emit the error normally.
     assert!(event.is_some());
     assert_ne!(post_action, CodexPostAction::RetryThreadStart);
 }
