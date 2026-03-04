@@ -101,4 +101,10 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""
 fi
 
+if ! command -v gh >/dev/null 2>&1; then
+    echo ""
+    echo "Note: GitHub CLI (gh) is not installed."
+    echo "Midtown requires gh at runtime. Install it from: https://cli.github.com/"
+fi
+
 echo "Run 'midtown --help' to get started."
