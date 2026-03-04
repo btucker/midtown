@@ -7,7 +7,7 @@
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, activeProject } from './store.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread } from './api.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -119,6 +119,13 @@
   let forkParentLead = $derived(
     $threadData?.parentMessage?.id
       ? ($threadForkParents[$threadData.parentMessage.id] ?? null)
+      : null
+  )
+  // The fork session's agent name (e.g., "web-discuss-ab12").
+  // Used to verify msg.from actually belongs to the fork session.
+  let forkOwner = $derived(
+    $threadData?.parentMessage?.id
+      ? ($threadForkOwners[$threadData.parentMessage.id] ?? null)
       : null
   )
   let forkPending = $state(false)
@@ -591,7 +598,7 @@
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
-            isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
+            isDedicatedSession={hasDedicatedSession && forkOwner != null && msg.from === forkOwner}
             {forkParentLead}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >
@@ -811,7 +818,7 @@
             senderClass="mt-1"
             channelName={$threadData?.channelName}
             threadParentId={$threadData?.parentMessage?.id}
-            isDedicatedSession={hasDedicatedSession && msg.from !== 'user' && msg.from !== 'midtown'}
+            isDedicatedSession={hasDedicatedSession && forkOwner != null && msg.from === forkOwner}
             {forkParentLead}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           >

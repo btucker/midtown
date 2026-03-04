@@ -1622,10 +1622,17 @@ pub(super) async fn handle_session_fork(
             // fork path so the "Dedicated session" indicator appears regardless
             // of how the fork was created.
             if let Some(ref ch) = fork_channel {
-                let s2n = state.session_to_name.lock().unwrap();
-                let owner = s2n.get(&sid).cloned();
-                let parent_lead = s2n.get(calling_session_id).cloned();
-                drop(s2n);
+                let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
+                // Resolve parent lead via channel_lead_sessions (not the caller)
+                // so non-lead callers don't get misattributed as the parent.
+                let parent_lead = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.channel_lead_sessions
+                        .get(ch.as_str())
+                        .and_then(|lead_sid| {
+                            state.session_to_name.lock().unwrap().get(lead_sid).cloned()
+                        })
+                };
                 state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
                     web::ThreadOwnershipData {
                         thread_parent_id: thread_parent_id.to_string(),

@@ -93,20 +93,20 @@
   <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" data-msg-id={msg.id} style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
     <div
-      class="relative flex-shrink-0 {coworkerNames.has(msg.from) ? 'cursor-pointer' : ''}"
+      class="relative flex-shrink-0 {coworkerNames.has(displayName) ? 'cursor-pointer' : ''}"
       style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}"
-      onclick={() => handleSenderClick(msg.from)}
-      role={coworkerNames.has(msg.from) ? 'button' : undefined}
-      title={coworkerNames.has(msg.from) ? `Open DM with ${msg.from}` : undefined}
+      onclick={() => handleSenderClick(displayName)}
+      role={coworkerNames.has(displayName) ? 'button' : undefined}
+      title={coworkerNames.has(displayName) ? `Open DM with ${displayName}` : undefined}
     >
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
         style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {displayColor}"
       >{avatarLetter(displayName)}</div>
-      {#if isForkWithParent}
+      {#if isDedicatedSession}
         <div
           class="absolute -bottom-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-background border border-border"
-          title="Fork of {forkParentLead}"
+          title={forkParentLead ? `Fork of ${forkParentLead}` : 'Fork session'}
         >
           <GitFork size={10} class="text-muted-foreground" />
         </div>
