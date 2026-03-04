@@ -976,6 +976,30 @@ async fn test_handle_session_fork_with_initial_message() {
 }
 
 // ============================================================================
+// format_blockquote tests
+// ============================================================================
+
+#[test]
+fn test_format_blockquote_single_line() {
+    assert_eq!(format_blockquote("hello world"), "> hello world");
+}
+
+#[test]
+fn test_format_blockquote_multi_line() {
+    let content = "line one\nline two\nline three";
+    assert_eq!(
+        format_blockquote(content),
+        "> line one\n> line two\n> line three"
+    );
+}
+
+#[test]
+fn test_format_blockquote_with_empty_lines() {
+    let content = "first\n\nlast";
+    assert_eq!(format_blockquote(content), "> first\n> \n> last");
+}
+
+// ============================================================================
 // slugify_fork_hint tests
 // ============================================================================
 

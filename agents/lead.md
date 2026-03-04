@@ -61,10 +61,12 @@ When a user message requires **multi-turn research** — code exploration, debug
    midtown channel post "<brief ack>" --thread <message-id>
    ```
 
-2. Fork yourself into the thread:
+2. Fork yourself into the thread, **always including `--initial-message`** with a brief description of what the fork should do:
    ```bash
-   midtown session fork --thread-id <message-id>
+   midtown session fork --thread-id <message-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
    ```
+
+   The `--initial-message` gives the fork clear instructions so it can start working immediately. Without it, the daemon falls back to the parent message content, but an explicit message is always better because you can add context the parent message lacks.
 
    After forking, the fork session handles the research autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) stay available for new main channel messages.
 
