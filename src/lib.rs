@@ -138,9 +138,6 @@ pub mod session_key;
 // LRU name pool for session-centric coworker naming
 pub mod name_pool;
 
-// Provider-specific adapters for headed (interactive) delivery paths
-pub mod headed_adapter;
-
 // Platform abstraction for CLI argument construction (shared by headed + headless)
 pub mod platform;
 

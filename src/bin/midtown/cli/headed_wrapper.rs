@@ -706,7 +706,6 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             let adapter_id = adapter_id
                 .clone()
                 .unwrap_or_else(|| default_adapter_id(session));
-            let adapter = midtown::headed_adapter::adapter_for(provider);
             let mut last_seen_id = 0u64;
             let mut last_heartbeat = Instant::now();
             let heartbeat_every = Duration::from_secs(10);
@@ -741,8 +740,7 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                     };
 
                 for msg in parsed.messages {
-                    let payload =
-                        apply_submit_key(adapter.format_system_message(&msg.text), msg.submit);
+                    let payload = apply_submit_key(msg.text.clone(), msg.submit);
                     deliver_payload(&msg, &payload, session, on_message_cmd.as_deref())?;
 
                     client.headed_ack(session, &adapter_id, msg.id)?;
@@ -844,7 +842,6 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
             spawn_stdout_relay(pty_reader, Arc::clone(&output_mirror));
             spawn_stdin_relay(Arc::clone(&shared_writer), Arc::clone(&input_state));
 
-            let adapter = midtown::headed_adapter::adapter_for(provider);
             let mut last_seen_id = 0u64;
             let mut last_heartbeat = Instant::now();
             let heartbeat_every = Duration::from_secs(10);
@@ -946,8 +943,7 @@ pub fn handle(cmd: &HeadedWrapperCommand, client: &DaemonClient) -> Result<Respo
                         );
                     }
 
-                    let payload =
-                        trim_trailing_linebreaks(adapter.format_system_message(&msg.text));
+                    let payload = trim_trailing_linebreaks(msg.text.clone());
 
                     if let Err(e) = write_payload_to_pty(&shared_writer, &payload) {
                         run_result = Err(e);
