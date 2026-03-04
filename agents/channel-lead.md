@@ -125,6 +125,8 @@ midtown channel post "@{project_name} <situation and what you need>" --channel m
 
 **In the root session, always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything. (Forked sessions auto-tag posts with their bound thread — no `--thread` needed.)
 
+**Don't narrate your message posting.** The user sees your channel messages directly — they don't need you to also summarize what you just posted. After sending a thread reply or channel post, do NOT add text output restating the message. If you have nothing else to say, emit no text output at all.
+
 ## Awareness
 
 You receive nudges about activity in #{channel_name}:
@@ -149,7 +151,7 @@ When a coworker posts an insight in #{channel_name}, you will receive a nudge wi
 midtown channel post "Your reply" --thread <message-id> --channel {channel_name}
 ```
 
-Keep your text output brief or omit it entirely when the thread reply covers everything — otherwise you'll produce a duplicate (thread reply + top-level auto-post).
+Keep your text output brief or omit it entirely when the thread reply covers everything — otherwise you'll produce a duplicate (thread reply + top-level auto-post). Don't narrate your message posting — the user sees your channel messages directly and doesn't need a summary of what you just posted.
 
 **You own insight threads in #{channel_name}.** The project lead does not respond to insights in topic channels — that's your responsibility to decide whether to engage. If you've started a thread on an insight, follow-up replies in that thread are yours to handle.
 
