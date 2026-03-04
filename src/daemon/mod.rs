@@ -3499,7 +3499,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
             _ = session_drain_interval.tick() => {
-                // Check workflow sidecar health (non-blocking: just try_wait on child PIDs).
+                // Check workflow sidecar health (try_wait on child PIDs; may yield if a per-entry lock is contended).
                 state.workflow_sidecar.check_health().await;
 
                 let (events, stopped, stderr_by_name) = state.session_manager.drain_events().await;

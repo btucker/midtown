@@ -357,41 +357,35 @@ class MidtownRPC:
 
 
 def _load_state(state_path: Path) -> dict:
-    """Load workflow state from disk, returning empty dict if absent."""
+    """Load workflow state from disk, returning empty dict if absent.
+
+    Raises on I/O or parse errors so callers can decide how to handle them
+    (single-shot ``run()`` exits; persistent ``run_loop()`` reports the error
+    and continues processing events).
+    """
     if state_path.exists():
-        try:
-            return json.loads(state_path.read_text())
-        except (json.JSONDecodeError, OSError) as exc:
-            print(
-                f"midtown: failed to load state from {state_path}: {exc}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        return json.loads(state_path.read_text())
     return {}
 
 
 def _persist_state(state: dict, state_path: Path) -> None:
-    """Atomically persist workflow state to disk (temp file + rename)."""
+    """Atomically persist workflow state to disk (temp file + rename).
+
+    Raises on I/O errors so callers can decide how to handle them.
+    """
     state_dir = state_path.parent
     state_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp_path, state_path)
+    except Exception:
         try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp_path, state_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-    except OSError as exc:
-        print(
-            f"midtown: failed to save state to {state_path}: {exc}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +461,20 @@ def run(
         sys.exit(1)
 
     state_path = Path(args.state)
-    state = _load_state(state_path)
-    rpc = MidtownRPC(args.socket)
+    try:
+        state = _load_state(state_path)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"midtown: failed to load state from {state_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
+    rpc = MidtownRPC(args.socket)
     handler(event, rpc, state)
 
-    _persist_state(state, state_path)
+    try:
+        _persist_state(state, state_path)
+    except OSError as exc:
+        print(f"midtown: failed to save state to {state_path}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -533,16 +535,16 @@ def run_loop(
             continue
 
         state_path = Path(state_file) if state_file else None
-        state = _load_state(state_path) if state_path else {}
         rpc = MidtownRPC(socket_path)
 
         try:
+            state = _load_state(state_path) if state_path else {}
             handler(event, rpc, state)
             if state_path:
                 _persist_state(state, state_path)
             _write_response(ok=True)
         except Exception as exc:
-            # Don't crash the sidecar on handler errors — report and continue.
+            # Don't crash the sidecar on handler/state errors — report and continue.
             _write_response(ok=False, error=str(exc))
 
 

@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -59,20 +60,27 @@ struct SidecarEntry {
     /// When the sidecar last crashed (for backoff timing).
     last_crash: Option<Instant>,
     /// Whether we've determined this script doesn't support sidecar mode.
-    /// Once set, all events fall back to subprocess-per-event.
+    /// Once set, all events fall back to subprocess-per-event until the
+    /// script file is modified (mtime change clears this flag).
     single_shot_only: bool,
-    /// Modification time of the script when the sidecar was spawned.
-    /// Used to detect hot-reload needs.
+    /// Modification time of the script when the sidecar was spawned (or
+    /// when it was classified as single-shot). Used to detect hot-reload
+    /// needs and to re-probe single-shot scripts after user edits.
     script_mtime: Option<std::time::SystemTime>,
 }
 
 /// Manages persistent workflow sidecar processes.
 ///
-/// Keyed by a composite of (channel, script_path) since different channels
-/// can have different workflow scripts via the 4-level resolution order.
+/// Keyed by canonical script path. Different channels can resolve to different
+/// scripts via the 4-level resolution order; if two channels share the same
+/// script file, they share a single sidecar process.
+///
+/// Uses per-entry locks so events to different scripts proceed concurrently.
+/// The outer `StdMutex` is held only briefly for HashMap lookups/inserts;
+/// per-entry `tokio::sync::Mutex` guards each sidecar's I/O independently.
 pub(crate) struct WorkflowSidecarManager {
-    /// Sidecar entries keyed by script path (canonical).
-    sidecars: Mutex<HashMap<PathBuf, SidecarEntry>>,
+    /// Sidecar entries keyed by canonical script path, each independently locked.
+    sidecars: StdMutex<HashMap<PathBuf, Arc<Mutex<SidecarEntry>>>>,
     /// Socket path for the daemon (passed to sidecar in event envelopes).
     socket_path: PathBuf,
 }
@@ -80,7 +88,7 @@ pub(crate) struct WorkflowSidecarManager {
 impl WorkflowSidecarManager {
     pub fn new(socket_path: PathBuf) -> Self {
         Self {
-            sidecars: Mutex::new(HashMap::new()),
+            sidecars: StdMutex::new(HashMap::new()),
             socket_path,
         }
     }
@@ -100,15 +108,33 @@ impl WorkflowSidecarManager {
             .canonicalize()
             .unwrap_or_else(|_| script_path.to_path_buf());
 
-        let mut sidecars = self.sidecars.lock().await;
+        // Get or create the per-entry lock. Outer lock is held only briefly.
+        let entry_arc = {
+            let mut sidecars = self.sidecars.lock().unwrap();
+            sidecars
+                .entry(canonical.clone())
+                .or_insert_with(|| {
+                    Arc::new(Mutex::new(SidecarEntry {
+                        process: None,
+                        script_path: script_path.to_path_buf(),
+                        crash_count: 0,
+                        last_crash: None,
+                        single_shot_only: false,
+                        script_mtime: None,
+                    }))
+                })
+                .clone()
+        };
+
+        // Now lock only this entry — other scripts can proceed concurrently.
+        let mut entry = entry_arc.lock().await;
 
         // Check for hot-reload: if the script's mtime changed, kill the old sidecar
         // and clear the single_shot_only flag (the user may have upgraded the script).
         let current_mtime = std::fs::metadata(script_path)
             .and_then(|m| m.modified())
             .ok();
-        if let Some(entry) = sidecars.get_mut(&canonical)
-            && let (Some(cached), Some(current)) = (entry.script_mtime, current_mtime)
+        if let (Some(cached), Some(current)) = (entry.script_mtime, current_mtime)
             && cached != current
         {
             info!(
@@ -125,24 +151,9 @@ impl WorkflowSidecarManager {
         }
 
         // Check if this script is known to be single-shot only.
-        if sidecars
-            .get(&canonical)
-            .is_some_and(|entry| entry.single_shot_only)
-        {
+        if entry.single_shot_only {
             return Ok(false);
         }
-
-        // Ensure sidecar is running (spawn if needed).
-        let entry = sidecars
-            .entry(canonical.clone())
-            .or_insert_with(|| SidecarEntry {
-                process: None,
-                script_path: script_path.to_path_buf(),
-                crash_count: 0,
-                last_crash: None,
-                single_shot_only: false,
-                script_mtime: None,
-            });
 
         if entry.process.is_none() {
             // Check backoff before respawning.
@@ -280,10 +291,17 @@ impl WorkflowSidecarManager {
 
     /// Shut down all running sidecars (called on daemon shutdown).
     pub async fn shutdown_all(&self) {
-        let mut sidecars = self.sidecars.lock().await;
-        for (path, entry) in sidecars.iter_mut() {
+        let entries: Vec<Arc<Mutex<SidecarEntry>>> = {
+            let sidecars = self.sidecars.lock().unwrap();
+            sidecars.values().cloned().collect()
+        };
+        for entry_arc in entries {
+            let mut entry = entry_arc.lock().await;
             if let Some(mut proc) = entry.process.take() {
-                debug!(script = %path.display(), "Shutting down sidecar");
+                debug!(
+                    script = %entry.script_path.display(),
+                    "Shutting down sidecar"
+                );
                 // Close stdin to signal EOF, then kill if it doesn't exit.
                 drop(proc.stdin);
                 let kill_result =
@@ -293,16 +311,25 @@ impl WorkflowSidecarManager {
                 }
             }
         }
-        sidecars.clear();
+        self.sidecars.lock().unwrap().clear();
     }
 
     /// Check if any sidecars have died and need cleanup.
     /// Called periodically from the daemon event loop.
+    ///
+    /// Acquires per-entry locks briefly to call `try_wait()` on child PIDs.
+    /// May yield if a per-entry lock is contended (e.g., during `send_event`).
     pub async fn check_health(&self) {
-        let mut sidecars = self.sidecars.lock().await;
-        let mut dead_keys = Vec::new();
+        let entries: Vec<(PathBuf, Arc<Mutex<SidecarEntry>>)> = {
+            let sidecars = self.sidecars.lock().unwrap();
+            sidecars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        };
 
-        for (path, entry) in sidecars.iter_mut() {
+        for (path, entry_arc) in entries {
+            let mut entry = entry_arc.lock().await;
             if let Some(ref mut proc) = entry.process {
                 // Non-blocking check if the process has exited.
                 match proc.child.try_wait() {
@@ -314,7 +341,7 @@ impl WorkflowSidecarManager {
                         );
                         entry.crash_count += 1;
                         entry.last_crash = Some(Instant::now());
-                        dead_keys.push(path.clone());
+                        entry.process = None;
                     }
                     Ok(None) => {} // Still running
                     Err(e) => {
@@ -327,12 +354,6 @@ impl WorkflowSidecarManager {
                 }
             }
         }
-
-        for key in dead_keys {
-            if let Some(entry) = sidecars.get_mut(&key) {
-                entry.process = None;
-            }
-        }
     }
 
     /// Clear the "single_shot_only" flag for a script, forcing re-detection.
@@ -342,9 +363,12 @@ impl WorkflowSidecarManager {
         let canonical = script_path
             .canonicalize()
             .unwrap_or_else(|_| script_path.to_path_buf());
-        let mut sidecars = self.sidecars.lock().await;
-        if let Some(entry) = sidecars.get_mut(&canonical) {
-            entry.single_shot_only = false;
+        let entry_arc = {
+            let sidecars = self.sidecars.lock().unwrap();
+            sidecars.get(&canonical).cloned()
+        };
+        if let Some(entry_arc) = entry_arc {
+            entry_arc.lock().await.single_shot_only = false;
         }
     }
 }
