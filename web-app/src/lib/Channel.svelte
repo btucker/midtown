@@ -956,7 +956,7 @@
           type="submit"
           disabled={!inputText.trim() && !pendingFile || uploading}
           data-testid="send-button"
-          class="absolute right-[12px] bottom-[13px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
+          class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         >
           <SendHorizontal size={18} />
         </button>

@@ -184,8 +184,8 @@ fn review_assigned_nudge_uses_rich_template() {
         "ReviewAssigned should use the full reviewer-resume template, not a one-liner"
     );
     assert!(
-        msg.contains("gh pr comment 42"),
-        "ReviewAssigned should include PR comment instructions from the template"
+        msg.contains("midtown pr review post --pr 42"),
+        "ReviewAssigned should include review post instructions from the template"
     );
 }
 

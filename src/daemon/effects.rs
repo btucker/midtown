@@ -535,6 +535,17 @@ pub enum Effect {
     /// stuck-PR detection path in `pr.rs`.
     AutoMergePr { pr_number: u64, title: String },
 
+    /// Post a "Review in progress" placeholder comment on a PR.
+    ///
+    /// Executed as an `on_success` callback after spawning a reviewer session.
+    /// The daemon posts the comment (avoiding prompt-compliance issues with
+    /// escaped `!` characters) and stores the comment ID on the
+    /// `PrReviewerAssignment` for later update via `pr.review-post`.
+    PostPrComment {
+        pr_number: u64,
+        reviewer_name: String,
+        body: String,
+    },
     /// Invoke the channel's workflow script with a domain event.
     ///
     /// When a workflow script exists for the event's channel (resolved via
@@ -2978,6 +2989,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
 
+            Effect::PostPrComment {
+                pr_number,
+                reviewer_name,
+                body,
+            } => {
+                post_pr_comment(state, pr_number, &reviewer_name, &body).await;
+            }
+
             Effect::MergePr { pr_number, title } => {
                 auto_merge_pr(state, pr_number, &title).await;
             }
@@ -3041,6 +3060,112 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
             "gh run rerun failed for workflow {}: {}",
             run_id,
             stderr.trim()
+        );
+    }
+}
+
+/// Post a "Review in progress" placeholder comment on a PR via `gh pr comment`.
+///
+/// Parses the comment ID from the stdout URL and stores it on the
+/// `PrReviewerAssignment` so the daemon can later update the placeholder
+/// with the final review via `pr.review-post`.
+async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &str, body: &str) {
+    let repo_path = state.all_repo_paths.first().cloned();
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args(["pr", "comment", &pr_number.to_string(), "--body", body]);
+    if let Some(ref path) = repo_path {
+        cmd.current_dir(path);
+    }
+
+    let output = match cmd.output().await {
+        Ok(output) => output,
+        Err(e) => {
+            warn!(
+                "Failed to post placeholder comment on PR #{}: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(
+            "gh pr comment failed for PR #{}: {}",
+            pr_number,
+            stderr.trim()
+        );
+        return;
+    }
+
+    // Parse comment ID from the URL in stdout (e.g., "https://github.com/.../issuecomment-12345")
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let comment_id = stdout
+        .trim()
+        .rsplit('/')
+        .next()
+        .and_then(|segment| {
+            // Handle both "issuecomment-12345" and bare "12345" formats
+            segment
+                .strip_prefix("issuecomment-")
+                .or(Some(segment))
+                .and_then(|s| s.trim().parse::<u64>().ok())
+        })
+        .or_else(|| {
+            // Fallback: find any trailing number in the URL
+            stdout
+                .trim()
+                .rsplit(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+        });
+
+    if let Some(comment_id) = comment_id {
+        info!(
+            "Posted placeholder comment {} on PR #{} for reviewer {}",
+            comment_id, pr_number, reviewer_name
+        );
+
+        // Store the comment ID on the reviewer assignment.
+        // Serialize under the lock, then write to disk after releasing it
+        // to avoid blocking the tokio runtime with file I/O.
+        let serialized = {
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
+                assignment.placeholder_comment_id = Some(comment_id);
+            }
+            serde_json::to_string_pretty(&*ps).ok()
+        };
+        if let Some(json) = serialized {
+            let repo_name = state.repo_name.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                let path = crate::paths::daemon_state_file_for_repo(&repo_name);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let tmp_path = path.with_extension("json.tmp");
+                std::fs::write(&tmp_path, &json)?;
+                crate::paths::atomic_rename(&tmp_path, &path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e)))
+            {
+                warn!(
+                    "Failed to save daemon-state.json after storing placeholder comment ID: {}",
+                    e
+                );
+            }
+        }
+
+        // Populate the placeholder cache so snapshot doesn't need an API call
+        {
+            let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+            cache.insert(pr_number, (Some(comment_id), std::time::Instant::now()));
+        }
+    } else {
+        warn!(
+            "Could not parse comment ID from gh pr comment output: {}",
+            stdout.trim()
         );
     }
 }

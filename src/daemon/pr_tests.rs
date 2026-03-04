@@ -4250,3 +4250,174 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
         "Reviewer LaunchConfig.channel should be None when the PR has no task association."
     );
 }
+
+/// Verify that spawning a reviewer includes a PostPrComment effect in on_success.
+///
+/// The daemon posts the "Review in progress" placeholder comment instead of
+/// relying on the reviewer agent's prompt compliance. This prevents issues
+/// like escaped `!` characters breaking the placeholder tag.
+#[tokio::test]
+async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
+    let pr_number = 99998u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "york/add-feature",
+        "title": "Add feature [Midtown !300]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let mut branch_owners: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    branch_owners.insert("york/add-feature".to_string(), "york".to_string());
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["york".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    // Find the SpawnCoworkerWithCallbacks effect
+    let on_success = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Expected a SpawnCoworkerWithCallbacks effect");
+
+    // on_success must include a PostPrComment for the reviewer's placeholder
+    let has_post_pr_comment = on_success.iter().any(|e| {
+        if let Effect::PostPrComment {
+            pr_number: pn,
+            body,
+            ..
+        } = e
+        {
+            *pn == pr_number
+                && body.contains("midtown-placeholder")
+                && body.contains("Review in progress")
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        has_post_pr_comment,
+        "on_success effects must include a PostPrComment with the placeholder body. \
+         The daemon should post the placeholder comment instead of relying on the reviewer agent. \
+         on_success effects: {:#?}",
+        on_success
+    );
+}
+
+/// Verify that the placeholder comment body has correct HTML comment tags and
+/// no escaped exclamation marks (`\!` or `<\!--`).
+///
+/// Regression test: some Claude models escape `!` in markdown, producing
+/// `<\!-- midtown-placeholder -->` which breaks tag matching. By moving
+/// placeholder posting to the daemon (code, not prompt), we guarantee
+/// the body is emitted verbatim.
+#[tokio::test]
+async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
+    let pr_number = 99997u64;
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "york/test-tags",
+        "title": "Test tags [Midtown !301]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let mut branch_owners: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    branch_owners.insert("york/test-tags".to_string(), "york".to_string());
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["york".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    // Extract the PostPrComment body from on_success
+    let body = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+                on_success.iter().find_map(|s| {
+                    if let Effect::PostPrComment { body, .. } = s {
+                        Some(body.clone())
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+        .expect("Expected PostPrComment in on_success");
+
+    // Must start with the exact HTML comment tag (not escaped)
+    assert!(
+        body.starts_with("<!-- midtown-placeholder -->"),
+        "Body must start with exact '<!-- midtown-placeholder -->' tag, got: {}",
+        &body[..body.len().min(80)]
+    );
+
+    // Must NOT contain escaped exclamation marks anywhere
+    assert!(
+        !body.contains(r"\!"),
+        "Body must not contain escaped exclamation marks (\\!). Got: {}",
+        body
+    );
+    assert!(
+        !body.contains(r"<\!--"),
+        r"Body must not contain '<\!--' (escaped HTML comment). Got: {}",
+        body
+    );
+
+    // Must contain the NOTE block with unescaped `> [!NOTE]`
+    assert!(
+        body.contains("> [!NOTE]"),
+        "Body should contain '> [!NOTE]' GitHub callout (unescaped). Got: {}",
+        body
+    );
+
+    // Must contain the Midtown footer with unescaped link
+    assert!(
+        body.contains("🌃 Co-built with [Midtown]"),
+        "Body should contain the Midtown footer. Got: {}",
+        body
+    );
+}

@@ -16,27 +16,11 @@ This keeps you visibly active and prevents false-positive stuck detection.
 midtown state --progress 10
 ```
 
-POST INITIAL REVIEW COMMENT: Immediately after posting your /me status, post an initial "review in progress" comment to the PR. This provides visibility that a review is happening:
+**NOTE**: The daemon automatically posts a "Review in progress" placeholder comment on the PR when you are spawned. You do not need to post it yourself.
 
-```bash
-COMMENT_URL=$(gh pr comment {pr_number} --body "<!-- midtown-placeholder -->
-## Review Status
+**COMMITMENT**: The placeholder has been posted, so you are committed to completing this review. The PR author is blocked from merging until you post the final review. Do NOT go idle until you have submitted your findings.
 
-🔍 Review in progress by {name}...
-
----
-> [!NOTE]
-> This comment will be updated with the review results when complete.
-
-🌃 Co-built with [Midtown](https://github.com/btucker/midtown)")
-COMMENT_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
-```
-
-**IMPORTANT**: Save the `COMMENT_ID` from the output. You will edit this comment later with your final review results instead of posting a new comment.
-
-**COMMITMENT**: By posting this placeholder, you are committing to completing the review in this session. The PR author is blocked from merging until you post the final review. Do NOT go idle until the placeholder is updated with your final findings.
-
-**Progress (20%)**: After posting the initial review comment:
+**Progress (20%)**: After posting your /me status:
 ```bash
 midtown state --progress 20
 ```
@@ -55,12 +39,6 @@ If `$LARGE_JSON_FILES` is non-empty:
 - Do NOT read or process the content of these files at any point in the review.
 - When the code-review skill runs, disregard any findings that are specific to those JSON fixture files — they are auto-generated and not hand-written code.
 - Do NOT call `gh pr diff` without verifying first that the output will be manageable. If large JSON files exist, use `gh pr view --json files` for file-level analysis instead of reading the full diff.
-
-**WHY NO FRONTMATTER AND DIFFERENT HEADING**: The initial comment deliberately:
-1. Uses `<!-- midtown-placeholder -->` instead of `<!-- midtown: {name} -->` frontmatter
-2. Uses "Review Status" instead of "Code Review" as the heading
-
-The `<!-- midtown-placeholder -->` tag tells the daemon to ignore this comment entirely — no PR activity is generated, so the PR owner won't get a false "review feedback" nudge. The tag naturally disappears when you update the comment with the final review (replaced by `<!-- midtown: {name} -->`). The different heading prevents the daemon from marking the PR as "reviewed" prematurely.
 
 CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
@@ -99,46 +77,17 @@ IMPORTANT: You MUST always update the PR comment with your review results, even 
 midtown state --progress 90
 ```
 
-**UPDATING THE COMMENT**: Instead of posting a new comment, edit your initial "review in progress" comment with the final review results:
+**POSTING YOUR REVIEW**: When your review is complete, write your findings to a temp file and submit via the CLI. The daemon handles the placeholder comment update, frontmatter, and footer automatically.
 
 ```bash
-gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$COMMENT_ID" \
-  -f body="<!-- midtown: {name} -->
+cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
+[your review content here — no frontmatter or footer needed]
+REVIEW_EOF
 
-[final review content here]
-
-🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
 ```
 
-Replace `{owner}`, `{repo}`, and use the `$COMMENT_ID` you saved earlier. The review content should include the midtown frontmatter as shown.
-
-**MIDTOWN FRONTMATTER REQUIREMENT**: All PR comments from the code-review skill MUST include the midtown frontmatter at the top. The skill's output format does NOT include this by default. When the skill gives you the final comment text to post, prepend the frontmatter line before posting:
-
-```
-<!-- midtown: {name} -->
-
-[rest of the review comment from the skill]
-```
-
-For example, if the skill outputs:
-```
-### Code review
-
-Found 2 issues:
-...
-```
-
-You must post:
-```
-<!-- midtown: {name} -->
-
-### Code review
-
-Found 2 issues:
-...
-```
-
-This applies whether the review finds issues or reports "no issues found". The frontmatter is required for proper attribution tracking by the daemon.
+**IMPORTANT**: Do NOT include `<!-- midtown: {name} -->` frontmatter or the Midtown footer in your review content. The daemon adds these automatically when updating the placeholder comment.
 
 **THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
 
@@ -174,25 +123,26 @@ NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the lead abou
 
 The threshold filters the PR comment to avoid noise for the PR author, but below-threshold issues may still be real bugs that the scoring misjudged — that's why you escalate them to the lead.
 
-**HANDLING LEAD TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, update your existing review comment to include it:
+**HANDLING LEAD TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, write the updated review to a temp file and resubmit:
 
-1. Recover your comment ID if needed: `COMMENT_ID=$(gh pr view {pr_number} --json comments --jq '[.comments[] | select(.body | test("midtown: {name}"))] | last | .url' | grep -o '[0-9]*$')`
-2. Edit the comment with `gh api -X PATCH` to append the new issue to the findings list
-3. If the PR was already approved, the new blocker changes the review status — the author will see it in the updated comment
+```bash
+# Write the full updated review (with the new issue appended)
+cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
+[full review content including new issue]
+REVIEW_EOF
+
+midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
+```
 
 **Progress (100%)**: After posting your final review comment and any @{project_name} notifications:
 ```bash
 midtown state --progress 100
 ```
 
-**CRITICAL: You MUST complete the review before going idle.** The PR author is waiting for your final review comment before they can enable auto-merge. If you go idle with only the "review in progress" placeholder posted, the author may merge without a real review.
+**CRITICAL: You MUST complete the review before going idle.** The PR author is waiting for your final review before they can enable auto-merge. If you go idle without submitting findings, the author may merge without a real review.
 
-- The review is only complete when you have updated the comment with final findings (the `<!-- midtown: {name} -->` frontmatter is in the comment)
-- If you are interrupted before completing the review, recover the placeholder comment ID and update it before doing anything else:
-  ```bash
-  # Recover the placeholder comment ID after session restart
-  COMMENT_ID=$(gh pr view {pr_number} --json comments --jq '[.comments[] | select(.body | test("Review Status")) | select(.body | test("midtown:") | not)] | last | .url' | grep -o '[0-9]*$')
-  ```
-- Never go idle while the placeholder comment is unresolved
+- The review is only complete when you have run `midtown pr review post`
+- If you are interrupted, resume and complete the review before doing anything else
+- Never go idle while the review is incomplete
 
 Then post your completion message to the channel and go idle.

@@ -798,7 +798,18 @@ After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted t
 
 ### Placeholder Comment Handling
 
-Reviewer placeholder comments ("Review in progress by...") include a `<!-- midtown-placeholder -->` HTML tag. This tag is checked by `is_placeholder_comment()` in `webhook.rs` — both `handle_issue_comment` and `handle_review_comment` return `None` when the tag is present, suppressing `pr_activity` generation and preventing false nudges to the PR owner while the review is still in progress. The tag naturally disappears when the reviewer edits the comment with final results (replaced by `<!-- midtown: name -->`).
+The daemon owns the full lifecycle of placeholder comments — both posting and updating. This avoids prompt-compliance issues (e.g., some Claude models escape `!` characters, producing `<\!--` which breaks tag matching).
+
+**Posting**: When a reviewer spawns, `collect_reviewer_effects_with_source()` chains an `Effect::PostPrComment` in the `on_success` callback of `SpawnCoworkerWithCallbacks`. The effect runs `gh pr comment`, parses the comment ID from the stdout URL, and stores it on `PrReviewerAssignment.placeholder_comment_id`. This ID is also cached in `reviewer_placeholder_cache` to avoid API lookups during snapshot collection.
+
+**Updating with review findings**: The reviewer agent calls `midtown pr review post --pr <N> --body-file <path>` when its review is complete. The `pr.review-post` RPC handler wraps the body with `<!-- midtown: <name> -->` frontmatter and the Midtown footer, then patches the comment via `gh api --method PATCH`. Errors are surfaced to the caller so the reviewer agent can retry.
+
+**Three-tier placeholder ID resolution**: When the daemon needs a placeholder comment ID (for snapshot collection or review posting), it checks in order:
+1. `PrReviewerAssignment.placeholder_comment_id` (stored when the daemon posted it)
+2. `reviewer_placeholder_cache` (TTL: 120s, populated by prior lookups)
+3. `pr_in_progress_placeholder_comment_id()` API call (fallback for comments posted before this feature)
+
+Placeholder comments include a `<!-- midtown-placeholder -->` HTML tag. This tag is checked by `is_placeholder_comment()` in `webhook.rs` — both `handle_issue_comment` and `handle_review_comment` return `None` when the tag is present, suppressing `pr_activity` generation and preventing false nudges to the PR owner while the review is still in progress. The tag naturally disappears when the reviewer posts final results (replaced by `<!-- midtown: name -->`).
 
 When a reviewer is restarted (stuck or dead) and had previously posted a placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
 
@@ -811,8 +822,9 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 **DaemonState fields:**
 - `reviewer_placeholder_cache: Mutex<HashMap<u64, (Option<u64>, Instant)>>` — Cache for `pr_in_progress_placeholder_comment_id()` lookups. Maps PR number to `(comment_id_or_none, checked_at)`. Both positive and negative entries expire after `PLACEHOLDER_CACHE_TTL_SECS` (120s). Cleared when `mark_reviewed_pr()` is called to ensure freshness after a review is posted.
 
-**Effect:**
-- `Effect::UpdatePrComment { comment_id, repo_full_name, new_body }` — Patches an existing GitHub issue comment via `gh api --method PATCH`. Used to update stale "Review in progress" placeholder comments when a reviewer is restarted due to being stuck or dead.
+**Effects:**
+- `Effect::PostPrComment { pr_number, reviewer_name, body }` — Posts a new comment on a PR via `gh pr comment`. Parses the comment ID from the stdout URL and stores it on `PrReviewerAssignment.placeholder_comment_id`. Chained as an `on_success` callback when spawning a reviewer.
+- `Effect::UpdatePrComment { comment_id, repo_full_name, new_body }` — Patches an existing GitHub issue comment via `gh api --method PATCH`. Used to update stale "Review in progress" placeholder comments when a reviewer is restarted due to being stuck or dead, and by `pr.review-post` to replace the placeholder with final review findings.
 
 ## Reminders
 

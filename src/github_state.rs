@@ -105,6 +105,13 @@ pub struct PrReviewerAssignment {
     /// `MAX_REVIEWER_RESTARTS`, no further restarts are attempted.
     #[serde(default)]
     pub restart_count: u32,
+    /// GitHub comment ID of the "Review in progress" placeholder comment.
+    ///
+    /// Set by the daemon when it posts the placeholder via `PostPrComment`.
+    /// Used to update the placeholder with the final review via `pr.review-post`.
+    /// Eliminates the need for API lookups to find the placeholder comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder_comment_id: Option<u64>,
 }
 
 /// Tracks the Claude session associated with a PR author.
@@ -198,6 +205,7 @@ impl GitHubState {
             source,
             webhook_event_id: None,
             restart_count: 0,
+            placeholder_comment_id: None,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }
@@ -218,6 +226,7 @@ impl GitHubState {
             source,
             webhook_event_id,
             restart_count: 0,
+            placeholder_comment_id: None,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }
@@ -241,6 +250,7 @@ impl GitHubState {
             source,
             webhook_event_id: None,
             restart_count,
+            placeholder_comment_id: None,
         };
         self.pr_reviewers.insert(pr_number, assignment);
     }

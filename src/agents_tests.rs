@@ -104,7 +104,8 @@ fn test_reviewer_prompt_substitutes_pr_number() {
     let prompt = reviewer_prompt(42, AuthProvider::Claude);
     assert!(prompt.contains("reviewing PR #42"));
     assert!(prompt.contains("/code-review:code-review 42"));
-    assert!(prompt.contains("gh pr comment 42 --body"));
+    // Daemon posts the placeholder, reviewer uses `midtown pr review post`
+    assert!(prompt.contains("midtown pr review post --pr 42"));
     assert!(prompt.contains("PR #42 repeats"));
     assert!(
         !prompt.contains("{pr_number}"),
@@ -116,7 +117,8 @@ fn test_reviewer_prompt_substitutes_pr_number() {
 fn test_reviewer_resume_prompt_substitutes_pr_number() {
     let prompt = reviewer_resume_prompt(99, AuthProvider::Claude);
     assert!(prompt.contains("Resume reviewing PR #99"));
-    assert!(prompt.contains("gh pr comment 99 --body"));
+    // Daemon posts the placeholder, reviewer uses `midtown pr review post`
+    assert!(prompt.contains("midtown pr review post --pr 99"));
     assert!(prompt.contains("PR #99 repeats"));
     assert!(
         !prompt.contains("{pr_number}"),
@@ -209,26 +211,25 @@ fn test_reviewer_system_prompt_merges_all_sources() {
 }
 
 #[test]
-fn test_reviewer_prompts_include_frontmatter_requirement() {
+fn test_reviewer_prompts_use_daemon_review_post() {
     let system_prompt = reviewer_system_prompt("park", "midtown", AuthProvider::Claude, Some(42));
     let resume_prompt = reviewer_resume_prompt(42, AuthProvider::Claude);
 
+    // Frontmatter is now handled by the daemon, not the reviewer agent.
+    // Reviewer prompts should NOT contain the old frontmatter requirement.
     assert!(
-        system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
-        "Reviewer system prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
-    );
-    assert!(
-        system_prompt.contains("<!-- midtown: park -->"),
-        "Reviewer system prompt should show the frontmatter format with substituted name"
-    );
-    assert!(
-        system_prompt.contains("prepend the frontmatter"),
-        "Reviewer system prompt should instruct to prepend frontmatter"
+        !system_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
+        "Daemon handles frontmatter now — reviewer system prompt should not contain MIDTOWN FRONTMATTER REQUIREMENT"
     );
 
+    // Instead, reviewer prompts should instruct using `midtown pr review post`
     assert!(
-        resume_prompt.contains("MIDTOWN FRONTMATTER REQUIREMENT"),
-        "Reviewer resume prompt should contain MIDTOWN FRONTMATTER REQUIREMENT section"
+        system_prompt.contains("midtown pr review post"),
+        "Reviewer system prompt should instruct using `midtown pr review post`"
+    );
+    assert!(
+        resume_prompt.contains("midtown pr review post"),
+        "Reviewer resume prompt should instruct using `midtown pr review post`"
     );
 }
 

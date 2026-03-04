@@ -1,9 +1,9 @@
-//! PR data handler for the `prs.status` RPC method.
+//! PR-related RPC handlers.
 //!
-//! Contains the `prs.status` RPC handler, the `PrsCache`, and all
-//! GraphQL/PR-formatting logic for the web UI kanban board.
-//!
-//! - `prs.status` (this module): GitHub PR data, cached for 60s.
+//! - `prs.status`: GitHub PR data for the web UI kanban board, cached for 60s.
+//! - `pr.review`: Spawn a reviewer coworker for a PR.
+//! - `pr.review-post`: Update the placeholder comment with final review findings.
+//! - `pr.merge`: Merge a PR (with reviewer-active and CI gates).
 //! - `coworkers.status` (rpc_coworker.rs): live local coworker state, no cache.
 
 use std::collections::HashMap;
@@ -939,6 +939,169 @@ async fn fetch_pr_for_merge(
         serde_json::from_slice(&stdout)
             .map_err(|e| format!("Failed to parse gh pr view output: {}", e))
     })
+}
+
+// ============================================================================
+// PR review post handler
+// ============================================================================
+
+/// Handle `pr.review-post` RPC method — update the placeholder comment with final review.
+///
+/// Called by the reviewer agent via `midtown pr review post --pr <N> --body-file <path>`.
+/// The daemon:
+/// 1. Looks up the placeholder comment ID from the `PrReviewerAssignment`
+/// 2. Falls back to API lookup via `pr_in_progress_placeholder_comment_id()` if needed
+/// 3. Constructs the final body with frontmatter and footer
+/// 4. Updates the comment via `UpdatePrComment` effect
+pub(super) async fn handle_pr_review_post(
+    id: RequestId,
+    pr_number: u64,
+    body: &str,
+    state: &DaemonState,
+) -> Response {
+    info!("Review post requested for PR #{}", pr_number);
+
+    // Step 1: Look up the reviewer name and placeholder comment ID
+    let (reviewer_name, placeholder_comment_id) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.github.pr_reviewers.get(&pr_number) {
+            Some(assignment) => (
+                assignment.reviewer.clone(),
+                assignment.placeholder_comment_id,
+            ),
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!("No reviewer assignment found for PR #{}", pr_number),
+                    ),
+                );
+            }
+        }
+    };
+
+    // Step 2: Resolve the comment ID (assignment field, then API fallback)
+    let comment_id = if let Some(cid) = placeholder_comment_id {
+        cid
+    } else {
+        // Fallback: search the PR comments for the placeholder
+        let pr_num = pr_number;
+        let fallback_id = tokio::task::spawn_blocking(move || {
+            super::pr::pr_in_progress_placeholder_comment_id(pr_num)
+        })
+        .await
+        .ok()
+        .flatten();
+
+        match fallback_id {
+            Some(cid) => cid,
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No placeholder comment found for PR #{} — cannot update",
+                            pr_number
+                        ),
+                    ),
+                );
+            }
+        }
+    };
+
+    // Step 3: Construct the final body with frontmatter and footer
+    let final_body = format!(
+        "<!-- midtown: {} -->\n\n{}\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+        reviewer_name, body
+    );
+
+    // Step 4: Execute UpdatePrComment effect
+    let repo_path = match state.all_repo_paths.first() {
+        Some(path) => path,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(-32603, "No repo paths configured on daemon".to_string()),
+            );
+        }
+    };
+    let repo_full_name = state.get_repo_full_name(repo_path);
+
+    // Execute the comment update inline (not via execute_effects) so we can
+    // surface failures to the caller — the reviewer agent can retry on error.
+    let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
+    let output = tokio::process::Command::new("gh")
+        .args([
+            "api",
+            "--method",
+            "PATCH",
+            &endpoint,
+            "-f",
+            &format!("body={}", final_body),
+        ])
+        .output()
+        .await;
+
+    match output {
+        Ok(out) if out.status.success() => {
+            info!(
+                "Updated placeholder comment {} on {}",
+                comment_id, repo_full_name
+            );
+
+            // Clear the placeholder cache since the comment has been updated
+            {
+                let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+                cache.remove(&pr_number);
+            }
+
+            Response::success(
+                id,
+                serde_json::json!({
+                    "message": format!(
+                        "Review posted for PR #{} (comment {})",
+                        pr_number, comment_id
+                    )
+                }),
+            )
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            warn!(
+                "Failed to update comment {} for PR #{}: {}",
+                comment_id,
+                pr_number,
+                stderr.trim()
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!(
+                        "Failed to update comment {} for PR #{}: {}",
+                        comment_id,
+                        pr_number,
+                        stderr.trim()
+                    ),
+                ),
+            )
+        }
+        Err(e) => {
+            warn!(
+                "Failed to run gh api for comment update {} on PR #{}: {}",
+                comment_id, pr_number, e
+            );
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to run gh api for PR #{}: {}", pr_number, e),
+                ),
+            )
+        }
+    }
 }
 
 #[path = "rpc_prs_tests.rs"]

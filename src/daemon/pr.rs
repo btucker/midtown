@@ -2985,6 +2985,21 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 message: format!("─── Reviewing PR #{} ───", pr_number),
                 channel: Some(format!("dm-{}", reviewer_name)),
             },
+            // Post the "Review in progress" placeholder comment on the PR.
+            // The daemon handles this instead of the reviewer agent to avoid
+            // prompt-compliance issues (e.g., escaped `!` in `<!-- midtown-placeholder -->`).
+            // The comment ID is stored on the PrReviewerAssignment for later update.
+            Effect::PostPrComment {
+                pr_number,
+                reviewer_name: reviewer_name.clone(),
+                body: format!(
+                    "<!-- midtown-placeholder -->\n## Review Status\n\n\
+                     🔍 Review in progress by {}...\n\n---\n\
+                     > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
+                     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                    reviewer_name
+                ),
+            },
         ];
 
         // Warn the PR author not to enable auto-merge while the review is in progress.
