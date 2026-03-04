@@ -557,6 +557,24 @@ pub enum Effect {
     /// On non-zero exit or spawn failure, the script's stderr is posted to the
     /// channel as a system message so failures are visible in the chat log.
     EmitWorkflowEvent(crate::workflow::WorkflowEvent),
+
+    /// Respawn a dead fork session bound to a thread.
+    ///
+    /// Spawns a fresh fork session (no parent resume) with the same thread binding,
+    /// channel, and working directory as the original fork. Updates `topic_sessions`
+    /// with the new session ID and creates a `SessionRecord` for the new fork.
+    ///
+    /// This is the fork counterpart to `SpawnCoworker` for task-based crash recovery.
+    /// Fork sessions are thread-bound (not task-bound), so they need a separate
+    /// respawn path that preserves the thread↔session binding.
+    RespawnFork {
+        fork_name: String,
+        thread_parent_id: String,
+        channel: Option<String>,
+        working_dir: Option<String>,
+        auth_provider: crate::auth::AuthProvider,
+        is_channel_lead: bool,
+    },
 }
 
 /// Extract task IDs that are currently claimed by spawn or nudge effects.
@@ -3025,6 +3043,26 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::EmitWorkflowEvent(event) => {
                 invoke_workflow_script(state, event).await;
             }
+
+            Effect::RespawnFork {
+                fork_name,
+                thread_parent_id,
+                channel,
+                working_dir,
+                auth_provider,
+                is_channel_lead,
+            } => {
+                respawn_fork(
+                    state,
+                    &fork_name,
+                    &thread_parent_id,
+                    channel.as_deref(),
+                    working_dir.as_deref(),
+                    auth_provider,
+                    is_channel_lead,
+                )
+                .await;
+            }
         }
     }
 }
@@ -3522,6 +3560,127 @@ fn auto_detach_suffix_message(name: &str, repo_name: &str, is_channel_lead: bool
     } else {
         " Session will be reassigned via normal task dispatch."
     }
+}
+
+/// Respawn a dead fork session bound to a thread.
+///
+/// Builds a fresh fork HeadlessConfig (no parent resume), spawns it via
+/// SessionManager, and re-establishes the topic_sessions and reverse-map
+/// bindings so the thread continues routing to the new fork.
+async fn respawn_fork(
+    state: &DaemonState,
+    fork_name: &str,
+    thread_parent_id: &str,
+    channel: Option<&str>,
+    working_dir: Option<&str>,
+    auth_provider: crate::auth::AuthProvider,
+    is_channel_lead: bool,
+) {
+    // Build a fork config. We pass an empty calling_session_id and override
+    // resume_session_id to None — crash recovery spawns fresh, not from parent.
+    let (name, mut headless_config) = super::rpc_session::build_fork_config(
+        thread_parent_id,
+        "",              // no calling session (crash recovery)
+        None,            // no caller name
+        Some(fork_name), // reuse the original fork name as hint
+        channel,
+        working_dir,
+        auth_provider,
+        is_channel_lead,
+        &state.repo_name,
+    );
+    headless_config.resume_session_id = None; // Fresh session, don't resume from parent
+
+    // Spawn the fork
+    let fork_session_id = match state
+        .session_manager
+        .spawn_fork(&name, headless_config)
+        .await
+    {
+        Ok(sid) => sid,
+        Err(e) => {
+            warn!("Failed to respawn fork {}: {}", fork_name, e);
+            return;
+        }
+    };
+
+    // Update topic_sessions with the new session ID
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
+    }
+
+    // Create SessionRecord for the new fork
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            fork_session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: fork_session_id.clone(),
+                task_id: None,
+                current_name: Some(name.clone()),
+                preferred_name: Some(name.clone()),
+                working_dir: working_dir.unwrap_or_default().to_string(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: if is_channel_lead {
+                    "channel-lead".to_string()
+                } else {
+                    "dev".to_string()
+                },
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+                bound_thread_id: Some(thread_parent_id.to_string()),
+                last_active: chrono::Utc::now(),
+                purpose: format!(
+                    "respawned fork in thread {} (crash recovery)",
+                    thread_parent_id
+                ),
+                pid: None,
+                channel: channel.map(String::from),
+                provider: Some(auth_provider),
+                platform: Some(crate::platform::Platform::from_provider(auth_provider)),
+                profile: None,
+            },
+        );
+        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+            warn!("Failed to persist session record for respawned fork: {}", e);
+        }
+    }
+
+    // Populate in-memory reverse maps
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(name.clone(), fork_session_id.clone());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_session_id.clone(), name.clone());
+
+    // Cache the bound thread mapping for the output binding hot path
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(name.clone(), thread_parent_id.to_string());
+    if let Some(ch) = channel {
+        state
+            .fork_bound_channels
+            .lock()
+            .unwrap()
+            .insert(name.clone(), ch.to_string());
+    }
+
+    info!(
+        "Respawned fork {} → thread={}, new_session={}",
+        name, thread_parent_id, fork_session_id
+    );
 }
 
 #[path = "effects_tests.rs"]

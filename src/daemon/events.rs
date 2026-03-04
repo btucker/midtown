@@ -110,6 +110,7 @@ pub async fn evaluate_tick(
                 &claimed_ids,
             ));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
+            effects.extend(super::health::check_and_respawn_dead_forks(snap, state).await);
             // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
             // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
             // removes the entry from DaemonState when executed in effects.rs. The lead respawn
