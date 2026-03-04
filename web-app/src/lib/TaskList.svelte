@@ -2,6 +2,8 @@
   import { kanbanData, coworkers } from './store.js'
   import { openTaskThread, selectDm } from './api.js'
   import { getSenderColor } from './messageUtils.js'
+  import Feather from '@lucide/svelte/icons/feather'
+  import Search from '@lucide/svelte/icons/search'
 
   let { channelName = '' } = $props()
 
@@ -37,12 +39,12 @@
   // Map coworker name → coworker object for progress/phase lookup
   const cwMap = $derived(new Map($coworkers.map(cw => [cw.name, cw])))
 
-  // Map task_id → PR reviewer for showing reviewer avatar
+  // Map task_id → { reviewer, reviewPosted } for showing reviewer avatar + glow state
   const taskReviewerMap = $derived.by(() => {
     const map = new Map()
     for (const pr of $kanbanData.review) {
       if (pr.task_id != null && pr.reviewer) {
-        map.set(String(pr.task_id), pr.reviewer)
+        map.set(String(pr.task_id), { reviewer: pr.reviewer, reviewPosted: pr.review_posted || false })
       }
     }
     return map
@@ -53,6 +55,28 @@
     // Use the owner's avatar color for the status bar when in-progress
     if (task.owner) return getSenderColor(task.owner)
     return 'hsl(var(--accent-teal))'
+  }
+
+  /**
+   * Build progress bar segments: 70% dev, 20% review, 10% fix.
+   * Returns array of { width, color } for each filled segment.
+   */
+  function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
+    const segments = []
+    if (!reviewer) {
+      // Dev phase: author filling 0-70%
+      segments.push({ width: (cwProgress / 100) * 70, color: ownerColor })
+    } else if (!reviewPosted) {
+      // Review phase: dev complete (70%), reviewer filling the 20% block
+      segments.push({ width: 70, color: ownerColor })
+      segments.push({ width: 20, color: reviewerColor })
+    } else {
+      // Fix phase: dev (70%) + review (20%) complete, author filling 10%
+      segments.push({ width: 70, color: ownerColor })
+      segments.push({ width: 20, color: reviewerColor })
+      segments.push({ width: (cwProgress / 100) * 10, color: ownerColor })
+    }
+    return segments
   }
 
   function handleTaskClick(task) {
@@ -66,7 +90,9 @@
     {@const isBlocked = task.blocked_by?.length > 0}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const hasProgress = cw?.progress != null}
-    {@const reviewer = taskReviewerMap.get(String(task.id))}
+    {@const reviewInfo = taskReviewerMap.get(String(task.id))}
+    {@const reviewer = reviewInfo?.reviewer}
+    {@const reviewPosted = reviewInfo?.reviewPosted}
     <button
       class="task-row"
       class:active={isActive}
@@ -82,31 +108,39 @@
             <span class="blocked-badge" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
           {/if}
           {#if task.owner}
+            {@const ownerGlow = isActive && (!reviewer || reviewPosted)}
             <button
               class="owner-chip"
-              style="background-color: {getSenderColor(task.owner)}"
+              class:glowing={ownerGlow}
+              style="background-color: {getSenderColor(task.owner)}{ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
               title="{task.owner}{cw?.phase ? ` · ${cw.phase}` : ''}"
               onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
-            >{task.owner[0].toUpperCase()}</button>
+            >{task.owner[0].toUpperCase()}<span class="chip-badge"><Feather size={11} strokeWidth={2.5} fill="white" /></span></button>
           {/if}
           {#if reviewer}
+            {@const reviewerGlow = isActive && !reviewPosted}
             <button
               class="reviewer-chip"
-              style="border-color: {getSenderColor(reviewer)}"
-              title="{reviewer} · reviewing"
+              class:glowing={reviewerGlow}
+              style="background-color: {getSenderColor(reviewer)}{reviewerGlow ? `; --glow-color: ${getSenderColor(reviewer)}` : ''}"
+              title="{reviewer} · {reviewPosted ? 'reviewed' : 'reviewing'}"
               onclick={(e) => { e.stopPropagation(); selectDm(reviewer) }}
-            >{reviewer[0].toUpperCase()}</button>
+            >{reviewer[0].toUpperCase()}<span class="chip-badge"><Search size={11} strokeWidth={2.5} fill="white" style="transform: scaleX(-1)" /></span></button>
           {/if}
         </div>
-        {#if isActive && hasProgress}
+        {#if isActive && (hasProgress || reviewer)}
+          {@const segments = lifecycleSegments(cw?.progress ?? 100, reviewer, reviewPosted, getSenderColor(task.owner), reviewer ? getSenderColor(reviewer) : null)}
+          {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
           <div class="progress-row">
             <div class="progress-track">
-              <div
-                class="progress-fill"
-                style="width: {cw.progress}%; background: {getSenderColor(task.owner)}"
-              ></div>
+              {#each segments as seg}
+                <div
+                  class="progress-fill"
+                  style="width: {seg.width}%; background: {seg.color}"
+                ></div>
+              {/each}
             </div>
-            <span class="progress-label">{cw.progress}%</span>
+            <span class="progress-label">{totalPct}%</span>
           </div>
         {/if}
       </div>
@@ -204,6 +238,7 @@
   }
 
   .owner-chip {
+    position: relative;
     flex-shrink: 0;
     width: 16px;
     height: 16px;
@@ -222,26 +257,40 @@
     cursor: pointer;
   }
 
+  .chip-badge {
+    position: absolute;
+    bottom: -4px;
+    right: -4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: hsl(var(--sidebar-foreground));
+  }
+
+
   .owner-chip:hover {
     opacity: 0.85;
   }
 
+  .glowing {
+    box-shadow: 0 0 6px 1px var(--glow-color);
+  }
+
   .reviewer-chip {
+    position: relative;
     flex-shrink: 0;
     width: 16px;
     height: 16px;
     border-radius: 3px;
-    border: 1.5px solid;
+    border: none;
     padding: 0;
-    margin-left: -4px;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 0.55rem;
     font-weight: 700;
     font-family: var(--font-sans);
-    color: hsl(var(--muted-foreground));
-    background: hsl(var(--sidebar-background));
+    color: white;
     line-height: 1;
     cursor: pointer;
   }
@@ -263,11 +312,11 @@
     background: hsl(var(--sidebar-accent));
     border-radius: 2px;
     overflow: hidden;
+    display: flex;
   }
 
   .progress-fill {
     height: 100%;
-    border-radius: 2px;
     transition: width 0.5s ease;
   }
 
