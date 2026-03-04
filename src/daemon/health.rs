@@ -1528,6 +1528,15 @@ fn build_reviewer_respawn_effects(
     );
     config.working_dir = Some(wt_path.clone());
 
+    // Route reviewer to the task's topic channel (same lookup pattern
+    // used in check_and_restart_stuck_reviewers for workflow events).
+    config.channel = snap
+        .pr
+        .pr_task_associations
+        .get(&pr_number)
+        .and_then(|task_id| snap.task_channel.get(task_id))
+        .cloned();
+
     effects.push(Effect::EnsureWorktree {
         worktree_id: worktree_id.clone(),
         path: wt_path,

@@ -2957,6 +2957,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         );
         config.working_dir = Some(wt_path.clone());
 
+        // Route reviewer to the task's topic channel so `midtown channel post`
+        // defaults to the right channel (via MIDTOWN_CHANNEL env var).
+        {
+            let ps = state.persistent_state.lock().await;
+            let pr_task_map = ps.github.pr_to_task_map();
+            if let Some(task_id) = pr_task_map.get(&pr_number) {
+                config.channel = ps.task_channel.get(task_id).cloned();
+            }
+        }
+
         effects.push(Effect::EnsureWorktree {
             worktree_id: worktree_id.clone(),
             path: wt_path.clone(),
