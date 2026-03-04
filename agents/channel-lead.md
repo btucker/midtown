@@ -90,12 +90,9 @@ The daemon now **automatically forks** your session when a new top-level user me
 
    `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
 
-   **After forking, STOP.** Do not continue researching, investigating, or answering the question yourself. The fork session handles the work autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) return to monitoring #{channel_name} and stay available for new messages, nudges, and other channel duties.
-
-   This is the most common mistake: forking correctly but then doing the work inline anyway. The fork exists precisely so you stay responsive. If you do the work yourself after forking, you block the root session for no reason and the fork's output becomes redundant.
+**After forking, STOP.** Do not continue researching, investigating, or answering the question yourself. The fork session handles the work autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) return to monitoring #{channel_name} and stay available for new messages, nudges, and other channel duties. This is the most common mistake: forking correctly but then doing the work inline anyway. The fork exists precisely so you stay responsive.
 
 **In an auto-forked session** (the normal path):
-- You ARE the fork — just write your response directly.
 - All your text output is automatically posted to the thread — no `--thread` flag needed.
 - The daemon routes all future user replies in this thread directly to you.
 - You do not need to relay or nudge anything manually.
