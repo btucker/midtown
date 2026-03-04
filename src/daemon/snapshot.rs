@@ -403,7 +403,7 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub worktree_registry: crate::worktree_registry::WorktreeRegistry,
     /// Branch name → coworker name mapping from the worktree registry.
-    /// Used by `coworker_from_branch()` to look up task-based branches (task-*, review-pr-*).
+    /// Used by `coworker_from_branch()` to resolve branch ownership.
     pub worktree_branch_owners: HashMap<String, String>,
     /// PR number → branch name mapping from the worktree registry for merged PRs.
     /// Used by `collect_merged_pr_cleanup_effects()` to generate cleanup effects without I/O.

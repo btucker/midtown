@@ -45,13 +45,14 @@ fn test_handle_pull_request_opened() {
                 "title": "Add auth endpoint",
                 "user": {"login": "btucker"},
                 "merged": false,
-                "head": {"ref": "lexington/add-auth"}
+                "head": {"ref": "task-100-add-auth"},
+                "body": "<!-- midtown: lexington -->\n\nAdd auth endpoint"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
 
     let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
-    // Content includes @mention prefix for coworker
+    // Content includes @mention prefix for coworker (from frontmatter)
     assert_eq!(
         event.message.content,
         "@lexington opened PR #42: Add auth endpoint"
@@ -72,7 +73,8 @@ fn test_handle_pull_request_opened_draft_no_review() {
                 "user": {"login": "btucker"},
                 "merged": false,
                 "draft": true,
-                "head": {"ref": "lexington/add-auth"}
+                "head": {"ref": "task-100-add-auth"},
+                "body": "<!-- midtown: lexington -->\n\nWIP: Add auth endpoint"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -120,7 +122,8 @@ fn test_handle_pull_request_merged() {
                 "title": "Add auth endpoint",
                 "user": {"login": "btucker"},
                 "merged": true,
-                "head": {"ref": "lexington/add-auth"}
+                "head": {"ref": "task-100-add-auth"},
+                "body": "<!-- midtown: lexington -->\n\nAdd auth endpoint"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -146,7 +149,8 @@ fn test_handle_pull_request_closed_not_merged() {
                 "title": "Add auth endpoint",
                 "user": {"login": "btucker"},
                 "merged": false,
-                "head": {"ref": "lexington/add-auth"}
+                "head": {"ref": "task-100-add-auth"},
+                "body": "<!-- midtown: lexington -->\n\nAdd auth endpoint"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -245,7 +249,7 @@ fn test_ignores_pending_status() {
 }
 
 #[test]
-fn test_handle_review_with_branch_attribution() {
+fn test_handle_review_with_frontmatter_attribution_on_review() {
     let payload = r#"{
             "action": "submitted",
             "review": {
@@ -255,8 +259,8 @@ fn test_handle_review_with_branch_attribution() {
             },
             "pull_request": {
                 "number": 42,
-                "head": {"ref": "amsterdam/fix-bug"},
-                "body": "Some PR description"
+                "head": {"ref": "task-100-fix-bug"},
+                "body": "<!-- midtown: amsterdam -->\n\nSome PR description"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -264,7 +268,7 @@ fn test_handle_review_with_branch_attribution() {
     let event = handle_pull_request_review(payload.as_bytes())
         .unwrap()
         .unwrap();
-    // Content includes @mention prefix for coworker from branch
+    // Content includes @mention prefix for coworker from frontmatter
     assert_eq!(event.message.content, "@amsterdam btucker approved PR #42");
     // Sender is always "github"
     assert_eq!(event.message.from, "github");
@@ -300,28 +304,29 @@ fn test_handle_review_with_frontmatter_attribution() {
 }
 
 #[test]
-fn test_handle_ci_status_with_branch_attribution() {
+fn test_handle_ci_status_no_coworker_attribution() {
+    // CI status events don't carry PR body, so coworker attribution via
+    // frontmatter is unavailable. The daemon's polling path handles attribution
+    // via the branch_owners map instead.
     let payload = r#"{
             "state": "failure",
             "context": "ci/tests",
             "description": "Tests failed",
             "sha": "abc123",
-            "branches": [{"name": "riverside/add-feature"}],
+            "branches": [{"name": "task-100-add-feature"}],
             "repository": {"full_name": "org/repo"}
         }"#;
 
     let event = handle_status(payload.as_bytes()).unwrap().unwrap();
-    // Content includes @mention prefix for coworker from branch
-    assert_eq!(
-        event.message.content,
-        "@riverside CI failed (ci/tests): Tests failed"
-    );
-    // Sender is always "github"
+    // No @mention — CI status events can't resolve coworker without PR body
+    assert_eq!(event.message.content, "CI failed (ci/tests): Tests failed");
     assert_eq!(event.message.from, "github");
 }
 
 #[test]
-fn test_handle_check_run_with_branch_attribution() {
+fn test_handle_check_run_no_coworker_attribution() {
+    // Check run events don't carry PR body, so coworker attribution via
+    // frontmatter is unavailable. The daemon's polling path handles attribution.
     let payload = r#"{
             "action": "completed",
             "check_run": {
@@ -330,7 +335,7 @@ fn test_handle_check_run_with_branch_attribution() {
                 "conclusion": "success",
                 "check_suite": {
                     "head_sha": "abc123",
-                    "head_branch": "park/implement-thing",
+                    "head_branch": "task-100-implement-thing",
                     "pull_requests": [{"number": 99}]
                 }
             },
@@ -338,12 +343,8 @@ fn test_handle_check_run_with_branch_attribution() {
         }"#;
 
     let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
-    // Content includes @mention prefix for coworker from branch
-    assert_eq!(
-        event.message.content,
-        "@park Check 'build' passed on PR #99"
-    );
-    // Sender is always "github"
+    // No @mention — check run events can't resolve coworker without PR body
+    assert_eq!(event.message.content, "Check 'build' passed on PR #99");
     assert_eq!(event.message.from, "github");
 }
 
@@ -405,7 +406,7 @@ fn test_handle_check_run_failure_on_pr_branch_no_nudge() {
                 "conclusion": "failure",
                 "check_suite": {
                     "head_sha": "abc123",
-                    "head_branch": "park/implement-thing",
+                    "head_branch": "task-100-implement-thing",
                     "pull_requests": [{"number": 99}]
                 }
             },
@@ -413,10 +414,7 @@ fn test_handle_check_run_failure_on_pr_branch_no_nudge() {
         }"#;
 
     let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
-    assert_eq!(
-        event.message.content,
-        "@park Check 'build' failed on PR #99"
-    );
+    assert_eq!(event.message.content, "Check 'build' failed on PR #99");
     assert!(event.ci_failed_on_default_branch.is_none());
 }
 
@@ -497,13 +495,13 @@ fn test_handle_check_run_failure_on_non_default_branch_no_pr_no_nudge() {
 }
 
 #[test]
-fn test_handle_review_comment_with_branch_attribution() {
+fn test_handle_review_comment_with_frontmatter_attribution() {
     let payload = r#"{
             "action": "created",
             "pull_request": {
                 "number": 77,
-                "head": {"ref": "madison/refactor"},
-                "body": "PR body here"
+                "head": {"ref": "task-200-refactor"},
+                "body": "<!-- midtown: madison -->\n\nPR body here"
             },
             "comment": {
                 "id": 200,
@@ -514,19 +512,17 @@ fn test_handle_review_comment_with_branch_attribution() {
         }"#;
 
     let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
-    // Content includes @mention prefix for coworker from branch
+    // Content includes @mention prefix for coworker from frontmatter
     assert_eq!(
         event.message.content,
         "@madison reviewer left review comment on PR #77: Nice work!"
     );
-    // Sender is always "github"
     assert_eq!(event.message.from, "github");
     // PR activity should identify madison as owner
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 77);
     assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
     assert_eq!(activity.actor, "reviewer");
-    // Should include comment node for reactions
     assert!(matches!(
         activity.comment_node,
         Some(CommentNode::ReviewComment(200))
@@ -795,8 +791,8 @@ fn test_handle_review_comment_with_coworker_signature() {
             "action": "created",
             "pull_request": {
                 "number": 77,
-                "head": {"ref": "madison/refactor"},
-                "body": "PR body here"
+                "head": {"ref": "task-200-refactor"},
+                "body": "<!-- midtown: madison -->\n\nPR body here"
             },
             "comment": {
                 "id": 203,
@@ -808,7 +804,7 @@ fn test_handle_review_comment_with_coworker_signature() {
 
     let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
     // Should use coworker name from comment signature
-    // Note: @mention still uses PR attribution (madison), but commenter is lexington
+    // Note: @mention still uses PR attribution (madison from PR frontmatter), but commenter is lexington
     assert_eq!(
         event.message.content,
         "@madison lexington left review comment on PR #77: Consider using a match here."
@@ -822,15 +818,15 @@ fn test_handle_review_comment_with_coworker_signature() {
 }
 
 #[test]
-fn test_handle_review_comment_without_signature_uses_branch() {
-    // When no coworker signature in the comment, but the PR branch
-    // maps to a coworker and the commenter is the repo owner (shared account),
-    // use the branch-derived coworker name
+fn test_handle_review_comment_without_signature_uses_pr_frontmatter() {
+    // When no coworker signature in the comment, but the PR body has
+    // frontmatter and the commenter is the repo owner (shared account),
+    // use the PR-frontmatter-derived coworker name
     let payload = r#"{
             "action": "created",
             "pull_request": {
                 "number": 77,
-                "head": {"ref": "madison/refactor"},
+                "head": {"ref": "task-200-refactor"},
                 "body": "<!-- midtown: madison -->\n\nPR body"
             },
             "comment": {
@@ -842,7 +838,7 @@ fn test_handle_review_comment_without_signature_uses_branch() {
         }"#;
 
     let event = handle_review_comment(payload.as_bytes()).unwrap().unwrap();
-    // Should use coworker name from PR branch/body, not GitHub username
+    // Should use coworker name from PR frontmatter, not GitHub username
     assert_eq!(
         event.message.content,
         "@madison madison left review comment on PR #77: Good point, I'll fix that."
@@ -860,8 +856,8 @@ fn test_handle_review_comment_external_user_keeps_username() {
             "action": "created",
             "pull_request": {
                 "number": 77,
-                "head": {"ref": "madison/refactor"},
-                "body": "PR body here"
+                "head": {"ref": "task-200-refactor"},
+                "body": "<!-- midtown: madison -->\n\nPR body here"
             },
             "comment": {
                 "id": 205,
@@ -892,8 +888,8 @@ fn test_review_approved_produces_state_change() {
             },
             "pull_request": {
                 "number": 42,
-                "head": {"ref": "broadway/fix-bug"},
-                "body": "Some PR description"
+                "head": {"ref": "task-100-fix-bug"},
+                "body": "<!-- midtown: broadway -->\n\nSome PR description"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -964,6 +960,8 @@ fn test_review_commented_no_state_change() {
 
 #[test]
 fn test_check_run_failure_on_pr_produces_ci_failure() {
+    // Check run events don't carry PR body, so owner_coworker is None.
+    // The daemon resolves the owner via branch_owners map when processing the effect.
     let payload = r#"{
             "action": "completed",
             "check_run": {
@@ -972,7 +970,7 @@ fn test_check_run_failure_on_pr_produces_ci_failure() {
                 "conclusion": "failure",
                 "check_suite": {
                     "head_sha": "abc123",
-                    "head_branch": "park/implement-thing",
+                    "head_branch": "task-100-implement-thing",
                     "pull_requests": [{"number": 99}]
                 }
             },
@@ -982,7 +980,7 @@ fn test_check_run_failure_on_pr_produces_ci_failure() {
     let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
     let failure = event.pr_ci_failure.unwrap();
     assert_eq!(failure.pr_number, 99);
-    assert_eq!(failure.owner_coworker.as_deref(), Some("park"));
+    assert_eq!(failure.owner_coworker, None);
     assert_eq!(failure.check_name, "Build");
     // Should NOT flag as default-branch CI failure
     assert!(event.ci_failed_on_default_branch.is_none());

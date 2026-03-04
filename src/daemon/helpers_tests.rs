@@ -463,44 +463,37 @@ fn ci_passed_with_no_checks() {
 }
 
 // -------------------------------------------------------------------------
-// coworker_from_branch — extracts owner from PR branch name
+// coworker_from_branch — resolves owner via branch_owners map
 // -------------------------------------------------------------------------
 
 #[test]
-fn coworker_from_branch_extracts_prefix() {
+fn coworker_from_branch_resolves_via_map() {
+    let mut map = std::collections::HashMap::new();
+    map.insert("task-42-fix-auth".to_string(), "lexington".to_string());
+    map.insert("review-pr-99".to_string(), "amsterdam".to_string());
+
     assert_eq!(
-        coworker_from_branch("lexington/fix-auth"),
+        coworker_from_branch("task-42-fix-auth", &map),
         Some("lexington".to_string())
     );
     assert_eq!(
-        coworker_from_branch("amsterdam/feature-123"),
-        Some("amsterdam".to_string())
-    );
-}
-
-#[test]
-fn coworker_from_branch_case_insensitive() {
-    assert_eq!(
-        coworker_from_branch("YORK/big-feature"),
-        Some("york".to_string())
-    );
-    assert_eq!(
-        coworker_from_branch("Amsterdam/Fix"),
+        coworker_from_branch("review-pr-99", &map),
         Some("amsterdam".to_string())
     );
 }
 
 #[test]
 fn coworker_from_branch_returns_none_for_unknown() {
+    let map = std::collections::HashMap::new();
     assert_eq!(
-        coworker_from_branch("unknown-name/feature"),
+        coworker_from_branch("unknown-branch", &map),
         None,
-        "unknown branch prefix should return None"
+        "unknown branch should return None"
     );
     assert_eq!(
-        coworker_from_branch("main"),
+        coworker_from_branch("main", &map),
         None,
-        "branch without slash should return None"
+        "main should return None"
     );
 }
 

@@ -642,20 +642,6 @@ const COWORKER_NAMES: &[&str] = &[
     "riverside",
 ];
 
-/// Extract coworker name from branch prefix (e.g., "lexington/fix-auth" -> "lexington").
-///
-/// **Note:** This only supports legacy `<coworker>/<description>` branches. Task-based
-/// branches (`task-*`, `review-pr-*`) are handled via frontmatter (`<!-- midtown: name -->`)
-/// in the PR body. Since webhooks don't have access to the worktree registry, they rely on
-/// coworkers including frontmatter in their PRs for correct attribution.
-fn coworker_from_branch(branch: &str) -> Option<&'static str> {
-    let prefix = branch.split('/').next()?;
-    COWORKER_NAMES
-        .iter()
-        .find(|&&name| name.eq_ignore_ascii_case(prefix))
-        .copied()
-}
-
 /// Extract coworker name from frontmatter in body (e.g., "<!-- midtown: lexington -->")
 fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
     // Look for <!-- midtown: name --> pattern
@@ -671,24 +657,10 @@ fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
 }
 
 /// Determine the coworker associated with a PR-related event.
-/// Priority: frontmatter > branch prefix
+/// Uses frontmatter (`<!-- midtown: name -->`) in the PR body for attribution.
 /// Returns None if no coworker can be determined.
-fn determine_pr_coworker(branch: Option<&str>, body: Option<&str>) -> Option<&'static str> {
-    // Check frontmatter first (explicit attribution)
-    if let Some(body) = body
-        && let Some(name) = coworker_from_frontmatter(body)
-    {
-        return Some(name);
-    }
-
-    // Check branch prefix
-    if let Some(branch) = branch
-        && let Some(name) = coworker_from_branch(branch)
-    {
-        return Some(name);
-    }
-
-    None
+fn determine_pr_coworker(_branch: Option<&str>, body: Option<&str>) -> Option<&'static str> {
+    body.and_then(coworker_from_frontmatter)
 }
 
 /// Format @mention prefix for a coworker, or empty string if none.

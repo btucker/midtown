@@ -140,34 +140,25 @@ fn make_test_state_with_owner(
     (state, temp_dir, _guard)
 }
 
-/// Bug: collect_green_with_feedback_effects was using head_ref.split('/').next()
-/// to extract the owner, which doesn't validate against known coworker names.
-/// This meant PRs with branches like "btucker/fix" would extract "btucker" as owner
-/// and potentially nudge wrong coworkers if the prefix matches a coworker name.
+/// Verify coworker_from_branch only resolves via the branch_owners map.
 #[test]
-fn coworker_from_branch_rejects_non_coworker_prefixes() {
-    // These should return None because they're not valid coworker names
-    assert!(
-        coworker_from_branch("btucker/fix-something").is_none(),
-        "btucker is not a coworker name"
-    );
-    assert!(
-        coworker_from_branch("feature/add-auth").is_none(),
-        "feature is not a coworker name"
-    );
-    assert!(coworker_from_branch("main").is_none(), "main has no slash");
+fn coworker_from_branch_resolves_via_map_only() {
+    let mut map = std::collections::HashMap::new();
+    map.insert("task-42-fix-auth".to_string(), "york".to_string());
 
-    // These should return Some because they are valid coworker names
+    // Resolves when present in map
     assert_eq!(
-        coworker_from_branch("york/fix-something"),
+        coworker_from_branch("task-42-fix-auth", &map),
         Some("york".to_string()),
-        "york is a valid coworker name"
     );
+
+    // Returns None for branches not in map, even with coworker-like prefixes
     assert_eq!(
-        coworker_from_branch("amsterdam/add-feature"),
-        Some("amsterdam".to_string()),
-        "amsterdam is a valid coworker name"
+        coworker_from_branch("york/fix-something", &map),
+        None,
+        "legacy prefix branches no longer resolve"
     );
+    assert_eq!(coworker_from_branch("main", &map), None,);
 }
 
 #[test]
@@ -279,33 +270,24 @@ fn format_no_reviewer_reason_only_author_excluded() {
     );
 }
 
-/// Task-based branches (the common case in Midtown) require the worktree_branch_owners
-/// map to resolve to a coworker name. Without the map, `coworker_from_branch` returns
-/// None, so the diagnostic message omits the `excluded-author` annotation even when the
-/// PR author is identifiable. This test verifies the full resolution path works correctly.
+/// Task-based branches require the worktree_branch_owners map to resolve.
+/// This test verifies that the resolved author appears in the diagnostic.
 #[test]
 fn format_no_reviewer_reason_task_based_branch_resolves_with_map() {
     let mut branch_owners = std::collections::HashMap::new();
     branch_owners.insert("task-42-fix-auth".to_string(), "york".to_string());
 
-    // Without the map, coworker_from_branch returns None for task-based branches
-    let without_map = coworker_from_branch("task-42-fix-auth");
+    // coworker_from_branch resolves via the map
+    let resolved = coworker_from_branch("task-42-fix-auth", &branch_owners);
     assert_eq!(
-        without_map, None,
-        "coworker_from_branch should return None for task-based branches"
-    );
-
-    // With the map, coworker_from_branch_with_map resolves correctly
-    let with_map = coworker_from_branch_with_map("task-42-fix-auth", Some(&branch_owners));
-    assert_eq!(
-        with_map,
+        resolved,
         Some("york".to_string()),
-        "coworker_from_branch_with_map should resolve task-based branch via map"
+        "coworker_from_branch should resolve task-based branch via map"
     );
 
     // The resolved author should appear as excluded-author in the diagnostic
     let busy = vec!["madison".to_string(), "york".to_string()];
-    let reason = format_no_reviewer_reason(&busy, with_map.as_deref());
+    let reason = format_no_reviewer_reason(&busy, resolved.as_deref());
     assert_eq!(
         reason, "no eligible reviewers (busy: [madison, york], excluded-author: york)",
         "excluded-author should appear when task-based branch resolves via map"
@@ -315,7 +297,7 @@ fn format_no_reviewer_reason_task_based_branch_resolves_with_map() {
 /// Bug: When a coworker goes on break, their PR's branch is no longer in
 /// worktree_branch_owners. The poll_prs_for_issues loop (lines 664-669) skips
 /// any PR whose branch doesn't map to an active coworker via
-/// coworker_from_branch_with_map(), which means orphaned PRs with merge
+/// coworker_from_branch(), which means orphaned PRs with merge
 /// conflicts never trigger nudges or warnings.
 ///
 /// Expected: The daemon should detect merge conflicts on ALL open PRs (not just
@@ -507,8 +489,9 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
     // (it's the main "lead" worktree in a different location)
     let active_names = std::collections::HashSet::new();
 
+    let empty_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let effects = collect_reviewer_effects_with_source(
-        None, // No branch_owners_map (simulating empty worktree map)
+        &empty_owners, // No branch owners (simulating empty worktree map)
         &registry,
         &active_names,
         &state,
@@ -701,7 +684,7 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
 
 /// Bug: When a coworker creates a PR with a task-based branch name (e.g.,
 /// "task-42-fix-auth") and then goes on break, the branch is removed from
-/// worktree_branch_owners. coworker_from_branch_with_map() returns None
+/// worktree_branch_owners. coworker_from_branch() returns None
 /// for this branch (it's not in the map and doesn't match the coworker/branch
 /// pattern). The poll_prs_for_issues loop skips such PRs entirely at line 719,
 /// so merge conflicts are never detected.
@@ -766,7 +749,7 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     }
 
     // Create a minimal snapshot with NO active coworkers and NO worktree_branch_owners
-    // entry for task-42-fix-auth. coworker_from_branch_with_map will return None.
+    // entry for task-42-fix-auth. coworker_from_branch will return None.
     let snap = minimal_snapshot_for_test();
     // snap.worktree_branch_owners is empty - this ensures owner_opt = None
 
@@ -798,7 +781,7 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
         !effects.is_empty(),
         "BUG: Expected effects for orphaned PR with merge conflict, but got none. \
          The PR with branch 'task-42-fix-auth' and merge conflict was completely \
-         ignored because coworker_from_branch_with_map returned None."
+         ignored because coworker_from_branch returned None."
     );
 
     // Verify we got a system message warning about the orphaned PR
@@ -856,7 +839,7 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
     let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -913,12 +896,15 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
         })
         .unwrap();
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let branch_owners: std::collections::HashMap<String, String> =
+        [("madison/fix-polling".to_string(), "madison".to_string())]
+            .into_iter()
+            .collect();
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let active_names = std::collections::HashSet::new();
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -994,7 +980,7 @@ async fn test_completed_worktree_with_snapshot_data() {
 
     // Call the function under test with snapshot's worktree registry and synthetic PR
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &snap.worktree_registry, // Real snapshot data with task 1323's completed worktree
         &active_names,
         &state,
@@ -1073,7 +1059,7 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
 
     // Call the function under test
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &worktree_registry,
         &active_names,
         &state,
@@ -1114,14 +1100,14 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     use super::super::snapshot::minimal_snapshot_for_test;
 
     // Simulate PR #42 that meets all orphan criteria:
-    // - Has coworker branch prefix
+    // - Branch resolves to a coworker via branch_owners map
     // - Has been reviewed
     // - CI is passing
     // - Not a draft
     let pr_data = json!({
         "number": 42,
         "title": "Fix authentication bug",
-        "headRefName": "york/fix-auth",
+        "headRefName": "task-100-fix-auth",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1129,6 +1115,8 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     });
 
     let mut snap = minimal_snapshot_for_test();
+    snap.worktree_branch_owners
+        .insert("task-100-fix-auth".to_string(), "york".to_string());
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(42);
 
@@ -1186,7 +1174,7 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     let pr_data = json!({
         "number": 42,
         "title": "Fix authentication bug",
-        "headRefName": "york/fix-auth",
+        "headRefName": "task-100-fix-auth",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1194,6 +1182,8 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     });
 
     let mut snap = minimal_snapshot_for_test();
+    snap.worktree_branch_owners
+        .insert("task-100-fix-auth".to_string(), "york".to_string());
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(42);
 
@@ -1763,8 +1753,8 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
 /// 2. Extract task_id 1483 from title → no worktree with task_id="1483" → None
 /// 3. `worktree_registry.get_by_branch("park/task-1483-...")` → None
 /// 4. `worktree = None` → check `is_lead_branch` → false
-/// 5. `coworker_from_branch_with_map` → returns `Some("park")` (matches prefix)
-/// 6. **Incorrectly marks PR as orphaned** even though park is actively running
+/// 5. `coworker_from_branch` → returns `Some("park")` via branch_owners map
+/// 6. Checks `active_names.contains("park")` → true → NOT orphaned
 ///
 /// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
 /// can always address review feedback regardless of worktree status.
@@ -1816,12 +1806,15 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
 
     let (state, _tmp, _guard) = make_test_state("midtown");
 
-    // Empty branch_owners_map — the bug manifests because coworker_from_branch_with_map
-    // still identifies "park" as the owner via the branch prefix
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Provide branch_owners so park's branch resolves correctly
+    let mut branch_owners = std::collections::HashMap::new();
+    branch_owners.insert(
+        "park/task-1483-kill-ring-yank-v2".to_string(),
+        "park".to_string(),
+    );
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &snap.worktree_registry, // Real snapshot registry: no task 1483 entry
         &snap.coworkers.active_names, // Real snapshot active_names: includes "park"
         &state,
@@ -1880,11 +1873,15 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
     let active_names: std::collections::HashSet<String> =
         ["york".to_string()].into_iter().collect();
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut branch_owners = std::collections::HashMap::new();
+    branch_owners.insert(
+        "york/task-500-headless-feature".to_string(),
+        "york".to_string(),
+    );
     let registry = crate::worktree_registry::WorktreeRegistry::new();
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2332,10 +2329,10 @@ async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
 /// Fix: Also exclude the PR author's name (extracted from the branch) from reviewer selection.
 #[tokio::test]
 async fn test_reviewer_not_assigned_to_pr_author() {
-    // PR whose branch identifies "riverside" as the author
+    // PR whose branch resolves to "riverside" via branch_owners map
     let pr = json!({
         "number": 9998,  // Non-existent PR — gh call fails gracefully → is_pr_reviewed returns false
-        "headRefName": "riverside/some-feature",
+        "headRefName": "task-100-some-feature",
         "title": "feat: Some feature [Midtown !100]",
         "isDraft": false,
         "createdAt": "2026-01-01T00:00:00Z",
@@ -2368,14 +2365,17 @@ async fn test_reviewer_not_assigned_to_pr_author() {
             .unwrap();
     }
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let branch_owners: std::collections::HashMap<String, String> =
+        [("task-100-some-feature".to_string(), "riverside".to_string())]
+            .into_iter()
+            .collect();
     let registry = crate::worktree_registry::WorktreeRegistry::new();
     // "riverside" is active (it's the PR author), so the PR is not orphaned
     let active_names: std::collections::HashSet<String> =
         ["riverside".to_string()].into_iter().collect();
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2464,7 +2464,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2532,7 +2532,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2599,7 +2599,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
 
     // Tick 1: stale active_names → early guard blocks spawn (conservative)
     let effects_tick1 = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names_stale,
         &state,
@@ -2628,7 +2628,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
     };
 
     let effects_tick2 = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names_fresh,
         &state,
@@ -2689,7 +2689,7 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2738,7 +2738,7 @@ async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
     config.save("test-repo").expect("save test project config");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2762,7 +2762,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
     let pr_number = 99994u64;
     let pr_json = serde_json::json!({
         "number": pr_number,
-        "headRefName": "york/fix-auth",
+        "headRefName": "task-778-fix-auth",
         "title": "Fix auth regression [Midtown !778]",
         "mergeable": "MERGEABLE",
         "statusCheckRollup": null,
@@ -2772,7 +2772,10 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
         "state": "OPEN",
     });
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let branch_owners: std::collections::HashMap<String, String> =
+        [("task-778-fix-auth".to_string(), "york".to_string())]
+            .into_iter()
+            .collect();
     let active_names: std::collections::HashSet<String> =
         std::collections::HashSet::from(["york".to_string()]);
     let registry = crate::worktree_registry::WorktreeRegistry::default();
@@ -2785,7 +2788,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
     config.save("test-repo").expect("save test project config");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
@@ -2816,11 +2819,11 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
 /// enable auto-merge until the review is complete.
 #[tokio::test]
 async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
-    // PR authored by "madison" (branch: madison/fix-polling)
+    // PR authored by "madison" (resolved via branch_owners map)
     let pr_number = 99994u64;
     let pr_json = serde_json::json!({
         "number": pr_number,
-        "headRefName": "madison/fix-polling",
+        "headRefName": "task-200-fix-polling",
         "title": "Fix polling reconciliation [Midtown !200]",
         "mergeable": "MERGEABLE",
         "statusCheckRollup": null,
@@ -2830,7 +2833,10 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
         "state": "OPEN",
     });
 
-    let branch_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let branch_owners: std::collections::HashMap<String, String> =
+        [("task-200-fix-polling".to_string(), "madison".to_string())]
+            .into_iter()
+            .collect();
     let registry = crate::worktree_registry::WorktreeRegistry::new();
     // madison is active (owns the PR) so the PR is not orphaned
     let active_names: std::collections::HashSet<String> =
@@ -2839,7 +2845,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     let effects = collect_reviewer_effects_with_source(
-        Some(&branch_owners),
+        &branch_owners,
         &registry,
         &active_names,
         &state,
