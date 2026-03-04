@@ -192,7 +192,10 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         extra: dict = {}
         if event_type == "pr.opened" and coworker:
             extra["pr_author"] = coworker
-            extra["pr_opened_at"] = time.time()
+            # Only record on the first real open — replays must not reset the
+            # timestamp or the pr.ci_passed age gate would re-suppress spawns.
+            if _get_task_data(state, task_id or "").get("pr_opened_at") is None:
+                extra["pr_opened_at"] = time.time()
         elif event_type == "task.assigned" and coworker:
             extra["coworker"] = coworker
 

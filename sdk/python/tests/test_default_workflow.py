@@ -129,3 +129,25 @@ class TestPrOpenedRecordsTimestamp:
         opened_at = state["tasks"]["100"].get("pr_opened_at")
         assert opened_at is not None
         assert before <= opened_at <= after
+
+    def test_pr_opened_replay_preserves_timestamp(self) -> None:
+        """A replayed pr.opened must NOT overwrite the original pr_opened_at."""
+        rpc = _make_rpc()
+        state: dict = {}
+        original_time = time.time() - 120  # opened 2 minutes ago
+        _setup_pr_opened(state, "100", opened_at=original_time)
+
+        # Replay the event — task is already in_review so no state transition
+        handle(
+            {
+                "type": "pr.opened",
+                "task_id": "100",
+                "pr_number": 42,
+                "coworker": "park",
+                "channel": "test",
+            },
+            rpc,
+            state,
+        )
+
+        assert state["tasks"]["100"]["pr_opened_at"] == original_time
