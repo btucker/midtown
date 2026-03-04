@@ -34,14 +34,6 @@ detect_arch() {
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 
-# ── Check dependencies ──────────────────────────────────────────────────────
-
-if ! command -v gh >/dev/null 2>&1; then
-    echo "Error: GitHub CLI (gh) is required but not installed." >&2
-    echo "Install it from: https://cli.github.com/" >&2
-    exit 1
-fi
-
 # ── Resolve latest version ───────────────────────────────────────────────────
 
 echo "Detecting latest midtown release..."
@@ -107,6 +99,12 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
     echo ""
     echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
     echo ""
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+    echo ""
+    echo "Note: GitHub CLI (gh) is not installed."
+    echo "Midtown requires gh at runtime. Install it from: https://cli.github.com/"
 fi
 
 echo "Run 'midtown --help' to get started."

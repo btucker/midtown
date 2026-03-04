@@ -16,13 +16,15 @@ Coworkers are the agents created to pick up and execute those tasks. Coworkers o
 
 ### 1. Install
 
-The quickest way to install (requires [GitHub CLI](https://cli.github.com/)):
+The quickest way to install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/btucker/midtown/main/install.sh | sh
 ```
 
-This detects your OS and architecture, downloads the latest release binary, and installs it to `~/.cargo/bin`. The installer checks for `gh` and will prompt you to install it if missing. Set `MIDTOWN_INSTALL_DIR` to change the install location. If `~/.cargo/bin` is not already in your PATH, the script will print instructions to add it.
+This detects your OS and architecture, downloads the latest release binary, and installs it to `~/.cargo/bin`. Set `MIDTOWN_INSTALL_DIR` to change the install location. If `~/.cargo/bin` is not already in your PATH, the script will print instructions to add it.
+
+Midtown requires the [GitHub CLI](https://cli.github.com/) (`gh`) at runtime — the installer will remind you if it's not found.
 
 Or install from [crates.io](https://crates.io/crates/midtown) (requires [Rust & Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html) and [GitHub CLI](https://cli.github.com/)):
 
