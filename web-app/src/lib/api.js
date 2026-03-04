@@ -28,6 +28,7 @@ import {
   trackedThreads,
   threadUnreadCounts,
   dismissedThreads,
+  userSenderName,
 } from './store.js'
 
 // Maximum number of tool call items retained per agent in the activity store.
@@ -218,14 +219,21 @@ export function switchProject(projectName, webhookPort) {
   threadToolItems.set({})
   threadData.set(null)
   threadOwnership.set({})
-  // Only clear tracked threads when switching to a different project.
-  // On same-project reload, the stores were initialized from localStorage
-  // and should be preserved.
+  // Clear tracked threads when switching to a different project.
+  // On same-project reload, the stores (initialized from localStorage)
+  // should be preserved.  Use the persisted project name so the first
+  // switchProject call after a page reload still detects a project change.
   const previousProject = get(activeProject)
-  if (previousProject && previousProject !== projectName) {
+  const savedThreadProject =
+    typeof localStorage !== 'undefined' ? localStorage.getItem('midtown_thread_project') : null
+  const lastProject = previousProject || savedThreadProject
+  if (lastProject !== projectName) {
     trackedThreads.set({})
     threadUnreadCounts.set({})
     dismissedThreads.set(new Set())
+  }
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('midtown_thread_project', projectName)
   }
   connected.set(false)
 
@@ -408,6 +416,7 @@ export async function fetchStatus() {
       if (data.max_coworkers !== undefined) {
         maxCoworkers.set(data.max_coworkers)
       }
+      userSenderName.set(data.user_display_name || 'user')
       updateKanbanData(data)
       updateRepoStatus(data)
     }
@@ -641,7 +650,9 @@ export function handleUpdate(update) {
 
         // Thread sidebar tracking: increment unread when a tracked thread gets a reply
         // from someone other than the user, and the thread panel isn't currently showing it.
-        if (msg.from !== 'user') {
+        // Compare against both 'user' and the configured user_display_name to avoid
+        // counting the user's own replies as unread.
+        if (msg.from !== 'user' && msg.from !== get(userSenderName)) {
           const tracked = get(trackedThreads)
           const td = get(threadData)
           const panelShowingThis = td && td.parentMessage?.id === msg.thread_parent_id

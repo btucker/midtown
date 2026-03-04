@@ -1224,6 +1224,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         Vec::new()
     };
 
+    let user_display_name = crate::config::get_user_display_name_for_project(&state.config.repo);
+
     let status = serde_json::json!({
         "daemon": "running",
         "coworkers": coworkers_data,
@@ -1235,6 +1237,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
         "max_coworkers": state.max_coworkers,
+        "user_display_name": user_display_name,
     });
 
     Ok(axum::Json(status))

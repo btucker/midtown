@@ -100,6 +100,10 @@ export const projects = writable([])
 // Currently selected project name (null = single-project mode)
 export const activeProject = writable(null)
 
+// The sender name the daemon uses for user-authored messages.
+// Defaults to 'user'; overridden by the configured user_display_name.
+export const userSenderName = writable('user')
+
 // Whether the app is running in multi-project mode (always true — served from shared webserver)
 export const multiProjectMode = writable(true)
 
