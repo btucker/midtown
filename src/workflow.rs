@@ -56,6 +56,15 @@ pub enum WorkflowEvent {
         task_id: String,
         /// Task subject line.
         subject: String,
+        /// Task description body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// Thread ID the task belongs to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        /// The task's announcement message ID.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
     },
 
     /// A coworker was assigned to (or claimed) a task.
@@ -65,6 +74,17 @@ pub enum WorkflowEvent {
         task_id: String,
         /// The coworker who claimed the task.
         coworker: String,
+        /// Task subject line.
+        subject: String,
+        /// Task description body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// Thread ID the task belongs to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        /// The task's announcement message ID.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
     },
 
     /// A task was marked completed.
@@ -74,6 +94,17 @@ pub enum WorkflowEvent {
         task_id: String,
         /// The coworker who completed the task, if known.
         coworker: Option<String>,
+        /// Task subject line.
+        subject: String,
+        /// Task description body.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// Thread ID the task belongs to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        /// The task's announcement message ID.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
     },
 
     // ── PR lifecycle ─────────────────────────────────────────────────────────
@@ -171,6 +202,11 @@ pub enum WorkflowEvent {
         coworker: String,
         /// The message content.
         message: String,
+        /// Thread this message belongs to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        /// The message's own unique ID.
+        message_id: String,
     },
 
     // ── Channel ──────────────────────────────────────────────────────────────
@@ -182,6 +218,11 @@ pub enum WorkflowEvent {
         sender: String,
         /// The message content.
         message: String,
+        /// Thread this message belongs to.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        thread_id: Option<String>,
+        /// The message's own unique ID.
+        message_id: String,
     },
 
     // ── Timer ────────────────────────────────────────────────────────────────

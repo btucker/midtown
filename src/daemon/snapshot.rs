@@ -345,6 +345,16 @@ pub struct WorldSnapshot {
     /// initial prompt when spawning for a task with an execution skill.
     #[serde(default)]
     pub task_execution_skill_map: HashMap<String, String>,
+    /// Task-to-thread-ID mapping for workflow events.
+    /// Maps task ID → thread ID. Used by dispatch.rs to include thread context
+    /// in TaskAssigned/TaskCompleted workflow events without I/O.
+    #[serde(default)]
+    pub task_thread_id_map: HashMap<String, String>,
+    /// Task-to-message-ID mapping for workflow events.
+    /// Maps task ID → announcement message ID. Used by dispatch.rs to include
+    /// message context in TaskAssigned/TaskCompleted workflow events without I/O.
+    #[serde(default)]
+    pub task_message_id_map: HashMap<String, String>,
     /// Channel lead session mapping for nudge routing.
     /// Maps channel name → session ID. Used by effects.rs to deliver
     /// `NudgeChannelLead` effects without locking persistent state.
@@ -686,12 +696,15 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let pending_tasks_without_owners =
         crate::tasks::get_pending_tasks_without_owners_for_repo(&state.repo_name);
 
-    // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill, and channel-lead mappings
+    // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
+    // task-to-thread, task-to-message, and channel-lead mappings
     let (
         task_channel,
         task_model_map,
         task_plan_map,
         task_execution_skill_map,
+        task_thread_id_map,
+        task_message_id_map,
         channel_lead_sessions,
     ) = {
         let ps = state.persistent_state.lock().await;
@@ -700,6 +713,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             ps.task_model.clone(),
             ps.task_plan.clone(),
             ps.task_execution_skill.clone(),
+            ps.task_thread_id.clone(),
+            ps.task_message_id.clone(),
             ps.channel_lead_sessions.clone(),
         )
     };
@@ -1168,6 +1183,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_model_map,
         task_plan_map,
         task_execution_skill_map,
+        task_thread_id_map,
+        task_message_id_map,
         channel_lead_sessions,
         coworkers_with_unblocked_deps,
         archived_channels,
@@ -1231,6 +1248,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_model_map: HashMap::new(),
         task_plan_map: HashMap::new(),
         task_execution_skill_map: HashMap::new(),
+        task_thread_id_map: HashMap::new(),
+        task_message_id_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),

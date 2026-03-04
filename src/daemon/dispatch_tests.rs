@@ -221,8 +221,13 @@ fn test_should_recover_task_with_explicit_pr_association() {
 
 #[test]
 fn test_build_task_completion_effects_with_task_id() {
-    let effects =
-        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        None,
+        None,
+    );
 
     // 4 effects: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification
     assert_eq!(effects.len(), 4, "Should return 4 effects");
@@ -273,7 +278,8 @@ fn test_build_task_completion_effects_with_task_id() {
 
 #[test]
 fn test_build_task_completion_effects_without_task_id() {
-    let effects = build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo", None);
+    let effects =
+        build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo", None, None);
 
     assert!(
         effects.is_empty(),
@@ -283,8 +289,13 @@ fn test_build_task_completion_effects_without_task_id() {
 
 #[test]
 fn test_build_task_completion_effects_message_says_merged() {
-    let effects =
-        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        None,
+        None,
+    );
 
     // Verify the channel message says "merged" not "opened"
     match &effects[2] {
@@ -4425,6 +4436,7 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
         123,
         "myrepo",
         Some("proj-auth".to_string()),
+        None,
     );
 
     // 4 base effects (CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification) + 1 TaskCompleted + 1 PrMerged
@@ -4472,8 +4484,13 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
 
 #[test]
 fn test_build_task_completion_effects_no_workflow_event_without_channel() {
-    let effects =
-        build_task_completion_effects("feat: Add auth endpoint [Midtown #42]", 123, "myrepo", None);
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        None,
+        None,
+    );
 
     // Only the 4 base effects — no workflow events without a channel
     assert_eq!(effects.len(), 4);
@@ -4533,15 +4550,19 @@ fn test_build_subject_based_completion_effects_emits_task_completed() {
         "Should emit 1 TaskCompleted workflow event"
     );
 
-    assert!(
-        matches!(
-            workflow_events[0],
-            crate::workflow::WorkflowEvent::TaskCompleted {
-                channel,
-                task_id,
-                coworker,
-            } if channel == "proj-auth" && task_id == "55" && coworker.as_deref() == Some("amsterdam")
-        ),
-        "Should emit TaskCompleted with correct fields"
-    );
+    if let crate::workflow::WorkflowEvent::TaskCompleted {
+        channel,
+        task_id,
+        coworker,
+        subject,
+        ..
+    } = workflow_events[0]
+    {
+        assert_eq!(channel, "proj-auth");
+        assert_eq!(task_id, "55");
+        assert_eq!(coworker.as_deref(), Some("amsterdam"));
+        assert!(!subject.is_empty());
+    } else {
+        panic!("Should emit TaskCompleted with correct fields");
+    }
 }

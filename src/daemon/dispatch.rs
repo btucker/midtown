@@ -138,13 +138,17 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 // ============================================================================
 
 /// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification.
+#[allow(clippy::too_many_arguments)]
 fn task_completed_effects(
     task_id: &str,
     repo_name: &str,
     task_subject: &str,
+    task_description: Option<String>,
     channel_message: String,
     channel: Option<String>,
     coworker: Option<String>,
+    thread_id: Option<String>,
+    message_id: Option<String>,
 ) -> Vec<Effect> {
     let mut effects = vec![
         Effect::CompleteTask {
@@ -177,6 +181,10 @@ fn task_completed_effects(
                 channel: ch,
                 task_id: task_id.to_string(),
                 coworker,
+                subject: task_subject.to_string(),
+                description: task_description,
+                thread_id,
+                message_id,
             },
         ));
     }
@@ -2156,6 +2164,10 @@ fn dispatch_unowned_pending_tasks(
                         channel: ch.clone(),
                         task_id: task.id.clone(),
                         coworker: coworker_name.clone(),
+                        subject: task.subject.clone(),
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
                 ));
             }
@@ -2214,6 +2226,10 @@ fn dispatch_unowned_pending_tasks(
                         channel: ch.clone(),
                         task_id: task.id.clone(),
                         coworker: coworker_name.clone(),
+                        subject: task.subject.clone(),
+                        description: task.description.clone(),
+                        thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
+                        message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
                 ));
             }
@@ -2246,26 +2262,42 @@ fn dispatch_unowned_pending_tasks(
 /// 3. Post a notification to the channel
 ///
 /// Returns an empty vector if no task ID is found in the title.
+/// Context for enriching task workflow events with thread/message/description data.
+pub(super) struct TaskEventContext {
+    pub description: Option<String>,
+    pub thread_id: Option<String>,
+    pub message_id: Option<String>,
+}
+
 pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
     repo_name: &str,
     channel: Option<String>,
+    ctx: Option<TaskEventContext>,
 ) -> Vec<Effect> {
     let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
         return vec![];
+    };
+
+    let (description, thread_id, message_id) = match ctx {
+        Some(c) => (c.description, c.thread_id, c.message_id),
+        None => (None, None, None),
     };
 
     let mut effects = task_completed_effects(
         &task_id.to_string(),
         repo_name,
         pr_title,
+        description,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",
             task_id, pr_number
         ),
         channel.clone(),
         None,
+        thread_id,
+        message_id,
     );
 
     // Emit PrMerged alongside task completion when channel is known.
@@ -2316,12 +2348,15 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     &task.id,
                     &snap.repo_name,
                     &task.subject,
+                    task.description.clone(),
                     format!(
                         "✅ Auto-completed task !{} (PR #{} merged)",
                         task.id, pr_number
                     ),
                     task_channel,
                     task.owner.clone(),
+                    snap.task_thread_id_map.get(&task.id).cloned(),
+                    snap.task_message_id_map.get(&task.id).cloned(),
                 ));
             }
         } else {
@@ -2357,12 +2392,15 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     &task.id,
                     &snap.repo_name,
                     &task.subject,
+                    task.description.clone(),
                     format!(
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
                         task.id, pr_list
                     ),
                     task_channel,
                     task.owner.clone(),
+                    snap.task_thread_id_map.get(&task.id).cloned(),
+                    snap.task_message_id_map.get(&task.id).cloned(),
                 ));
             }
         }

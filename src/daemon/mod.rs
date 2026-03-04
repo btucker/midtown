@@ -3339,20 +3339,31 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // the generic "PR merged" push for task-linked PRs.
                     let mut task_handled = false;
                     if let Some(pr_merged_info) = webhook_event.pr_merged_info {
-                        // Look up the task's channel for workflow event routing.
-                        let task_channel = if let Some(task_id) =
+                        // Look up task context for workflow event routing.
+                        let (task_channel, task_event_ctx) = if let Some(task_id) =
                             crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title)
                         {
                             let ps = state.persistent_state.lock().await;
-                            ps.task_channel.get(&task_id.to_string()).cloned()
+                            let channel = ps.task_channel.get(&task_id.to_string()).cloned();
+                            let task = crate::tasks::read_task_for_repo(
+                                &task_id.to_string(),
+                                &state.repo_name,
+                            );
+                            let ctx = dispatch::TaskEventContext {
+                                description: task.and_then(|t| t.description),
+                                thread_id: ps.task_thread_id.get(&task_id.to_string()).cloned(),
+                                message_id: ps.task_message_id.get(&task_id.to_string()).cloned(),
+                            };
+                            (channel, Some(ctx))
                         } else {
-                            None
+                            (None, None)
                         };
                         let completion_effects = dispatch::build_task_completion_effects(
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
                             &state.repo_name,
                             task_channel,
+                            task_event_ctx,
                         );
                         if !completion_effects.is_empty() {
                             task_handled = true;
