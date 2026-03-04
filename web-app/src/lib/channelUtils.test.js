@@ -6,6 +6,8 @@ import {
   computeExpandedAfterTriangleClick,
   computeExpandedAfterChannelNameClick,
   computeVisibleDmChannels,
+  findPr,
+  getPrUrl,
 } from './channelUtils.js'
 
 describe('getChannelTaskCount', () => {
@@ -378,5 +380,96 @@ describe('computeVisibleDmChannels', () => {
     })
     // All 3 are visited, so filtered set = full set → "show less" is redundant
     expect(filtered.length).toBe(allDmsNoUnread.length)
+  })
+})
+
+// ── PR link navigation ──────────────────────────────────────────────────────
+// PR #N links must always open GitHub, never redirect to a task thread.
+// Both desktop (handleLinkClick) and mobile (handleMessageTap) use getPrUrl
+// to resolve the destination. These tests verify getPrUrl always returns a
+// GitHub URL regardless of task association.
+
+describe('findPr', () => {
+  const kanban = {
+    review: [{ number: 42, task_id: 7, repo: 'main' }],
+    done: [{ number: 10, task_id: null }],
+  }
+
+  it('finds a PR in the review column', () => {
+    expect(findPr(42, kanban)).toEqual({ number: 42, task_id: 7, repo: 'main' })
+  })
+
+  it('finds a PR in the done column', () => {
+    expect(findPr(10, kanban)).toEqual({ number: 10, task_id: null })
+  })
+
+  it('returns null for unknown PR number', () => {
+    expect(findPr(999, kanban)).toBeNull()
+  })
+
+  it('parses string PR numbers', () => {
+    expect(findPr('42', kanban)).toEqual({ number: 42, task_id: 7, repo: 'main' })
+  })
+})
+
+describe('getPrUrl', () => {
+  const primaryRepo = 'btucker/midtown'
+
+  it('returns GitHub URL for PR with associated task', () => {
+    // Key invariant: even when a PR has a task_id, we get a GitHub URL, not a task thread
+    const kanban = {
+      review: [{ number: 42, task_id: 7, repo: null }],
+      done: [],
+    }
+    const url = getPrUrl(42, kanban, [], primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown/pull/42')
+  })
+
+  it('returns GitHub URL for PR without associated task', () => {
+    const kanban = {
+      review: [{ number: 10, task_id: null, repo: null }],
+      done: [],
+    }
+    const url = getPrUrl(10, kanban, [], primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown/pull/10')
+  })
+
+  it('resolves multi-repo PR via repoStatuses', () => {
+    const kanban = {
+      review: [{ number: 5, task_id: 3, repo: 'docs' }],
+      done: [],
+    }
+    const repoStatuses = [
+      { label: 'docs', fullName: 'btucker/midtown-docs' },
+    ]
+    const url = getPrUrl(5, kanban, repoStatuses, primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown-docs/pull/5')
+  })
+
+  it('falls back to primary repo when multi-repo label has no match', () => {
+    const kanban = {
+      review: [{ number: 5, task_id: null, repo: 'unknown-label' }],
+      done: [],
+    }
+    const url = getPrUrl(5, kanban, [], primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown/pull/5')
+  })
+
+  it('falls back to primary repo when PR is not in kanban', () => {
+    const kanban = { review: [], done: [] }
+    const url = getPrUrl(99, kanban, [], primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown/pull/99')
+  })
+
+  it('returns null when no repo info is available', () => {
+    const kanban = { review: [], done: [] }
+    const url = getPrUrl(99, kanban, [], null)
+    expect(url).toBeNull()
+  })
+
+  it('accepts string PR numbers', () => {
+    const kanban = { review: [], done: [] }
+    const url = getPrUrl('42', kanban, [], primaryRepo)
+    expect(url).toBe('https://github.com/btucker/midtown/pull/42')
   })
 })

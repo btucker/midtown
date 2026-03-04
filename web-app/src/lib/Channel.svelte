@@ -12,6 +12,7 @@
   import MessageRow from './MessageRow.svelte'
   import DayDivider from './DayDivider.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
+  import { findPr as findPrUtil, getPrUrl as getPrUrlUtil } from './channelUtils.js'
 
   // Windowed rendering: only render a slice of messages near the viewport.
   // Messages outside this window are not mounted in the DOM.
@@ -348,33 +349,12 @@
     return pr ? pr.status : null
   }
 
-  // Find a PR by number across all kanban columns that contain PR data.
-  // PRs appear in 'review' (open) and 'done' (merged) columns.
   function findPr(prNum) {
-    const num = parseInt(prNum)
-    return $kanbanData.review.find((p) => p.number === num)
-      || $kanbanData.done.find((p) => p.number === num)
-      || null
+    return findPrUtil(prNum, $kanbanData)
   }
 
-  // Build GitHub PR URL (multi-repo aware).
-  // Looks up the PR in kanbanData to find its repo, then resolves via
-  // repoStatuses. Falls back to the primary repo if no match is found.
-  // Returns null if repo full name is unavailable.
   function getPrUrl(prNum) {
-    const pr = findPr(prNum)
-    // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
-    if (pr?.repo && $repoStatuses.length > 0) {
-      const info = $repoStatuses.find((r) => r.label === pr.repo)
-      if (info?.fullName) {
-        return `https://github.com/${info.fullName}/pull/${prNum}`
-      }
-    }
-    // Fall back to the primary repo
-    if ($repoStatus.fullName) {
-      return `https://github.com/${$repoStatus.fullName}/pull/${prNum}`
-    }
-    return null
+    return getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
   }
 
   // Find a task by ID from the daemon status task list

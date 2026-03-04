@@ -250,6 +250,42 @@ export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds)
 }
 
 /**
+ * Find a PR by number across kanban columns that contain PR data.
+ * PRs appear in 'review' (open) and 'done' (merged) columns.
+ */
+export function findPr(prNum, kanbanData) {
+  const num = parseInt(prNum)
+  return kanbanData.review.find((p) => p.number === num)
+    || kanbanData.done?.find((p) => p.number === num)
+    || null
+}
+
+/**
+ * Build GitHub PR URL (multi-repo aware).
+ * Looks up the PR in kanbanData to find its repo, then resolves via
+ * repoStatuses. Falls back to the primary repo if no match is found.
+ * Returns null if repo full name is unavailable.
+ *
+ * This always returns a GitHub URL regardless of whether the PR has
+ * an associated task — PR links should always open GitHub.
+ */
+export function getPrUrl(prNum, kanbanData, repoStatuses, primaryRepoFullName) {
+  const pr = findPr(prNum, kanbanData)
+  // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
+  if (pr?.repo && repoStatuses.length > 0) {
+    const info = repoStatuses.find((r) => r.label === pr.repo)
+    if (info?.fullName) {
+      return `https://github.com/${info.fullName}/pull/${prNum}`
+    }
+  }
+  // Fall back to the primary repo
+  if (primaryRepoFullName) {
+    return `https://github.com/${primaryRepoFullName}/pull/${prNum}`
+  }
+  return null
+}
+
+/**
  * Get active PRs for a channel, using task_id → channel lookup.
  * Main channel shows all PRs, topic channels filter by task channel.
  */
