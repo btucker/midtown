@@ -352,7 +352,7 @@ fn test_auto_detach_stale_lead_then_respawn() {
     // Set up: lead is attached but stale (15 min ago, past the 10-min ATTACH_TIMEOUT).
     // Also ensure lead is not running so ensure_lead_alive would spawn it once detached.
     // After the rename, the lead session name equals the repo name (e.g. "midtown").
-    let lead_name = harness.snapshot().repo_name.clone();
+    let lead_name = harness.snapshot().project_name.clone();
     let stale_attach_time = harness.snapshot().now_utc - chrono::Duration::minutes(15);
     harness
         .snapshot_mut()

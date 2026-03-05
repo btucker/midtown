@@ -48,7 +48,7 @@ fn make_test_state(
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
-        repo_name.to_string(),
+        crate::paths::ProjectPaths::with_project_name(repo_name, repo_name),
         vec![base_dir],
         channel_router,
         None,

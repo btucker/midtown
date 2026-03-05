@@ -245,9 +245,9 @@ impl FullProjectConfig {
 
     /// Load the full project config for a named project.
     ///
-    /// Looks in `~/.midtown/projects/<project_name>/config.toml`.
-    pub fn load(project_name: &str) -> Option<Self> {
-        Self::load_from(&project_config_path(project_name))
+    /// Looks in `~/.midtown/projects/<dir_key>/config.toml`.
+    pub fn load(dir_key: &str) -> Option<Self> {
+        Self::load_from(&project_config_path(dir_key))
     }
 
     /// Create a minimal config for a single-repo project.
@@ -313,8 +313,8 @@ impl FullProjectConfig {
     }
 
     /// Save this config for the named project.
-    pub fn save(&self, project_name: &str) -> std::io::Result<()> {
-        self.save_to(&project_config_path(project_name))
+    pub fn save(&self, dir_key: &str) -> std::io::Result<()> {
+        self.save_to(&project_config_path(dir_key))
     }
 }
 
@@ -1025,8 +1025,8 @@ impl GlobalConfig {
 /// Returns None if the file doesn't exist.
 /// Supports both the new structured format (with `[project]`, `[default]`, `[daemon]` sections)
 /// and the legacy flat format (top-level keys like `bin_command`, `max_coworkers`).
-fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
-    let path = project_config_path(project_name);
+fn load_project_config(dir_key: &str) -> Option<ProjectConfig> {
+    let path = project_config_path(dir_key);
 
     if !path.exists() {
         return None;
@@ -1061,16 +1061,16 @@ fn load_project_config(project_name: &str) -> Option<ProjectConfig> {
 /// Load the full project config (including [project] and [daemon] sections).
 ///
 /// Returns None if the file doesn't exist.
-pub fn load_full_project_config(project_name: &str) -> Option<FullProjectConfig> {
-    FullProjectConfig::load(project_name)
+pub fn load_full_project_config(dir_key: &str) -> Option<FullProjectConfig> {
+    FullProjectConfig::load(dir_key)
 }
 
 /// Get the project-specific daemon configuration, merged with global.
 ///
 /// Priority: project daemon section > global daemon section.
-pub fn get_project_daemon_config(project_name: &str) -> DaemonSection {
+pub fn get_project_daemon_config(dir_key: &str) -> DaemonSection {
     let global = GlobalConfig::load();
-    let project = FullProjectConfig::load(project_name);
+    let project = FullProjectConfig::load(dir_key);
 
     match project {
         Some(proj) => global.daemon.merge(&proj.daemon),
@@ -1081,9 +1081,9 @@ pub fn get_project_daemon_config(project_name: &str) -> DaemonSection {
 /// Get the project-specific execution provider configuration, merged with global.
 ///
 /// Priority: project execution section > global execution section.
-pub fn get_project_execution_config(project_name: &str) -> ExecutionSection {
+pub fn get_project_execution_config(dir_key: &str) -> ExecutionSection {
     let global = GlobalConfig::load();
-    let project = FullProjectConfig::load(project_name);
+    let project = FullProjectConfig::load(dir_key);
 
     match project {
         Some(proj) => global.execution.merge(&proj.execution),
@@ -1094,8 +1094,8 @@ pub fn get_project_execution_config(project_name: &str) -> ExecutionSection {
 /// Get the effective review mode for a project.
 ///
 /// Defaults to `ReviewMode::Local` when not configured.
-pub fn get_review_mode_for_repo(project_name: &str) -> ReviewMode {
-    get_project_execution_config(project_name)
+pub fn get_review_mode_for_repo(dir_key: &str) -> ReviewMode {
+    get_project_execution_config(dir_key)
         .review_mode
         .unwrap_or(ReviewMode::Local)
 }
@@ -1104,10 +1104,10 @@ pub fn get_review_mode_for_repo(project_name: &str) -> ReviewMode {
 ///
 /// If no role-specific provider is configured, defaults to Claude.
 pub fn get_execution_provider_for_role(
-    project_name: &str,
+    dir_key: &str,
     role: ExecutionRole,
 ) -> crate::auth::AuthProvider {
-    let execution = get_project_execution_config(project_name);
+    let execution = get_project_execution_config(dir_key);
     resolve_execution_provider(&execution, role)
 }
 
@@ -1136,8 +1136,8 @@ fn resolve_execution_provider(
 ///
 /// Resolution order: role-specific `*_model` → `default_model` → `None`.
 /// When `None`, the caller should fall back to the hardcoded default for that role.
-pub fn get_model_for_role(project_name: &str, role: ExecutionRole) -> Option<ModelSize> {
-    let execution = get_project_execution_config(project_name);
+pub fn get_model_for_role(dir_key: &str, role: ExecutionRole) -> Option<ModelSize> {
+    let execution = get_project_execution_config(dir_key);
     let role_specific = match role {
         ExecutionRole::Coworker => execution.coworker_model,
         ExecutionRole::Reviewer => execution.reviewer_model,
@@ -1152,9 +1152,9 @@ pub fn get_model_for_role(project_name: &str, role: ExecutionRole) -> Option<Mod
 /// Get the project-specific sandbox configuration, merged with global.
 ///
 /// Project-level paths extend (not replace) global paths.
-pub fn get_project_sandbox_config(project_name: &str) -> SandboxSection {
+pub fn get_project_sandbox_config(dir_key: &str) -> SandboxSection {
     let global = GlobalConfig::load();
-    let project = FullProjectConfig::load(project_name);
+    let project = FullProjectConfig::load(dir_key);
 
     match project {
         Some(proj) => global.sandbox.merge(&proj.sandbox),
@@ -1167,8 +1167,8 @@ pub fn get_project_sandbox_config(project_name: &str) -> SandboxSection {
 /// Returns the `[channel_leads]` section from the project config, or a default
 /// (empty) config if not set. Channel lead config is project-specific only —
 /// there is no global default for per-channel model overrides.
-pub fn get_channel_leads_config(project_name: &str) -> ChannelLeadsConfig {
-    FullProjectConfig::load(project_name)
+pub fn get_channel_leads_config(dir_key: &str) -> ChannelLeadsConfig {
+    FullProjectConfig::load(dir_key)
         .map(|full| full.channel_leads)
         .unwrap_or_default()
 }
@@ -1178,17 +1178,17 @@ pub fn get_channel_leads_config(project_name: &str) -> ChannelLeadsConfig {
 /// This resolves `execution.channel_lead_model` → `execution.default_model` → None,
 /// providing the fallback that `ChannelLeadsConfig::model_for_channel_with_fallback()` uses
 /// when neither a per-channel override nor `[channel_leads].default_model` is set.
-pub fn get_channel_lead_model_fallback(project_name: &str) -> Option<ModelSize> {
-    get_model_for_role(project_name, ExecutionRole::ChannelLead)
+pub fn get_channel_lead_model_fallback(dir_key: &str) -> Option<ModelSize> {
+    get_model_for_role(dir_key, ExecutionRole::ChannelLead)
 }
 
 /// Get the effective configuration for a project.
 ///
 /// Merges global defaults with project-specific overrides.
-pub fn get_project_config(project_name: &str) -> ProjectConfig {
+pub fn get_project_config(dir_key: &str) -> ProjectConfig {
     let global = GlobalConfig::load();
 
-    match load_project_config(project_name) {
+    match load_project_config(dir_key) {
         Some(project) => global.default.merge(&project),
         None => global.default,
     }
@@ -1200,26 +1200,26 @@ pub fn get_project_config(project_name: &str) -> ProjectConfig {
 /// If the file already exists, it is not modified.
 /// If it doesn't exist, a minimal config is created with the project name
 /// and repo path inferred from the working directory.
-pub fn ensure_project_config(project_name: &str, workdir: &Path) -> std::io::Result<()> {
+pub fn ensure_project_config(dir_key: &str, workdir: &Path) -> std::io::Result<()> {
     // Reject coworker names to prevent worktree directories from being
     // registered as projects (e.g., "broadway" instead of "midtown").
-    if crate::coworker::is_coworker_name(project_name) {
+    if crate::coworker::is_coworker_name(dir_key) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
                 "Refusing to create project config for '{}': this is a coworker name, not a project",
-                project_name
+                dir_key
             ),
         ));
     }
 
-    let path = project_config_path(project_name);
+    let path = project_config_path(dir_key);
     if path.exists() {
         return Ok(());
     }
 
     let repo_path = workdir.to_string_lossy().to_string();
-    let config = FullProjectConfig::minimal(project_name, &repo_path);
+    let config = FullProjectConfig::minimal(dir_key, &repo_path);
     config.save_to(&path)
 }
 
@@ -1229,8 +1229,8 @@ pub fn global_config_path() -> PathBuf {
 }
 
 /// Get the path to a project-specific config file.
-pub fn project_config_path(project_name: &str) -> PathBuf {
-    crate::paths::projects_dir_for_repo(project_name).join("config.toml")
+pub fn project_config_path(dir_key: &str) -> PathBuf {
+    crate::paths::projects_dir_for_repo(dir_key).join("config.toml")
 }
 
 /// Clear per-project auth overrides for a specific provider across all projects.
@@ -1330,7 +1330,7 @@ pub fn collect_used_webhook_ports() -> Vec<u16> {
 ///
 /// The assigned port is written back to the project's config.toml so it
 /// remains stable across restarts.
-pub fn assign_webhook_port(project_name: &str) -> u16 {
+pub fn assign_webhook_port(dir_key: &str) -> u16 {
     let used_ports = collect_used_webhook_ports();
 
     // Find next available port starting from AUTO_PORT_START
@@ -1344,7 +1344,7 @@ pub fn assign_webhook_port(project_name: &str) -> u16 {
     }
 
     // Write the assigned port back to config.toml
-    let path = project_config_path(project_name);
+    let path = project_config_path(dir_key);
     let mut config = FullProjectConfig::load_from(&path).unwrap_or_default();
     config.daemon.webhook_port = Some(port);
     let _ = config.save_to(&path);
@@ -1408,8 +1408,8 @@ pub fn get_theme() -> ThemeName {
 }
 
 /// Get the user display name for a specific project, if configured.
-pub fn get_user_display_name_for_project(project_name: &str) -> Option<String> {
-    get_project_config(project_name)
+pub fn get_user_display_name_for_project(dir_key: &str) -> Option<String> {
+    get_project_config(dir_key)
         .user_display_name()
         .map(|s| s.to_string())
 }

@@ -51,10 +51,10 @@ pub fn read_tasks() -> Vec<Task> {
 
 /// Read all tasks for a specific repository.
 ///
-/// If `repo_name` is None, attempts to detect the current repository.
+/// If `dir_key` is None, attempts to detect the current repository.
 /// Tasks are stored in `~/.claude/tasks/midtown-<repo>/`.
-pub fn read_tasks_for_repo(repo_name: Option<&str>) -> Vec<Task> {
-    let repo = repo_name
+pub fn read_tasks_for_repo(dir_key: Option<&str>) -> Vec<Task> {
+    let repo = dir_key
         .map(String::from)
         .or_else(crate::paths::detect_repo_name)
         .unwrap_or_else(|| "default".to_string());
@@ -85,8 +85,8 @@ pub fn read_task(task_id: &str) -> Option<Task> {
 /// Read a single task by ID for a specific repository.
 ///
 /// Returns None if the task doesn't exist or can't be parsed.
-pub fn read_task_for_repo(task_id: &str, repo_name: &str) -> Option<Task> {
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+pub fn read_task_for_repo(task_id: &str, dir_key: &str) -> Option<Task> {
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
 
     let home = dirs::home_dir()?;
 
@@ -261,8 +261,8 @@ pub fn get_busy_coworkers() -> Vec<String> {
 ///
 /// This is the preferred version for daemon usage where the repo name is already known,
 /// avoiding the need to detect it via git commands which may fail in background processes.
-pub fn get_busy_coworkers_for_repo(repo_name: &str) -> Vec<String> {
-    read_tasks_for_repo(Some(repo_name))
+pub fn get_busy_coworkers_for_repo(dir_key: &str) -> Vec<String> {
+    read_tasks_for_repo(Some(dir_key))
         .into_iter()
         .filter(|t| t.status == TaskStatus::InProgress)
         .filter_map(|t| t.owner)
@@ -297,9 +297,9 @@ pub fn get_in_progress_tasks_with_subjects() -> Vec<(String, String, String)> {
 /// dependency on the current working directory. Used by the daemon to ensure
 /// task reads are consistent regardless of where the daemon process runs.
 pub fn get_in_progress_tasks_with_subjects_for_repo(
-    repo_name: &str,
+    dir_key: &str,
 ) -> Vec<(String, String, String)> {
-    read_tasks_for_repo(Some(repo_name))
+    read_tasks_for_repo(Some(dir_key))
         .into_iter()
         .filter(|t| t.status == TaskStatus::InProgress)
         .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
@@ -406,8 +406,8 @@ pub fn get_pending_tasks_with_owners() -> Vec<(String, String, String)> {
 /// Unlike the cwd-based variant, this takes an explicit repo name to avoid
 /// dependency on the current working directory. Used by the daemon to ensure
 /// task reads are consistent regardless of where the daemon process runs.
-pub fn get_pending_tasks_with_owners_for_repo(repo_name: &str) -> Vec<(String, String, String)> {
-    read_tasks_for_repo(Some(repo_name))
+pub fn get_pending_tasks_with_owners_for_repo(dir_key: &str) -> Vec<(String, String, String)> {
+    read_tasks_for_repo(Some(dir_key))
         .into_iter()
         .filter(|t| t.status == TaskStatus::Pending && t.owner.is_some())
         .map(|t| (t.id, t.subject, t.owner.unwrap_or_default()))
@@ -451,16 +451,16 @@ pub fn get_pending_tasks_without_owners_with_grace(grace_secs: u64) -> Vec<Task>
 /// Unlike the cwd-based variant, this takes an explicit repo name to avoid
 /// dependency on the current working directory. Used by the daemon to ensure
 /// task reads are consistent regardless of where the daemon process runs.
-pub fn get_pending_tasks_without_owners_for_repo(repo_name: &str) -> Vec<Task> {
-    get_pending_tasks_without_owners_with_grace_for_repo(repo_name, TASK_CREATION_GRACE_SECS)
+pub fn get_pending_tasks_without_owners_for_repo(dir_key: &str) -> Vec<Task> {
+    get_pending_tasks_without_owners_with_grace_for_repo(dir_key, TASK_CREATION_GRACE_SECS)
 }
 
 /// Get pending tasks without owners with grace period for a specific repository.
 fn get_pending_tasks_without_owners_with_grace_for_repo(
-    repo_name: &str,
+    dir_key: &str,
     grace_secs: u64,
 ) -> Vec<Task> {
-    let all_tasks = read_tasks_for_repo(Some(repo_name));
+    let all_tasks = read_tasks_for_repo(Some(dir_key));
     filter_pending_tasks_without_owners(&all_tasks, grace_secs)
 }
 
@@ -505,9 +505,9 @@ pub fn get_coworkers_with_unblocked_dependents() -> std::collections::HashSet<St
 /// dependency on the current working directory. Used by the daemon to ensure
 /// task reads are consistent regardless of where the daemon process runs.
 pub fn get_coworkers_with_unblocked_dependents_for_repo(
-    repo_name: &str,
+    dir_key: &str,
 ) -> std::collections::HashSet<String> {
-    let all_tasks = read_tasks_for_repo(Some(repo_name));
+    let all_tasks = read_tasks_for_repo(Some(dir_key));
     get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks)
 }
 
@@ -644,7 +644,7 @@ fn update_task_owner_in_dir(
 #[allow(clippy::too_many_arguments)]
 pub fn update_task_fields_for_repo(
     task_id: &str,
-    repo_name: &str,
+    dir_key: &str,
     owner: Option<&str>,
     status: Option<&str>,
     description: Option<&str>,
@@ -658,7 +658,7 @@ pub fn update_task_fields_for_repo(
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     let task_file = tasks_dir.join(format!("{}.json", task_id));
 
@@ -710,14 +710,14 @@ pub fn update_task_fields_for_repo(
 ///
 /// Used when a coworker goes idle after opening a PR — the task stays in_progress
 /// (linked to the PR via PrAuthorSession) but the coworker name is freed for new work.
-pub fn unassign_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+pub fn unassign_task_for_repo(task_id: &str, dir_key: &str) -> Result<(), String> {
     use fs2::FileExt;
 
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let task_file = home
         .join(".claude")
         .join("tasks")
@@ -762,14 +762,14 @@ pub fn reset_task_to_pending(task_id: &str) -> Result<(), String> {
 /// Reset a task to pending status and clear its owner for a specific repo.
 ///
 /// This is the preferred version for daemon usage where the repo name is already known.
-pub fn reset_task_to_pending_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+pub fn reset_task_to_pending_for_repo(task_id: &str, dir_key: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
 
     // Use the shared task list ID (midtown-<repo>) — same directory that
     // update_task_owner() and Claude Code sessions use via CLAUDE_CODE_TASK_LIST_ID
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
 
     // Read the task file
     let task_file = home
@@ -922,12 +922,12 @@ fn complete_task_in_dir(task_id: &str, tasks_dir: &std::path::Path) -> Result<()
 ///
 /// Called when a PR with `[Midtown !XX]` merges (via webhook/polling),
 /// or when a coworker completes a non-PR task (reviews, investigations).
-pub fn complete_task_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+pub fn complete_task_for_repo(task_id: &str, dir_key: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
 
     complete_task_in_dir(task_id, &tasks_dir)
@@ -959,12 +959,12 @@ fn set_task_in_progress_in_dir(task_id: &str, tasks_dir: &std::path::Path) -> Re
 /// Set a task's status to in_progress for a specific repo.
 ///
 /// Called after a coworker successfully spawns to reflect that work has started.
-pub fn set_task_in_progress_for_repo(task_id: &str, repo_name: &str) -> Result<(), String> {
+pub fn set_task_in_progress_for_repo(task_id: &str, dir_key: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
 
     set_task_in_progress_in_dir(task_id, &tasks_dir)
@@ -1028,12 +1028,12 @@ fn clear_blocked_by_in_dir(
 /// When a task is completed, any tasks that were blocked by it should have
 /// that ID removed from their `blockedBy` list. This allows dependent tasks
 /// to become unblocked and be assigned.
-pub fn clear_blocked_by_for_repo(completed_task_id: &str, repo_name: &str) -> Result<(), String> {
+pub fn clear_blocked_by_for_repo(completed_task_id: &str, dir_key: &str) -> Result<(), String> {
     let Some(home) = dirs::home_dir() else {
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
 
     clear_blocked_by_in_dir(completed_task_id, &tasks_dir)
@@ -1179,8 +1179,8 @@ pub fn update_task_fields_in_dir(
 /// after `/resume`) to the shared sequential IDs in `~/.claude/tasks/midtown-<repo>/`.
 ///
 /// Format: `{"1": "805", "2": "806", ...}`
-pub fn read_lead_task_id_map(repo: &str) -> std::collections::HashMap<String, String> {
-    let path = crate::paths::projects_dir_for_repo(repo).join("lead-task-id-map.json");
+pub fn read_lead_task_id_map(dir_key: &str) -> std::collections::HashMap<String, String> {
+    let path = crate::paths::projects_dir_for_repo(dir_key).join("lead-task-id-map.json");
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -1188,11 +1188,11 @@ pub fn read_lead_task_id_map(repo: &str) -> std::collections::HashMap<String, St
 }
 
 /// Store a mapping from an internal task ID to a shared task ID.
-pub fn store_lead_task_id_mapping(repo: &str, internal_id: &str, shared_id: &str) {
-    let dir = crate::paths::projects_dir_for_repo(repo);
+pub fn store_lead_task_id_mapping(dir_key: &str, internal_id: &str, shared_id: &str) {
+    let dir = crate::paths::projects_dir_for_repo(dir_key);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("lead-task-id-map.json");
-    let mut map = read_lead_task_id_map(repo);
+    let mut map = read_lead_task_id_map(dir_key);
     map.insert(internal_id.to_string(), shared_id.to_string());
     let _ = std::fs::write(
         &path,
@@ -1201,24 +1201,24 @@ pub fn store_lead_task_id_mapping(repo: &str, internal_id: &str, shared_id: &str
 }
 
 /// Look up the shared task ID for an internal task ID.
-pub fn lookup_lead_task_id(repo: &str, internal_id: &str) -> Option<String> {
-    read_lead_task_id_map(repo).get(internal_id).cloned()
+pub fn lookup_lead_task_id(dir_key: &str, internal_id: &str) -> Option<String> {
+    read_lead_task_id_map(dir_key).get(internal_id).cloned()
 }
 
 /// Clear the Lead task ID mapping file.
 ///
 /// Called when a fresh Lead session starts, since fresh sessions use the shared
 /// directory directly and don't need remapping.
-pub fn clear_lead_task_id_map(repo: &str) {
-    let path = crate::paths::projects_dir_for_repo(repo).join("lead-task-id-map.json");
+pub fn clear_lead_task_id_map(dir_key: &str) {
+    let path = crate::paths::projects_dir_for_repo(dir_key).join("lead-task-id-map.json");
     let _ = std::fs::remove_file(&path);
 }
 
 /// Get the shared tasks directory for a repo.
 ///
 /// Returns `~/.claude/tasks/midtown-<repo>/`.
-pub fn shared_tasks_dir_for_repo(repo: &str) -> std::path::PathBuf {
-    let task_list_id = crate::paths::task_list_id_for_repo(repo);
+pub fn shared_tasks_dir_for_repo(dir_key: &str) -> std::path::PathBuf {
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     dirs::home_dir()
         .unwrap_or_default()
         .join(".claude")
@@ -1236,7 +1236,7 @@ pub fn create_task_for_repo(
     description: &str,
     active_form: &str,
     owner: &str,
-    repo_name: &str,
+    dir_key: &str,
     blocked_by: Option<&[String]>,
     channel: Option<&str>,
     pr: Option<u64>,
@@ -1245,7 +1245,7 @@ pub fn create_task_for_repo(
         return Err("Could not determine home directory".to_string());
     };
 
-    let task_list_id = crate::paths::task_list_id_for_repo(repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
 
     // Ensure directory exists

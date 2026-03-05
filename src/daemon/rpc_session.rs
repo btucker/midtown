@@ -486,7 +486,7 @@ pub(super) async fn handle_session_attach(
     let cwd = if name == "lead" {
         // Lead attaches in the lead worktree (where the headless session runs),
         // so `claude --resume` finds the session data (stored per-CWD).
-        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        let lead_wt = state.paths.lead_worktree();
         if lead_wt.exists() {
             lead_wt.to_string_lossy().to_string()
         } else {
@@ -678,13 +678,13 @@ pub(super) async fn handle_session_detach(
     };
 
     let mut config = if name == "lead" {
-        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name, None);
+        let mut c = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
         c.session_mode = session_mode;
         c
     } else {
         crate::launch::LaunchConfig::coworker(
             &name,
-            &state.repo_name,
+            state.paths.dir_key(),
             session_mode,
             Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
         )
@@ -692,7 +692,7 @@ pub(super) async fn handle_session_detach(
     // For the lead, always use the canonical lead worktree path.
     // For coworkers, restore from persisted working_dir.
     if name == "lead" {
-        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        let lead_wt = state.paths.lead_worktree();
         if lead_wt.exists() {
             config.working_dir = Some(lead_wt);
         }
@@ -702,11 +702,11 @@ pub(super) async fn handle_session_detach(
     {
         let execution_role = coworker_role_to_execution_role(&config.role);
         let provider = session_info.provider.unwrap_or_else(|| {
-            crate::config::get_execution_provider_for_role(&state.repo_name, execution_role)
+            crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
         config.model =
-            super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
+            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
     }
     // Don't restore auth_profile_dir from persisted profile name — let
     // spawn_coworker() re-resolve from project config (authoritative source).
@@ -976,7 +976,7 @@ pub(super) async fn handle_session_clear(
     };
 
     let mut config = if name == "lead" {
-        let mut c = crate::launch::LaunchConfig::lead(&state.repo_name, None);
+        let mut c = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
         c.session_mode = crate::launch::SessionMode::Fresh;
         c.initial_prompt = Some(fresh_prompt);
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
@@ -985,7 +985,7 @@ pub(super) async fn handle_session_clear(
     } else {
         let mut c = crate::launch::LaunchConfig::coworker(
             &name,
-            &state.repo_name,
+            state.paths.dir_key(),
             crate::launch::SessionMode::Fresh,
             Some(fresh_prompt),
         );
@@ -1011,7 +1011,7 @@ pub(super) async fn handle_session_clear(
 
     // Restore working directory: lead uses canonical worktree, coworkers use persisted path
     if name == "lead" {
-        let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+        let lead_wt = state.paths.lead_worktree();
         if lead_wt.exists() {
             config.working_dir = Some(lead_wt);
         }
@@ -1021,11 +1021,11 @@ pub(super) async fn handle_session_clear(
     {
         let execution_role = coworker_role_to_execution_role(&config.role);
         let provider = session_info.provider.unwrap_or_else(|| {
-            crate::config::get_execution_provider_for_role(&state.repo_name, execution_role)
+            crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
         config.model =
-            super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
+            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
     }
 
     match state.spawn_coworker(&config).await {
@@ -1325,7 +1325,7 @@ pub(super) async fn create_fork_session(
     let fork_channel = channel_hint
         .map(String::from)
         .or(channel)
-        .or_else(|| Some(state.repo_name.clone()));
+        .or_else(|| Some(state.project_name.clone()));
 
     let (fork_name, headless_config) = build_fork_config(
         thread_parent_id,
@@ -1336,7 +1336,7 @@ pub(super) async fn create_fork_session(
         working_dir.as_deref(),
         auth_provider,
         is_channel_lead,
-        &state.repo_name,
+        state.paths.dir_key(),
         None, // normal fork — derive name from hint
     );
 
@@ -1418,7 +1418,7 @@ pub(super) async fn create_fork_session(
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
             },
         );
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("{}: failed to persist session record: {}", caller, e);
         }
     }
@@ -1558,7 +1558,7 @@ pub(super) async fn handle_session_fork(
             } else {
                 // Look up the parent message content as fallback context.
                 let parent_content = if let Some(ref ch) = fork_channel {
-                    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                    let base_dir = state.paths.base_dir().to_path_buf();
                     match crate::channel::Channel::new(&base_dir, ch) {
                         Ok(channel) => {
                             match channel.find_message_by_id_async(thread_parent_id).await {

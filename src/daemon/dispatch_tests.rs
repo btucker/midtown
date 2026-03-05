@@ -20,19 +20,20 @@ fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> cra
 //
 // Before the consolidation fix, orphan recovery and duplicate detection in
 // dispatch_via_sessions_with_task_lookup() and check_for_duplicate_task_workers()
-// only skipped tasks owned by snap.repo_name, NOT the legacy "lead" name.
+// only skipped tasks owned by snap.project_name, NOT the legacy "lead" name.
 // ============================================================================
 
 /// Build a minimal WorldSnapshot for lead-guard tests.
 ///
-/// Sets in_progress_tasks and repo_name; all other fields are empty/false.
+/// Sets in_progress_tasks and dir_key/project_name; all other fields are empty/false.
 fn make_lead_guard_snapshot(
     in_progress: Vec<(String, String, String)>,
     repo_name: &str,
 ) -> snapshot::WorldSnapshot {
     let mut snap = snapshot::minimal_snapshot_for_test();
     snap.in_progress_tasks = in_progress;
-    snap.repo_name = repo_name.to_string();
+    snap.dir_key = repo_name.to_string();
+    snap.project_name = repo_name.to_string();
     snap.default_channel = repo_name.to_string();
     snap.coworkers.session_name = format!("{}-test", repo_name);
     snap
@@ -223,9 +224,9 @@ fn test_build_task_completion_effects_with_task_id() {
 
     // Verify CompleteTask effect
     match &effects[0] {
-        Effect::CompleteTask { task_id, repo_name } => {
+        Effect::CompleteTask { task_id, dir_key } => {
             assert_eq!(task_id, "42");
-            assert_eq!(repo_name, "myrepo");
+            assert_eq!(dir_key, "myrepo");
         }
         _ => panic!("First effect should be CompleteTask"),
     }
@@ -234,10 +235,10 @@ fn test_build_task_completion_effects_with_task_id() {
     match &effects[1] {
         Effect::ClearBlockedBy {
             completed_task_id,
-            repo_name,
+            dir_key,
         } => {
             assert_eq!(completed_task_id, "42");
-            assert_eq!(repo_name, "myrepo");
+            assert_eq!(dir_key, "myrepo");
         }
         _ => panic!("Second effect should be ClearBlockedBy"),
     }
@@ -345,7 +346,8 @@ fn test_task_completion_does_not_send_push_notifications() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: tasks,
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -395,7 +397,8 @@ fn test_subject_based_completion_all_prs_merged() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -412,9 +415,9 @@ fn test_subject_based_completion_all_prs_merged() {
 
     // Verify CompleteTask effect
     match &effects[0] {
-        Effect::CompleteTask { task_id, repo_name } => {
+        Effect::CompleteTask { task_id, dir_key } => {
             assert_eq!(task_id, "1100");
-            assert_eq!(repo_name, "test-repo");
+            assert_eq!(dir_key, "test-repo");
         }
         _ => panic!("First effect should be CompleteTask"),
     }
@@ -455,7 +458,8 @@ fn test_subject_based_completion_some_prs_not_merged() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -491,7 +495,8 @@ fn test_subject_based_completion_no_pr_references() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
@@ -527,7 +532,8 @@ fn test_subject_based_completion_skips_pending_tasks() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -563,7 +569,8 @@ fn test_subject_based_completion_no_description() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         ..snapshot::minimal_snapshot_for_test()
@@ -615,7 +622,8 @@ fn test_subject_based_completion_skips_already_completed_tasks() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![completed_task, in_progress_task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -695,7 +703,8 @@ fn test_subject_based_completion_does_not_scan_description_for_prs() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -754,7 +763,8 @@ fn test_subject_based_completion_still_works_for_meta_tasks() {
 
     let snap = snapshot::WorldSnapshot {
         all_tasks: vec![task],
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         pr: snapshot::SnapshotPrState {
@@ -795,6 +805,7 @@ fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
     );
     let mut snap: snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("deserialize captured snapshot");
+    snap.fixup_legacy_fields();
 
     // Inject a synthetic task that mimics the original bug: PR numbers (#1272, #1275)
     // appear only in the description as contextual background. Both are in the
@@ -1939,9 +1950,9 @@ fn test_reset_orphaned_tasks_inactive_owner_no_pr() {
 
     assert_eq!(effects.len(), 1, "Should reset orphaned task");
     match &effects[0] {
-        Effect::ResetTaskToPending { task_id, repo_name } => {
+        Effect::ResetTaskToPending { task_id, dir_key } => {
             assert_eq!(task_id, "1146");
-            assert_eq!(repo_name, "test-repo");
+            assert_eq!(dir_key, "test-repo");
         }
         other => panic!("Expected ResetTaskToPending, got {:?}", other),
     }
@@ -2267,8 +2278,9 @@ fn test_grouped_task_skips_if_already_assigned() {
     let fixture = include_str!(
         "../../tests/fixtures/snapshot/snapshot-spawn-loop-york-1107-20260210-205810.json"
     );
-    let snap: snapshot::WorldSnapshot =
+    let mut snap: snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("deserialize captured snapshot");
+    snap.fixup_legacy_fields();
 
     // Verify fixture prerequisites: york is active and busy, task !1107 is pending
     assert!(
@@ -2334,6 +2346,7 @@ fn test_spawn_coworker_with_callbacks_records_task_assignment() {
     );
     let mut snap: snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("deserialize captured snapshot");
+    snap.fixup_legacy_fields();
 
     // Override to test Case 1: pending task WITH owner, coworker NOT running.
     // Clear Case 2 tasks and set up a Case 1 scenario.
@@ -2390,6 +2403,7 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
     );
     let mut snap: snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("deserialize captured snapshot");
+    snap.fixup_legacy_fields();
 
     // Set up Case 1 scenario: task with owner, coworker IS running but NOT busy
     // (triggers NudgeOwner rather than Skip due to has_in_progress_task)
@@ -2573,7 +2587,7 @@ fn make_test_state() -> (
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
-        "test-repo".to_string(),
+        crate::paths::ProjectPaths::with_project_name("test-repo", "test-repo"),
         vec![base_dir.clone()],
         channel_router,
         None,

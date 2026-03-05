@@ -35,7 +35,7 @@ struct WorktreeSetup {
 fn prepare_task_worktree(
     task_id: &str,
     task_subject: &str,
-    repo_name: &str,
+    dir_key: &str,
     snap: &snapshot::WorldSnapshot,
 ) -> WorktreeSetup {
     let (worktree_id, needs_registration) =
@@ -48,7 +48,7 @@ fn prepare_task_worktree(
             )
         };
 
-    let path = crate::paths::worktrees_dir_for_repo(repo_name).join(&worktree_id);
+    let path = crate::paths::worktrees_dir_for_repo(dir_key).join(&worktree_id);
 
     let mut pre_spawn_effects = vec![Effect::EnsureWorktree {
         worktree_id: worktree_id.clone(),
@@ -140,7 +140,7 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 /// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification.
 fn task_completed_effects(
     task_id: &str,
-    repo_name: &str,
+    dir_key: &str,
     task_subject: &str,
     channel_message: String,
     channel: Option<String>,
@@ -150,11 +150,11 @@ fn task_completed_effects(
     let mut effects = vec![
         Effect::CompleteTask {
             task_id: task_id.to_string(),
-            repo_name: repo_name.to_string(),
+            dir_key: dir_key.to_string(),
         },
         Effect::ClearBlockedBy {
             completed_task_id: task_id.to_string(),
-            repo_name: repo_name.to_string(),
+            dir_key: dir_key.to_string(),
         },
         Effect::PostToChannel {
             sender: "midtown".to_string(),
@@ -416,13 +416,13 @@ where
         let wt = prepare_task_worktree(
             &recovery.task_id,
             &recovery.task_subject,
-            &state.repo_name,
+            state.paths.dir_key(),
             snap,
         );
 
         let mut config = crate::launch::LaunchConfig::coworker(
             recovery.owner.clone(),
-            state.repo_name.clone(),
+            state.paths.dir_key().to_string(),
             crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
             Some(prompt),
         );
@@ -470,7 +470,7 @@ where
                 },
                 Effect::ResetTaskToPending {
                     task_id: recovery.task_id.clone(),
-                    repo_name: snap.repo_name.clone(),
+                    dir_key: snap.dir_key.clone(),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -494,13 +494,13 @@ where
     let wt = prepare_task_worktree(
         &recovery.task_id,
         &recovery.task_subject,
-        &state.repo_name,
+        state.paths.dir_key(),
         snap,
     );
 
     let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
-        state.repo_name.clone(),
+        state.paths.dir_key().to_string(),
         crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
@@ -554,7 +554,7 @@ where
             },
             Effect::ResetTaskToPending {
                 task_id: recovery.task_id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -632,7 +632,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
         // these are not managed by the coworker dispatch loop.
         if owner.is_empty()
-            || is_project_lead(owner, &snap.repo_name)
+            || is_project_lead(owner, &snap.project_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -749,7 +749,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         // Prepare worktree (reuse existing or create new) and build config.
         // Uses prepare_task_worktree to keep the worktree registry current and
         // emit EnsureWorktree / BindCoworkerToWorktree effects.
-        let wt = prepare_task_worktree(task_id, task_subject, &snap.repo_name, snap);
+        let wt = prepare_task_worktree(task_id, task_subject, &snap.dir_key, snap);
         if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, coworker_name) {
             debug!(
                 "Session dispatch: skipping task !{} because worktree {} is bound to active coworker {}",
@@ -760,7 +760,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
 
         let mut config = crate::launch::LaunchConfig::coworker(
             coworker_name.to_string(),
-            snap.repo_name.clone(),
+            snap.dir_key.clone(),
             crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
             Some(prompt),
         );
@@ -847,7 +847,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 },
                 Effect::ResetTaskToPending {
                     task_id: task_id.clone(),
-                    repo_name: snap.repo_name.clone(),
+                    dir_key: snap.dir_key.clone(),
                 },
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -964,7 +964,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     let wt = prepare_task_worktree(
         &recovery.task_id,
         &recovery.task_subject,
-        &snap.repo_name,
+        &snap.dir_key,
         snap,
     );
     if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &recovery.owner) {
@@ -977,7 +977,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
 
     let mut config = crate::launch::LaunchConfig::coworker(
         recovery.owner.clone(),
-        snap.repo_name.clone(),
+        snap.dir_key.clone(),
         crate::launch::SessionMode::Fresh,
         Some(prompt),
     );
@@ -1031,7 +1031,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
             },
             Effect::ResetTaskToPending {
                 task_id: recovery.task_id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             },
             Effect::PostToChannel {
                 sender: "midtown".to_string(),
@@ -1169,7 +1169,7 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
         // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
         // these are not managed by the coworker dispatch loop.
         if owner.is_empty()
-            || is_project_lead(owner, &snap.repo_name)
+            || is_project_lead(owner, &snap.project_name)
             || snap
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
@@ -1409,11 +1409,11 @@ fn dispatch_owned_pending_tasks(
             );
             effects.push(Effect::CompleteTask {
                 task_id: task_id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
             effects.push(Effect::ClearBlockedBy {
                 completed_task_id: task_id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
             continue;
         }
@@ -1526,7 +1526,7 @@ fn dispatch_owned_pending_tasks(
                 let plan_section = build_plan_prompt_section(tid, snap);
                 let prompt = crate::agents::coworker_task_prompt(tid, subj, &plan_section);
 
-                let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
+                let wt = prepare_task_worktree(tid, subj, state.paths.dir_key(), snap);
 
                 if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, o) {
                     debug!(
@@ -1538,7 +1538,7 @@ fn dispatch_owned_pending_tasks(
 
                 let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
-                    state.repo_name.clone(),
+                    state.paths.dir_key().to_string(),
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                 );
@@ -1691,7 +1691,7 @@ fn dispatch_unowned_pending_tasks(
         .coworkers
         .running_coworkers
         .iter()
-        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.repo_name, &channel_lead_names))
+        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.project_name, &channel_lead_names))
         .count();
 
     for task in snap.pending_tasks_without_owners.iter() {
@@ -1733,11 +1733,11 @@ fn dispatch_unowned_pending_tasks(
             );
             effects.push(Effect::CompleteTask {
                 task_id: task.id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
             effects.push(Effect::ClearBlockedBy {
                 completed_task_id: task.id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
             continue;
         }
@@ -1773,7 +1773,7 @@ fn dispatch_unowned_pending_tasks(
                 let plan_section = build_plan_prompt_section(&task.id, snap);
                 let prompt =
                     crate::agents::coworker_recovery_prompt(&task.id, &task.subject, &plan_section);
-                let wt = prepare_task_worktree(&task.id, &task.subject, &snap.repo_name, snap);
+                let wt = prepare_task_worktree(&task.id, &task.subject, &snap.dir_key, snap);
                 let coworker_name = record.preferred_name.clone().unwrap_or_default();
 
                 if let Some(bound_coworker) =
@@ -1806,7 +1806,7 @@ fn dispatch_unowned_pending_tasks(
                 };
                 let mut config = crate::launch::LaunchConfig::coworker(
                     coworker_name,
-                    snap.repo_name.clone(),
+                    snap.dir_key.clone(),
                     crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
                     Some(prompt),
                 );
@@ -1988,7 +1988,7 @@ fn dispatch_unowned_pending_tasks(
             });
         } else {
             // Spawn a new coworker — assign ownership atomically with spawn
-            let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
+            let wt = prepare_task_worktree(&task.id, &task.subject, state.paths.dir_key(), snap);
             if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &coworker_name) {
                 debug!(
                     "Pending task !{}: skipping fresh spawn for {} because worktree {} is bound to active coworker {}",
@@ -2001,7 +2001,7 @@ fn dispatch_unowned_pending_tasks(
 
             let mut config = crate::launch::LaunchConfig::coworker(
                 coworker_name.clone(),
-                state.repo_name.clone(),
+                state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::Fresh,
                 Some(prompt),
             );
@@ -2051,7 +2051,7 @@ fn dispatch_unowned_pending_tasks(
             effects.push(Effect::AssignAndSpawn {
                 task_id: task.id.clone(),
                 owner: coworker_name.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
                 config,
                 on_success,
                 on_failure: vec![],
@@ -2088,7 +2088,7 @@ pub(super) struct TaskEventContext {
 pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
-    repo_name: &str,
+    dir_key: &str,
     channel: Option<String>,
     ctx: Option<TaskEventContext>,
 ) -> Vec<Effect> {
@@ -2103,7 +2103,7 @@ pub(super) fn build_task_completion_effects(
 
     let mut effects = task_completed_effects(
         &task_id.to_string(),
-        repo_name,
+        dir_key,
         &task_subject,
         format!(
             "✅ Auto-completed task !{} (PR #{} merged)",
@@ -2160,7 +2160,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
             if snap.pr.merged_pr_numbers.contains(&pr_number) {
                 effects.extend(task_completed_effects(
                     &task.id,
-                    &snap.repo_name,
+                    &snap.dir_key,
                     &task.subject,
                     format!(
                         "✅ Auto-completed task !{} (PR #{} merged)",
@@ -2207,7 +2207,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     .join(", ");
                 effects.extend(task_completed_effects(
                     &task.id,
-                    &snap.repo_name,
+                    &snap.dir_key,
                     &task.subject,
                     format!(
                         "✅ Auto-completed task !{} (all referenced PRs merged: {})",
@@ -2345,7 +2345,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             );
             effects.push(Effect::ResetTaskToPending {
                 task_id: task_id.clone(),
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
             continue;
         }
@@ -2372,7 +2372,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
         effects.push(Effect::ResetTaskToPending {
             task_id: task_id.clone(),
-            repo_name: snap.repo_name.clone(),
+            dir_key: snap.dir_key.clone(),
         });
     }
 

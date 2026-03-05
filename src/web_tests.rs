@@ -995,7 +995,8 @@ async fn test_api_get_screenshot_not_found_for_missing_file() {
     let (channel_post_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
-            repo: "test-proj".to_string(),
+            dir_key: "test-proj".to_string(),
+            project_name: "test-proj".to_string(),
         },
         updates_tx,
         coworkers: None,
@@ -1039,7 +1040,8 @@ async fn test_api_get_screenshot_canonicalize_containment() {
         let (channel_post_tx, _) = mpsc::channel(10);
         let state = Arc::new(WebState {
             config: WebConfig {
-                repo: "test-proj".to_string(),
+                dir_key: "test-proj".to_string(),
+                project_name: "test-proj".to_string(),
             },
             updates_tx,
             coworkers: None,
@@ -1072,7 +1074,8 @@ async fn test_api_get_screenshot_serves_valid_image() {
     let (channel_post_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
-            repo: "test-proj".to_string(),
+            dir_key: "test-proj".to_string(),
+            project_name: "test-proj".to_string(),
         },
         updates_tx,
         coworkers: None,
@@ -1103,7 +1106,8 @@ async fn test_api_get_screenshot_rejects_non_image() {
     let (channel_post_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
-            repo: "test-proj".to_string(),
+            dir_key: "test-proj".to_string(),
+            project_name: "test-proj".to_string(),
         },
         updates_tx,
         coworkers: None,

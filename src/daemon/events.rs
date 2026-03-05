@@ -153,7 +153,7 @@ pub async fn evaluate_tick(
 
             // Clean up stale worktrees and daemon state (completed tasks older than retention period)
             {
-                let daemon_config = crate::config::get_project_daemon_config(&state.repo_name);
+                let daemon_config = crate::config::get_project_daemon_config(state.paths.dir_key());
                 let retention_hours = daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
                 // Skip worktree directory cleanup if retention is set to 0
                 if retention_hours > 0 {
@@ -391,7 +391,7 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 Effect::AssignAndSpawn {
                     task_id,
                     owner,
-                    repo_name,
+                    dir_key,
                     config,
                     on_success,
                     on_failure,
@@ -402,7 +402,7 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
                         Effect::AssignAndSpawn {
                             task_id,
                             owner,
-                            repo_name,
+                            dir_key,
                             config,
                             on_success: other,
                             on_failure,

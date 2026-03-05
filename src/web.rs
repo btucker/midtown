@@ -126,14 +126,17 @@ const REPO_STATUS_CACHE_TTL: Duration = Duration::from_secs(300);
 /// Configuration for the web server
 #[derive(Debug, Clone)]
 pub struct WebConfig {
-    /// Repository name for channel access
-    pub repo: String,
+    /// Filesystem directory key (e.g., "midtown.nosync") for path construction
+    pub dir_key: String,
+    /// Logical project name (e.g., "midtown") for display and identity
+    pub project_name: String,
 }
 
 impl Default for WebConfig {
     fn default() -> Self {
         Self {
-            repo: "default".to_string(),
+            dir_key: "default".to_string(),
+            project_name: "default".to_string(),
         }
     }
 }
@@ -450,12 +453,16 @@ async fn api_channels_list(
     State(state): State<Arc<WebState>>,
     Query(query): Query<ChannelListQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
-    let channels = Channel::list(base_dir, query.include_archived, Some(&state.config.repo))
-        .map_err(|e| {
-            error!("Failed to list channels: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key);
+    let channels = Channel::list(
+        base_dir,
+        query.include_archived,
+        Some(&state.config.project_name),
+    )
+    .map_err(|e| {
+        error!("Failed to list channels: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(axum::Json(serde_json::json!({ "channels": channels })))
 }
@@ -545,10 +552,10 @@ async fn api_channels_create(
 ) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
     let channel_name = body.name.trim();
 
-    validate_channel_name(channel_name, &state.config.repo)?;
+    validate_channel_name(channel_name, &state.config.project_name)?;
 
     // Create the channel (idempotent - returns existing channel if it already exists)
-    let base_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key);
     let already_exists = base_dir.join("channels").join(channel_name).exists();
     Channel::create(base_dir, channel_name).map_err(|e| {
         error!("Failed to create channel '{}': {}", channel_name, e);
@@ -605,13 +612,13 @@ async fn api_channel_history(
         validate_channel_name_for_history(channel_name).map_err(|_| StatusCode::BAD_REQUEST)?;
 
         // Load a specific channel by name
-        Channel::for_repo_named(&state.config.repo, channel_name).map_err(|e| {
+        Channel::for_repo_named(&state.config.dir_key, channel_name).map_err(|e| {
             error!("Failed to open channel '{}': {}", channel_name, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     } else {
         // Default: load the main channel
-        Channel::for_repo(&state.config.repo).map_err(|e| {
+        Channel::for_repo(&state.config.dir_key).map_err(|e| {
             error!("Failed to open channel: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
@@ -736,7 +743,7 @@ async fn api_search(
     State(state): State<Arc<WebState>>,
     Query(params): Query<SearchQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let project_dir = crate::paths::projects_dir_for_repo(&state.config.repo);
+    let project_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key);
 
     let response = crate::search::search_messages(&project_dir, &params.q, params.limit)
         .await
@@ -904,7 +911,7 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Load persistent state to get reviewer assignments, thread IDs, etc. (local file, cheap)
     let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.repo)
+        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.dir_key)
             .unwrap_or_default();
 
     // Read tasks directly from Claude Code task storage (local file, cheap)
@@ -954,7 +961,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
 
     // --- PR data: prefer prs.status RPC (60s server-side cache), fall back to gh CLI ---
     // --- Coworker data: prefer coworkers.status RPC (live, no cache) ---
-    let repo_name = state.config.repo.clone();
+    let repo_name = state.config.dir_key.clone();
     let (
         pull_requests,
         merged_prs,
@@ -1265,7 +1272,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         Vec::new()
     };
 
-    let user_display_name = crate::config::get_user_display_name_for_project(&state.config.repo);
+    let user_display_name = crate::config::get_user_display_name_for_project(&state.config.dir_key);
 
     let status = serde_json::json!({
         "daemon": "running",
@@ -1273,7 +1280,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "tasks": tasks,
         "pull_requests": pull_requests,
         "merged_prs": merged_prs,
-        "repo_name": state.config.repo,
+        "repo_name": state.config.project_name,
         "repo_full_name": repo_full_name,
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
@@ -1559,7 +1566,7 @@ async fn api_auth_switch(
         })?
         .unwrap_or_default();
 
-    let repo = state.config.repo.clone();
+    let repo = state.config.dir_key.clone();
     let profile = body.profile;
     let all = body.all;
 
@@ -1664,7 +1671,7 @@ async fn api_auth_pool_toggle(
         })?
         .unwrap_or_default();
 
-    let repo = state.config.repo.clone();
+    let repo = state.config.dir_key.clone();
     let profile = body.profile;
     let enabled = body.enabled;
 
@@ -1760,11 +1767,11 @@ async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoRespon
     // If no active coworkers, fall back to configured project-lead provider/profile.
     let profiles_to_fetch = if active_profiles.is_empty() {
         let provider = crate::config::get_execution_provider_for_role(
-            &state.config.repo,
+            &state.config.dir_key,
             crate::config::ExecutionRole::Lead,
         );
         let profile =
-            crate::auth::active_profile_for_project_with_provider(&state.config.repo, provider);
+            crate::auth::active_profile_for_project_with_provider(&state.config.dir_key, provider);
         vec![(provider, profile)]
     } else {
         active_profiles
@@ -1843,7 +1850,7 @@ async fn api_usage(State(state): State<Arc<WebState>>) -> Result<impl IntoRespon
 async fn api_pending_questions(
     State(state): State<Arc<WebState>>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let repo = state.config.repo.clone();
+    let repo = state.config.dir_key.clone();
     let questions = tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
@@ -1884,7 +1891,7 @@ async fn api_upload(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
     // Create uploads directory if it doesn't exist
-    let uploads_dir = crate::paths::projects_dir_for_repo(&state.config.repo).join("uploads");
+    let uploads_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key).join("uploads");
     if let Err(e) = tokio::fs::create_dir_all(&uploads_dir).await {
         error!("Failed to create uploads directory: {}", e);
         return Err((
@@ -1991,7 +1998,7 @@ async fn api_get_upload(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let file_path = crate::paths::projects_dir_for_repo(&state.config.repo)
+    let file_path = crate::paths::projects_dir_for_repo(&state.config.dir_key)
         .join("uploads")
         .join(&filename);
 
@@ -2025,7 +2032,7 @@ async fn api_get_screenshot(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let screenshots_dir = crate::paths::screenshots_dir_for_repo(&state.config.repo);
+    let screenshots_dir = crate::paths::screenshots_dir_for_repo(&state.config.dir_key);
     let file_path = screenshots_dir.join(&filename);
 
     // Canonicalize containment check (defense-in-depth, matching project_asset)
@@ -2240,7 +2247,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
 
             // Forward to daemon via coworker.nudge RPC (which clears the pending question and delivers the answer).
             // Uses spawn_blocking to avoid stalling the async executor on synchronous socket I/O.
-            let repo = state.config.repo.clone();
+            let repo = state.config.dir_key.clone();
             let cw_name = coworker_name.clone();
             let ans = answer.clone();
             tokio::task::spawn_blocking(move || {
@@ -2278,7 +2285,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
             thread_parent_id,
             channel,
         } => {
-            let repo = state.config.repo.clone();
+            let repo = state.config.dir_key.clone();
             let tid = thread_parent_id.clone();
             let ch = channel.clone();
             tokio::task::spawn_blocking(move || {
@@ -2303,7 +2310,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
             thread_parent_id,
             channel,
         } => {
-            let repo = state.config.repo.clone();
+            let repo = state.config.dir_key.clone();
             let tid = thread_parent_id.clone();
             let ch = channel.clone();
             tokio::task::spawn_blocking(move || {
@@ -2328,7 +2335,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
             thread_parent_id,
             channel,
         } => {
-            let repo = state.config.repo.clone();
+            let repo = state.config.dir_key.clone();
             let tid = thread_parent_id.clone();
             let ch = channel.clone();
             tokio::task::spawn_blocking(move || {

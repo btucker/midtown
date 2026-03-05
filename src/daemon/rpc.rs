@@ -340,7 +340,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let provider = match parse_optional_provider_param(params) {
                 Ok(Some(provider)) => provider,
                 Ok(None) => crate::config::get_execution_provider_for_role(
-                    &state.repo_name,
+                    state.paths.dir_key(),
                     crate::config::ExecutionRole::Coworker,
                 ),
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
@@ -376,7 +376,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "coworker.nudge" => {
             let name = require_str!(params, "name", request.id);
             let message = require_str!(params, "message", request.id);
-            let from: &str = params.str_param("from").unwrap_or(state.repo_name.as_str());
+            let from: &str = params
+                .str_param("from")
+                .unwrap_or(state.project_name.as_str());
             super::rpc_coworker::handle_coworker_nudge(request.id, from, name, message, state).await
         }
 
@@ -395,7 +397,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let provider = match parse_optional_provider_param(params) {
                 Ok(Some(provider)) => provider,
                 Ok(None) => crate::config::get_execution_provider_for_role(
-                    &state.repo_name,
+                    state.paths.dir_key(),
                     crate::config::ExecutionRole::Lead,
                 ),
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
@@ -445,7 +447,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         // ---- Channel ----
         "channel.post" => {
             let message = require_str!(params, "message", request.id);
-            let from: &str = params.str_param("from").unwrap_or(state.repo_name.as_str());
+            let from: &str = params
+                .str_param("from")
+                .unwrap_or(state.project_name.as_str());
             let channel = params.str_param("channel");
             let thread_parent_id = params.str_param("thread_parent_id");
             super::rpc_channel::handle_channel_post(
@@ -562,7 +566,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 .filter(|from| !from.trim().is_empty())
                 .filter(|from| !from.eq_ignore_ascii_case("unknown"))
                 .map(str::to_string)
-                .unwrap_or_else(|| state.repo_name.clone());
+                .unwrap_or_else(|| state.project_name.clone());
             super::rpc_task::handle_task_request(request.id, &from, message, state).await
         }
 
@@ -573,7 +577,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 .filter(|from| !from.trim().is_empty())
                 .filter(|from| !from.eq_ignore_ascii_case("unknown"))
                 .map(str::to_string)
-                .unwrap_or_else(|| state.repo_name.clone());
+                .unwrap_or_else(|| state.project_name.clone());
             super::rpc_task::handle_task_claim(request.id, task_id, &from, state).await
         }
 
@@ -803,7 +807,7 @@ async fn handle_oneshot_execute(
     let auth_provider = match parse_optional_provider_param(params) {
         Ok(Some(provider)) => provider,
         Ok(None) => crate::config::get_execution_provider_for_role(
-            &state.repo_name,
+            state.paths.dir_key(),
             crate::config::ExecutionRole::HeadlessExecute,
         ),
         Err(msg) => return Response::error(id, RpcError::new(-32602, msg)),
@@ -821,7 +825,7 @@ async fn handle_oneshot_execute(
             .all_repo_paths
             .first()
             .map(|p| p.to_string_lossy().to_string()),
-        project_name: Some(state.repo_name.clone()),
+        project_name: Some(state.project_name.clone()),
         persist_session: false,
         resume_session_id: None,
         session_id: None,

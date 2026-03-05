@@ -257,8 +257,10 @@ pub struct WebhookConfig {
     pub port: u16,
     /// Webhook secret for signature verification (optional but recommended)
     pub secret: Option<String>,
-    /// Repository name for channel routing
-    pub repo: String,
+    /// Filesystem directory key (e.g., "midtown.nosync") for path construction
+    pub dir_key: String,
+    /// Logical project name (e.g., "midtown") for display and identity
+    pub project_name: String,
 }
 
 impl Default for WebhookConfig {
@@ -266,7 +268,8 @@ impl Default for WebhookConfig {
         Self {
             port: 8080,
             secret: None,
-            repo: "default".to_string(),
+            dir_key: "default".to_string(),
+            project_name: "default".to_string(),
         }
     }
 }
@@ -311,7 +314,8 @@ pub async fn start_webhook_server(
 
     // Create web state for mobile app
     let web_config = WebConfig {
-        repo: config.repo.clone(),
+        dir_key: config.dir_key.clone(),
+        project_name: config.project_name.clone(),
     };
 
     let push_manager: Option<Arc<crate::push::PushManager>> = match crate::push::PushManager::new()

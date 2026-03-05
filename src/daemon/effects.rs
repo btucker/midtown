@@ -13,12 +13,12 @@ use crate::message::Message;
 
 fn build_resume_handoff_prompt(
     name: &str,
-    repo_name: &str,
+    dir_key: &str,
     previous_session_id: &str,
     prior_prompt: Option<&str>,
     working_dir: Option<&std::path::Path>,
 ) -> String {
-    let history_file = crate::paths::headless_output_file(repo_name, name);
+    let history_file = crate::paths::headless_output_file(dir_key, name);
     let worktree = working_dir
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|| "<current default worktree>".to_string());
@@ -161,7 +161,7 @@ pub enum Effect {
     /// Clear the scheduled usage-limit nudge (after it fires).
     ClearUsageLimitNudge,
     /// Reset a task back to pending (e.g. when a coworker can't be respawned).
-    ResetTaskToPending { task_id: String, repo_name: String },
+    ResetTaskToPending { task_id: String, dir_key: String },
     /// Clear a stale session record for a task.
     ///
     /// When spawn fails (e.g. missing worktree), the session→task link must be
@@ -197,7 +197,7 @@ pub enum Effect {
     AssignAndSpawn {
         task_id: String,
         owner: String,
-        repo_name: String,
+        dir_key: String,
         config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
@@ -208,7 +208,7 @@ pub enum Effect {
     /// keeping `check_and_fire_reminders` pure.
     MarkRemindersFired {
         fired_ids: Vec<String>,
-        repo_name: String,
+        dir_key: String,
     },
     /// Record a PR issue nudge in the tracker (prevents repeated nudges).
     RecordPrNudge {
@@ -289,13 +289,13 @@ pub enum Effect {
     /// Mark a task as completed.
     ///
     /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs).
-    CompleteTask { task_id: String, repo_name: String },
+    CompleteTask { task_id: String, dir_key: String },
     /// Clear a completed task ID from all dependent tasks' `blockedBy` arrays.
     ///
     /// Called after a task is completed to unblock dependent tasks.
     ClearBlockedBy {
         completed_task_id: String,
-        repo_name: String,
+        dir_key: String,
     },
     /// Set the explicit PR association for a task.
     ///
@@ -303,7 +303,7 @@ pub enum Effect {
     SetTaskPr {
         task_id: String,
         pr_number: u64,
-        repo_name: String,
+        dir_key: String,
     },
     /// Send a push notification to the mobile PWA.
     ///
@@ -408,7 +408,7 @@ pub enum Effect {
     ///
     /// Used when a coworker opens a PR and goes idle — the task stays in_progress
     /// (linked to the PR via PrAuthorSession) but the coworker name is freed.
-    UnassignTask { task_id: String, repo_name: String },
+    UnassignTask { task_id: String, dir_key: String },
     /// Reset an abandoned task back to pending.
     ///
     /// Used when a PR is closed without merge — the associated task is reset
@@ -416,14 +416,14 @@ pub enum Effect {
     ResetAbandonedTask {
         task_id: String,
         pr_number: u64,
-        repo_name: String,
+        dir_key: String,
     },
     /// Create a new task.
     ///
     /// Used by reconciliation logic to generate tasks for orphaned PRs or other
     /// conditions discovered during polling ticks.
     CreateTask {
-        repo_name: String,
+        dir_key: String,
         subject: String,
         description: String,
         /// Optional PR number to associate with the task (for deduplication).
@@ -912,7 +912,7 @@ async fn clear_stale_task_session_binding(
     let mut ps = state.persistent_state.lock().await;
     let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
     if cleared > 0
-        && let Err(e) = ps.save_for_repo(&state.repo_name)
+        && let Err(e) = ps.save_for_repo(state.paths.dir_key())
     {
         warn!(
             "Failed to save state after clearing stale session binding for task !{}: {}",
@@ -999,7 +999,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         crate::launch::SessionMode::ResumeSession(session_id.clone());
                 }
 
-                match spawn_with_resume_fallback(state, &state.repo_name, &mut config).await {
+                match spawn_with_resume_fallback(state, state.paths.dir_key(), &mut config).await {
                     Ok((_, used_fallback)) => {
                         if used_fallback {
                             info!("Fell back to fresh resume handoff for coworker {}", name);
@@ -1017,7 +1017,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 message,
                 summary,
             } => {
-                let team_name = crate::mailbox::team_name_for_repo(&state.repo_name);
+                let team_name = crate::mailbox::team_name_for_repo(&state.project_name);
                 let mut msg = crate::mailbox::MailboxMessage::new(&message, "midtown")
                     .with_color("yellow".to_string());
                 if let Some(s) = summary {
@@ -1107,7 +1107,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Forked sessions should still clear tool activity when they post to
                 // their inherited thread channel.
                 let is_system_sender = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
-                    || sender.eq_ignore_ascii_case(&state.repo_name);
+                    || sender.eq_ignore_ascii_case(&state.project_name);
                 let has_fork_channel_binding = state
                     .fork_bound_channels
                     .lock()
@@ -1176,7 +1176,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     .or_default();
                 entry.is_usage_limited = true;
                 entry.usage_limit_reset_at = reset_at;
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
                         "Failed to persist MarkProfileLimited for {}: {}",
                         profile_email, e
@@ -1189,15 +1189,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     entry.is_usage_limited = false;
                     entry.usage_limit_reset_at = None;
                 }
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
                         "Failed to persist ClearProfileLimit for {}: {}",
                         profile_email, e
                     );
                 }
             }
-            Effect::ResetTaskToPending { task_id, repo_name } => {
-                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
+            Effect::ResetTaskToPending { task_id, dir_key } => {
+                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &dir_key) {
                     warn!("Failed to reset task !{} to pending: {}", task_id, e);
                 }
                 // Clear task assignment tracking (task is no longer assigned)
@@ -1299,7 +1299,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     record.current_name = None;
                 }
 
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
                         "Failed to save persistent state after clearing stale session ID for '{}': {}",
                         name, e
@@ -1326,7 +1326,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record.working_dir, session_id
                     );
                     record.working_dir = String::new();
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save state after clearing working_dir for session {}: {}",
                             session_id, e
@@ -1376,7 +1376,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::AssignAndSpawn {
                 task_id,
                 owner,
-                repo_name,
+                dir_key,
                 config,
                 on_success,
                 on_failure,
@@ -1404,7 +1404,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 .lock()
                                 .unwrap()
                                 .insert(task_id.clone(), session_id);
-                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save persistent state after AssignAndSpawn task_id update: {}",
                                     e
@@ -1420,7 +1420,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         // Transition task from pending to in_progress now that the coworker is running
                         if let Err(e) =
-                            crate::tasks::set_task_in_progress_for_repo(&task_id, &repo_name)
+                            crate::tasks::set_task_in_progress_for_repo(&task_id, &dir_key)
                         {
                             warn!(
                                 "Failed to set task !{} to in_progress after spawn: {}",
@@ -1428,7 +1428,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                         // Post task divider to the coworker's DM channel
-                        let task_subject = crate::tasks::read_tasks_for_repo(Some(&repo_name))
+                        let task_subject = crate::tasks::read_tasks_for_repo(Some(&dir_key))
                             .into_iter()
                             .find(|t| t.id == task_id)
                             .map(|t| t.subject);
@@ -1448,17 +1448,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::MarkRemindersFired {
-                fired_ids,
-                repo_name,
-            } => {
+            Effect::MarkRemindersFired { fired_ids, dir_key } => {
                 let mut ps = state.persistent_state.lock().await;
                 for reminder in &mut ps.reminders.reminders {
                     if fired_ids.contains(&reminder.id) {
                         reminder.fired = true;
                     }
                 }
-                if let Err(e) = ps.save_for_repo(&repo_name) {
+                if let Err(e) = ps.save_for_repo(&dir_key) {
                     warn!(
                         "Failed to save daemon-state.json after firing reminders: {}",
                         e
@@ -1519,7 +1516,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 {
                     assignment.reviewer_session_id = Some(sid);
                 }
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save daemon-state.json: {}", e);
                 }
             }
@@ -1530,7 +1527,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Removed reviewer assignment for PR #{} (was assigned to {})",
                         pr_number, assignment.reviewer
                     );
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save daemon-state.json after removing assignment: {}",
                             e
@@ -1566,7 +1563,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 let mut ps = state.persistent_state.lock().await;
                 for name in &orphaned_coworkers {
-                    ps.clear_reviewer_assignment(name, &state.repo_name);
+                    ps.clear_reviewer_assignment(name, state.paths.dir_key());
                 }
             }
             Effect::RerunWorkflow {
@@ -1633,7 +1630,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         pr_number, wt_id, branch, author
                     );
                 }
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to persist PR author session: {}", e);
                 } else {
                     info!(
@@ -1642,8 +1639,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::CompleteTask { task_id, repo_name } => {
-                if let Err(e) = crate::tasks::complete_task_for_repo(&task_id, &repo_name) {
+            Effect::CompleteTask { task_id, dir_key } => {
+                if let Err(e) = crate::tasks::complete_task_for_repo(&task_id, &dir_key) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
@@ -1659,7 +1656,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             .pr_author_sessions
                             .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
                         // Save both mutations in a single write
-                        if let Err(e) = ps.save_for_repo(&repo_name) {
+                        if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save task completion state: {}", e);
                         }
                     }
@@ -1669,10 +1666,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::ClearBlockedBy {
                 completed_task_id,
-                repo_name,
+                dir_key,
             } => {
                 if let Err(e) =
-                    crate::tasks::clear_blocked_by_for_repo(&completed_task_id, &repo_name)
+                    crate::tasks::clear_blocked_by_for_repo(&completed_task_id, &dir_key)
                 {
                     warn!(
                         "Failed to clear blockedBy for task !{}: {}",
@@ -1688,11 +1685,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::SetTaskPr {
                 task_id,
                 pr_number,
-                repo_name,
+                dir_key,
             } => {
                 if let Err(e) = crate::tasks::update_task_fields_for_repo(
                     &task_id,
-                    &repo_name,
+                    &dir_key,
                     None, // owner
                     None, // status
                     None, // description
@@ -1783,7 +1780,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let pr_session_removed = ps.github.pr_author_sessions.remove(&pr_number);
                     // Save if either worktree or pr_author_session was removed
                     if (removed.is_some() || pr_session_removed.is_some())
-                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                        && let Err(e) = ps.save_for_repo(state.paths.dir_key())
                     {
                         warn!("Failed to save daemon state after worktree cleanup: {}", e);
                     }
@@ -1832,7 +1829,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.remove_worktree(&worktree_id);
                     if removed.is_some()
-                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                        && let Err(e) = ps.save_for_repo(state.paths.dir_key())
                     {
                         warn!(
                             "Failed to save daemon state after stale worktree cleanup: {}",
@@ -1885,7 +1882,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let result = ps.apply_gc(&dead_session_ids, &orphaned_task_ids);
 
                     if result.has_changes()
-                        && let Err(e) = ps.save_for_repo(&state.repo_name)
+                        && let Err(e) = ps.save_for_repo(state.paths.dir_key())
                     {
                         warn!("Failed to save daemon state after GC: {}", e);
                     }
@@ -1969,7 +1966,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 } else {
                     debug!("Bound {} to worktree {}", coworker, worktree_id);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save daemon state after binding coworker: {}", e);
                     }
                 }
@@ -1999,7 +1996,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to register worktree assignment {}: {}", wt_id, e);
                 } else {
                     debug!("Registered worktree assignment {}", wt_id);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save daemon state after registering worktree: {}",
                             e
@@ -2011,7 +2008,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut ps = state.persistent_state.lock().await;
                 ps.github.rate_limit = rate_limit.clone();
                 debug!("Updated GitHub rate limits: {}", rate_limit.summary());
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
                         "Failed to save daemon state after updating rate limit: {}",
                         e
@@ -2023,7 +2020,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 initial_tasks,
             } => {
                 // Create the channel JSONL file
-                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let base_dir = state.paths.base_dir().to_path_buf();
                 let already_exists = base_dir.join("channels").join(&name).exists();
                 if let Err(e) = crate::channel::Channel::create(&base_dir, &name) {
                     warn!("Failed to create channel '{}': {}", name, e);
@@ -2056,7 +2053,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         ps.channel_lead_sessions
                             .entry(name.clone())
                             .or_insert_with(String::new);
-                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                             warn!(
                                 "Failed to save daemon state before spawning channel lead: {}",
                                 e
@@ -2075,7 +2072,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     });
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
-                        &state.repo_name,
+                        state.paths.dir_key(),
                         crate::launch::SessionMode::Fresh,
                         domain_context,
                     );
@@ -2090,7 +2087,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             // the race window before the init StreamEvent arrives.
                             let mut ps = state.persistent_state.lock().await;
                             ps.channel_lead_sessions.insert(name.clone(), session_id);
-                            if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
+                            if let Err(save_err) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save daemon state after channel lead spawn: {}",
                                     save_err
@@ -2103,7 +2100,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             // Recovery will spawn a fresh session on the next daemon restart.
                             let mut ps = state.persistent_state.lock().await;
                             ps.channel_lead_sessions.remove(&name);
-                            if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
+                            if let Err(save_err) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save daemon state after failed channel lead spawn: {}",
                                     save_err
@@ -2115,7 +2112,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::ArchiveChannel { name } => {
                 // Archive the channel by using Channel::archive()
-                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let base_dir = state.paths.base_dir().to_path_buf();
 
                 // Idempotency guard: check if the channel directory still exists before
                 // archiving. This effect may fire repeatedly (once per TaskDispatchTick)
@@ -2131,7 +2128,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 match crate::channel::Channel::new(&base_dir, &name) {
                     Ok(channel) => {
-                        if let Err(e) = channel.archive(&state.repo_name) {
+                        if let Err(e) = channel.archive(&state.project_name) {
                             warn!("Failed to archive channel '{}': {}", name, e);
                         } else {
                             info!("Archived channel '{}'", name);
@@ -2181,7 +2178,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         "Removed channel lead session for archived channel '{}'",
                                         name
                                     );
-                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                         warn!(
                                             "Failed to save daemon state after removing channel lead: {}",
                                             e
@@ -2198,7 +2195,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::MergeChannels { from, into } => {
                 // Read all messages from source channel
-                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let base_dir = state.paths.base_dir().to_path_buf();
                 let from_channel = match crate::channel::Channel::new(&base_dir, &from) {
                     Ok(ch) => ch,
                     Err(e) => {
@@ -2240,7 +2237,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             *channel = into.clone();
                         }
                     }
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save task_channel after merge: {}", e);
                     }
                 }
@@ -2262,7 +2259,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // and then archive() would overwrite the real archived data.
                 let from_channel_dir = base_dir.join("channels").join(&from);
                 if from_channel_dir.exists() {
-                    if let Err(e) = from_channel.archive(&state.repo_name) {
+                    if let Err(e) = from_channel.archive(&state.project_name) {
                         warn!(
                             "Failed to archive source channel '{}' after merge: {}",
                             from, e
@@ -2288,14 +2285,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut ps = state.persistent_state.lock().await;
                 ps.task_channel.insert(task_id.clone(), channel.clone());
                 debug!("Assigned task !{} to channel '{}'", task_id, channel);
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save task_channel after assignment: {}", e);
                 }
                 // Also update the task file on disk so dispatch.rs reads the correct channel
                 // (dispatch reads task.channel from the file, not from persistent state)
                 if let Err(e) = crate::tasks::update_task_fields_for_repo(
                     &task_id,
-                    &state.repo_name,
+                    state.paths.dir_key(),
                     None, // owner
                     None, // status
                     None, // description
@@ -2306,8 +2303,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to update task file channel for !{}: {}", task_id, e);
                 }
             }
-            Effect::UnassignTask { task_id, repo_name } => {
-                if let Err(e) = crate::tasks::unassign_task_for_repo(&task_id, &repo_name) {
+            Effect::UnassignTask { task_id, dir_key } => {
+                if let Err(e) = crate::tasks::unassign_task_for_repo(&task_id, &dir_key) {
                     warn!("Failed to unassign task !{}: {}", task_id, e);
                 } else {
                     info!(
@@ -2320,9 +2317,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::ResetAbandonedTask {
                 task_id,
                 pr_number,
-                repo_name,
+                dir_key,
             } => {
-                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &repo_name) {
+                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &dir_key) {
                     warn!(
                         "Failed to reset abandoned task !{} (PR #{} closed): {}",
                         task_id, pr_number, e
@@ -2345,7 +2342,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CreateTask {
-                repo_name,
+                dir_key,
                 subject,
                 description,
                 pr,
@@ -2355,7 +2352,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // when multiple review comments arrive in quick succession (e.g., after
                 // a daemon restart resets the in-memory cooldown).
                 if let Some(pr_num) = pr {
-                    let existing = crate::tasks::read_tasks_for_repo(Some(&repo_name));
+                    let existing = crate::tasks::read_tasks_for_repo(Some(&dir_key));
                     if create_task_duplicate_exists(&existing, pr_num) {
                         debug!(
                             "Skipping CreateTask for PR #{}: non-completed task already exists",
@@ -2377,7 +2374,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     &description,
                     &active_form,
                     "", // owner (empty = unassigned)
-                    &repo_name,
+                    &dir_key,
                     None, // blocked_by
                     None, // channel
                     pr,   // pr (from effect)
@@ -2400,7 +2397,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 if !ps.task_thread_id.contains_key(&task_id) {
                                     ps.task_thread_id.insert(task_id.clone(), message_id);
                                 }
-                                if let Err(e) = ps.save_for_repo(&repo_name) {
+                                if let Err(e) = ps.save_for_repo(&dir_key) {
                                     warn!("Failed to save task message_id mapping: {}", e);
                                 }
                             }
@@ -2425,7 +2422,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     "Saved channel lead session for '{}': {}",
                     channel_name, session_id
                 );
-                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
                         "Failed to save daemon state after saving channel lead session: {}",
                         e
@@ -2475,7 +2472,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // without this a new session would inherit unread messages meant
                 // for its predecessor.
                 {
-                    let team_name = crate::mailbox::team_name_for_repo(&state.repo_name);
+                    let team_name = crate::mailbox::team_name_for_repo(&state.project_name);
                     if let Err(e) = crate::mailbox::clear_inbox(&team_name, &name) {
                         warn!("SpawnSession: failed to clear inbox for '{}': {}", name, e);
                     }
@@ -2573,7 +2570,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             if bound_thread_id.is_some() {
                                 record.bound_thread_id = bound_thread_id;
                             }
-                            if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!("Failed to save persistent state after SpawnSession: {}", e);
                             }
                         }
@@ -2586,7 +2583,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // including reviewers).
                         {
                             let task_subject =
-                                crate::tasks::read_tasks_for_repo(Some(&state.repo_name))
+                                crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()))
                                     .into_iter()
                                     .find(|t| t.id == task_id)
                                     .map(|t| t.subject);
@@ -2619,7 +2616,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             }
                             if let Err(reset_err) = crate::tasks::reset_task_to_pending_for_repo(
                                 &task_id,
-                                &state.repo_name,
+                                state.paths.dir_key(),
                             ) {
                                 warn!(
                                     "SpawnSession cleanup: failed to reset task !{} to pending: {}",
@@ -2668,7 +2665,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Some(record) = ps.sessions.get_mut(&session_id) {
                         record.is_running = false;
                     }
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save persistent state after ShutdownSession for {}: {}",
                             session_id, e
@@ -2760,7 +2757,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                                     ps.channel_lead_sessions
                                         .insert(channel_name.clone(), active_session_id.clone());
-                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                         warn!(
                                             "Failed to update channel lead session mapping for '{}': {}",
                                             channel_name, e
@@ -2783,7 +2780,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => false,
                     };
 
-                    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                    let base_dir = state.paths.base_dir().to_path_buf();
                     let notes_base = base_dir;
                     let notes_channel = channel_name.clone();
                     let domain_context = tokio::task::spawn_blocking(move || {
@@ -2802,14 +2799,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         (Some(id), true) => {
                             let mut config = crate::launch::LaunchConfig::channel_lead(
                                 &channel_name,
-                                &state.repo_name,
+                                state.paths.dir_key(),
                                 crate::launch::SessionMode::ResumeSession(id.to_string()),
                                 &domain_context,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
 
-                            match spawn_with_resume_fallback(state, &state.repo_name, &mut config)
-                                .await
+                            match spawn_with_resume_fallback(
+                                state,
+                                state.paths.dir_key(),
+                                &mut config,
+                            )
+                            .await
                             {
                                 Ok((resumed_session_id, _)) => {
                                     let active_session_id = state
@@ -2825,7 +2826,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                             channel_name.clone(),
                                             active_session_id.clone(),
                                         );
-                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                             tracing::error!(
                                                 "Failed to save state after channel lead resume/fallback: {}",
                                                 e
@@ -2845,7 +2846,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         let mut ps = state.persistent_state.lock().await;
                                         ps.channel_lead_sessions
                                             .insert(channel_name.clone(), String::new());
-                                        if let Err(save_err) = ps.save_for_repo(&state.repo_name) {
+                                        if let Err(save_err) =
+                                            ps.save_for_repo(state.paths.dir_key())
+                                        {
                                             warn!(
                                                 "Failed to clear stale channel lead session ID for '{}': {}",
                                                 channel_name, save_err
@@ -2862,7 +2865,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         let mut ps = state.persistent_state.lock().await;
                                         ps.channel_lead_sessions
                                             .insert(channel_name.clone(), String::new());
-                                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                             warn!(
                                                 "Failed to clear stale channel lead session ID for '{}': {}",
                                                 channel_name, e
@@ -2875,7 +2878,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => {
                             let mut config = crate::launch::LaunchConfig::channel_lead(
                                 &channel_name,
-                                &state.repo_name,
+                                state.paths.dir_key(),
                                 crate::launch::SessionMode::Fresh,
                                 &domain_context,
                             );
@@ -2886,15 +2889,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 let mut ps = state.persistent_state.lock().await;
                                 ps.channel_lead_sessions
                                     .insert(channel_name.clone(), String::new());
-                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                     tracing::error!(
                                         "Failed to save state before spawning channel lead: {}",
                                         e
                                     );
                                 }
                             }
-                            match spawn_with_resume_fallback(state, &state.repo_name, &mut config)
-                                .await
+                            match spawn_with_resume_fallback(
+                                state,
+                                state.paths.dir_key(),
+                                &mut config,
+                            )
+                            .await
                             {
                                 Ok((session_id, _)) => {
                                     // Update channel_lead_sessions with the real session_id
@@ -2903,7 +2910,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                     let mut ps = state.persistent_state.lock().await;
                                     ps.channel_lead_sessions
                                         .insert(channel_name.clone(), session_id);
-                                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                         tracing::error!(
                                             "Failed to save state after spawning channel lead: {}",
                                             e
@@ -2979,7 +2986,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 {
                     let mut ps = state.persistent_state.lock().await;
                     ps.sessions.insert(session_id.clone(), *record);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save persistent state after RecordSession: {}", e);
                     }
                 }
@@ -3017,7 +3024,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     ps.channel_lead_sessions.contains_key(name.as_str())
                 };
                 let suffix =
-                    auto_detach_suffix_message(name.as_str(), &state.repo_name, is_channel_lead);
+                    auto_detach_suffix_message(name.as_str(), &state.project_name, is_channel_lead);
                 let mut msg = crate::message::Message::system(format!(
                     "⚠️ Auto-detached stale attached session for {} — interactive session ended without detach.{}",
                     name, suffix
@@ -3079,7 +3086,7 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
     {
         let mut ps = state.persistent_state.lock().await;
         ps.ci_stats.record_rerun(run_id);
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("Failed to save CI stats after recording rerun: {}", e);
         }
     }
@@ -3196,9 +3203,8 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             serde_json::to_string_pretty(&*ps).ok()
         };
         if let Some(json) = serialized {
-            let repo_name = state.repo_name.clone();
+            let path = state.paths.daemon_state_file();
             if let Err(e) = tokio::task::spawn_blocking(move || {
-                let path = crate::paths::daemon_state_file_for_repo(&repo_name);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
@@ -3307,7 +3313,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
     // Resolve the workflow script path (4-level priority order).
     let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
     let script_path =
-        crate::paths::workflow_script_for_channel(&channel, &project_root, &state.repo_name);
+        crate::paths::workflow_script_for_channel(&channel, &project_root, state.paths.dir_key());
     let Some(script) = script_path else {
         // No workflow script configured for this channel — silent no-op.
         return;
@@ -3325,7 +3331,7 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
         }
     };
 
-    let state_file = crate::paths::workflow_state_file(&channel, &state.repo_name);
+    let state_file = crate::paths::workflow_state_file(&channel, state.paths.dir_key());
 
     // Fast path: try the persistent sidecar.
     match state
@@ -3508,7 +3514,7 @@ fn record_session_recovery_cooldown(
 
 async fn spawn_with_resume_fallback(
     state: &DaemonState,
-    repo_name: &str,
+    dir_key: &str,
     config: &mut crate::launch::LaunchConfig,
 ) -> Result<(String, bool), String> {
     let resume_session_id = match &config.session_mode {
@@ -3535,7 +3541,7 @@ async fn spawn_with_resume_fallback(
             config.session_mode = crate::launch::SessionMode::Fresh;
             config.initial_prompt = Some(build_resume_handoff_prompt(
                 &config.name,
-                repo_name,
+                dir_key,
                 &session_id,
                 prior_prompt.as_deref(),
                 config.working_dir.as_deref(),
@@ -3556,8 +3562,12 @@ async fn spawn_with_resume_fallback(
 /// The lead session (both canonical repo name and legacy "lead") gets a
 /// respawn notice; channel leads get a channel-respawn notice; everyone
 /// else gets a task-dispatch notice.
-fn auto_detach_suffix_message(name: &str, repo_name: &str, is_channel_lead: bool) -> &'static str {
-    if super::helpers::is_project_lead(name, repo_name) {
+fn auto_detach_suffix_message(
+    name: &str,
+    project_name: &str,
+    is_channel_lead: bool,
+) -> &'static str {
+    if super::helpers::is_project_lead(name, project_name) {
         " Headless session will respawn on the next tick."
     } else if is_channel_lead {
         " Channel lead session will be respawned for its channel."
@@ -3593,7 +3603,7 @@ async fn respawn_fork(
         working_dir,
         auth_provider,
         is_channel_lead,
-        &state.repo_name,
+        state.paths.dir_key(),
         Some(fork_name), // reuse exact original fork name
     );
     headless_config.resume_session_id = None; // Fresh session, don't resume from parent
@@ -3653,7 +3663,7 @@ async fn respawn_fork(
                 profile: None,
             },
         );
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("Failed to persist session record for respawned fork: {}", e);
         }
     }

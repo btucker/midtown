@@ -361,7 +361,7 @@ fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64)
 pub(super) fn detect_abandoned_pr_tasks(
     snap: &WorldSnapshot,
     open_pr_numbers: &[u64],
-    repo_name: &str,
+    dir_key: &str,
 ) -> Vec<Effect> {
     let open_set: HashSet<u64> = open_pr_numbers.iter().copied().collect();
     let mut effects = Vec::new();
@@ -416,7 +416,7 @@ pub(super) fn detect_abandoned_pr_tasks(
                     effects.push(Effect::ResetAbandonedTask {
                         task_id: task_id.clone(),
                         pr_number: *pr_number,
-                        repo_name: repo_name.to_string(),
+                        dir_key: dir_key.to_string(),
                     });
                 }
             }
@@ -498,7 +498,7 @@ async fn resolve_pr_owner_from_state(
     head_ref: Option<&str>,
     owner_fallback: Option<&str>,
 ) -> Option<String> {
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
     let head = head_ref.unwrap_or("");
 
     let owner = {
@@ -760,7 +760,7 @@ async fn update_pr_caches(
     effects.extend(detect_abandoned_pr_tasks(
         snap,
         &open_pr_numbers,
-        &state.repo_name,
+        state.paths.dir_key(),
     ));
 
     // Clean up persistent reviewer assignments for PRs that are no longer open.
@@ -769,7 +769,7 @@ async fn update_pr_caches(
         ps.github.cleanup_closed_prs(&open_pr_numbers);
         ps.github
             .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
     }
@@ -1143,7 +1143,7 @@ pub(super) async fn poll_prs_for_issues(
     );
 
     // Check for stuck conditions and nudge lead if self-healing has failed
-    let review_mode = crate::config::get_review_mode_for_repo(&state.repo_name);
+    let review_mode = crate::config::get_review_mode_for_repo(state.paths.dir_key());
     effects.extend(
         collect_stuck_condition_effects(
             state,
@@ -1381,7 +1381,7 @@ fn pr_action_to_effects(
         if !is_handoff {
             let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
             let has_script = channel.as_ref().is_some_and(|ch| {
-                crate::paths::workflow_script_for_channel(ch, &project_root, &state.repo_name)
+                crate::paths::workflow_script_for_channel(ch, &project_root, state.paths.dir_key())
                     .is_some()
             });
 
@@ -1451,7 +1451,7 @@ fn pr_action_to_effects(
             };
             let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
-                state.repo_name.clone(),
+                state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
             );
@@ -1568,7 +1568,7 @@ struct StuckEvalContext<'a> {
     channel_lead_names: HashSet<String>,
     has_available_slots: bool,
     running_coworkers: Vec<crate::coworker::Coworker>,
-    repo_name: &'a str,
+    project_name: &'a str,
     /// PR numbers that have a reviewer assigned in persistent state.
     assigned_prs: HashSet<u64>,
     /// PR numbers with an active reviewer who hasn't finished their cached review.
@@ -1639,7 +1639,7 @@ async fn collect_stuck_condition_effects(
             channel_lead_names,
             has_available_slots,
             running_coworkers: state.coworkers.list_running(),
-            repo_name: &state.repo_name,
+            project_name: &state.project_name,
             assigned_prs: assigned,
             active_reviewer_prs: active_reviewers,
             pr_task_associations,
@@ -1712,7 +1712,7 @@ async fn collect_stuck_condition_effects(
                     let has_script = crate::paths::workflow_script_for_channel(
                         channel,
                         &project_root,
-                        &state.repo_name,
+                        state.paths.dir_key(),
                     )
                     .is_some();
                     if has_script {
@@ -1806,7 +1806,7 @@ fn no_review_nudge_self_review(
         let mut busy: Vec<String> = ctx
             .running_coworkers
             .iter()
-            .filter(|cw| is_non_lead_coworker(&cw.name, ctx.repo_name, &ctx.channel_lead_names))
+            .filter(|cw| is_non_lead_coworker(&cw.name, ctx.project_name, &ctx.channel_lead_names))
             .map(|cw| cw.name.clone())
             .collect();
         busy.sort();
@@ -2379,7 +2379,7 @@ async fn collect_comment_notification_effects(
                 pr_number, task_id
             );
             effects.push(Effect::CreateTask {
-                repo_name: state.repo_name.clone(),
+                dir_key: state.paths.dir_key().to_string(),
                 subject,
                 description,
                 pr: Some(pr_number),
@@ -2472,7 +2472,7 @@ fn comment_action_to_effects(
             };
             let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
-                state.repo_name.clone(),
+                state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
             );
@@ -2595,7 +2595,7 @@ fn handoff_to_coworker_effects(
     // Look up topic channel for this PR's task (falls back to main if not found)
     let config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
-        state.repo_name.clone(),
+        state.paths.dir_key().to_string(),
         session_id,
         pr_number,
         branch,
@@ -2685,7 +2685,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
-    let review_mode = crate::config::get_review_mode_for_repo(&state.repo_name);
+    let review_mode = crate::config::get_review_mode_for_repo(state.paths.dir_key());
     let spawn_local_reviewers = matches!(
         review_mode,
         crate::config::ReviewMode::Local | crate::config::ReviewMode::Both
@@ -2716,7 +2716,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         pr_author_names,
     ) = {
         let ps = state.persistent_state.lock().await;
-        let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+        let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
         let pr_task_associations = ps.github.pr_to_task_map();
         let session_task_map: HashMap<String, String> = ps
             .sessions
@@ -2783,8 +2783,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
             .is_some_and(|channel| {
                 let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-                crate::paths::workflow_script_for_channel(&channel, &project_root, &state.repo_name)
-                    .is_some()
+                crate::paths::workflow_script_for_channel(
+                    &channel,
+                    &project_root,
+                    state.paths.dir_key(),
+                )
+                .is_some()
             });
 
             if has_script {
@@ -2839,7 +2843,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                         pr_number
                     );
                     ps.github.remove_assignment(pr_number);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save daemon-state.json: {}", e);
                     }
                 }
@@ -3094,7 +3098,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // Compute worktree details for reviewer worktree
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-        let wt_path = crate::paths::worktrees_dir_for_repo(&state.repo_name).join(&worktree_id);
+        let wt_path = state.paths.worktrees_dir().join(&worktree_id);
 
         // Collision guard: abort spawn if the worktree is already bound to an active coworker.
         // The BindCoworkerToWorktree effect has its own collision guard, but by then the
@@ -3122,12 +3126,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // a provider-aware initial prompt in addition to spawn arguments.
         // restart_count=0 for new assignments (not a respawn).
         let auth_provider = crate::config::get_execution_provider_for_role(
-            &state.repo_name,
+            state.paths.dir_key(),
             crate::config::ExecutionRole::Reviewer,
         );
         let mut config = crate::launch::LaunchConfig::reviewer(
             reviewer_name.clone(),
-            &state.repo_name,
+            state.paths.dir_key(),
             pr_number,
             0,
             auth_provider,
@@ -3308,7 +3312,7 @@ fn review_complete_action_to_effects(
             };
             let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
-                state.repo_name.clone(),
+                state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
             );
@@ -3822,7 +3826,7 @@ pub(super) async fn handle_pr_comment_nudge(
             );
             let effects = vec![
                 Effect::CreateTask {
-                    repo_name: state.repo_name.clone(),
+                    dir_key: state.paths.dir_key().to_string(),
                     subject,
                     description,
                     pr: Some(pr_number),
@@ -3883,7 +3887,7 @@ pub(super) async fn handle_pr_comment_nudge(
             // Reviewer stopped — resume their session with the follow-up context
             let config = crate::launch::LaunchConfig::coworker(
                 reviewer_name.clone(),
-                state.repo_name.clone(),
+                state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::ResumeSession(session_id.clone()),
                 Some(nudge_msg),
             );
@@ -4535,7 +4539,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 
         // Nudge the lead to decide what to do with this PR
         effects.push(Effect::nudge_channel_lead(
-            &snap.repo_name,
+            &snap.project_name,
             format!(
                 "PR #{} ({}) is reviewed and CI is green, but has no active task. \
                  Please check the PR and either tell the author to merge it or handle it manually.",
@@ -4581,7 +4585,7 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
             effects.push(Effect::SetTaskPr {
                 task_id: task_id_str.clone(),
                 pr_number,
-                repo_name: snap.repo_name.clone(),
+                dir_key: snap.dir_key.clone(),
             });
         }
     }

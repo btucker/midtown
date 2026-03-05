@@ -61,7 +61,7 @@ fn make_pool_toggle_test_state(
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
-        repo_name.to_string(),
+        crate::paths::ProjectPaths::with_project_name(repo_name, repo_name),
         vec![repo_dir.path().to_path_buf()],
         channel_router,
         None,

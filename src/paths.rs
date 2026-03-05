@@ -184,21 +184,186 @@ pub fn detect_repo_name_from_dir(dir: &std::path::Path) -> Option<String> {
 ///
 /// Priority:
 /// 1. `[project].name` from the per-project config.toml
-/// 2. Git repository directory name (from `detect_repo_name()`)
+/// 2. Auto-sanitized repo directory name (dots replaced with hyphens)
 ///
 /// This is the canonical way to get the project name for use in
-/// session names, display labels, etc.
+/// session names, channel names, display labels, etc.
 pub fn detect_project_name() -> Option<String> {
     let repo_name = detect_repo_name()?;
+    Some(project_name_for_dir_key(&repo_name))
+}
 
-    // Check if the project config has an explicit name
-    if let Some(name) = crate::config::load_full_project_config(&repo_name)
+/// Derive a project name from a dir_key (git directory name).
+///
+/// Resolution order:
+/// 1. `[project].name` from config.toml (explicit override)
+/// 2. `dir_key.replace('.', '-')` (auto-sanitized from git dir name)
+///
+/// This ensures project names are always valid identifiers (no dots)
+/// without requiring manual config.
+pub fn project_name_for_dir_key(dir_key: &str) -> String {
+    if let Some(name) = crate::config::load_full_project_config(dir_key)
         .and_then(|c| c.project.name().map(|s| s.to_string()))
     {
-        return Some(name);
+        return name;
+    }
+    sanitize_project_name(dir_key)
+}
+
+/// Sanitize a directory name into a valid project name by replacing dots with hyphens.
+pub fn sanitize_project_name(dir_key: &str) -> String {
+    dir_key.replace('.', "-")
+}
+
+/// Consolidated path manager for a project.
+///
+/// Carries both identifiers that a project needs:
+/// - `dir_key`: The git directory name (e.g., "midtown.nosync"), used for filesystem paths
+/// - `project_name`: The logical identity (e.g., "midtown"), used for channel names, display, etc.
+///
+/// All path methods that previously existed as `*_for_repo()` free functions
+/// are now methods on this struct, ensuring consistent path construction.
+#[derive(Debug, Clone)]
+pub struct ProjectPaths {
+    dir_key: String,
+    project_name: String,
+    base: PathBuf,
+    state_base: PathBuf,
+}
+
+impl ProjectPaths {
+    /// Create `ProjectPaths` from a dir_key, resolving the project name from config
+    /// or auto-sanitizing (replacing dots with hyphens).
+    pub fn new(dir_key: &str) -> Self {
+        let project_name = project_name_for_dir_key(dir_key);
+        Self::with_project_name(dir_key, &project_name)
     }
 
-    Some(repo_name)
+    /// Create `ProjectPaths` with an explicit project name (for tests or when
+    /// the project name is already known).
+    pub fn with_project_name(dir_key: &str, project_name: &str) -> Self {
+        Self {
+            dir_key: dir_key.to_string(),
+            project_name: project_name.to_string(),
+            base: midtown_base_dir().join("projects").join(dir_key),
+            state_base: state_dir().join("midtown").join(dir_key),
+        }
+    }
+
+    /// The filesystem key (git directory name, e.g., "midtown.nosync").
+    pub fn dir_key(&self) -> &str {
+        &self.dir_key
+    }
+
+    /// The logical project name (e.g., "midtown").
+    pub fn project_name(&self) -> &str {
+        &self.project_name
+    }
+
+    /// Base project directory: `~/.midtown/projects/<dir_key>/`.
+    pub fn base_dir(&self) -> &Path {
+        &self.base
+    }
+
+    /// Assets directory: `~/.midtown/projects/<dir_key>/assets/`.
+    pub fn assets_dir(&self) -> PathBuf {
+        self.base.join("assets")
+    }
+
+    /// Screenshots directory: `~/.midtown/projects/<dir_key>/screenshots/`.
+    pub fn screenshots_dir(&self) -> PathBuf {
+        self.base.join("screenshots")
+    }
+
+    /// Task-based worktrees directory: `~/.midtown/projects/<dir_key>/worktrees/`.
+    pub fn worktrees_dir(&self) -> PathBuf {
+        migrate_worktree_paths(&self.dir_key);
+        self.base.join("worktrees")
+    }
+
+    /// Lead worktree path: `~/.midtown/projects/<dir_key>/worktrees/lead/`.
+    pub fn lead_worktree(&self) -> PathBuf {
+        self.worktrees_dir().join("lead")
+    }
+
+    /// Daemon state file: `~/.midtown/projects/<dir_key>/daemon-state.json`.
+    pub fn daemon_state_file(&self) -> PathBuf {
+        self.base.join("daemon-state.json")
+    }
+
+    /// Daemon socket: `~/.local/state/midtown/<dir_key>/daemon.sock`.
+    pub fn daemon_socket(&self) -> PathBuf {
+        self.state_base.join("daemon.sock")
+    }
+
+    /// Daemon log directory: `~/.midtown/projects/<dir_key>/logs/`.
+    pub fn daemon_log_dir(&self) -> PathBuf {
+        self.base.join("logs")
+    }
+
+    /// Daemon log file: `~/.midtown/projects/<dir_key>/logs/daemon.log`.
+    pub fn daemon_log_file(&self) -> PathBuf {
+        self.daemon_log_dir().join("daemon.log")
+    }
+
+    /// Hooks log file: `~/.midtown/projects/<dir_key>/logs/hooks.log`.
+    pub fn hooks_log_file(&self) -> PathBuf {
+        self.daemon_log_dir().join("hooks.log")
+    }
+
+    /// Daemon PID file: `~/.midtown/projects/<dir_key>/daemon.pid`.
+    pub fn daemon_pid_file(&self) -> PathBuf {
+        self.base.join("daemon.pid")
+    }
+
+    /// Headless output log: `~/.midtown/projects/<dir_key>/headless-<name>.jsonl`.
+    pub fn headless_output(&self, coworker_name: &str) -> PathBuf {
+        self.base.join(format!("headless-{}.jsonl", coworker_name))
+    }
+
+    /// Lead session file: `~/.midtown/projects/<dir_key>/lead-session-id`.
+    pub fn lead_session_file(&self) -> PathBuf {
+        self.base.join("lead-session-id")
+    }
+
+    /// Lead system prompt file: `~/.midtown/projects/<dir_key>/lead-system-prompt.txt`.
+    pub fn lead_system_prompt_file(&self) -> PathBuf {
+        self.base.join("lead-system-prompt.txt")
+    }
+
+    /// GitHub state file: `~/.midtown/projects/<dir_key>/github-state.json`.
+    pub fn github_state_file(&self) -> PathBuf {
+        self.base.join("github-state.json")
+    }
+
+    /// Reminders file: `~/.midtown/projects/<dir_key>/reminders.json`.
+    pub fn reminders_file(&self) -> PathBuf {
+        self.base.join("reminders.json")
+    }
+
+    /// Cursors directory: `~/.midtown/projects/<dir_key>/cursors/`.
+    pub fn cursors_dir(&self) -> PathBuf {
+        self.base.join("cursors")
+    }
+
+    /// Channel file: `~/.midtown/projects/<dir_key>/channels/<channel>/history/current.jsonl`.
+    pub fn channel_file(&self, channel: &str) -> PathBuf {
+        self.base
+            .join("channels")
+            .join(channel)
+            .join("history")
+            .join("current.jsonl")
+    }
+
+    /// Task list ID for this project (uses dir_key for path stability).
+    pub fn task_list_id(&self) -> String {
+        format!("midtown-{}", self.dir_key)
+    }
+
+    /// Team name for agent mailbox (uses project_name for logical identity).
+    pub fn team_name(&self) -> String {
+        format!("midtown-{}", self.project_name)
+    }
 }
 
 /// Get the state directory for midtown.

@@ -291,12 +291,13 @@ impl LaunchConfig {
     /// description into the initial prompt and tracks assignment internally.
     pub fn coworker(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_mode: SessionMode,
         initial_prompt: Option<String>,
     ) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -334,12 +335,12 @@ impl LaunchConfig {
     /// instructs the reviewer to update the existing placeholder comment.
     pub fn reviewer(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         pr_number: u64,
         restart_count: u32,
         auth_provider: crate::auth::AuthProvider,
     ) -> Self {
-        let repo = repo_name.into();
+        let repo = dir_key.into();
         let model =
             crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
                 .map(|s| s.as_model_str().to_string())
@@ -374,9 +375,10 @@ impl LaunchConfig {
     ///
     /// The Project Lead uses unrestricted setting sources and runs as a headless session
     /// that can be attached/detached like coworkers.
-    pub fn lead(repo_name: impl Into<String>, channel: Option<&str>) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+    pub fn lead(dir_key: impl Into<String>, channel: Option<&str>) -> Self {
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
 
         if let Some(channel_name) = channel {
             // Channel lead — delegate to channel_lead factory
@@ -395,10 +397,13 @@ impl LaunchConfig {
                     .map(|s| s.as_model_str().to_string())
                     .unwrap_or_else(|| "opus".to_string());
             LaunchConfig {
-                name: repo.clone(),
+                name: project_name.clone(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
-                initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),
+                initial_prompt: Some(crate::agents::main_lead_initial_prompt(
+                    &project_name,
+                    &project_name,
+                )),
                 additional_dirs: vec![],
                 pr_number: None,
                 team_name: Some(team),
@@ -420,14 +425,15 @@ impl LaunchConfig {
     /// continue the work. Used when the original PR author is unavailable.
     pub fn pr_handoff(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_id: String,
         pr_number: u64,
         branch: &str,
         original_author: &str,
     ) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -485,14 +491,15 @@ impl LaunchConfig {
     /// not by a name prefix.
     pub fn channel_lead(
         channel_name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_mode: SessionMode,
         domain_context: impl Into<String>,
     ) -> Self {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::ChannelLead,
@@ -528,11 +535,12 @@ impl LaunchConfig {
     /// Generates the system prompt based on the coworker's role, and maps
     /// session mode to `persist_session` / `resume_session_id` fields.
     ///
-    /// `project_name` is used to load sandbox configuration.
+    /// `paths` carries both `dir_key` (for config/filesystem) and `project_name` (for identity).
     ///
-    /// For Lead role: saves the system prompt to `~/.midtown/projects/<repo>/lead-system-prompt.txt`
+    /// For Lead role: saves the system prompt to `~/.midtown/projects/<dir_key>/lead-system-prompt.txt`
     /// so it can be re-applied when attaching to the headless session.
-    pub fn to_headless_config(&self, project_name: &str) -> HeadlessConfig {
+    pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
+        let project_name = paths.project_name();
         let system_prompt = match &self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
                 &self.name,
@@ -559,7 +567,7 @@ impl LaunchConfig {
 
         // Save the lead system prompt to disk for attach resumption
         if matches!(self.role, CoworkerRole::Lead) {
-            let prompt_file = crate::paths::lead_system_prompt_file(project_name);
+            let prompt_file = crate::paths::lead_system_prompt_file(paths.dir_key());
             if let Some(parent) = prompt_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -801,10 +809,14 @@ mod tests {
     use super::*;
     use crate::auth::AuthProvider;
 
+    fn test_paths() -> crate::paths::ProjectPaths {
+        crate::paths::ProjectPaths::with_project_name("myrepo", "midtown")
+    }
+
     #[test]
     fn test_to_headless_config_fresh_coworker() {
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert!(headless.persist_session);
         assert!(headless.resume_session_id.is_none());
@@ -826,7 +838,7 @@ mod tests {
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
             ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
         };
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert!(headless.persist_session);
         assert_eq!(headless.resume_session_id, Some("abc-123".to_string()));
@@ -835,7 +847,7 @@ mod tests {
     #[test]
     fn test_to_headless_config_reviewer_has_no_teams() {
         let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert!(headless.team_name.is_none());
         assert!(headless.agent_id.is_none());
@@ -850,7 +862,7 @@ mod tests {
     #[test]
     fn test_to_headless_config_reviewer_has_tools() {
         let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         assert!(headless.allow_tools);
     }
 
@@ -859,21 +871,21 @@ mod tests {
         // setting_sources is now always None on HeadlessConfig — the platform
         // arg builder unconditionally adds --setting-sources project,local.
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         assert_eq!(
             headless.setting_sources, None,
             "setting_sources should be None — handled by platform arg builder"
         );
 
         let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         assert_eq!(
             headless.setting_sources, None,
             "setting_sources should be None — handled by platform arg builder"
         );
 
         let config = LaunchConfig::lead("myrepo", None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         assert_eq!(
             headless.setting_sources, None,
             "setting_sources should be None — handled by platform arg builder"
@@ -1042,7 +1054,7 @@ mod tests {
     fn test_channel_routing_env_var() {
         let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
         config.channel = Some("task-42".to_string());
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         // Verify MIDTOWN_CHANNEL env var is set
         assert_eq!(
@@ -1054,7 +1066,7 @@ mod tests {
     #[test]
     fn test_no_channel_routing_when_none() {
         let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         // Verify MIDTOWN_CHANNEL env var is not set when channel is None
         assert!(!headless.env.contains_key("MIDTOWN_CHANNEL"));
@@ -1066,7 +1078,7 @@ mod tests {
         config.auth_provider = crate::auth::AuthProvider::Codex;
         config.auth_profile_dir = Some(std::path::PathBuf::from("/tmp/midtown-codex-profile"));
 
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert_eq!(
             headless.env.get("CODEX_HOME"),
@@ -1094,7 +1106,7 @@ mod tests {
         config.auth_profile_dir = Some(dir.path().to_path_buf());
         config.model = "haiku".to_string();
 
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert_eq!(
             headless.env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
@@ -1235,7 +1247,7 @@ mod tests {
     #[test]
     fn test_headless_config_lead_role_uses_lead_prompt() {
         let config = LaunchConfig::lead("myrepo", None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         // Lead should use main_lead_system_prompt (not coworker)
         assert!(
@@ -1252,7 +1264,7 @@ mod tests {
         // All sessions now get --setting-sources project,local via the platform
         // arg builder. The HeadlessConfig.setting_sources field is always None.
         let config = LaunchConfig::lead("myrepo", None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         assert_eq!(
             headless.setting_sources, None,
             "setting_sources should be None — handled by platform arg builder"
@@ -1283,7 +1295,7 @@ mod tests {
     #[test]
     fn test_lead_config_has_team_name() {
         let config = LaunchConfig::lead("myrepo", None);
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
 
         assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
         assert_eq!(headless.agent_id, Some("myrepo@midtown-myrepo".to_string()));
@@ -1324,7 +1336,7 @@ mod tests {
     #[test]
     fn test_channel_lead_headless_config_has_system_prompt() {
         let config = LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "");
-        let headless = config.to_headless_config("midtown");
+        let headless = config.to_headless_config(&test_paths());
         // Channel lead system prompt references the channel name
         assert!(
             headless.system_prompt.contains("tui"),

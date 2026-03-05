@@ -78,7 +78,8 @@ pub struct MultiTickHarness {
 impl MultiTickHarness {
     /// Create a new harness from a JSON snapshot fixture.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        let snapshot: WorldSnapshot = serde_json::from_str(json)?;
+        let mut snapshot: WorldSnapshot = serde_json::from_str(json)?;
+        snapshot.fixup_legacy_fields();
         Ok(Self { snapshot })
     }
 
