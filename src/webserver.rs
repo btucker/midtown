@@ -276,7 +276,9 @@ async fn project_channel(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Read channel directly from file (no daemon needed)
-    let channel = crate::Channel::for_repo(&name).map_err(|e| {
+    // Use project_name (sanitized) as the channel name, dir_key for the filesystem path
+    let project_name = crate::paths::project_name_for_dir_key(&name);
+    let channel = crate::Channel::for_repo_named(&name, &project_name).map_err(|e| {
         warn!("Failed to open channel for project {}: {}", name, e);
         StatusCode::NOT_FOUND
     })?;
