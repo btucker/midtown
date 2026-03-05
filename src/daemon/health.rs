@@ -1170,74 +1170,9 @@ pub(super) async fn check_and_respawn_dead_processes(
     effects
 }
 
-/// Detect and respawn dead fork sessions.
-///
-/// Fork sessions are thread-bound (via `topic_sessions[thread_parent_id]`),
-/// not task-bound, so they're invisible to `check_and_respawn_dead_processes`.
-/// This function fills that gap by checking `topic_sessions` against process
-/// health and respawning dead forks with the same thread binding.
-///
-/// Uses the same per-name cooldown as task-based respawns to prevent loops.
-pub(super) async fn check_and_respawn_dead_forks(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    let respawns = crate::rules::decide_dead_fork_respawns(
-        &snap.topic_sessions,
-        &snap.sessions,
-        &snap.health.headless_process_health,
-    );
-
-    let mut effects = Vec::new();
-    for respawn in respawns {
-        // Per-fork cooldown to prevent respawn loops (same category as task-based)
-        let should_check = {
-            let cooldowns = state.cooldowns.lock().unwrap();
-            cooldowns.check("process_respawn", &respawn.name, ZOMBIE_RESPAWN_COOLDOWN)
-        };
-        if !should_check {
-            debug!("Fork respawn cooldown active for {}", respawn.name);
-            continue;
-        }
-
-        warn!(
-            "Fork {} process died (exit code {}) — respawning for thread {}",
-            respawn.name, respawn.exit_code, respawn.thread_parent_id
-        );
-
-        // Shut down the dead fork (cleans up topic_sessions, reverse maps, etc.)
-        effects.push(Effect::ShutdownCoworker {
-            name: respawn.name.clone(),
-            message: String::new(),
-        });
-
-        // Respawn a fresh fork bound to the same thread
-        effects.push(Effect::RespawnFork {
-            fork_name: respawn.name.clone(),
-            thread_parent_id: respawn.thread_parent_id.clone(),
-            channel: respawn.channel.clone(),
-            working_dir: respawn.working_dir.clone(),
-            auth_provider: respawn.auth_provider,
-            is_channel_lead: respawn.is_channel_lead,
-        });
-
-        effects.push(Effect::RecordCooldown {
-            category: "process_respawn".to_string(),
-            key: respawn.name.clone(),
-        });
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "💀 Fork {} process died (exit {}) — respawning for thread {}",
-                respawn.name, respawn.exit_code, respawn.thread_parent_id
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-        });
-    }
-
-    effects
-}
+// Note: fork crash recovery is handled in the session_drain handler (mod.rs),
+// not via a snapshot-based function. See the "Crash recovery" section in
+// docs/architecture.md for the rationale (cleanup ordering).
 
 /// Ensure the lead session is always running.
 ///

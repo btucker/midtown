@@ -179,6 +179,38 @@ fn fork_with_no_name_uses_preferred_name() {
 }
 
 #[test]
+fn dead_fork_without_exit_code_is_detected() {
+    // In production, collect_health() always sets exit_code: None.
+    // The function must detect dead processes via is_alive alone.
+    let mut topic_sessions = HashMap::new();
+    topic_sessions.insert("thread-abc".to_string(), "session-fork-1".to_string());
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-fork-1".to_string(),
+        fork_session_record("session-fork-1", "fork-abc", "thread-abc", Some("ops")),
+    );
+
+    let mut health = HashMap::new();
+    health.insert(
+        "fork-abc".to_string(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: None, // production case: exit_code never populated
+            ..Default::default()
+        },
+    );
+
+    let respawns = decide_dead_fork_respawns(&topic_sessions, &sessions, &health);
+    assert_eq!(
+        respawns.len(),
+        1,
+        "dead fork with exit_code: None should still be detected"
+    );
+    assert_eq!(respawns[0].exit_code, -1); // defaults to -1 when unknown
+}
+
+#[test]
 fn fork_with_empty_working_dir_returns_none() {
     let mut topic_sessions = HashMap::new();
     topic_sessions.insert("thread-abc".to_string(), "session-fork-1".to_string());

@@ -3684,6 +3684,44 @@ async fn respawn_fork(
         "Respawned fork {} → thread={}, new_session={}",
         name, thread_parent_id, fork_session_id
     );
+
+    // Send an initial nudge so the fork has a message to act on.
+    // Without this, the fork session sits idle forever with no initial prompt
+    // (same issue as the original fork creation path — see rpc_session.rs).
+    let nudge_message = if is_channel_lead {
+        channel
+            .map(|ch| {
+                format!(
+                    "{}\n\n(This is a crash recovery session — the previous fork for this thread exited unexpectedly.)",
+                    super::rpc_channel::fork_initial_framing(ch)
+                )
+            })
+    } else {
+        Some(
+            "This is a crash recovery session — the previous fork for this thread exited unexpectedly. \
+             Please read the thread context and continue where the previous session left off.".to_string()
+        )
+    };
+    if let Some(message) = nudge_message {
+        let reason = crate::daemon::wake_reason::WakeReason::Nudge { message };
+        if let Some(follow_up) = send_session_nudge(state, &fork_session_id, &reason).await {
+            Box::pin(execute_effects(follow_up, state)).await;
+        }
+    }
+
+    // Broadcast ThreadOwnership to web clients so the "Dedicated session"
+    // indicator reappears after crash recovery (cleanup_coworker_state
+    // already broadcast has_dedicated_session: false when the fork died).
+    if let Some(ch) = channel {
+        state.broadcast_web_update(crate::web::WebUpdate::ThreadOwnership(
+            crate::web::ThreadOwnershipData {
+                thread_parent_id: thread_parent_id.to_string(),
+                channel: ch.to_string(),
+                has_dedicated_session: true,
+                owner: Some(name.clone()),
+            },
+        ));
+    }
 }
 
 #[path = "effects_tests.rs"]

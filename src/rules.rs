@@ -626,10 +626,15 @@ pub(crate) fn decide_dead_process_respawns(
 }
 
 // ---------------------------------------------------------------------------
-// Dead fork detection
+// Dead fork detection (test-only pure function)
 // ---------------------------------------------------------------------------
+//
+// In production, fork crash recovery is handled in the session_drain handler
+// (mod.rs) which captures fork bindings before cleanup_coworker_state removes
+// them. This pure function is kept for unit testing the detection logic.
 
 /// A fork session whose process has died and should be respawned.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeadForkRespawn {
     /// Name of the dead fork process.
@@ -655,12 +660,14 @@ pub(crate) struct DeadForkRespawn {
 /// A fork is considered dead if:
 /// - It appears in `topic_sessions` (thread_parent_id → session_id)
 /// - Its corresponding session record has a `current_name`
-/// - That name's process has `is_alive == false` and `exit_code.is_some()`
+/// - That name's process has `is_alive == false`
 ///
 /// Unlike task-bound coworkers, forks are thread-bound — they don't appear in
 /// `in_progress_tasks`, so `decide_dead_process_respawns()` misses them.
 ///
 /// Pure function: takes snapshot data and returns respawn decisions.
+/// Only used by tests — production detection is in session_drain handler.
+#[cfg(test)]
 pub(crate) fn decide_dead_fork_respawns(
     topic_sessions: &HashMap<String, String>,
     sessions: &HashMap<String, crate::daemon::state::SessionRecord>,
@@ -683,11 +690,13 @@ pub(crate) fn decide_dead_fork_respawns(
             continue;
         };
 
-        // Check if the process is dead
+        // Check if the process is dead.
+        // Note: `exit_code` is not reliably populated by `collect_health()` (always None
+        // for running sessions). Use `is_alive` as the primary dead-process indicator.
         let Some(health) = process_health.get(name) else {
             continue;
         };
-        if health.is_alive || health.exit_code.is_none() {
+        if health.is_alive {
             continue;
         }
 
