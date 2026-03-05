@@ -126,6 +126,50 @@ fn test_pr_conflict_type_field() {
 }
 
 #[test]
+fn test_pr_auto_merge_type_field() {
+    let event = WorkflowEvent::PrAutoMerge {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        pr_number: 123,
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "pr.auto_merge");
+}
+
+#[test]
+fn test_pr_auto_merge_fields() {
+    let event = WorkflowEvent::PrAutoMerge {
+        channel: "proj-workflows".into(),
+        task_id: "42".into(),
+        pr_number: 123,
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["channel"], "proj-workflows");
+    assert_eq!(json["task_id"], "42");
+    assert_eq!(json["pr_number"], 123);
+}
+
+#[test]
+fn test_pr_auto_merge_channel_accessor() {
+    let event = WorkflowEvent::PrAutoMerge {
+        channel: "my-channel".into(),
+        task_id: "1".into(),
+        pr_number: 99,
+    };
+    assert_eq!(event.channel(), "my-channel");
+}
+
+#[test]
+fn test_pr_auto_merge_task_id_accessor() {
+    let event = WorkflowEvent::PrAutoMerge {
+        channel: "my-channel".into(),
+        task_id: "55".into(),
+        pr_number: 99,
+    };
+    assert_eq!(event.task_id(), Some("55"));
+}
+
+#[test]
 fn test_coworker_idle_type_field() {
     let event = WorkflowEvent::CoworkerIdle {
         channel: "proj-workflows".into(),

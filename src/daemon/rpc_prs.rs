@@ -894,6 +894,56 @@ pub(super) async fn handle_pr_merge(
     )
 }
 
+/// Enable GitHub auto-merge on a PR.
+///
+/// Called by workflow scripts in response to a `pr.auto_merge` event.
+/// The daemon already verified the PR is auto-mergeable (approved + CI green,
+/// no active reviewer) before emitting the event, so this handler only needs
+/// to execute the merge effect.
+///
+/// Unlike `handle_pr_merge` (which enforces review/CI/feedback gates for
+/// coworker-initiated merges), this is a lightweight path for the daemon's
+/// proactive auto-merge behavior exposed to workflow scripts.
+pub(super) async fn handle_pr_auto_merge(
+    id: RequestId,
+    pr_number: u64,
+    state: &DaemonState,
+) -> Response {
+    info!(
+        "Auto-merge requested for PR #{} (via workflow script)",
+        pr_number
+    );
+
+    // Fetch the PR title for the merge message
+    let title = match fetch_pr_title(pr_number, state).await {
+        Ok(t) => t,
+        Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
+    };
+
+    let effects = vec![super::effects::Effect::AutoMergePr {
+        pr_number,
+        title: title.clone(),
+    }];
+    super::effects::execute_effects(effects, state).await;
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "message": format!("Auto-merge enabled for PR #{} ({})", pr_number, title)
+        }),
+    )
+}
+
+/// Fetch just the PR title for auto-merge messages.
+async fn fetch_pr_title(pr_number: u64, state: &DaemonState) -> Result<String, String> {
+    let pr_data = fetch_pr_for_merge(pr_number, state).await?;
+    Ok(pr_data
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("untitled")
+        .to_string())
+}
+
 /// Fetch PR data needed for merge gate checks.
 ///
 /// Retrieves title, state, CI status, comments, mergeable status, and

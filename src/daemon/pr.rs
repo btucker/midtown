@@ -1573,6 +1573,10 @@ struct StuckEvalContext<'a> {
     assigned_prs: HashSet<u64>,
     /// PR numbers with an active reviewer who hasn't finished their cached review.
     active_reviewer_prs: HashSet<u64>,
+    /// PR number → task ID mapping for workflow event routing.
+    pr_task_associations: HashMap<u64, String>,
+    /// Task ID → channel name mapping for workflow event routing.
+    task_channel: HashMap<String, String>,
 }
 
 /// Check for stuck conditions and return effects to nudge the lead.
@@ -1627,6 +1631,8 @@ async fn collect_stuck_condition_effects(
             .collect();
         let channel_lead_names = ps.channel_lead_names();
         let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
+        let pr_task_associations = ps.github.pr_to_task_map();
+        let task_channel = ps.task_channel.clone();
         StuckEvalContext {
             review_mode,
             branch_owners,
@@ -1636,6 +1642,8 @@ async fn collect_stuck_condition_effects(
             repo_name: &state.repo_name,
             assigned_prs: assigned,
             active_reviewer_prs: active_reviewers,
+            pr_task_associations,
+            task_channel,
         }
     };
 
@@ -1688,6 +1696,39 @@ async fn collect_stuck_condition_effects(
             nudge_count
         );
     }
+
+    // When a workflow script exists, replace AutoMergePr with EmitWorkflowEvent(PrAutoMerge)
+    // so the script controls whether to proceed with auto-merge.
+    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+    effects = effects
+        .into_iter()
+        .map(|effect| {
+            if let Effect::AutoMergePr { pr_number, .. } = &effect {
+                let pr_number = *pr_number;
+                // Look up PR → task → channel
+                if let Some(task_id) = ctx.pr_task_associations.get(&pr_number)
+                    && let Some(channel) = ctx.task_channel.get(task_id)
+                {
+                    let has_script = crate::paths::workflow_script_for_channel(
+                        channel,
+                        &project_root,
+                        &state.repo_name,
+                    )
+                    .is_some();
+                    if has_script {
+                        return Effect::EmitWorkflowEvent(
+                            crate::workflow::WorkflowEvent::PrAutoMerge {
+                                channel: channel.clone(),
+                                task_id: task_id.clone(),
+                                pr_number,
+                            },
+                        );
+                    }
+                }
+            }
+            effect
+        })
+        .collect();
 
     effects
 }

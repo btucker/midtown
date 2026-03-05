@@ -4298,6 +4298,144 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     );
 }
 
+// ── AutoMergePr workflow event authority tests ──────────────────────────────
+
+/// When a workflow script exists and a PR is associated with a task/channel,
+/// AutoMergePr should be replaced with EmitWorkflowEvent(PrAutoMerge).
+/// This lets the script control auto-merge behavior.
+#[tokio::test]
+async fn auto_merge_emits_workflow_event_when_script_exists() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42u64;
+    let task_id = "100";
+    let channel = "proj-workflows";
+
+    // Set up PR → task → channel routing and install workflow script
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            pr_number,
+            "session-1",
+            "lexington/some-feature",
+            "lexington",
+            &format!("feat: some feature [Midtown !{task_id}]"),
+        );
+        ps.task_channel
+            .insert(task_id.to_string(), channel.to_string());
+    }
+    install_workflow_script(&state);
+
+    let pr_json = json!({
+        "number": pr_number,
+        "title": format!("feat: some feature [Midtown !{task_id}]"),
+        "headRefName": "lexington/some-feature",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+    });
+
+    let reviewed_prs = std::collections::HashSet::new();
+    let branch_owners = std::collections::HashMap::new();
+    let review_mode = crate::config::ReviewMode::Local;
+
+    let effects = collect_stuck_condition_effects(
+        &state,
+        &[pr_json],
+        &reviewed_prs,
+        &branch_owners,
+        review_mode,
+    )
+    .await;
+
+    // AutoMergePr should NOT be present (replaced by workflow event)
+    let has_auto_merge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AutoMergePr { .. }));
+    assert!(
+        !has_auto_merge,
+        "AutoMergePr should be replaced by EmitWorkflowEvent when workflow script exists. \
+         Got: {:?}",
+        effects
+    );
+
+    // EmitWorkflowEvent(PrAutoMerge) should be present
+    let workflow_events = extract_workflow_events(&effects);
+    let has_pr_auto_merge = workflow_events.iter().any(|e| {
+        matches!(
+            e,
+            crate::workflow::WorkflowEvent::PrAutoMerge { pr_number: 42, .. }
+        )
+    });
+    assert!(
+        has_pr_auto_merge,
+        "EmitWorkflowEvent(PrAutoMerge) should be emitted when workflow script exists. \
+         Workflow events: {:?}",
+        workflow_events
+    );
+}
+
+/// Without a workflow script, AutoMergePr should fire as before (inline effect).
+/// This test complements auto_merge_fires_when_no_reviewer by explicitly setting
+/// up PR → task → channel routing WITHOUT a workflow script.
+#[tokio::test]
+async fn auto_merge_fires_inline_when_no_workflow_script() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr_number = 42u64;
+    let task_id = "100";
+    let channel = "proj-workflows";
+
+    // Set up PR → task → channel routing but NO workflow script
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            pr_number,
+            "session-1",
+            "lexington/some-feature",
+            "lexington",
+            &format!("feat: some feature [Midtown !{task_id}]"),
+        );
+        ps.task_channel
+            .insert(task_id.to_string(), channel.to_string());
+    }
+    // Note: NO install_workflow_script() call
+
+    let pr_json = json!({
+        "number": pr_number,
+        "title": format!("feat: some feature [Midtown !{task_id}]"),
+        "headRefName": "lexington/some-feature",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "APPROVED",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+    });
+
+    let reviewed_prs = std::collections::HashSet::new();
+    let branch_owners = std::collections::HashMap::new();
+    let review_mode = crate::config::ReviewMode::Local;
+
+    let effects = collect_stuck_condition_effects(
+        &state,
+        &[pr_json],
+        &reviewed_prs,
+        &branch_owners,
+        review_mode,
+    )
+    .await;
+
+    let has_auto_merge = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AutoMergePr { .. }));
+    assert!(
+        has_auto_merge,
+        "AutoMergePr should fire as inline effect when no workflow script exists. \
+         Got: {:?}",
+        effects
+    );
+}
+
 // ── Reviewer channel routing tests ──────────────────────────────────────────
 
 /// Reviewers should inherit the topic channel of the PR's associated task.
