@@ -876,18 +876,42 @@ async fn process_pr_issue_nudges(
 
             pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
 
+            let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
             let action = decide_pr_issue_action_with_handoff(
                 &owner,
                 active_coworkers,
                 idle_coworkers,
-                state.is_at_dev_limit(&channel_lead_names),
+                at_dev_limit,
                 pr_ctx.session_context.as_ref(),
                 &message,
             );
 
-            effects.extend(pr_action_to_effects(
-                action, pf.number, pf.title, issue_type, state, &pr_ctx,
-            ));
+            let action_name = match &action {
+                crate::rules::PrAction::NudgeOwner { .. } => "NudgeOwner",
+                crate::rules::PrAction::SpawnOwner { .. } => "SpawnOwner",
+                crate::rules::PrAction::HandoffToCoworker { .. } => "HandoffToCoworker",
+                crate::rules::PrAction::PostToChannel { .. } => "PostToChannel",
+                crate::rules::PrAction::Skip { .. } => "Skip",
+            };
+
+            let new_effects =
+                pr_action_to_effects(action, pf.number, pf.title, issue_type, state, &pr_ctx);
+
+            log_pr_decision(
+                &state.repo_name,
+                pf.number,
+                pf.title,
+                &owner,
+                issue_type,
+                action_name,
+                &new_effects,
+                &pr_ctx,
+                active_coworkers.contains(&owner),
+                idle_coworkers.contains(&owner),
+                at_dev_limit,
+            );
+
+            effects.extend(new_effects);
         }
     }
 
@@ -4638,6 +4662,142 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     }
 
     effects
+}
+
+// ---------------------------------------------------------------------------
+// PR decision logging
+// ---------------------------------------------------------------------------
+
+/// Extract the variant name of an Effect as a static string.
+///
+/// Used by `log_pr_decision` to build a human-readable summary of emitted
+/// effects without requiring `Serialize` on the Effect enum.
+fn effect_variant_name(e: &Effect) -> &'static str {
+    match e {
+        Effect::SpawnCoworker(_) => "SpawnCoworker",
+        Effect::ShutdownCoworker { .. } => "ShutdownCoworker",
+        Effect::ShutdownCoworkerWithCallbacks { .. } => "ShutdownCoworkerWithCallbacks",
+        Effect::ResumeCoworker { .. } => "ResumeCoworker",
+        Effect::DeliverMailboxMessage { .. } => "DeliverMailboxMessage",
+        Effect::PostToChannel { .. } => "PostToChannel",
+        Effect::PostSystemMessage { .. } => "PostSystemMessage",
+        Effect::BroadcastCoworkerUpdate { .. } => "BroadcastCoworkerUpdate",
+        Effect::BroadcastUniversalItems { .. } => "BroadcastUniversalItems",
+        Effect::RecordCooldown { .. } => "RecordCooldown",
+        Effect::SetUsageLimitNudge { .. } => "SetUsageLimitNudge",
+        Effect::ClearUsageLimitNudge => "ClearUsageLimitNudge",
+        Effect::ResetTaskToPending { .. } => "ResetTaskToPending",
+        Effect::ClearSessionForTask { .. } => "ClearSessionForTask",
+        Effect::ClearSavedSessionId { .. } => "ClearSavedSessionId",
+        Effect::ClearSessionWorkingDir { .. } => "ClearSessionWorkingDir",
+        Effect::SpawnCoworkerWithCallbacks { .. } => "SpawnCoworkerWithCallbacks",
+        Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
+        Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
+        Effect::RecordPrNudge { .. } => "RecordPrNudge",
+        Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
+        Effect::ClearPrBreakSession { .. } => "ClearPrBreakSession",
+        Effect::AssignReviewer { .. } => "AssignReviewer",
+        Effect::RemoveReviewerAssignment { .. } => "RemoveReviewerAssignment",
+        Effect::RecordReviewerEscalation { .. } => "RecordReviewerEscalation",
+        Effect::RecordOrphanedPrLeadNudge { .. } => "RecordOrphanedPrLeadNudge",
+        Effect::ClearOrphanedPrLeadNudge { .. } => "ClearOrphanedPrLeadNudge",
+        Effect::ClearOrphanedReviewerAssignments { .. } => "ClearOrphanedReviewerAssignments",
+        Effect::RerunWorkflow { .. } => "RerunWorkflow",
+        Effect::UpdatePrComment { .. } => "UpdatePrComment",
+        Effect::StorePrAuthorSession { .. } => "StorePrAuthorSession",
+        Effect::CompleteTask { .. } => "CompleteTask",
+        Effect::ClearBlockedBy { .. } => "ClearBlockedBy",
+        Effect::SetTaskPr { .. } => "SetTaskPr",
+        Effect::SendPushNotification { .. } => "SendPushNotification",
+        Effect::CleanStaleBranches => "CleanStaleBranches",
+        Effect::CleanWorktreeTarget { .. } => "CleanWorktreeTarget",
+        Effect::CleanupMergedWorktree { .. } => "CleanupMergedWorktree",
+        Effect::CleanupStaleWorktree { .. } => "CleanupStaleWorktree",
+        Effect::GarbageCollectState { .. } => "GarbageCollectState",
+        Effect::EnsureWorktree { .. } => "EnsureWorktree",
+        Effect::BindCoworkerToWorktree { .. } => "BindCoworkerToWorktree",
+        Effect::RegisterWorktreeAssignment { .. } => "RegisterWorktreeAssignment",
+        Effect::UpdateRateLimit(_) => "UpdateRateLimit",
+        Effect::CreateChannel { .. } => "CreateChannel",
+        Effect::ArchiveChannel { .. } => "ArchiveChannel",
+        Effect::MergeChannels { .. } => "MergeChannels",
+        Effect::AssignTaskChannel { .. } => "AssignTaskChannel",
+        Effect::UnassignTask { .. } => "UnassignTask",
+        Effect::ResetAbandonedTask { .. } => "ResetAbandonedTask",
+        Effect::CreateTask { .. } => "CreateTask",
+        Effect::SaveChannelLeadSession { .. } => "SaveChannelLeadSession",
+        Effect::MarkProfileLimited { .. } => "MarkProfileLimited",
+        Effect::ClearProfileLimit { .. } => "ClearProfileLimit",
+        Effect::AutoDetachCoworker { .. } => "AutoDetachCoworker",
+        Effect::NudgeChannelLead { .. } => "NudgeChannelLead",
+        Effect::NudgeSession { .. } => "NudgeSession",
+        Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
+        Effect::SpawnSession { .. } => "SpawnSession",
+        Effect::ShutdownSession { .. } => "ShutdownSession",
+        Effect::RecordSession { .. } => "RecordSession",
+        Effect::ReleaseName { .. } => "ReleaseName",
+        Effect::MergePr { .. } => "MergePr",
+        Effect::AutoMergePr { .. } => "AutoMergePr",
+        Effect::PostPrComment { .. } => "PostPrComment",
+        Effect::EmitWorkflowEvent(_) => "EmitWorkflowEvent",
+    }
+}
+
+/// Log a single PR decision as a JSONL line to `~/.midtown/projects/<repo>/pr-decisions.jsonl`.
+///
+/// Each entry captures the full decision context: which PR, what issue was detected,
+/// what action the rules engine chose, and which effects were emitted. This creates
+/// a corpus for verifying functional equivalence when migrating to workflow scripts.
+///
+/// Logging failures are silently swallowed (debug-logged) — this must never crash the daemon.
+#[allow(clippy::too_many_arguments)]
+fn log_pr_decision(
+    repo_name: &str,
+    pr_number: u64,
+    title: &str,
+    owner: &str,
+    issue_type: PrIssueType,
+    action_name: &str,
+    effects: &[Effect],
+    ctx: &PrContext,
+    owner_is_active: bool,
+    owner_is_idle: bool,
+    at_dev_limit: bool,
+) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let channel = ctx.get_channel(pr_number);
+    let task_id = ctx.pr_task_associations.get(&pr_number);
+
+    let entry = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "pr": pr_number,
+        "title": title,
+        "owner": owner,
+        "issue": issue_type.to_string(),
+        "owner_active": owner_is_active,
+        "owner_idle": owner_is_idle,
+        "at_dev_limit": at_dev_limit,
+        "has_active_reviewer": ctx.has_active_reviewer,
+        "has_session_context": ctx.session_context.is_some(),
+        "task_id": task_id,
+        "channel": channel,
+        "action": action_name,
+        "effect_count": effects.len(),
+        "effects": effects.iter().map(effect_variant_name).collect::<Vec<_>>(),
+    });
+
+    let dir = crate::paths::projects_dir_for_repo(repo_name);
+    let path = dir.join("pr-decisions.jsonl");
+    if let Err(e) = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut file = OpenOptions::new().append(true).create(true).open(&path)?;
+        writeln!(file, "{}", entry)?;
+        Ok(())
+    })() {
+        debug!("Failed to write PR decision log: {}", e);
+    }
 }
 
 #[path = "pr_tests.rs"]
