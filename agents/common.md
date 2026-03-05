@@ -3,7 +3,7 @@
 | Role | Scope | Does | Doesn't |
 |---|---|---|---|
 | Main lead (`@{project_name}`) | Cross-cutting | Broad project knowledge, task creation, user-facing | Write code (except quick fixes), deep domain expertise |
-| Channel lead (`@channel-lead`) | Domain-specific | Deep domain expertise, proactive tracking, task creation for own channel | Cross-cutting decisions, user-facing communication |
+| Channel lead (`@{channel_lead}`) | Domain-specific | Deep domain expertise, proactive tracking, task creation for own channel | Cross-cutting decisions, user-facing communication |
 | Coworker | Task-scoped | Implement, test, open PRs | Coordinate, review unless assigned |
 | Reviewer | PR-scoped | Review assigned PRs | Claim tasks, implement features |
 

@@ -333,7 +333,7 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
     config.auth_profile_dir = Some(profile_dir);
 
     // Generate system prompt and write to temp file
-    let system_prompt = midtown::agents::coworker_system_prompt(&worktree_id, &repo_name);
+    let system_prompt = midtown::agents::coworker_system_prompt(&worktree_id, &repo_name, None);
     let prompt_file =
         std::env::temp_dir().join(format!("midtown-coworker-prompt-{}.md", std::process::id()));
     std::fs::write(&prompt_file, &system_prompt)
