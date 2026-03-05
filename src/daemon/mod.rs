@@ -3719,6 +3719,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
 
                 // Handle stopped sessions: deregister, record stop time, post to channel
+                let mut fork_respawn_effects: Vec<effects::Effect> = Vec::new();
                 for name in all_stopped {
                     warn!("Headless session '{}' exited unexpectedly", name);
 
@@ -3736,6 +3737,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         .unwrap()
                         .get(&name)
                         .cloned();
+
+                    // Capture fork bindings BEFORE cleanup (cleanup clears these).
+                    // Fork crash recovery must detect dead forks here — not in the
+                    // snapshot-based TaskDispatchTick — because cleanup_coworker_state
+                    // removes topic_sessions entries, making dead forks invisible to
+                    // any snapshot collected after cleanup.
+                    let fork_thread_id = state.fork_bound_threads.lock().unwrap().get(&name).cloned();
+                    let fork_channel = state.fork_bound_channels.lock().unwrap().get(&name).cloned();
 
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
@@ -3801,6 +3810,73 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         }
                     }
 
+                    // Fork crash recovery: if this was a fork session, queue respawn effects.
+                    // We captured fork bindings above (before cleanup removed them).
+                    if let Some(thread_parent_id) = fork_thread_id {
+                        // Check cooldown to prevent respawn loops
+                        let should_respawn = {
+                            let cooldowns = state.cooldowns.lock().unwrap();
+                            cooldowns.check(
+                                "process_respawn",
+                                &name,
+                                constants::ZOMBIE_RESPAWN_COOLDOWN,
+                            )
+                        };
+                        if should_respawn {
+                            // Get fork metadata from persistent state (record persists after cleanup)
+                            let (working_dir, auth_provider, is_channel_lead) =
+                                if let Some(ref sid) = session_id_for_cleanup {
+                                    let ps = state.persistent_state.lock().await;
+                                    if let Some(record) = ps.sessions.get(sid) {
+                                        (
+                                            if record.working_dir.is_empty() {
+                                                None
+                                            } else {
+                                                Some(record.working_dir.clone())
+                                            },
+                                            record
+                                                .provider
+                                                .unwrap_or(crate::auth::AuthProvider::Claude),
+                                            record.coworker_type == "channel-lead",
+                                        )
+                                    } else {
+                                        (None, crate::auth::AuthProvider::Claude, false)
+                                    }
+                                } else {
+                                    (None, crate::auth::AuthProvider::Claude, false)
+                                };
+
+                            warn!(
+                                "Fork {} process died — queuing respawn for thread {}",
+                                name, thread_parent_id
+                            );
+
+                            fork_respawn_effects.push(effects::Effect::RespawnFork {
+                                fork_name: name.clone(),
+                                thread_parent_id: thread_parent_id.clone(),
+                                channel: fork_channel.clone(),
+                                working_dir,
+                                auth_provider,
+                                is_channel_lead,
+                            });
+                            fork_respawn_effects.push(effects::Effect::RecordCooldown {
+                                category: "process_respawn".to_string(),
+                                key: name.clone(),
+                            });
+                            fork_respawn_effects.push(effects::Effect::PostToChannel {
+                                sender: "midtown".to_string(),
+                                message: format!(
+                                    "💀 Fork {} process died — respawning for thread {}",
+                                    name, thread_parent_id
+                                ),
+                                channel: Some(constants::OPS_CHANNEL.to_string()),
+                                auto_output: false,
+                            });
+                        } else {
+                            debug!("Fork respawn cooldown active for {}", name);
+                        }
+                    }
+
                     // Format message with stderr if available
                     let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
                         if stderr_lines.is_empty() {
@@ -3829,6 +3905,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     if let Err(e) = state.send_and_broadcast_async(&msg).await {
                         warn!("Failed to post session exit message for {}: {}", name, e);
                     }
+                }
+
+                // Execute fork respawn effects (after all cleanups are complete).
+                if !fork_respawn_effects.is_empty() {
+                    effects::execute_effects(fork_respawn_effects, &state).await;
                 }
             }
 

@@ -293,6 +293,8 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 - `topic_sessions` is cleared on daemon restart, so fork sessions themselves do not survive across daemon lifetimes.
 - `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `create_fork_session` remain ephemeral.
 
+**Crash recovery:** When a fork process dies (API error, rate limit, etc.), the daemon detects it in the `session_drain_interval` handler and respawns a fresh fork bound to the same thread. Detection happens **before** `cleanup_coworker_state` runs — the fork bindings (`fork_bound_threads`, `fork_bound_channels`) are captured first, then cleanup proceeds, then `Effect::RespawnFork` is executed. This ordering is critical: `cleanup_coworker_state` removes `topic_sessions` entries, so any detection path that reads `topic_sessions` after cleanup (e.g., snapshot-based) would never see dead forks. The `respawn_fork` function in `effects.rs` builds a fresh `HeadlessConfig` via `build_fork_config()` (no `--resume`, fresh session), re-establishes `topic_sessions` and reverse maps, sends a `NudgeSession` so the fork has an initial message, and broadcasts `ThreadOwnership(true)` to restore the web UI indicator. Per-fork cooldown (`process_respawn` category, `ZOMBIE_RESPAWN_COOLDOWN`) prevents respawn loops.
+
 ## Channel Storage Layout
 
 Each channel is stored as a directory under `~/.midtown/projects/<repo>/channels/`:

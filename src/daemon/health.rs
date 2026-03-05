@@ -1170,6 +1170,10 @@ pub(super) async fn check_and_respawn_dead_processes(
     effects
 }
 
+// Note: fork crash recovery is handled in the session_drain handler (mod.rs),
+// not via a snapshot-based function. See the "Crash recovery" section in
+// docs/architecture.md for the rationale (cleanup ordering).
+
 /// Ensure the lead session is always running.
 ///
 /// The lead is the human-facing session that should never be permanently down.

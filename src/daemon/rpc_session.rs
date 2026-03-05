@@ -1149,24 +1149,30 @@ pub(super) fn build_fork_config(
     auth_provider: crate::auth::AuthProvider,
     is_channel_lead: bool,
     repo_name: &str,
+    name_override: Option<&str>,
 ) -> (String, crate::headless::HeadlessConfig) {
     let config_dir =
         crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider);
     let team = crate::mailbox::team_name_for_repo(repo_name);
 
-    // Build a human-readable fork name from the caller name and the hint.
-    let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
-    let fork_name = if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
-        let slug = slugify_fork_hint(hint, thread_parent_id);
-        match caller_name {
-            Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
-            None => format!("fork-{}-{}", slug, tid_suffix),
-        }
+    // Use the exact name if overridden (e.g., crash recovery reuses the original
+    // fork name to keep cooldown keys stable). Otherwise derive from hint/caller.
+    let fork_name = if let Some(name) = name_override {
+        name.to_string()
     } else {
-        format!(
-            "fork-{}",
-            thread_parent_id.get(..8).unwrap_or(thread_parent_id),
-        )
+        let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
+        if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
+            let slug = slugify_fork_hint(hint, thread_parent_id);
+            match caller_name {
+                Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
+                None => format!("fork-{}-{}", slug, tid_suffix),
+            }
+        } else {
+            format!(
+                "fork-{}",
+                thread_parent_id.get(..8).unwrap_or(thread_parent_id),
+            )
+        }
     };
 
     let mut env = crate::launch::build_agent_env_vars(
@@ -1331,6 +1337,7 @@ pub(super) async fn create_fork_session(
         auth_provider,
         is_channel_lead,
         &state.repo_name,
+        None, // normal fork — derive name from hint
     );
 
     // Spawn the forked session.

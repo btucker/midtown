@@ -466,6 +466,15 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub recently_recovered_session_ids: HashSet<String>,
 
+    // ── Fork / topic session state ─────────────────────────────────────
+    /// Thread-bound fork sessions: maps `thread_parent_id → session_id`.
+    ///
+    /// Populated from `DaemonState::topic_sessions` during snapshot collection.
+    /// Used by `decide_dead_fork_respawns()` to detect fork sessions whose
+    /// processes have died and need respawning.
+    #[serde(default)]
+    pub topic_sessions: HashMap<String, String>,
+
     // ── Session-centric fields (new model) ──────────────────────────────
     /// All session records, keyed by session_id.
     ///
@@ -1193,6 +1202,15 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // ── Fork / topic sessions ───────────────────────────────────────────
+    let topic_sessions: HashMap<String, String> = {
+        let ts = state.topic_sessions.lock().unwrap();
+        ts.iter()
+            .filter(|(_, sid)| sid.as_str() != "pending")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    };
+
     // ── Session-centric fields ───────────────────────────────────────────
     let (sessions, session_task_map, session_name_map, name_session_map) = {
         let persistent = state.persistent_state.lock().await;
@@ -1365,6 +1383,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         repo_name,
         default_channel,
         repo_owner,
+        topic_sessions,
         sessions,
         session_task_map,
         session_name_map,
@@ -1433,6 +1452,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         repo_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
+        topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),

@@ -110,6 +110,10 @@ pub async fn evaluate_tick(
                 &claimed_ids,
             ));
             effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
+            // Note: fork crash recovery is handled in the session_drain handler (mod.rs),
+            // not here. Fork bindings (topic_sessions) are cleaned up during
+            // cleanup_coworker_state before the snapshot is collected, so a snapshot-based
+            // approach would never see dead forks.
             // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
             // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
             // removes the entry from DaemonState when executed in effects.rs. The lead respawn

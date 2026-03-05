@@ -1139,6 +1139,7 @@ fn test_build_fork_config_uses_project_auth_profile() {
         provider,
         true,
         repo_name,
+        None, // no name override
     );
 
     // The CLAUDE_CONFIG_DIR env var in the fork config must point to the
@@ -1159,6 +1160,81 @@ fn test_build_fork_config_uses_project_auth_profile() {
         config_dir,
         &global_dir.to_string_lossy().to_string(),
         "fork CLAUDE_CONFIG_DIR must NOT be the global profile dir"
+    );
+}
+
+/// Demonstrates that `build_fork_config` re-derives a *different* name when
+/// given an existing fork name as a hint. This is why `respawn_fork` must
+/// use the original fork name directly rather than relying on the generated name —
+/// cooldowns are keyed by name, and name mutation would bypass rate limiting.
+///
+/// Regression guard for the Codex-identified crash-respawn name stability issue.
+#[test]
+fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let thread_id = "abcd1234-5678";
+    let provider = crate::auth::AuthProvider::Claude;
+    let repo_name = "test-repo";
+
+    // First fork: caller "web" creates a fork with topic hint "auth discussion"
+    let (original_name, _cfg) = build_fork_config(
+        thread_id,
+        "parent-session",
+        Some("web"),
+        Some("auth discussion"),
+        Some("web"),
+        Some("/tmp/test"),
+        provider,
+        false,
+        repo_name,
+        None, // no name override
+    );
+
+    // Without name_override: passing original name as hint re-derives a different name
+    let (respawned_name_via_hint, _cfg) = build_fork_config(
+        thread_id,
+        "",
+        None,
+        Some(&original_name),
+        Some("web"),
+        Some("/tmp/test"),
+        provider,
+        false,
+        repo_name,
+        None, // no name override — uses hint derivation
+    );
+
+    // The names DIFFER when using hint — this is the bug that name_override fixes
+    assert_ne!(
+        original_name, respawned_name_via_hint,
+        "build_fork_config should produce a different name when re-deriving from an existing \
+         fork name as hint (demonstrating why name_override is needed)"
+    );
+
+    // With name_override: the exact original name is preserved
+    let (respawned_name_via_override, cfg) = build_fork_config(
+        thread_id,
+        "",
+        None,
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        provider,
+        false,
+        repo_name,
+        Some(&original_name), // name override — reuses exact name
+    );
+
+    assert_eq!(
+        original_name, respawned_name_via_override,
+        "name_override should produce the exact same fork name for stable cooldown keys"
+    );
+    assert_eq!(
+        cfg.agent_name.as_deref(),
+        Some(original_name.as_str()),
+        "HeadlessConfig agent_name should match the overridden name"
     );
 }
 
