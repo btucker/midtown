@@ -4126,15 +4126,16 @@ pub(super) async fn handle_webhook_ci_failure(
     failure: crate::webhook::PrCiFailure,
 ) {
     let pr_number = failure.pr_number;
+    info!(
+        "PR #{} CI check '{}' failed (webhook) — resolving owner to nudge",
+        pr_number, failure.check_name
+    );
 
     // Check cooldown
     {
         let tracker = state.pr_issue_tracker.lock().await;
         if !tracker.should_nudge(pr_number, PrIssueType::CiFailed) {
-            debug!(
-                "PR #{} CI failure nudge on cooldown, skipping webhook nudge",
-                pr_number
-            );
+            info!("PR #{} CI failure nudge on cooldown, skipping", pr_number);
             return;
         }
     }
@@ -4144,14 +4145,14 @@ pub(super) async fn handle_webhook_ci_failure(
         state,
         pr_number,
         "",
-        None,
+        failure.head_ref.as_deref(),
         failure.owner_coworker.as_deref(),
     )
     .await;
 
     let Some(owner) = owner else {
-        debug!(
-            "PR #{} has no coworker owner, skipping webhook CI failure nudge",
+        warn!(
+            "PR #{} has no coworker owner, cannot nudge about CI failure",
             pr_number
         );
         return;
@@ -4192,6 +4193,11 @@ pub(super) async fn handle_webhook_ci_failure(
         state.is_at_dev_limit(&channel_lead_names),
         pr_ctx.session_context.as_ref(),
         &nudge_msg,
+    );
+
+    info!(
+        "PR #{} CI failure: owner={}, action={:?}",
+        pr_number, owner, action
     );
 
     // Convert PrAction → Effects using the same pure converter as polling,

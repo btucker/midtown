@@ -194,6 +194,8 @@ pub struct PrCiFailure {
     pub owner_coworker: Option<String>,
     /// Name of the failed check
     pub check_name: String,
+    /// Head branch name (for owner resolution via branch prefix)
+    pub head_ref: Option<String>,
 }
 
 /// Structured data about a newly opened PR.
@@ -1175,6 +1177,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
                 pr_number: pr.number,
                 owner_coworker: coworker.map(|s| s.to_string()),
                 check_name: event.check_run.name.clone(),
+                head_ref: branch.map(|s| s.to_string()),
             })
     } else {
         None
