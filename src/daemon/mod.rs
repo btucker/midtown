@@ -2933,7 +2933,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         let webhook_config = WebhookConfig {
             port,
             secret: config.webhook_secret.clone(),
-            repo: paths.project_name().to_string(),
+            dir_key: paths.dir_key().to_string(),
+            project_name: paths.project_name().to_string(),
         };
         match start_webhook_server(
             webhook_config,
