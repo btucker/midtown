@@ -629,6 +629,21 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
         );
 
+        // Emit a workflow event so channel scripts can react to the dead reviewer.
+        let reviewer_task_id = snap
+            .pr
+            .pr_task_associations
+            .get(&restart.pr_number)
+            .cloned();
+        let reviewer_channel = snap.channel_for_pr_or_default(restart.pr_number);
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerStuck {
+                channel: reviewer_channel,
+                task_id: reviewer_task_id,
+                coworker: restart.name.clone(),
+            },
+        ));
+
         // Respawn the reviewer with an incremented restart count.
         effects.extend(build_reviewer_respawn_effects(
             snap,
@@ -1135,6 +1150,15 @@ pub(super) async fn check_and_respawn_dead_processes(
             .iter()
             .find(|t| t.id == respawn.task_id)
             .and_then(|t| t.channel.clone());
+
+        // Emit a workflow event so channel scripts can react to the dead process.
+        effects.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::CoworkerStuck {
+                channel: channel.clone().unwrap_or_else(|| snap.repo_name.clone()),
+                task_id: Some(respawn.task_id.clone()),
+                coworker: respawn.name.clone(),
+            },
+        ));
 
         let mut config = crate::launch::LaunchConfig::coworker(
             respawn.name.clone(),
