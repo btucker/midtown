@@ -137,17 +137,17 @@ fn discover_projects() -> Vec<ProjectInfo> {
             continue;
         }
 
-        let name = entry.file_name().to_string_lossy().to_string();
+        let dir_key = entry.file_name().to_string_lossy().to_string();
 
         // Skip entries that are coworker names, not real projects.
         // These get created when a coworker process in a worktree incorrectly
         // registers itself as a project using the worktree directory name.
-        if crate::coworker::is_coworker_name(&name) {
+        if crate::coworker::is_coworker_name(&dir_key) {
             continue;
         }
 
         let pid_file = entry.path().join("daemon.pid");
-        let socket_path = crate::paths::daemon_socket_for_repo(&name);
+        let socket_path = crate::paths::daemon_socket_for_repo(&dir_key);
 
         // Check if daemon is running
         let status = if pid_file.exists() && is_pid_locked(&pid_file) {
@@ -164,7 +164,11 @@ fn discover_projects() -> Vec<ProjectInfo> {
 
         // Read webhook port from config
         let webhook_port =
-            crate::config::load_full_project_config(&name).and_then(|c| c.daemon.webhook_port);
+            crate::config::load_full_project_config(&dir_key).and_then(|c| c.daemon.webhook_port);
+
+        // Use the logical project name (from config or auto-sanitized) for display,
+        // not the raw directory name which may contain dots.
+        let name = crate::paths::project_name_for_dir_key(&dir_key);
 
         projects.push(ProjectInfo {
             name,
