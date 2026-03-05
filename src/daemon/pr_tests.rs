@@ -4615,3 +4615,209 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
         body
     );
 }
+
+/// When a workflow script exists for the PR's channel, the polling fallback
+/// uses a much longer delay (PR_REVIEW_DELAY_SCRIPT_SECS = 300s) so the
+/// script's real-time pr.opened handler is truly authoritative. A PR at 60s
+/// old passes the normal 45s delay but should be skipped by polling.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_polling_defers_to_workflow_script_with_longer_delay() {
+    use crate::github_state::PrAuthorSession;
+    use crate::worktree_registry::WorktreeRegistry;
+    use chrono::Utc;
+
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews
+    let temp_dir_mock = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir_mock.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let (state, temp_dir, _guard) = make_test_state("test-repo");
+
+    // Create a workflow script at the project root so the script-authoritative
+    // path activates. Uses the project-default location (.midtown/workflow.py).
+    let workflow_dir = temp_dir.path().join(".midtown");
+    std::fs::create_dir_all(&workflow_dir).unwrap();
+    std::fs::write(workflow_dir.join("workflow.py"), "# test workflow").unwrap();
+
+    // Set up task association: PR #100 → task "42" → channel "proj-test"
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.pr_author_sessions.insert(
+            100,
+            PrAuthorSession {
+                session_id: "sess-1".to_string(),
+                branch: "madison/task-42-feature".to_string(),
+                original_author: "madison".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("42".to_string()),
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "proj-test".to_string());
+        ps.save_for_repo("test-repo").unwrap();
+    }
+
+    // PR created 60 seconds ago — passes normal 45s delay but NOT the 300s
+    // script-authoritative delay.
+    let created_at = (Utc::now() - chrono::Duration::seconds(60))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let pr = json!({
+        "number": 100,
+        "headRefName": "madison/task-42-feature",
+        "title": "feat: Add feature [Midtown !42]",
+        "isDraft": false,
+        "createdAt": created_at,
+    });
+
+    let registry = WorktreeRegistry::new();
+    let active_names = std::collections::HashSet::new();
+    let empty_owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &empty_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
+
+    // The PR should be skipped because it hasn't reached the 300s script delay.
+    assert!(
+        effects.is_empty(),
+        "Polling should defer to workflow script and skip PR at 60s old (script delay is 300s). Got {} effects",
+        effects.len()
+    );
+}
+
+/// Counterpart: without a workflow script, polling uses the normal 45s delay.
+/// A PR at 60s old should proceed to reviewer spawning (or at least past the
+/// age check — it may be skipped for other reasons like orphan detection).
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_polling_uses_normal_delay_without_workflow_script() {
+    use crate::github_state::PrAuthorSession;
+    use crate::worktree_registry::WorktreeRegistry;
+    use chrono::Utc;
+
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews
+    let temp_dir_mock = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir_mock.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let (state, _temp_dir, _guard) = make_test_state("test-repo");
+
+    // No workflow script — polling should use normal 45s delay.
+
+    // Set up task association: PR #101 → task "43" → channel "proj-test"
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.pr_author_sessions.insert(
+            101,
+            PrAuthorSession {
+                session_id: "sess-2".to_string(),
+                branch: "madison/task-43-feature".to_string(),
+                original_author: "madison".to_string(),
+                stored_at: Utc::now(),
+                task_id: Some("43".to_string()),
+            },
+        );
+        ps.task_channel
+            .insert("43".to_string(), "proj-test".to_string());
+        ps.save_for_repo("test-repo").unwrap();
+    }
+
+    // PR created 60 seconds ago — passes normal 45s delay.
+    let created_at = (Utc::now() - chrono::Duration::seconds(60))
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let pr = json!({
+        "number": 101,
+        "headRefName": "madison/task-43-feature",
+        "title": "feat: Add feature [Midtown !43]",
+        "isDraft": false,
+        "createdAt": created_at,
+    });
+
+    let registry = WorktreeRegistry::new();
+    // Add madison as active so the PR is not orphaned
+    let mut active_names = std::collections::HashSet::new();
+    active_names.insert("madison".to_string());
+    let mut branch_owners: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    branch_owners.insert("madison/task-43-feature".to_string(), "madison".to_string());
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
+
+    // Without a workflow script, the PR at 60s should NOT be skipped by the age check.
+    // It should proceed to spawn effects (or at least past the delay gate).
+    assert!(
+        !effects.is_empty(),
+        "Without workflow script, polling should use normal 45s delay and not skip PR at 60s old"
+    );
+}
