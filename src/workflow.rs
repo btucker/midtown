@@ -21,7 +21,7 @@
 //! | Group | Events |
 //! |-------|--------|
 //! | task | `task.created`, `task.assigned`, `task.completed` |
-//! | pr | `pr.opened`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.ci_passed`, `pr.ci_failed`, `pr.conflict` |
+//! | pr | `pr.opened`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.ci_passed`, `pr.ci_failed`, `pr.conflict`, `pr.auto_merge` |
 //! | coworker | `coworker.idle`, `coworker.stuck`, `coworker.message` |
 //! | channel | `channel.message` |
 //! | timer | `timer.tick` |
@@ -170,6 +170,18 @@ pub enum WorkflowEvent {
         pr_number: u64,
     },
 
+    /// A PR is eligible for auto-merge (approved + CI green, no active reviewer).
+    ///
+    /// Emitted from the stuck-PR detection path when `is_auto_mergeable()` returns
+    /// true. When a workflow script handles this event, the script decides whether
+    /// to proceed with auto-merge (via `pr.auto-merge` RPC) or block it.
+    #[serde(rename = "pr.auto_merge")]
+    PrAutoMerge {
+        channel: String,
+        task_id: String,
+        pr_number: u64,
+    },
+
     // ── Coworker lifecycle ───────────────────────────────────────────────────
     /// A coworker finished its current turn and is now idle.
     ///
@@ -249,6 +261,7 @@ impl WorkflowEvent {
             | Self::PrCiPassed { channel, .. }
             | Self::PrCiFailed { channel, .. }
             | Self::PrConflict { channel, .. }
+            | Self::PrAutoMerge { channel, .. }
             | Self::CoworkerIdle { channel, .. }
             | Self::CoworkerStuck { channel, .. }
             | Self::CoworkerMessage { channel, .. }
@@ -269,7 +282,8 @@ impl WorkflowEvent {
             | Self::PrMerged { task_id, .. }
             | Self::PrCiPassed { task_id, .. }
             | Self::PrCiFailed { task_id, .. }
-            | Self::PrConflict { task_id, .. } => Some(task_id),
+            | Self::PrConflict { task_id, .. }
+            | Self::PrAutoMerge { task_id, .. } => Some(task_id),
             Self::CoworkerIdle { task_id, .. }
             | Self::CoworkerStuck { task_id, .. }
             | Self::CoworkerMessage { task_id, .. } => task_id.as_deref(),

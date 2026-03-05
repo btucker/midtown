@@ -49,6 +49,7 @@ Side effects
 * ``pr.changes_requested``— nudge author: please address review feedback
 * ``pr.ci_failed``       — nudge author: CI failed, please investigate
 * ``pr.conflict``        — nudge author: merge conflict, please rebase
+* ``pr.auto_merge``      — enable GitHub auto-merge (approved + CI green, no active reviewer)
 * ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge;
                            retry reviewer spawn (gated by PR_REVIEW_DELAY_SECS age check)
 * ``pr.merged``          — complete the associated task
@@ -272,6 +273,18 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
             rpc.nudge_coworker(
                 author,
                 f"PR #{pr_number} has a merge conflict — please rebase",
+            )
+
+    elif event_type == "pr.auto_merge" and pr_number:
+        # The daemon detected the PR is approved + CI green with no active
+        # reviewer.  Enable GitHub auto-merge.  Customise this handler to
+        # add extra gates (e.g. require a human approval) or to skip
+        # auto-merge entirely for specific PRs.
+        try:
+            rpc.enable_auto_merge(pr_number)
+        except Exception as exc:
+            rpc.post_to_channel(
+                f"⚠️ Failed to enable auto-merge for PR #{pr_number}: {exc}"
             )
 
     elif event_type == "pr.ci_passed" and pr_number:

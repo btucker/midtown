@@ -307,6 +307,25 @@ class MidtownRPC:
     # PR methods
     # ------------------------------------------------------------------
 
+    def enable_auto_merge(self, pr_number: int) -> Any:
+        """Enable GitHub auto-merge on a pull request.
+
+        Called by workflow scripts in response to a ``pr.auto_merge`` event.
+        The daemon already verified the PR is auto-mergeable before emitting
+        the event — this method triggers the actual ``gh pr merge --auto``
+        command.
+
+        Parameters
+        ----------
+        pr_number:
+            The GitHub PR number to auto-merge.
+
+        Returns
+        -------
+        A dict with a ``"message"`` key describing the outcome.
+        """
+        return self._call("pr.auto-merge", {"pr": pr_number})
+
     def spawn_reviewer(self, pr_number: int) -> Any:
         """Request the daemon to spawn a reviewer for a pull request.
 
