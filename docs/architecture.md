@@ -717,6 +717,31 @@ if __name__ == "__main__":
 
 `MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `spawn_reviewer()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`, `check_pending()`.
 
+### Hook-Based Plugin API
+
+The SDK provides a [pluggy](https://pluggy.readthedocs.io/)-based hook system (`sdk/python/midtown/hooks.py`, `sdk/python/midtown/actions.py`) for extending daemon behavior without modifying workflow scripts directly.
+
+**Core types:**
+
+- `WorkflowHooks` — 18 hook specs covering task lifecycle (`on_task_created`, `on_task_assigned`, `on_task_completed`, `on_task_phase_complete`), PR lifecycle (`on_pr_opened`, `on_pr_approved`, `on_pr_changes_requested`, `on_pr_merged`, `on_pr_ci_passed`, `on_pr_ci_failed`, `on_pr_conflict`, `on_pr_auto_merge`), coworker events (`on_coworker_spawned`, `on_coworker_idle`, `on_coworker_stuck`, `on_coworker_message`), fork leads (`on_fork_lead_spawned`, `on_fork_lead_idle`), channel messages (`on_channel_message`), and timer ticks (`on_timer_tick`).
+- `TaskHooks` — 3 hook specs for customizing task prompts: `get_system_prompt()`, `get_author_prompt()`, `get_reviewer_prompt()`.
+- `HookContext` — Context object passed to every workflow hook invocation. Contains `channel`, `task_id`, `thread_id`, `message_id`, `rpc` (MidtownRPC client), and `daemon_actions` (what the daemon would do by default). Plugins can call `context.prevent_default()` to suppress the daemon's built-in behavior.
+- `DaemonAction` — Describes what the daemon's compiled-in behavior would do for an event (passed in `HookContext.daemon_actions`).
+- `Action` — Returned by hook implementations to request daemon actions. Factory methods: `post_to_channel()`, `nudge_coworker()`, `spawn_reviewer()`, `spawn_coworker()`, `fork_lead()`, `complete_task()`, `enable_auto_merge()`, `check_pending()`, `http_post()`.
+
+**Plugin registration:** Plugins are classes with `@hookimpl`-decorated methods matching the hook spec signatures. Multiple plugins can respond to the same hook — pluggy collects all return values.
+
+```python
+from midtown import hookimpl, Action, HookContext
+
+class MyPlugin:
+    @hookimpl
+    def on_pr_opened(self, event: dict, context: HookContext):
+        return [Action.post_to_channel(f"PR #{event['pr_number']} opened!")]
+```
+
+**Exports:** All hook types are re-exported from the top-level `midtown` package: `Action`, `DaemonAction`, `HookContext`, `WorkflowHooks`, `TaskHooks`, `hookimpl`, `hookspec`.
+
 ### Reference Implementation
 
 `sdk/python/midtown/default_workflow.py` is the reference implementation that **drives** the PR lifecycle for task-linked PRs. The daemon delegates PR nudging to this script when a channel + task association exists. Copy it to start customizing:

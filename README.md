@@ -577,6 +577,26 @@ cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/d
 
 The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation. See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
 
+#### Hook-Based Plugins
+
+The SDK includes a [pluggy](https://pluggy.readthedocs.io/)-based hook system for extending daemon behavior. Plugins implement hook specs (`WorkflowHooks`, `TaskHooks`) and return `Action` objects to request daemon actions:
+
+```python
+from midtown import hookimpl, Action, HookContext
+
+class NotifyPlugin:
+    @hookimpl
+    def on_pr_opened(self, event: dict, context: HookContext):
+        return [Action.post_to_channel(f"New PR: #{event['pr_number']}")]
+
+    @hookimpl
+    def on_pr_auto_merge(self, event: dict, context: HookContext):
+        context.prevent_default()  # suppress daemon's default behavior
+        return [Action.enable_auto_merge(event["pr_number"])]
+```
+
+Available hook categories: task lifecycle, PR lifecycle, coworker events, fork leads, channel messages, and timer ticks. See [docs/architecture.md](docs/architecture.md) for the full hook spec reference.
+
 ### Channel Sync
 
 Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the hook reads new channel messages and checks for unclaimed tasks. This means coworkers automatically receive updates at natural pause points.
