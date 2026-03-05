@@ -162,6 +162,11 @@
       </div>
     {/if}
 
+    {#if isCard && task.plan}
+      <div class="flex items-center gap-1 pt-0.5 text-[0.68rem] text-muted-foreground/50">
+        <span title={task.plan}>📋 Plan: <span class="font-mono">{task.plan.split('/').slice(-1)[0]}</span></span>
+      </div>
+    {/if}
     {#if isCard && task.description}
       <details class="group pt-0.5 pb-1" onclick={(e) => e.stopPropagation()}>
         <summary class="text-[0.72rem] text-muted-foreground/60 cursor-pointer select-none list-none flex items-center gap-1">
