@@ -653,20 +653,32 @@ impl WorktreeManager {
     }
 
     /// Clean up stale branches that match the task-based naming pattern
-    /// (task-<id>-*) and are already merged into the default branch.
+    /// (task-<id>-* or review-pr-*) and are already merged into the default branch.
+    ///
+    /// Uses `git branch --merged` for a single-call check of all merged branches,
+    /// then batches deletions into one `git branch -D` call. This avoids the
+    /// O(N) subprocess calls that previously blocked the daemon event loop
+    /// for minutes when thousands of branches existed.
     pub fn clean_stale_task_branches(&self) -> Vec<String> {
         let default_branch =
             detect_default_branch(&self.repo_root).unwrap_or_else(|| "main".to_string());
 
+        // Single call: get all branches already merged into the default branch
         let output = Command::new("git")
             .current_dir(&self.repo_root)
-            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .args([
+                "branch",
+                "--merged",
+                &default_branch,
+                "--format=%(refname:short)",
+            ])
             .output();
 
-        let branches: Vec<String> = match output {
+        let merged_branches: Vec<String> = match output {
             Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .map(|l| l.to_string())
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
                 .collect(),
             _ => return vec![],
         };
@@ -687,44 +699,41 @@ impl WorktreeManager {
             })
             .unwrap_or_default();
 
-        let mut cleaned = Vec::new();
+        // Filter to task/review branches not in use by worktrees
+        let to_delete: Vec<String> = merged_branches
+            .into_iter()
+            .filter(|branch| {
+                branch != &default_branch
+                    && (branch.starts_with("task-") || branch.starts_with("review-pr-"))
+                    && !worktree_branches.contains(branch)
+            })
+            .collect();
 
-        for branch in branches {
-            if branch == default_branch {
-                continue;
-            }
-
-            // Check if this looks like a task branch or review branch
-            if !branch.starts_with("task-") && !branch.starts_with("review-pr-") {
-                continue;
-            }
-
-            if worktree_branches.contains(&branch) {
-                continue;
-            }
-
-            let output = Command::new("git")
-                .current_dir(&self.repo_root)
-                .args(["merge-base", "--is-ancestor", &branch, &default_branch])
-                .output();
-
-            let is_merged = match output {
-                Ok(output) => output.status.success(),
-                Err(_) => false,
-            };
-
-            if is_merged {
-                let result = Command::new("git")
-                    .current_dir(&self.repo_root)
-                    .args(["branch", "-D", &branch])
-                    .output();
-                if result.is_ok_and(|o| o.status.success()) {
-                    cleaned.push(branch);
-                }
-            }
+        if to_delete.is_empty() {
+            return vec![];
         }
 
-        cleaned
+        // Single batched deletion: `git branch -D branch1 branch2 ...`
+        let mut args = vec!["branch", "-D"];
+        args.extend(to_delete.iter().map(|s| s.as_str()));
+        let result = Command::new("git")
+            .current_dir(&self.repo_root)
+            .args(&args)
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => to_delete,
+            Ok(output) => {
+                // Partial failure: some branches may have been deleted.
+                // Parse stderr to find which ones failed and return the rest.
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                tracing::debug!("Partial branch cleanup: {}", stderr);
+                // On partial failure, conservatively return empty — the branches
+                // that were deleted will be absent on the next run.
+                vec![]
+            }
+            Err(_) => vec![],
+        }
     }
 }
 

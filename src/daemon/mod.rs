@@ -3933,19 +3933,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
                 effects::execute_effects(tick_effects, &state).await;
-                // Orphan worktree cleanup: gather data (blocking git ops + cache reads),
-                // then build effects via pure decision function.
-                // Pass task owners to suppress warnings for idle worktrees with no active work.
-                let task_owners: Vec<String> = snap.in_progress_tasks.iter()
+                // Stale branch cleanup: gather data on the main thread (lightweight
+                // in-memory checks including cooldown recording), then fire-and-forget
+                // the actual git operations in a background task. Recording the cooldown
+                // here prevents double-dispatch if the next tick fires before the
+                // background task starts.
+                let task_owners: Vec<String> = snap
+                    .in_progress_tasks
+                    .iter()
                     .map(|(_, _, owner)| owner.clone())
                     .collect();
-                if let Some(cleanup_data) = dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await {
-                    let cleanup_effects = dispatch::decide_stale_branch_cleanup(&cleanup_data);
-                    effects::execute_effects(cleanup_effects, &state).await;
+                if let Some(cleanup_data) =
+                    dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await
+                {
+                    let cleanup_state = state.clone();
+                    tokio::spawn(async move {
+                        let cleanup_effects =
+                            dispatch::decide_stale_branch_cleanup(&cleanup_data);
+                        effects::execute_effects(cleanup_effects, &cleanup_state).await;
+                    });
                 }
-                // Reviewer spawning from webhooks is now driven by the workflow script.
-                // The polling backstop in poll_prs_for_issues still runs
-                // collect_reviewer_effects() for PRs that webhook events missed.
             }
 
             // Periodic channel log rotation (rotates all active channels)
