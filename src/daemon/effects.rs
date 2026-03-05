@@ -3713,12 +3713,20 @@ async fn respawn_fork(
     // indicator reappears after crash recovery (cleanup_coworker_state
     // already broadcast has_dedicated_session: false when the fork died).
     if let Some(ch) = channel {
+        // Resolve the parent channel lead's name for the web UI display
+        let parent_lead = {
+            let ps = state.persistent_state.lock().await;
+            ps.channel_lead_sessions
+                .get(ch)
+                .and_then(|lead_sid| state.session_to_name.lock().unwrap().get(lead_sid).cloned())
+        };
         state.broadcast_web_update(crate::web::WebUpdate::ThreadOwnership(
             crate::web::ThreadOwnershipData {
                 thread_parent_id: thread_parent_id.to_string(),
                 channel: ch.to_string(),
                 has_dedicated_session: true,
                 owner: Some(name.clone()),
+                parent_lead,
             },
         ));
     }
