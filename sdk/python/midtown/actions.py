@@ -8,7 +8,7 @@ from typing import Any
 
 @dataclass
 class Action:
-    """Base class for actions. Use factory methods to create."""
+    """An action returned by workflow hooks. Use factory methods to create."""
 
     type: str
     args: dict[str, Any]

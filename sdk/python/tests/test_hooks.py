@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pluggy
-import pytest
 
 from midtown.actions import Action
 from midtown.hooks import (
@@ -27,22 +26,9 @@ class TestHookContext:
             rpc=None,
             daemon_actions=[],
         )
-        assert not ctx.isDefaultPrevented()
-        ctx.preventDefault()
-        assert ctx.isDefaultPrevented()
-
-    def test_default_coordination_fields(self) -> None:
-        ctx = HookContext(
-            channel="test",
-            task_id="1",
-            thread_id=None,
-            message_id=None,
-            rpc=None,
-            daemon_actions=[],
-        )
-        assert ctx._completed_phases == set()
-        assert ctx._pending_actions == []
-        assert ctx._order == 1000
+        assert not ctx.is_default_prevented()
+        ctx.prevent_default()
+        assert ctx.is_default_prevented()
 
     def test_daemon_actions_stored(self) -> None:
         actions = [DaemonAction(kind="spawn", args={"name": "alice"})]
@@ -167,7 +153,7 @@ class TestPluggyIntegration:
         class VetoPlugin:
             @hookimpl
             def on_pr_auto_merge(self, event: dict, context: HookContext):
-                context.preventDefault()
+                context.prevent_default()
                 return [Action.enable_auto_merge(event["pr_number"])]
 
         pm.register(VetoPlugin())
@@ -181,7 +167,7 @@ class TestPluggyIntegration:
             daemon_actions=[],
         )
         results = pm.hook.on_pr_auto_merge(event={"pr_number": 99}, context=ctx)
-        assert ctx.isDefaultPrevented()
+        assert ctx.is_default_prevented()
         assert len(results) == 1
 
     def test_multiple_plugins(self) -> None:

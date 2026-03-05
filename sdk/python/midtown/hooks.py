@@ -34,17 +34,13 @@ class HookContext:
     rpc: MidtownRPC | None
     daemon_actions: list[DaemonAction]
 
-    # Coordination fields
-    _completed_phases: set[str] = field(default_factory=set)
-    _pending_actions: list[Action] = field(default_factory=list)
-    _order: int = 1000
     _default_prevented: bool = field(default=False, repr=False)
 
-    def preventDefault(self) -> None:
+    def prevent_default(self) -> None:
         """Block daemon's default behavior for this event."""
         self._default_prevented = True
 
-    def isDefaultPrevented(self) -> bool:
+    def is_default_prevented(self) -> bool:
         return self._default_prevented
 
 
