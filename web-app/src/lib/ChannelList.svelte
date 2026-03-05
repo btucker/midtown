@@ -316,7 +316,7 @@
       </div>
 
       {#if isExpanded && (hasActiveTasks || hasTrackedThreads)}
-        <div class={!isActive ? 'expanded-group' : ''}>
+        <div class={!isActive ? 'expanded-group' : 'mr-3'}>
           {#if hasActiveTasks}
             <div class="px-3 py-1 pb-2">
               <TaskList channelName={channel.name} />

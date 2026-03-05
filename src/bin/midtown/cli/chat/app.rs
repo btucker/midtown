@@ -4162,7 +4162,7 @@ pub(super) mod tests {
         for attempt in 0..max_attempts {
             match f() {
                 Ok(val) => return Ok(val),
-                Err(e) if attempt < max_attempts - 1 => {
+                Err(_) if attempt < max_attempts - 1 => {
                     thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
                     continue;
                 }

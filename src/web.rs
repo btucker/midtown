@@ -617,8 +617,8 @@ async fn api_channel_history(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     } else {
-        // Default: load the main channel
-        Channel::for_repo(&state.config.dir_key).map_err(|e| {
+        // Default: load the main channel (use project_name as channel name, dir_key for path)
+        Channel::for_repo_named(&state.config.dir_key, &state.config.project_name).map_err(|e| {
             error!("Failed to open channel: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?
@@ -1091,11 +1091,16 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
             let task_id = extract_task_id_from_pr_title(title);
             let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
+            let ci_status = pr
+                .get("ci_status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             serde_json::json!({
                 "number": pr_number,
                 "title": title,
                 "author": author,
                 "status": status,
+                "ci_status": ci_status,
                 "reviewer": reviewer,
                 "reviewer_assigned_at": reviewer_assigned_at,
                 "review_posted": review_posted,

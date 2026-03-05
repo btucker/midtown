@@ -1154,7 +1154,7 @@ pub(super) async fn check_and_respawn_dead_processes(
         // Emit a workflow event so channel scripts can react to the dead process.
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
-                channel: channel.clone().unwrap_or_else(|| snap.repo_name.clone()),
+                channel: channel.clone().unwrap_or_else(|| snap.project_name.clone()),
                 task_id: Some(respawn.task_id.clone()),
                 coworker: respawn.name.clone(),
             },

@@ -20,8 +20,9 @@ pub fn handle_remind(cmd: &RemindCommand, client: &DaemonClient) -> Result<Respo
 pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
 
-    let repo_name = midtown::paths::detect_repo_name()
+    let dir_key = midtown::paths::detect_repo_name()
         .ok_or("Not in a git repository. Run from a git repo.")?;
+    let project_name = midtown::paths::project_name_for_dir_key(&dir_key);
 
     // Warn if the daemon is already running a headless lead session
     if let Ok(client) = crate::client::DaemonClient::connect()
@@ -36,12 +37,12 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
         );
     }
 
-    let mut config = midtown::launch::LaunchConfig::lead(&repo_name, channel);
+    let mut config = midtown::launch::LaunchConfig::lead(&dir_key, channel);
     config.session_mode = midtown::launch::SessionMode::Resume;
 
     // Load channel notes into domain_context for channel leads
     if let Some(channel_name) = channel {
-        let base_dir = midtown::paths::projects_dir_for_repo(&repo_name);
+        let base_dir = midtown::paths::projects_dir_for_repo(&dir_key);
         let notes = midtown::load_channel_notes(&base_dir, channel_name);
         if !notes.is_empty()
             && let midtown::launch::CoworkerRole::ChannelLead {
@@ -54,19 +55,22 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
     }
 
     // Resolve auth profile for this project/provider
-    let profile_dir = midtown::auth::active_profile_dir_for_project_with_provider(
-        &repo_name,
-        config.auth_provider,
-    );
+    let profile_dir =
+        midtown::auth::active_profile_dir_for_project_with_provider(&dir_key, config.auth_provider);
     config.auth_profile_dir = Some(profile_dir);
 
-    // Generate the system prompt based on role
+    // Generate the system prompt based on role — use project_name (not dir_key)
+    // for display/identity in prompts.
     let system_prompt = match &config.role {
-        midtown::launch::CoworkerRole::Lead => midtown::agents::main_lead_system_prompt(&repo_name),
+        midtown::launch::CoworkerRole::Lead => {
+            midtown::agents::main_lead_system_prompt(&project_name)
+        }
         midtown::launch::CoworkerRole::ChannelLead {
             channel_name,
             domain_context,
-        } => midtown::agents::channel_lead_system_prompt(channel_name, domain_context, &repo_name),
+        } => {
+            midtown::agents::channel_lead_system_prompt(channel_name, domain_context, &project_name)
+        }
         _ => unreachable!("LaunchConfig::lead() always produces Lead or ChannelLead role"),
     };
 
@@ -112,7 +116,7 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
         &prompt_file,
         initial_prompt_file.as_deref(),
         &cwd,
-        &repo_name,
+        &dir_key,
     );
 
     // exec() replaces this process — this line never returns on success

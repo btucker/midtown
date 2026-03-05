@@ -164,7 +164,7 @@
     {#if timeChanged(msgs, index) && permalinkUrl}
       <a
         href={permalinkUrl}
-        class="timestamp-link text-muted-foreground/70 flex-shrink-0 text-right select-none text-[0.7rem] leading-[1.55rem] no-underline hover:text-muted-foreground relative"
+        class="timestamp-link text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap no-underline hover:text-muted-foreground relative"
         style="width: {AVATAR_SIZE}"
         onclick={handleTimestampClick}
       >
@@ -175,7 +175,7 @@
       </a>
     {:else}
       <span
-        class="text-muted-foreground/70 flex-shrink-0 text-right select-none text-[0.7rem] leading-[1.55rem]"
+        class="text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap"
         style="width: {AVATAR_SIZE}"
       >{timeChanged(msgs, index) ? formatTimeCompact(msg.timestamp) : ''}</span>
     {/if}

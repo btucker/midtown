@@ -9,6 +9,36 @@ use std::process::{Command, Stdio};
 use crate::cli::Response;
 use crate::client::DaemonClient;
 
+/// Build a startup failure error message from a log file.
+///
+/// Reads the last 50 lines, extracts up to 5 ERROR lines, and formats them
+/// in chronological order after the given prefix.
+fn build_startup_error(prefix: &str, log_path: &std::path::Path) -> String {
+    let mut msg = prefix.to_string();
+    if let Ok(contents) = std::fs::read_to_string(log_path) {
+        let errors: Vec<&str> = contents
+            .lines()
+            .rev()
+            .take(50)
+            .filter(|line| line.contains("ERROR"))
+            .take(5)
+            .collect();
+        if !errors.is_empty() {
+            msg.push_str(". Errors from daemon log:");
+            for line in errors.into_iter().rev() {
+                msg.push('\n');
+                msg.push_str(line);
+            }
+        }
+    }
+    msg
+}
+
+/// Build a startup failure error message from the daemon log.
+fn daemon_startup_error(prefix: &str) -> String {
+    build_startup_error(prefix, &midtown::paths::daemon_log_file())
+}
+
 /// Validate that a project name contains only safe characters.
 ///
 /// Allowed: alphanumeric, hyphens, underscores, dots.
@@ -39,9 +69,10 @@ fn resolve_project_name(project: &Option<String>) -> Option<String> {
         return Some(name.clone());
     }
     midtown::paths::detect_project_name().or_else(|| {
-        repo_root()
-            .ok()
-            .and_then(|r| r.file_name().map(|s| s.to_string_lossy().to_string()))
+        repo_root().ok().and_then(|r| {
+            r.file_name()
+                .map(|s| midtown::paths::sanitize_project_name(&s.to_string_lossy()))
+        })
     })
 }
 
@@ -282,19 +313,19 @@ fn repo_root() -> Result<PathBuf, String> {
 ///
 /// If repos are provided on the CLI, they are returned directly.
 /// Otherwise, reads saved repos from the project's config.toml.
-fn resolve_repos(repos: &[PathBuf], project_name: &str) -> Vec<PathBuf> {
+fn resolve_repos(repos: &[PathBuf], dir_key: &str) -> Vec<PathBuf> {
     if !repos.is_empty() {
         return repos.to_vec();
     }
-    parse_saved_repos(project_name)
+    parse_saved_repos(dir_key)
 }
 
 /// Parse saved repos from a project's config.toml.
 ///
 /// Reads the `[project].repos` list and returns all entries
 /// except the primary repo (which is handled separately).
-fn parse_saved_repos(project_name: &str) -> Vec<PathBuf> {
-    let full_config = midtown::config::load_full_project_config(project_name);
+fn parse_saved_repos(dir_key: &str) -> Vec<PathBuf> {
+    let full_config = midtown::config::load_full_project_config(dir_key);
     match full_config {
         Some(config) => {
             let primary = config.project.primary_repo().map(|s| s.to_string());
@@ -311,17 +342,24 @@ fn parse_saved_repos(project_name: &str) -> Vec<PathBuf> {
 }
 
 /// Update the project config.toml with project name, primary repo, and additional repos.
+///
+/// When `explicit_name` is true (user passed `--project`), the name always overwrites.
+/// When false (auto-detected), it only sets the name if not already configured.
 fn update_project_config(
+    dir_key: &str,
     project_name: &str,
     primary_repo: &Path,
     additional_repos: &[PathBuf],
+    explicit_name: bool,
 ) -> Result<(), String> {
-    let config_path = midtown::config::project_config_path(project_name);
+    let config_path = midtown::config::project_config_path(dir_key);
     let mut config =
         midtown::config::FullProjectConfig::load_from(&config_path).unwrap_or_default();
 
-    // Set project name
-    config.project.name = Some(project_name.to_string());
+    // Set project name if explicitly provided via --project flag, or if not already configured
+    if explicit_name || config.project.name().is_none() {
+        config.project.name = Some(project_name.to_string());
+    }
 
     // Set primary repo
     let primary_str = primary_repo.to_string_lossy().to_string();
@@ -618,13 +656,15 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
 
     // Verify we're in a git repo first
     let primary_repo = repo_root()?;
-    let project_name = resolve_project_name(&project).unwrap_or_else(|| {
+    let dir_key = midtown::paths::detect_repo_name().unwrap_or_else(|| {
         primary_repo
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "default".to_string())
     });
-    let additional_repos = resolve_repos(&repos, &project_name);
+    let project_name = resolve_project_name(&project)
+        .unwrap_or_else(|| midtown::paths::sanitize_project_name(&dir_key));
+    let additional_repos = resolve_repos(&repos, &dir_key);
     emit_startup_progress(5, &format!("starting project '{}'", project_name));
 
     // Check and install required plugins before starting daemon
@@ -636,7 +676,13 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     let mut messages = Vec::new();
 
     // Update project config with repo information
-    let _ = update_project_config(&project_name, &primary_repo, &additional_repos);
+    let _ = update_project_config(
+        &dir_key,
+        &project_name,
+        &primary_repo,
+        &additional_repos,
+        project.is_some(),
+    );
 
     // Step 1: Start daemon if not running
     if daemon_is_running() {
@@ -679,14 +725,14 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
             emit_startup_progress(82, "daemon is ready");
         } else {
             clear_startup_progress();
-            return Err("Daemon failed to start".to_string());
+            return Err(daemon_startup_error("Daemon failed to start"));
         }
     }
 
     // Step 2: Spawn the Lead as a headless session (idempotent).
     emit_startup_progress(88, "spawning headless lead session");
     let configured_lead_provider = midtown::config::get_execution_provider_for_role(
-        &project_name,
+        &dir_key,
         midtown::config::ExecutionRole::Lead,
     );
     let lead_provider = std::env::var("MIDTOWN_LEAD_PROVIDER")
@@ -696,9 +742,23 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     match DaemonClient::connect() {
         Ok(client) => match client.lead_spawn(lead_provider) {
             Ok(_) => messages.push("Lead session running".to_string()),
-            Err(e) => messages.push(format!("Warning: Failed to spawn lead: {}", e)),
+            Err(e) => {
+                // If the daemon died during startup (race: socket bound before
+                // init finished), surface the real errors from the log.
+                if !daemon_is_running() {
+                    clear_startup_progress();
+                    return Err(daemon_startup_error("Daemon exited during startup"));
+                }
+                messages.push(format!("Warning: Failed to spawn lead: {}", e));
+            }
         },
-        Err(e) => messages.push(format!("Warning: Could not connect to daemon: {}", e)),
+        Err(e) => {
+            if !daemon_is_running() {
+                clear_startup_progress();
+                return Err(daemon_startup_error("Daemon exited during startup"));
+            }
+            messages.push(format!("Warning: Could not connect to daemon: {}", e));
+        }
     }
 
     // Step 3: Auto-launch shared webserver if not running
@@ -2146,7 +2206,13 @@ mod tests {
 
         // This will try to write to ~/.midtown/projects/<name>/config.toml
         // We test that it doesn't panic/error
-        let result = update_project_config(&project_name, &primary_repo, &additional);
+        let result = update_project_config(
+            &project_name,
+            &project_name,
+            &primary_repo,
+            &additional,
+            false,
+        );
 
         // Clean up
         let config_path = midtown::config::project_config_path(&project_name);
@@ -2278,6 +2344,96 @@ mod tests {
             is_working,
             "Status 'idle' doesn't exist in CoworkerStatus — if it appeared, it would be conservatively treated as 'working' (safe default for unknown statuses)"
         );
+    }
+
+    #[test]
+    fn test_build_startup_error_extracts_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("daemon.log");
+        std::fs::write(
+            &log_path,
+            "2026-01-01 INFO starting up\n\
+             2026-01-01 ERROR failed to bind socket\n\
+             2026-01-01 INFO retrying\n\
+             2026-01-01 ERROR config file not found\n",
+        )
+        .unwrap();
+
+        let result = build_startup_error("Daemon failed", &log_path);
+        assert!(result.starts_with("Daemon failed"));
+        assert!(result.contains("Errors from daemon log:"));
+        assert!(result.contains("failed to bind socket"));
+        assert!(result.contains("config file not found"));
+        // ERROR lines should appear in chronological order
+        let socket_pos = result.find("failed to bind socket").unwrap();
+        let config_pos = result.find("config file not found").unwrap();
+        assert!(socket_pos < config_pos);
+    }
+
+    #[test]
+    fn test_build_startup_error_no_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("daemon.log");
+        std::fs::write(&log_path, "2026-01-01 INFO all good\n").unwrap();
+
+        let result = build_startup_error("Daemon failed", &log_path);
+        assert_eq!(result, "Daemon failed");
+    }
+
+    #[test]
+    fn test_build_startup_error_missing_file() {
+        let result = build_startup_error("Daemon failed", std::path::Path::new("/nonexistent/log"));
+        assert_eq!(result, "Daemon failed");
+    }
+
+    #[test]
+    fn test_build_startup_error_limits_to_5_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("daemon.log");
+        let mut content = String::new();
+        for i in 0..10 {
+            content.push_str(&format!("2026-01-01 ERROR error number {}\n", i));
+        }
+        std::fs::write(&log_path, &content).unwrap();
+
+        let result = build_startup_error("Daemon failed", &log_path);
+        let error_lines: Vec<&str> = result.lines().filter(|l| l.contains("ERROR")).collect();
+        assert_eq!(error_lines.len(), 5);
+    }
+
+    #[test]
+    fn test_update_project_config_explicit_name_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_key = format!("test-explicit-{}", uuid::Uuid::new_v4());
+        let primary_repo = dir.path().join("main-repo");
+        let additional = vec![];
+        let config_path = midtown::config::project_config_path(&dir_key);
+
+        // First call: auto-detected name
+        let r1 = update_project_config(&dir_key, "auto-name", &primary_repo, &additional, false);
+        if r1.is_err() {
+            // Skip if filesystem doesn't allow writes (sandbox)
+            return;
+        }
+        let config = midtown::config::FullProjectConfig::load_from(&config_path).unwrap();
+        assert_eq!(config.project.name(), Some("auto-name"));
+
+        // Second call with explicit=false: should NOT clobber
+        update_project_config(&dir_key, "new-auto-name", &primary_repo, &additional, false)
+            .unwrap();
+        let config = midtown::config::FullProjectConfig::load_from(&config_path).unwrap();
+        assert_eq!(config.project.name(), Some("auto-name"));
+
+        // Third call with explicit=true: SHOULD override
+        update_project_config(&dir_key, "explicit-name", &primary_repo, &additional, true).unwrap();
+        let config = midtown::config::FullProjectConfig::load_from(&config_path).unwrap();
+        assert_eq!(config.project.name(), Some("explicit-name"));
+
+        // Clean up
+        let _ = std::fs::remove_file(&config_path);
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 }
 
