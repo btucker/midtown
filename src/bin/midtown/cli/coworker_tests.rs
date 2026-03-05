@@ -65,15 +65,8 @@ fn save_screenshot_locally_saves_and_cleans_up_temp() {
     std::fs::write(&tmp_path, b"fake png data").unwrap();
     assert!(tmp_path.exists());
 
-    let result = super::save_screenshot_locally(
-        &tmp_path,
-        "png",
-        false,
-        false,
-        &screenshots_dir,
-        None,
-        "test-repo",
-    );
+    let result =
+        super::save_screenshot_locally(&tmp_path, "png", false, false, &screenshots_dir, None);
 
     // Should succeed
     assert!(
@@ -122,15 +115,8 @@ fn save_screenshot_locally_before_after_prefix() {
     ));
     std::fs::write(&tmp_path, b"fake data").unwrap();
 
-    let result = super::save_screenshot_locally(
-        &tmp_path,
-        "png",
-        true,
-        false,
-        &screenshots_dir,
-        None,
-        "test-repo",
-    );
+    let result =
+        super::save_screenshot_locally(&tmp_path, "png", true, false, &screenshots_dir, None);
     assert!(result.is_ok());
 
     let entries: Vec<_> = std::fs::read_dir(&screenshots_dir)
@@ -164,8 +150,11 @@ fn save_screenshot_locally_github_flag_produces_markdown_image() {
         false,
         false,
         &screenshots_dir,
-        Some("http"),
-        "my-project",
+        Some(super::ScreenshotUrlConfig {
+            scheme: "http",
+            repo: "my-project",
+            external_url: None,
+        }),
     );
 
     assert!(result.is_ok(), "Expected success, got: {:?}", result);
@@ -209,8 +198,11 @@ fn save_screenshot_locally_github_before_uses_before_alt_text() {
         true,
         false,
         &screenshots_dir,
-        Some("http"),
-        "my-project",
+        Some(super::ScreenshotUrlConfig {
+            scheme: "http",
+            repo: "my-project",
+            external_url: None,
+        }),
     );
 
     assert!(result.is_ok());
@@ -244,8 +236,11 @@ fn save_screenshot_locally_github_url_encodes_repo_name() {
         false,
         false,
         &screenshots_dir,
-        Some("http"),
-        "my project#1",
+        Some(super::ScreenshotUrlConfig {
+            scheme: "http",
+            repo: "my project#1",
+            external_url: None,
+        }),
     );
 
     assert!(result.is_ok(), "Expected success, got: {:?}", result);
@@ -279,8 +274,11 @@ fn save_screenshot_locally_github_after_uses_after_alt_text() {
         false,
         true,
         &screenshots_dir,
-        Some("http"),
-        "my-project",
+        Some(super::ScreenshotUrlConfig {
+            scheme: "http",
+            repo: "my-project",
+            external_url: None,
+        }),
     );
 
     assert!(result.is_ok());
@@ -289,6 +287,97 @@ fn save_screenshot_locally_github_after_uses_after_alt_text() {
         assert!(
             message.starts_with("![after]("),
             "After screenshot should use 'after' alt text, got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_external_url_overrides_localhost() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-external-url-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake png data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        Some(super::ScreenshotUrlConfig {
+            scheme: "https",
+            repo: "my-project",
+            external_url: Some("https://macbook-pro.taile2dd2b.ts.net:47022"),
+        }),
+    );
+
+    assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.starts_with("![screenshot](https://macbook-pro.taile2dd2b.ts.net:47022/api/projects/my-project/screenshots/"),
+            "External URL should override localhost, got: {}",
+            message
+        );
+        assert!(
+            !message.contains("localhost"),
+            "Should not contain localhost when external_url is set, got: {}",
+            message
+        );
+        assert!(
+            message.ends_with(".png)"),
+            "URL should end with .png), got: {}",
+            message
+        );
+    } else {
+        panic!("Expected Message response");
+    }
+}
+
+#[test]
+fn save_screenshot_locally_external_url_trailing_slash_stripped() {
+    let screenshots_tmp = tempfile::tempdir().unwrap();
+    let screenshots_dir = screenshots_tmp.path().join("screenshots");
+
+    let dir = std::env::temp_dir();
+    let tmp_path = dir.join(format!(
+        "midtown-test-screenshot-external-url-slash-{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, b"fake png data").unwrap();
+
+    let result = super::save_screenshot_locally(
+        &tmp_path,
+        "png",
+        false,
+        false,
+        &screenshots_dir,
+        Some(super::ScreenshotUrlConfig {
+            scheme: "https",
+            repo: "my-project",
+            external_url: Some("https://example.com:47022/"),
+        }),
+    );
+
+    assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+    if let super::super::Response::Message { message } = result.unwrap() {
+        assert!(
+            message.contains("https://example.com:47022/api/projects/"),
+            "Trailing slash should be stripped to avoid double slash, got: {}",
+            message
+        );
+        assert!(
+            !message.contains("//api"),
+            "Should not have double slash before api, got: {}",
             message
         );
     } else {

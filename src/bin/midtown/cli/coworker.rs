@@ -131,8 +131,9 @@ impl Drop for TempFileGuard {
 /// the `[Attached: /path]` markdown ready for channel posts.
 ///
 /// When `github` is true, returns `![screenshot](URL)` markdown suitable for
-/// embedding in GitHub PR descriptions. The URL scheme (http/https) is derived
-/// from `GlobalConfig` TLS settings to match the running webserver.
+/// embedding in GitHub PR descriptions. If `GlobalConfig` has `external_url` set,
+/// it is used as the base URL; otherwise the scheme (http/https) is derived from
+/// TLS settings and combined with localhost.
 ///
 /// Does not require a daemon connection — runs Playwright locally and saves
 /// the screenshot to the project's screenshots directory with a UUID filename.
@@ -197,45 +198,54 @@ pub fn handle_screenshot(
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
-    let webserver_scheme = if github {
+    let (webserver_scheme, external_url) = if github {
         let config = midtown::config::GlobalConfig::load();
-        if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
+        let scheme = if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
             Some("https")
         } else {
             Some("http")
-        }
+        };
+        (scheme, config.webserver.external_url.clone())
     } else {
-        None
+        (None, None)
     };
 
-    save_screenshot_locally(
-        &tmp_path,
-        &ext,
-        before,
-        after,
-        &screenshots_dir,
-        webserver_scheme,
-        &repo,
-    )
+    let url_config = webserver_scheme.map(|scheme| ScreenshotUrlConfig {
+        scheme,
+        repo: &repo,
+        external_url: external_url.as_deref(),
+    });
+
+    save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir, url_config)
+}
+
+/// Parameters for constructing screenshot URLs in GitHub-compatible markdown.
+///
+/// Bundles the URL-construction concerns: the webserver scheme, repo name for
+/// the API path, and an optional external URL that overrides localhost.
+pub(crate) struct ScreenshotUrlConfig<'a> {
+    pub scheme: &'a str,
+    pub repo: &'a str,
+    pub external_url: Option<&'a str>,
 }
 
 /// Save a screenshot to the given screenshots directory and return
-/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `webserver_scheme` is set).
+/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `url_config` is set).
 ///
 /// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
 /// exit paths (success, early error return, or panic). Generates a UUID-based
 /// filename and copies the screenshot to the provided directory.
 ///
-/// When `webserver_scheme` is `Some("http")` or `Some("https")`, returns GitHub-compatible
-/// markdown image syntax using the webserver's screenshot endpoint.
+/// When `url_config` is `Some`, returns GitHub-compatible markdown image syntax
+/// using the webserver's screenshot endpoint. If `external_url` is set in the config,
+/// it is used as the base URL instead of constructing from localhost.
 pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
     ext: &str,
     before: bool,
     after: bool,
     screenshots_dir: &std::path::Path,
-    webserver_scheme: Option<&str>,
-    repo: &str,
+    url_config: Option<ScreenshotUrlConfig<'_>>,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
@@ -261,18 +271,23 @@ pub(crate) fn save_screenshot_locally(
 
     eprintln!("Screenshot saved: {}", dest_path.display());
 
-    if let Some(scheme) = webserver_scheme {
-        let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
+    if let Some(config) = url_config {
         // Encode characters unsafe in URL path segments while preserving - . _ ~
         const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
             .remove(b'-')
             .remove(b'.')
             .remove(b'_')
             .remove(b'~');
-        let encoded_repo = percent_encoding::utf8_percent_encode(repo, PATH_SEGMENT);
+        let encoded_repo = percent_encoding::utf8_percent_encode(config.repo, PATH_SEGMENT);
+        let base = if let Some(ext_url) = config.external_url {
+            ext_url.trim_end_matches('/').to_string()
+        } else {
+            let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
+            format!("{}://localhost:{}", config.scheme, port)
+        };
         let url = format!(
-            "{}://localhost:{}/api/projects/{}/screenshots/{}",
-            scheme, port, encoded_repo, filename
+            "{}/api/projects/{}/screenshots/{}",
+            base, encoded_repo, filename
         );
         let alt = if before {
             "before"

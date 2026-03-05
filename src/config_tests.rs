@@ -192,3 +192,41 @@ fn profile_pool_fields_merge_correctly() {
         Some(vec!["override@example.com".to_string()])
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// WebserverSection external_url
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn external_url_parses_from_toml() {
+    let toml = r#"
+[webserver]
+external_url = "https://macbook-pro.taile2dd2b.ts.net:47022"
+"#;
+    let config: GlobalConfig = toml::from_str(toml).unwrap();
+    assert_eq!(
+        config.webserver.external_url.as_deref(),
+        Some("https://macbook-pro.taile2dd2b.ts.net:47022")
+    );
+}
+
+#[test]
+fn external_url_defaults_to_none() {
+    let toml = r#"
+[webserver]
+"#;
+    let config: GlobalConfig = toml::from_str(toml).unwrap();
+    assert!(config.webserver.external_url.is_none());
+}
+
+#[test]
+fn external_url_roundtrips_through_serde() {
+    let mut config = GlobalConfig::default();
+    config.webserver.external_url = Some("https://example.com:47022".to_string());
+    let serialized = toml::to_string(&config).unwrap();
+    let deserialized: GlobalConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(
+        deserialized.webserver.external_url.as_deref(),
+        Some("https://example.com:47022")
+    );
+}

@@ -242,6 +242,7 @@ chat_monitor_enabled = true           # Enable @mention routing
 [webserver]
 tls_cert = "/path/to/cert.pem"       # TLS certificate (PEM format)
 tls_key = "/path/to/key.pem"         # TLS private key (PEM format)
+external_url = "https://myhost.ts.net:47022"  # Base URL for screenshot links in PRs
 
 [execution]
 lead_provider = "claude"              # Default for all leads ("claude", "codex", or "zai")

@@ -598,6 +598,7 @@ impl DaemonSection {
 /// [webserver]
 /// tls_cert = "/path/to/cert.pem"
 /// tls_key = "/path/to/key.pem"
+/// external_url = "https://macbook-pro.taile2dd2b.ts.net:47022"
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct WebserverSection {
@@ -610,6 +611,12 @@ pub struct WebserverSection {
     /// For Tailscale: `tailscale cert <hostname>` generates `<hostname>.key`.
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
+
+    /// External URL for the webserver, used in screenshot URLs for GitHub PRs.
+    /// When set, screenshot `--github` URLs use this as the base instead of
+    /// `localhost`. Example: `https://macbook-pro.taile2dd2b.ts.net:47022`
+    #[serde(default)]
+    pub external_url: Option<String>,
 }
 
 /// Role-specific execution provider settings.
