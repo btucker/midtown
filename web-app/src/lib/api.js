@@ -474,6 +474,7 @@ function updateKanbanData(data) {
       title: pr.title,
       author: pr.author,
       status: pr.status,
+      ci_status: pr.ci_status || 'unknown',
       reviewer: pr.reviewer,
       reviewer_assigned_at: pr.reviewer_assigned_at,
       review_posted: pr.review_posted || false,

@@ -7,6 +7,9 @@
   import Feather from '@lucide/svelte/icons/feather'
   import Search from '@lucide/svelte/icons/search'
   import Github from '@lucide/svelte/icons/github'
+  import CircleCheck from '@lucide/svelte/icons/circle-check'
+  import CircleX from '@lucide/svelte/icons/circle-x'
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle'
 
   let { task, cw = null, reviewer = null, reviewPosted = false, onclick = null, variant = 'row' } = $props()
 
@@ -78,7 +81,7 @@
 </script>
 
 <button
-  class="task-row w-full flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent pr-0 rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
+  class="task-row w-full overflow-visible flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
@@ -137,8 +140,15 @@
             href={prUrl}
             target="_blank"
             rel="noopener"
-            class="text-[hsl(var(--link-default))] text-[0.72rem] no-underline hover:underline"
-          ><Github size={12} class="inline -mt-px" /> PR #{relatedPr.number}</a>
+            class="inline-flex items-center gap-1 text-[hsl(var(--link-default))] text-[0.72rem] no-underline hover:underline"
+          ><span class="inline-flex items-center justify-center size-4 rounded-full bg-[hsl(var(--muted))]"><Github size={10} /></span>PR #{relatedPr.number}</a>
+          {#if relatedPr.ci_status === 'passed'}
+            <CircleCheck size={13} class="text-[hsl(var(--accent-green,142_71%_45%))]" />
+          {:else if relatedPr.ci_status === 'failed'}
+            <CircleX size={13} class="text-[hsl(var(--status-red,0_84%_60%))]" />
+          {:else if relatedPr.ci_status === 'running'}
+            <LoaderCircle size={13} class="text-[hsl(var(--status-amber,45_93%_47%))] animate-spin" />
+          {/if}
         {/if}
         <span class="flex-1"></span>
         {#if task.owner}
