@@ -585,8 +585,6 @@ impl WorldSnapshot {
         self.channel_lead_sessions.keys().cloned().collect()
     }
 
-    /// Look up the topic channel for a PR via its associated task.
-    ///
     /// Backward-compatibility fixup for snapshots serialized before the
     /// `repo_name` → `dir_key` + `project_name` split. Old JSON has a single
     /// `repo_name` field which serde maps to `dir_key` via `#[serde(alias)]`.
@@ -597,6 +595,8 @@ impl WorldSnapshot {
         }
     }
 
+    /// Look up the topic channel for a PR via its associated task.
+    ///
     /// Chains `pr_task_associations` (PR# → task_id) and `task_channel`
     /// (task_id → channel name). Analogous to `PrContext::get_channel()`
     /// on the async side — use this in synchronous decision functions that

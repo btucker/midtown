@@ -51,7 +51,7 @@ pub fn read_tasks() -> Vec<Task> {
 
 /// Read all tasks for a specific repository.
 ///
-/// If `repo_name` is None, attempts to detect the current repository.
+/// If `dir_key` is None, attempts to detect the current repository.
 /// Tasks are stored in `~/.claude/tasks/midtown-<repo>/`.
 pub fn read_tasks_for_repo(dir_key: Option<&str>) -> Vec<Task> {
     let repo = dir_key

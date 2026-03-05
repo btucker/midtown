@@ -245,7 +245,7 @@ impl FullProjectConfig {
 
     /// Load the full project config for a named project.
     ///
-    /// Looks in `~/.midtown/projects/<project_name>/config.toml`.
+    /// Looks in `~/.midtown/projects/<dir_key>/config.toml`.
     pub fn load(dir_key: &str) -> Option<Self> {
         Self::load_from(&project_config_path(dir_key))
     }

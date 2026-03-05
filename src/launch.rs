@@ -535,9 +535,9 @@ impl LaunchConfig {
     /// Generates the system prompt based on the coworker's role, and maps
     /// session mode to `persist_session` / `resume_session_id` fields.
     ///
-    /// `project_name` is used to load sandbox configuration.
+    /// `paths` carries both `dir_key` (for config/filesystem) and `project_name` (for identity).
     ///
-    /// For Lead role: saves the system prompt to `~/.midtown/projects/<repo>/lead-system-prompt.txt`
+    /// For Lead role: saves the system prompt to `~/.midtown/projects/<dir_key>/lead-system-prompt.txt`
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();

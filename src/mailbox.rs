@@ -216,9 +216,9 @@ pub fn write_to_inbox(
     Ok(())
 }
 
-/// Build the team name from a repository name.
+/// Build the team name from a project name.
 ///
-/// Format: `midtown-{repo_name}` (matches `task_list_id_for_repo`).
+/// Format: `midtown-{project_name}`.
 pub fn team_name_for_repo(project_name: &str) -> String {
     format!("midtown-{}", project_name)
 }
