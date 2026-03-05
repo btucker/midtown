@@ -291,12 +291,13 @@ impl LaunchConfig {
     /// description into the initial prompt and tracks assignment internally.
     pub fn coworker(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_mode: SessionMode,
         initial_prompt: Option<String>,
     ) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -334,12 +335,12 @@ impl LaunchConfig {
     /// instructs the reviewer to update the existing placeholder comment.
     pub fn reviewer(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         pr_number: u64,
         restart_count: u32,
         auth_provider: crate::auth::AuthProvider,
     ) -> Self {
-        let repo = repo_name.into();
+        let repo = dir_key.into();
         let model =
             crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
                 .map(|s| s.as_model_str().to_string())
@@ -374,9 +375,10 @@ impl LaunchConfig {
     ///
     /// The Project Lead uses unrestricted setting sources and runs as a headless session
     /// that can be attached/detached like coworkers.
-    pub fn lead(repo_name: impl Into<String>, channel: Option<&str>) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+    pub fn lead(dir_key: impl Into<String>, channel: Option<&str>) -> Self {
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
 
         if let Some(channel_name) = channel {
             // Channel lead — delegate to channel_lead factory
@@ -395,10 +397,13 @@ impl LaunchConfig {
                     .map(|s| s.as_model_str().to_string())
                     .unwrap_or_else(|| "opus".to_string());
             LaunchConfig {
-                name: repo.clone(),
+                name: project_name.clone(),
                 session_mode: SessionMode::Fresh,
                 role: CoworkerRole::Lead,
-                initial_prompt: Some(crate::agents::main_lead_initial_prompt(&repo, &repo)),
+                initial_prompt: Some(crate::agents::main_lead_initial_prompt(
+                    &project_name,
+                    &project_name,
+                )),
                 additional_dirs: vec![],
                 pr_number: None,
                 team_name: Some(team),
@@ -420,14 +425,15 @@ impl LaunchConfig {
     /// continue the work. Used when the original PR author is unavailable.
     pub fn pr_handoff(
         name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_id: String,
         pr_number: u64,
         branch: &str,
         original_author: &str,
     ) -> Self {
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -485,14 +491,15 @@ impl LaunchConfig {
     /// not by a name prefix.
     pub fn channel_lead(
         channel_name: impl Into<String>,
-        repo_name: impl Into<String>,
+        dir_key: impl Into<String>,
         session_mode: SessionMode,
         domain_context: impl Into<String>,
     ) -> Self {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
-        let repo = repo_name.into();
-        let team = crate::mailbox::team_name_for_repo(&repo);
+        let repo = dir_key.into();
+        let project_name = crate::paths::project_name_for_dir_key(&repo);
+        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::ChannelLead,
