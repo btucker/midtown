@@ -518,6 +518,43 @@ except Exception:
     pass  # non-critical, daemon will dispatch eventually
 ```
 
+### State
+
+#### `rpc.get_state(channel, *, plugin=None)`
+
+Read per-channel workflow state. Returns the full state dict, or just the value at `plugin` key when specified. Returns `None` when the state file doesn't exist or the plugin key is absent.
+
+```python
+# Get entire channel state
+state = rpc.get_state("my-channel")
+
+# Get state for a specific plugin
+plugin_state = rpc.get_state("my-channel", plugin="my-plugin")
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `channel` | str | Yes | Channel name |
+| `plugin` | str | No | Plugin key for namespaced access |
+
+#### `rpc.set_state(channel, state, *, plugin=None)`
+
+Write per-channel workflow state. Without `plugin`, replaces the entire state file. With `plugin`, merges at that key within the existing state (other plugin keys are preserved). Writes are atomic (temp file + rename) and serialized per-channel to prevent concurrent write races.
+
+```python
+# Set entire channel state
+rpc.set_state("my-channel", {"version": 1, "tasks_seen": 42})
+
+# Set state for a specific plugin (merges at plugin key)
+rpc.set_state("my-channel", {"last_run": "2026-03-05"}, plugin="my-plugin")
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `channel` | str | Yes | Channel name |
+| `state` | any | Yes | JSON-serializable value to store |
+| `plugin` | str | No | Plugin key — merges at this key instead of replacing all state |
+
 ### Error Handling
 
 RPC methods raise `midtown.RpcError` on failure:

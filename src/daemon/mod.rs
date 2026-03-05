@@ -26,6 +26,7 @@ mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
 mod rpc_task;
+mod rpc_workflow;
 pub(crate) mod sessions;
 pub(crate) mod sidecar;
 pub mod snapshot;
@@ -721,6 +722,13 @@ pub(crate) struct DaemonState {
     pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
     /// Manages persistent workflow sidecar processes.
     ///
+    /// Per-channel locks for workflow state file writes.
+    ///
+    /// Prevents TOCTOU races when concurrent `set_state` calls for different plugin
+    /// keys on the same channel both read-modify-write the state file. The outer
+    /// `std::sync::Mutex` is held briefly to look up or create the per-channel lock;
+    /// the inner `tokio::sync::Mutex` serializes actual file I/O.
+    workflow_state_locks: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// Instead of spawning `uv run workflow.py` per event (~300-800ms overhead),
     /// sidecars keep a Python process alive and receive events via stdin.
     /// Falls back to subprocess-per-event when the script doesn't support sidecar mode.
@@ -1443,6 +1451,7 @@ impl DaemonState {
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
+            workflow_state_locks: std::sync::Mutex::new(HashMap::new()),
             workflow_sidecar,
         })
     }
