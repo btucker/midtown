@@ -40,6 +40,15 @@ pub const ORPHANED_PR_NUDGE_COOLDOWN_SECS: u64 = 1800;
 /// Hash bucket deduplication prevents duplicate reviewer assignments.
 pub const PR_REVIEW_DELAY_SECS: u64 = 45;
 
+/// Minimum age in seconds before a PR is eligible for polling-driven auto-review
+/// when a workflow script exists for the PR's channel (5 minutes).
+///
+/// When a workflow script handles `pr.opened`, the script spawns reviewers in real-time
+/// via `rpc.spawn_reviewer()`. The polling fallback should only act as a safety net for
+/// missed webhooks, not race with the script. This longer delay ensures the script is
+/// truly authoritative while still recovering from missed events.
+pub const PR_REVIEW_DELAY_SCRIPT_SECS: u64 = 300;
+
 /// How long a review assignment is valid before it can be reassigned (10 minutes).
 /// Re-exported from github_state for use by the in-memory tracker.
 pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;

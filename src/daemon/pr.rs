@@ -2767,13 +2767,41 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if PR is old enough (enforce review delay)
+        // Check if PR is old enough (enforce review delay).
+        //
+        // When the polling fallback encounters a PR whose channel has a workflow
+        // script, use the much longer PR_REVIEW_DELAY_SCRIPT_SECS. The script
+        // spawns reviewers in real-time via rpc.spawn_reviewer() on pr.opened,
+        // so polling should only act as a safety net for missed webhooks — not
+        // race with the script.
+        let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
+            let has_script = {
+                let ps = state.persistent_state.lock().await;
+                pr_task_associations
+                    .get(&pr_number)
+                    .and_then(|task_id| ps.task_channel.get(task_id).cloned())
+            }
+            .is_some_and(|channel| {
+                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                crate::paths::workflow_script_for_channel(&channel, &project_root, &state.repo_name)
+                    .is_some()
+            });
+
+            if has_script {
+                PR_REVIEW_DELAY_SCRIPT_SECS
+            } else {
+                PR_REVIEW_DELAY_SECS
+            }
+        } else {
+            PR_REVIEW_DELAY_SECS
+        };
+
         if let Some(age_secs) = get_pr_age_secs(pr)
-            && age_secs < PR_REVIEW_DELAY_SECS
+            && age_secs < review_delay
         {
             debug!(
                 "PR #{} is too new ({}s < {}s), skipping auto-review",
-                pr_number, age_secs, PR_REVIEW_DELAY_SECS
+                pr_number, age_secs, review_delay
             );
             continue;
         }
@@ -2785,7 +2813,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             let ps = state.persistent_state.lock().await;
             if ps
                 .github
-                .webhook_recently_handled(pr_number, PR_REVIEW_DELAY_SECS as i64 * 2)
+                .webhook_recently_handled(pr_number, review_delay as i64 * 2)
             {
                 debug!(
                     "PR #{} was recently handled by webhook, polling defers",
