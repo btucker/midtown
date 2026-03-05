@@ -1082,3 +1082,66 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
         "Path 1 should still emit SpawnCoworkerWithCallbacks even with stale working_dir"
     );
 }
+
+#[test]
+fn test_session_dispatch_skips_task_when_worktree_bound_to_different_active_coworker() {
+    // Scenario: Task !42 owned by "park" has a stopped session. Its worktree
+    // is bound to "york" who is actively running. Dispatch should NOT recover
+    // the task — the worktree is in use by another coworker.
+    //
+    // This tests the end-to-end outcome: worktree collision prevents a spawn
+    // that would cause two coworkers to fight over the same working directory.
+    let session = make_session_record("sess-park-42", Some("42"), Some("park"), false);
+
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-42-fix-auth".to_string(),
+            branch_name: "task-42-fix-auth".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("york".to_string()),
+            pr_number: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    let mut snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![("42".to_string(), "Fix auth".to_string(), "park".to_string())],
+        sessions: [("sess-park-42".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("42".to_string(), "sess-park-42".to_string())]
+            .into_iter()
+            .collect(),
+        task_worktree_map: [("42".to_string(), "task-42-fix-auth".to_string())]
+            .into_iter()
+            .collect(),
+        tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
+        worktree_registry: registry,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+    // york is active (running), park is NOT active (stopped session)
+    snap.coworkers.active_names = ["york".to_string()].into_iter().collect();
+
+    let effects = dispatch_via_sessions_for_test(&snap);
+
+    // Outcome: no spawn effect — the worktree collision blocks recovery
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnCoworker(_)
+                | Effect::AssignAndSpawn { .. }
+                | Effect::SpawnSession { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Should NOT spawn when worktree is bound to a different active coworker (york), got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}

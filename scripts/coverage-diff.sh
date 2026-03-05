@@ -112,11 +112,10 @@ mkdir -p "${OUTPUT_DIR}"
 DIFF_COVER_ARGS=(
   "${LCOV_PATH}"
   --compare-branch "${BASE_BRANCH}"
-  --format console
-  --format "html:${HTML_REPORT}"
+  --html-report "${HTML_REPORT}"
 )
 if [[ -n "${JSON_REPORT}" ]]; then
-  DIFF_COVER_ARGS+=(--format "json:${OUTPUT_DIR}/${JSON_REPORT}")
+  DIFF_COVER_ARGS+=(--json-report "${OUTPUT_DIR}/${JSON_REPORT}")
 fi
 
 diff-cover "${DIFF_COVER_ARGS[@]}"

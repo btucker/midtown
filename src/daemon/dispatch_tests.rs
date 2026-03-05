@@ -1858,6 +1858,49 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
     }
 }
 
+#[test]
+fn test_orphan_recovery_skips_pr_protected_task() {
+    // Scenario: Task !42 is in_progress, owned by "york" who is not active.
+    // The task's PR was merged — it's in pr_protected_tasks. Orphan recovery
+    // should NOT spawn a coworker for this task; the merged-PR cleanup path
+    // will mark the task complete.
+    //
+    // Without this guard, recovery spawns a coworker who immediately discovers
+    // the task is done, goes idle, hits the grace period, and gets spawned again
+    // — an infinite loop burning coworker slots.
+    let in_progress = vec![(
+        "42".to_string(),
+        "Fix auth bug".to_string(),
+        "york".to_string(),
+    )];
+    let tasks_with_open_prs = HashMap::new();
+    let active_names = HashSet::new(); // york is NOT active
+
+    let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
+    // Mark the task as PR-protected (e.g. its PR was merged)
+    snap.pr_protected_tasks.insert("42".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |_| None);
+
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnCoworker(_)
+                | Effect::AssignAndSpawn { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Should NOT recover task !42 — it's PR-protected (merged PR). Got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
 // ======================================================================
 // reconcile_tasks_in_review tests
 // ======================================================================
