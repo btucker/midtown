@@ -198,6 +198,48 @@ async fn test_channels_have_isolated_state() {
     assert_eq!(get_b.result.unwrap()["state"]["ch"], "b");
 }
 
+/// Concurrent set_state calls for different plugin keys on the same channel
+/// both persist (no data loss from TOCTOU race).
+#[tokio::test]
+async fn test_concurrent_set_state_plugin_keys_no_data_loss() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-concurrent");
+    let state = std::sync::Arc::new(state);
+
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let s = state.clone();
+        handles.push(tokio::spawn(async move {
+            let key = format!("plugin-{i}");
+            handle_workflow_set_state(
+                RequestId::Number(i as i64),
+                "test-channel",
+                Some(&key),
+                serde_json::json!({"index": i}),
+                &s,
+            )
+            .await;
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    let resp =
+        handle_workflow_get_state(RequestId::Number(100), "test-channel", None, &state).await;
+    let result = resp.result.expect("should succeed");
+    let obj = result["state"].as_object().expect("state should be object");
+
+    // All 10 plugin keys should be present — no writes lost.
+    for i in 0..10 {
+        let key = format!("plugin-{i}");
+        assert!(
+            obj.contains_key(&key),
+            "missing key {key} — concurrent write lost data"
+        );
+        assert_eq!(obj[&key]["index"], i);
+    }
+}
+
 /// set_state without plugin key replaces entire state.
 #[tokio::test]
 async fn test_set_state_replaces_entire_state() {

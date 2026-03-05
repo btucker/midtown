@@ -98,6 +98,18 @@ pub(super) async fn handle_workflow_set_state(
 ) -> Response {
     let state_file = crate::paths::workflow_state_file(channel, daemon_state.paths.dir_key());
 
+    // Acquire a per-channel lock to prevent TOCTOU races when multiple
+    // concurrent set_state calls (e.g., different plugin keys) read-modify-write
+    // the same state file.
+    let channel_lock = daemon_state
+        .workflow_state_locks
+        .lock()
+        .unwrap()
+        .entry(channel.to_string())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _guard = channel_lock.lock().await;
+
     let final_value = match plugin {
         Some(key) => {
             // Merge into existing state at the plugin key.

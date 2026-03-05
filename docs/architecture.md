@@ -700,6 +700,11 @@ uv run workflow.py --event '{"type":"pr.opened",...}' \
 
 The state file (`workflow-state.json`, path from `workflow_state_file()` in `src/paths.rs`) stores the script's mutable state between invocations. Both single-shot and sidecar modes use the same state file. The `run()` / `run_loop()` entry points in the SDK load state before calling the handler and save it atomically afterward.
 
+Workflow scripts can also access state programmatically via two RPC methods handled by `rpc_workflow.rs`:
+
+- **`workflow.get_state`** — reads the state file for a channel, optionally scoped to a plugin key. Returns `null` when absent.
+- **`workflow.set_state`** — writes state atomically (temp file + rename). With a `plugin` key, merges at that key; without, replaces the entire file. Concurrent writes to the same channel are serialized by a per-channel `tokio::sync::Mutex` in `DaemonState.workflow_state_locks` to prevent TOCTOU races.
+
 ### Python SDK
 
 The Midtown Python SDK (`sdk/python/midtown/`) provides `run()` (single-shot) and `run_loop()` (persistent sidecar) entry points, plus the `MidtownRPC` client. `run()` auto-detects `--sidecar` in `sys.argv` and delegates to `run_loop()`, so existing scripts gain sidecar support without code changes. A typical workflow script:
@@ -715,7 +720,7 @@ if __name__ == "__main__":
     run(handle)
 ```
 
-`MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `spawn_reviewer()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`, `check_pending()`.
+`MidtownRPC` methods: `post_to_channel()`, `spawn_coworker()`, `spawn_reviewer()`, `nudge_coworker()`, `create_task()`, `update_task()`, `complete_task()`, `list_tasks()`, `check_pending()`, `get_state()`, `set_state()`.
 
 ### Reference Implementation
 
