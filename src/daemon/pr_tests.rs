@@ -2021,6 +2021,100 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
     );
 }
 
+#[test]
+fn test_resolve_pr_owner_chain_uses_task_pr_field() {
+    let pr_task_associations: HashMap<u64, String> = HashMap::new();
+    let session_task_map: HashMap<String, String> = HashMap::new();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let all_tasks = vec![crate::tasks::Task {
+        id: "2047".to_string(),
+        subject: "fix some issue".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(2047),
+        created_at: None,
+    }];
+
+    let result =
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(
+                    2047,
+                    "fix coworker bug",
+                    "some/branch",
+                    &all_tasks,
+                )
+            })
+            .or_else(|| coworker_from_branch("some/branch", &branch_owners));
+
+    assert_eq!(
+        result,
+        Some("york".to_string()),
+        "Resolution chain should fall back to task.pr owner when session data is missing"
+    );
+}
+
+#[test]
+fn test_resolve_pr_owner_chain_prefers_session_over_task_pr_field() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(2047, "555".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("555".to_string(), "sess-xyz".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-xyz".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-xyz".to_string(),
+            task_id: Some("555".to_string()),
+            current_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("task-2047-fix".to_string()),
+            pr_number: Some(2047),
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+    let branch_owners: HashMap<String, String> =
+        [("task-2047-fix".to_string(), "park".to_string())]
+            .into_iter()
+            .collect();
+    let all_tasks = vec![crate::tasks::Task {
+        id: "555".to_string(),
+        subject: "task title".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(2047),
+        created_at: None,
+    }];
+
+    let result =
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(
+                    2047,
+                    "Midtown !2047 something",
+                    "task-2047-fix",
+                    &all_tasks,
+                )
+            })
+            .or_else(|| coworker_from_branch("task-2047-fix", &branch_owners));
+
+    assert_eq!(
+        result,
+        Some("madison".to_string()),
+        "Session-derived owner should still win over task metadata and branch fallback"
+    );
+}
+
 /// Integration test: poll_prs_for_issues uses session-based owner resolution
 /// when available. PR branch is "lexington/fix-auth" but session record says
 /// current_name is "madison". The owner should be "madison".
@@ -2237,49 +2331,35 @@ fn test_pr_context_routing_only_no_task_session_id() {
     );
 }
 
-/// resolve_pr_owner_via_session should resolve through the full chain:
-/// PR# → pr_author_sessions → task_id → sessions → name
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_full_chain() {
-    use crate::github_state::PrAuthorSession;
+/// resolve_pr_owner_from_session should resolve through the full chain:
+/// PR# → pr_task_associations → task_id → session_task_map → session_id → session.name
+#[test]
+fn test_resolve_pr_owner_from_session_full_chain() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "100".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("100".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("100".to_string()),
+            current_name: Some("madison".to_string()),
+            preferred_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            is_running: true,
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
 
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    // Populate persistent state
-    {
-        let mut ps = state.persistent_state.lock().await;
-
-        // PR #42 → task "100"
-        ps.github.pr_author_sessions.insert(
-            42,
-            PrAuthorSession {
-                session_id: "old-session".to_string(),
-                branch: "lexington/fix-auth".to_string(),
-                original_author: "lexington".to_string(),
-                stored_at: chrono::Utc::now(),
-                task_id: Some("100".to_string()),
-            },
-        );
-
-        // Session "sess-abc" → task "100" → name "madison"
-        ps.sessions.insert(
-            "sess-abc".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-abc".to_string(),
-                task_id: Some("100".to_string()),
-                current_name: Some("madison".to_string()),
-                preferred_name: Some("madison".to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: Some("lexington/fix-auth".to_string()),
-                pr_number: Some(42),
-                is_running: true,
-                resume_on_startup: false,
-                ..Default::default()
-            },
-        );
-    }
-
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result,
         Some("madison".to_string()),
@@ -2287,56 +2367,47 @@ async fn test_resolve_pr_owner_via_session_full_chain() {
     );
 }
 
-/// resolve_pr_owner_via_session should return None when no pr_author_session exists.
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_returns_none_no_pr_session() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
+/// resolve_pr_owner_from_session should return None when no pr_task_association exists.
+#[test]
+fn test_resolve_pr_owner_from_session_returns_none_no_pr_association() {
+    let pr_task_associations: HashMap<u64, String> = HashMap::new();
+    let session_task_map: HashMap<String, String> = HashMap::new();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
 
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result, None,
-        "Should return None when no pr_author_session exists"
+        "Should return None when no pr_task_association exists"
     );
 }
 
-/// resolve_pr_owner_via_session falls back to preferred_name when current_name is None.
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
-    use crate::github_state::PrAuthorSession;
+/// resolve_pr_owner_from_session falls back to preferred_name when current_name is None.
+#[test]
+fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "100".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("100".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("100".to_string()),
+            preferred_name: Some("park".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
 
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    {
-        let mut ps = state.persistent_state.lock().await;
-
-        ps.github.pr_author_sessions.insert(
-            42,
-            PrAuthorSession {
-                session_id: "old-session".to_string(),
-                branch: "lexington/fix-auth".to_string(),
-                original_author: "lexington".to_string(),
-                stored_at: chrono::Utc::now(),
-                task_id: Some("100".to_string()),
-            },
-        );
-
-        // Session with no current_name but has preferred_name (suspended)
-        ps.sessions.insert(
-            "sess-abc".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-abc".to_string(),
-                task_id: Some("100".to_string()),
-                preferred_name: Some("park".to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: Some("lexington/fix-auth".to_string()),
-                pr_number: Some(42),
-                resume_on_startup: false,
-                ..Default::default()
-            },
-        );
-    }
-
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result,
         Some("park".to_string()),
@@ -3470,6 +3541,129 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
             crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
         ),
         "Event should be PrApproved for PR #42"
+    );
+}
+
+#[tokio::test]
+async fn test_review_complete_without_owner_posts_merge_reminder() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 2042u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "reviewer/task-2042-svelte-fix",
+        "title": "feat: ReviewComplete fallback path".to_string(),
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.task_channel
+            .insert("2042".to_string(), "daemon-core".to_string());
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel {
+                sender,
+                ..
+            } if sender == "midtown"
+        )),
+        "Expected review-complete fallback post to channel output, got: {:#?}",
+        effects
+    );
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::RecordPrNudge { pr_number, .. } if *pr_number == 2042)),
+        "Expected RecordPrNudge for PR #2042 to prevent duplicate nudges, got: {:#?}",
+        effects
+    );
+
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::NudgeSession { .. }
+        )),
+        "Should not try to spawn/nudge a coworker when owner cannot be resolved, got: {:#?}",
+        effects
+    );
+}
+
+#[tokio::test]
+async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unknown() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 2043u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "reviewer/task-2043-svelte-fix",
+        "title": "feat: ReviewComplete owner fallback path".to_string(),
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            pr_number,
+            "sess-2043",
+            "reviewer/task-2043-svelte-fix",
+            "park",
+            "feat: ReviewComplete owner fallback [Midtown !2043]",
+        );
+        ps.task_channel
+            .insert("2043".to_string(), "daemon-core".to_string());
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
+        )),
+        "Expected coworker-directed nudge via author session for PR #2043, got: {:#?}",
+        effects
     );
 }
 

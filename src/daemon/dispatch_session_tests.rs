@@ -117,7 +117,7 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
     };
     snap.coworkers.active_names = HashSet::new(); // lexington is NOT active
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Then: emits SpawnCoworkerWithCallbacks with SessionMode::ResumeSession
     // (SpawnCoworkerWithCallbacks enables on_failure cooldown and task reset)
@@ -291,7 +291,7 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Run dispatch_via_sessions first (as events.rs does)
-    let session_effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let session_effects = dispatch_via_sessions_for_test(&snap);
     let session_claimed_ids = effects::extract_claimed_task_ids_from_effects(&session_effects);
 
     // Run check_and_recover_orphans with the same task
@@ -384,7 +384,7 @@ fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
     };
 
     // Tick 1: recovery fires (expected — session is stopped).
-    let effects_tick1 = dispatch_via_sessions_for_test(&snap_with_stopped_session, None, |_| None);
+    let effects_tick1 = dispatch_via_sessions_for_test(&snap_with_stopped_session);
     assert!(
         effects_tick1
             .iter()
@@ -414,7 +414,7 @@ fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
     };
 
     // Tick 2: recovery must NOT fire — session is now running.
-    let effects_tick2 = dispatch_via_sessions_for_test(&snap_after_spawn, None, |_| None);
+    let effects_tick2 = dispatch_via_sessions_for_test(&snap_after_spawn);
     assert!(
         !effects_tick2
             .iter()
@@ -516,7 +516,7 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
     };
     snap.coworkers.active_names = HashSet::new(); // canal-lead is NOT active
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Then: no spawn effects — channel leads must not be recovered as coworkers
     let has_spawn = effects
@@ -564,7 +564,7 @@ fn test_session_dispatch_skips_active_reviewer() {
     snap.reviewer.reviewer_pr_assignments =
         [("columbus".to_string(), 1384_u64)].into_iter().collect();
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Then: no spawn effects — columbus is actively reviewing PR #1384
     let spawn_effects: Vec<_> = effects
@@ -637,7 +637,7 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
         .into_iter()
         .collect();
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Then: must NOT emit another recovery spawn — the session is already live.
     let spawn_effects: Vec<_> = effects
@@ -670,8 +670,6 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
 fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
     let session = make_session_record("sess-stale-123", Some("42"), Some("lexington"), false);
 
-    let task = in_progress_task_for_lookup("42", "Fix stale session bug", "lexington");
-
     let snap = snapshot::WorldSnapshot {
         sessions: [("sess-stale-123".to_string(), session)]
             .into_iter()
@@ -687,11 +685,7 @@ fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let lookup = |id: &str| -> Option<crate::tasks::Task> {
-        if id == "42" { Some(task.clone()) } else { None }
-    };
-
-    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // The outermost effect should be SpawnCoworkerWithCallbacks
     let spawn_effect = effects
@@ -759,7 +753,7 @@ fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Then: must NOT emit another recovery spawn — the session was recently recovered.
     // Without the fix, this fires on every tick causing log spam.
@@ -908,8 +902,6 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
         false,
     );
 
-    let task = in_progress_task_for_lookup("1703", "Fix session recovery spam", "park");
-
     let snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
             "1703".to_string(),
@@ -930,15 +922,7 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let lookup = |id: &str| -> Option<crate::tasks::Task> {
-        if id == "1703" {
-            Some(task.clone())
-        } else {
-            None
-        }
-    };
-
-    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Find the SpawnCoworkerWithCallbacks effect
     let spawn_effect = effects
@@ -1048,7 +1032,7 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
 }
 
 /// Path 1: when a recovered session has a working_dir that no longer exists,
-/// dispatch_via_sessions_with_task_lookup should fall back to the fresh worktree
+/// dispatch_via_sessions should fall back to the fresh worktree
 /// path and include ClearSessionWorkingDir in the effects.
 #[test]
 fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
@@ -1056,8 +1040,6 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
 
     let mut session = make_session_record("sess-stale-p1-abc", Some("1740"), Some("park"), false);
     session.working_dir = stale_path.to_string();
-
-    let task = in_progress_task_for_lookup("1740", "Stale worktree test", "park");
 
     let snap = snapshot::WorldSnapshot {
         in_progress_tasks: vec![(
@@ -1076,15 +1058,7 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let lookup = |id: &str| -> Option<crate::tasks::Task> {
-        if id == "1740" {
-            Some(task.clone())
-        } else {
-            None
-        }
-    };
-
-    let effects = dispatch_via_sessions_with_task_lookup(&snap, None, lookup);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Must emit ClearSessionWorkingDir for the stale session
     let has_clear_wd = effects.iter().any(|e| {
@@ -1106,5 +1080,68 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
     assert!(
         has_spawn,
         "Path 1 should still emit SpawnCoworkerWithCallbacks even with stale working_dir"
+    );
+}
+
+#[test]
+fn test_session_dispatch_skips_task_when_worktree_bound_to_different_active_coworker() {
+    // Scenario: Task !42 owned by "park" has a stopped session. Its worktree
+    // is bound to "york" who is actively running. Dispatch should NOT recover
+    // the task — the worktree is in use by another coworker.
+    //
+    // This tests the end-to-end outcome: worktree collision prevents a spawn
+    // that would cause two coworkers to fight over the same working directory.
+    let session = make_session_record("sess-park-42", Some("42"), Some("park"), false);
+
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-42-fix-auth".to_string(),
+            branch_name: "task-42-fix-auth".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("york".to_string()),
+            pr_number: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    let mut snap = snapshot::WorldSnapshot {
+        in_progress_tasks: vec![("42".to_string(), "Fix auth".to_string(), "park".to_string())],
+        sessions: [("sess-park-42".to_string(), session)]
+            .into_iter()
+            .collect(),
+        session_task_map: [("42".to_string(), "sess-park-42".to_string())]
+            .into_iter()
+            .collect(),
+        task_worktree_map: [("42".to_string(), "task-42-fix-auth".to_string())]
+            .into_iter()
+            .collect(),
+        tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
+        worktree_registry: registry,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+    // york is active (running), park is NOT active (stopped session)
+    snap.coworkers.active_names = ["york".to_string()].into_iter().collect();
+
+    let effects = dispatch_via_sessions_for_test(&snap);
+
+    // Outcome: no spawn effect — the worktree collision blocks recovery
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnCoworker(_)
+                | Effect::AssignAndSpawn { .. }
+                | Effect::SpawnSession { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Should NOT spawn when worktree is bound to a different active coworker (york), got: {:?}",
+        effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
     );
 }

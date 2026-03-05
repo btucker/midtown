@@ -62,37 +62,6 @@ fn resolve_pr_owner_from_session(
         .or_else(|| session.preferred_name.clone())
 }
 
-/// Try to resolve PR owner via session-centric path using persistent state.
-///
-/// Builds a temporary task_id → session_id map from ps.sessions, then chains:
-/// PR# → pr_task_associations → task_id → session_id → session.name
-///
-/// Returns `Some(name)` if the full chain resolves, `None` otherwise.
-/// Callers should fall back to branch-based lookup when this returns `None`.
-async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
-    let ps = state.persistent_state.lock().await;
-    let pr_task_associations = ps.github.pr_to_task_map();
-
-    // Build task_id → session_id reverse index from sessions map
-    let session_task_map: HashMap<String, String> = ps
-        .sessions
-        .iter()
-        .filter_map(|(session_id, record)| {
-            record
-                .task_id
-                .as_ref()
-                .map(|task_id| (task_id.clone(), session_id.clone()))
-        })
-        .collect();
-
-    resolve_pr_owner_from_session(
-        pr_number,
-        &pr_task_associations,
-        &session_task_map,
-        &ps.sessions,
-    )
-}
-
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -460,16 +429,121 @@ pub(super) fn detect_abandoned_pr_tasks(
 /// Resolve the owner of a PR from snapshot data.
 ///
 /// Tries session-based resolution first (PR# → task → session → current_name),
-/// then falls back to branch-based lookup via the worktree registry's branch_owners map.
+/// then falls back to task-based metadata from snapshot tasks (PR title/task ID, branch
+/// task ID pattern, and task.pr field), and finally branch-based lookup via the
+/// worktree registry's branch_owners map.
 /// Returns `None` if neither path yields an owner.
-fn resolve_pr_owner(pr_number: u64, head_ref: &str, snap: &WorldSnapshot) -> Option<String> {
+fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
-        pr_number,
+        pf.number,
         &snap.pr.pr_task_associations,
         &snap.session_task_map,
         &snap.sessions,
     )
-    .or_else(|| coworker_from_branch(head_ref, &snap.worktree_branch_owners))
+    .or_else(|| {
+        resolve_pr_owner_from_task_metadata(pf.number, pf.title, pf.head_ref, &snap.all_tasks)
+    })
+    .or_else(|| coworker_from_branch(pf.head_ref, &snap.worktree_branch_owners))
+}
+
+fn extract_task_id_from_head_ref(head_ref: &str) -> Option<u64> {
+    head_ref
+        .rsplit('/')
+        .next()
+        .and_then(|branch| branch.strip_prefix("task-"))
+        .and_then(|rest| rest.split('-').next())
+        .and_then(|task_id| task_id.parse().ok())
+}
+
+fn resolve_pr_owner_from_task_metadata(
+    pr_number: u64,
+    title: &str,
+    head_ref: &str,
+    all_tasks: &[crate::tasks::Task],
+) -> Option<String> {
+    let owner_for_task_id = |task_id: u64, all_tasks: &[crate::tasks::Task]| {
+        let task_id_str = task_id.to_string();
+        all_tasks
+            .iter()
+            .find(|task| task.id == task_id_str && task.owner.is_some())
+            .and_then(|task| task.owner.clone())
+    };
+
+    if let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(title)
+        && let Some(owner) = owner_for_task_id(task_id, all_tasks)
+    {
+        return Some(owner);
+    }
+
+    if let Some(task_id) = extract_task_id_from_head_ref(head_ref)
+        && let Some(owner) = owner_for_task_id(task_id, all_tasks)
+    {
+        return Some(owner);
+    }
+
+    all_tasks
+        .iter()
+        .find(|task| task.pr == Some(pr_number) && task.owner.is_some())
+        .and_then(|task| task.owner.clone())
+}
+
+/// Resolve PR owner from persistent state (used by webhook handlers).
+///
+/// Locks persistent_state once, tries session → task metadata → branch →
+/// PR worktree registry → fallback.
+async fn resolve_pr_owner_from_state(
+    state: &DaemonState,
+    pr_number: u64,
+    title: &str,
+    head_ref: Option<&str>,
+    owner_fallback: Option<&str>,
+) -> Option<String> {
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let head = head_ref.unwrap_or("");
+
+    let owner = {
+        let ps = state.persistent_state.lock().await;
+        let pr_task_associations = ps.github.pr_to_task_map();
+
+        let session_task_map: HashMap<String, String> = ps
+            .sessions
+            .iter()
+            .filter_map(|(session_id, record)| {
+                record
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (task_id.clone(), session_id.clone()))
+            })
+            .collect();
+
+        let branch_owners: HashMap<String, String> = ps
+            .worktree_registry
+            .all_assignments()
+            .values()
+            .filter_map(|assignment| {
+                assignment
+                    .current_coworker
+                    .as_ref()
+                    .map(|owner| (assignment.branch_name.clone(), owner.clone()))
+            })
+            .collect();
+
+        resolve_pr_owner_from_session(
+            pr_number,
+            &pr_task_associations,
+            &session_task_map,
+            &ps.sessions,
+        )
+        .or_else(|| resolve_pr_owner_from_task_metadata(pr_number, title, head, &all_tasks))
+        .or_else(|| coworker_from_branch(head, &branch_owners))
+        .or_else(|| {
+            ps.worktree_registry
+                .get_by_pr(pr_number)
+                .and_then(|assignment| assignment.current_coworker.clone())
+        })
+    };
+
+    owner.or_else(|| owner_fallback.map(|o| o.to_string()))
 }
 
 // ============================================================================
@@ -724,8 +798,9 @@ async fn process_pr_issue_nudges(
             continue;
         }
 
-        // Session-first, branch fallback: PR# → task → session → name, else branch prefix.
-        let owner_opt = resolve_pr_owner(pf.number, pf.head_ref, snap);
+        // Session-first, task metadata fallback, then branch prefix fallback.
+        // PR# → task → session → name → branch prefix → None.
+        let owner_opt = resolve_pr_owner(&pf, snap);
         let issues = detect_pr_issues(pr);
 
         // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
@@ -1125,7 +1200,7 @@ async fn collect_green_with_feedback_effects(
         }
 
         // Only process coworker-owned PRs — session-first, branch fallback.
-        let owner = match resolve_pr_owner(pr_number, pf.head_ref, snap) {
+        let owner = match resolve_pr_owner(&pf, snap) {
             Some(o) => o,
             None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
         };
@@ -2105,13 +2180,14 @@ async fn collect_comment_notification_effects(
     }
 
     for pr in prs {
-        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        let pf = PrFields::from_json(pr);
+        let pr_number = pf.number;
         if pr_number == 0 {
             continue;
         }
 
-        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+        let head_ref = pf.head_ref;
+        let title = pf.title;
 
         // Check for lead/* branches first, before filtering by coworker ownership
         if is_lead_branch(head_ref) {
@@ -2574,20 +2650,77 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         crate::config::ReviewMode::Local | crate::config::ReviewMode::Both
     );
 
-    // Build channel routing context once (single lock acquisition) for all PRs.
-    let pr_ctx = {
+    // Build all shared context once to avoid lock churn and repeated map
+    // allocation inside each PR loop.
+    let active_coworkers: Vec<String> = state
+        .coworkers
+        .list()
+        .iter()
+        .map(|c| c.name.clone())
+        .collect();
+    let busy_coworkers = state.get_all_busy_coworkers();
+    let idle_coworkers: Vec<String> = active_coworkers
+        .iter()
+        .filter(|c| !busy_coworkers.contains(*c))
+        .cloned()
+        .collect();
+
+    let (
+        pr_ctx,
+        all_tasks,
+        pr_task_associations,
+        session_task_map,
+        sessions,
+        is_at_dev_limit,
+        pr_author_names,
+    ) = {
         let ps = state.persistent_state.lock().await;
-        PrContext::routing_only(&ps)
+        let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+        let pr_task_associations = ps.github.pr_to_task_map();
+        let session_task_map: HashMap<String, String> = ps
+            .sessions
+            .iter()
+            .filter_map(|(session_id, record)| {
+                record
+                    .task_id
+                    .as_ref()
+                    .map(|task_id| (task_id.clone(), session_id.clone()))
+            })
+            .collect();
+        let sessions = ps.sessions.clone();
+        let pr_ctx = PrContext::routing_only(&ps);
+        let channel_lead_names = ps.channel_lead_names();
+        let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+        // PR author fallback: maps PR# → original author name from stored author sessions.
+        let pr_author_names: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .map(|(pr, s)| (*pr, s.original_author.clone()))
+            .collect();
+
+        (
+            pr_ctx,
+            all_tasks,
+            pr_task_associations,
+            session_task_map,
+            sessions,
+            is_at_dev_limit,
+            pr_author_names,
+        )
     };
 
     for pr in prs {
-        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        let pf = PrFields::from_json(pr);
+        let pr_number = pf.number;
         if pr_number == 0 {
             continue;
         }
 
+        let title = pf.title;
+
         // Skip draft PRs
-        let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+        let is_draft = pf.is_draft;
         if is_draft {
             debug!("PR #{} is a draft, skipping auto-review", pr_number);
             continue;
@@ -2660,61 +2793,68 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
 
             // Nudge the PR author — review is complete but PR is still open
-            let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-            let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
+            let should_nudge = {
+                let tracker = state.pr_issue_tracker.lock().await;
+                tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
+            };
+            let review_suffix = pre_fetched_review_content
+                .get(&pr_number)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let nudge_msg = format!(
+                "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+                pr_number,
+                truncate_str(title, 40),
+                review_suffix
+            );
 
-            // Only nudge coworker-owned PRs (resolved via branch_owners map)
-            if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
-                let should_nudge = {
-                    let tracker = state.pr_issue_tracker.lock().await;
-                    tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
-                };
-
-                if should_nudge {
-                    // Use pre-fetched review content (fetched at the top of poll_prs_for_issues
-                    // to keep this function free of I/O — CLAUDE.md: "Decision functions are pure").
-                    let review_suffix = pre_fetched_review_content
-                        .get(&pr_number)
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    let nudge_msg = format!(
-                        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-                        pr_number,
-                        truncate_str(title, 40),
-                        review_suffix
-                    );
-
-                    let active_coworkers: Vec<String> = state
-                        .coworkers
-                        .list()
-                        .iter()
-                        .map(|c| c.name.clone())
-                        .collect();
-                    let busy_coworkers = state.get_all_busy_coworkers();
-                    let idle_coworkers: Vec<String> = active_coworkers
-                        .iter()
-                        .filter(|c| !busy_coworkers.contains(*c))
-                        .cloned()
-                        .collect();
-
-                    let (channel_lead_names, pr_ctx) = {
-                        let ps = state.persistent_state.lock().await;
-                        (ps.channel_lead_names(), PrContext::routing_only(&ps))
-                    };
-
-                    let action = crate::rules::decide_review_complete_action(
-                        &owner,
-                        &active_coworkers,
-                        &idle_coworkers,
-                        state.is_at_dev_limit(&channel_lead_names),
-                        &nudge_msg,
-                    );
-
-                    effects.extend(review_complete_action_to_effects(
-                        action, pr_number, title, state, &pr_ctx,
-                    ));
-                }
+            if !should_nudge {
+                continue;
             }
+
+            let owner = resolve_pr_owner_from_session(
+                pr_number,
+                &pr_task_associations,
+                &session_task_map,
+                &sessions,
+            )
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, &all_tasks)
+            })
+            .or_else(|| coworker_from_branch(pf.head_ref, branch_owners))
+            .or_else(|| {
+                // Fallback: check pr_author_sessions for the original PR creator.
+                // This covers cases where the session record is gone but we stored
+                // who created the PR.
+                pr_author_names.get(&pr_number).cloned()
+            });
+
+            if let Some(owner) = owner {
+                let action = crate::rules::decide_review_complete_action(
+                    &owner,
+                    &active_coworkers,
+                    &idle_coworkers,
+                    is_at_dev_limit,
+                    &nudge_msg,
+                );
+
+                effects.extend(review_complete_action_to_effects(
+                    action, pr_number, title, state, &pr_ctx,
+                ));
+                continue;
+            }
+
+            let channel = pr_ctx.get_channel(pr_number);
+            effects.push(Effect::PostToChannel {
+                sender: "midtown".to_string(),
+                message: nudge_msg,
+                channel,
+                auto_output: false,
+            });
+            effects.push(Effect::RecordPrNudge {
+                pr_number,
+                issue_type: PrIssueType::ReviewComplete,
+            });
 
             continue;
         }
@@ -3544,11 +3684,15 @@ pub(super) async fn handle_pr_comment_nudge(
         return;
     }
 
-    // Session-centric resolution first: PR → task → session → name
-    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
-
-    // Only check coworker-owned PRs beyond this point
-    let owner = session_owner.or_else(|| activity.owner_coworker.clone());
+    // Resolve owner via session/task/worktree data, with webhook owner as fallback.
+    let owner = resolve_pr_owner_from_state(
+        state,
+        pr_number,
+        "",
+        branch.as_deref(),
+        activity.owner_coworker.as_deref(),
+    )
+    .await;
 
     let Some(mut owner) = owner else {
         debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
@@ -3805,11 +3949,10 @@ pub(super) async fn handle_webhook_review_state_change(
         }
     }
 
-    // Session-centric resolution first: PR → task → session → name
-    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
-
-    // Resolve owner: session path first, then webhook data
-    let owner = session_owner.or_else(|| change.owner_coworker.clone());
+    // Resolve owner via session/task/worktree data, with webhook owner as fallback.
+    let owner =
+        resolve_pr_owner_from_state(state, pr_number, "", None, change.owner_coworker.as_deref())
+            .await;
 
     let Some(owner) = owner else {
         debug!(
@@ -3923,11 +4066,15 @@ pub(super) async fn handle_webhook_ci_failure(
         }
     }
 
-    // Session-centric resolution first: PR → task → session → name
-    let session_owner = resolve_pr_owner_via_session(state, pr_number).await;
-
-    // Resolve owner: session path first, then webhook data
-    let owner = session_owner.or_else(|| failure.owner_coworker.clone());
+    // Resolve owner via session/task/worktree data, with webhook owner as fallback.
+    let owner = resolve_pr_owner_from_state(
+        state,
+        pr_number,
+        "",
+        None,
+        failure.owner_coworker.as_deref(),
+    )
+    .await;
 
     let Some(owner) = owner else {
         debug!(
