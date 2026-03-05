@@ -320,6 +320,7 @@
 
   // Handle clicks on PR links, task links, channel links in thread messages
   function handleThreadLinkClick(e) {
+    if (e.defaultPrevented) return
     const target = e.target
     if (target.classList.contains('pr-link')) {
       e.preventDefault()

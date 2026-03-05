@@ -3594,10 +3594,10 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     );
 
     assert!(
-        effects.iter().any(
-            |e| matches!(e, Effect::RecordPrNudge { pr_number, .. } if pr_number == pr_number)
-        ),
-        "Expected RecordPrNudge to be recorded to prevent duplicate nudges, got: {:#?}",
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::RecordPrNudge { pr_number, .. } if *pr_number == 2042)),
+        "Expected RecordPrNudge for PR #2042 to prevent duplicate nudges, got: {:#?}",
         effects
     );
 
