@@ -3686,3 +3686,89 @@ fn test_stuck_reviewer_respawn_no_escalation_target_without_channel_lead() {
         "Respawned reviewer should have escalation_target=None when no channel lead exists"
     );
 }
+
+/// Dead reviewer respawn emits CoworkerStuck workflow event with PR task channel.
+#[test]
+fn test_dead_reviewer_respawn_emits_coworker_stuck_workflow_event() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 55u64;
+    let task_id = "200";
+    let channel_name = "billing-feature";
+
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "lexington".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(5),
+        current_task: None,
+        session_id: Some("sess-rev-200".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+
+    // Dead: process has exited
+    snap.health.headless_process_health.insert(
+        "lexington".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(now - chrono::Duration::minutes(2)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: Some(1),
+        },
+    );
+
+    // Reviewer assignment + not yet reviewed
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("lexington".to_string(), pr_number);
+
+    // Session mapping
+    snap.name_session_map
+        .insert("lexington".to_string(), "sess-rev-200".to_string());
+
+    // PR → task → channel chain
+    snap.pr
+        .pr_task_associations
+        .insert(pr_number, task_id.to_string());
+    snap.task_channel
+        .insert(task_id.to_string(), channel_name.to_string());
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    let stuck_event = effects.iter().find_map(|e| {
+        if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::CoworkerStuck {
+            channel,
+            task_id,
+            coworker,
+        }) = e
+        {
+            Some((channel.clone(), task_id.clone(), coworker.clone()))
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        stuck_event.is_some(),
+        "Dead reviewer respawn should emit CoworkerStuck workflow event, got: {:#?}",
+        effects
+    );
+    let (ch, tid, cw) = stuck_event.unwrap();
+    assert_eq!(ch, channel_name);
+    assert_eq!(tid, Some(task_id.to_string()));
+    assert_eq!(cw, "lexington");
+}
