@@ -1,50 +1,123 @@
-"""Action types returned by workflow hooks."""
+"""Factory methods for creating :class:`~midtown.hooks.DaemonAction` objects.
+
+Plugins use the :class:`Actions` helper (available as ``ctx.actions`` in hook
+implementations) to build return values without constructing raw
+``DaemonAction`` dicts::
+
+    @hookimpl
+    def on_pr_opened(self, ctx: HookContext) -> list[DaemonAction]:
+        return [
+            ctx.actions.post_to_channel(f"PR #{ctx.pr_number} opened!"),
+            ctx.actions.spawn_reviewer(ctx.pr_number),
+        ]
+
+Each method mirrors an :class:`~midtown.MidtownRPC` method but returns a
+``DaemonAction`` instead of performing I/O.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
+from midtown.hooks import DaemonAction
 
-@dataclass
-class Action:
-    """An action returned by workflow hooks. Use factory methods to create."""
 
-    type: str
-    args: dict[str, Any]
+class Actions:
+    """Factory for building :class:`DaemonAction` objects.
 
-    @classmethod
-    def post_to_channel(cls, message: str, thread_id: str | None = None) -> Action:
-        return cls("post_to_channel", {"message": message, "thread_id": thread_id})
+    Methods mirror :class:`~midtown.MidtownRPC` for a familiar API.
+    """
 
-    @classmethod
-    def nudge_coworker(cls, name: str, message: str) -> Action:
-        return cls("nudge_coworker", {"name": name, "message": message})
+    # -- Channel ------------------------------------------------------------
 
-    @classmethod
-    def spawn_reviewer(cls, pr_number: int) -> Action:
-        return cls("spawn_reviewer", {"pr_number": pr_number})
+    @staticmethod
+    def post_to_channel(
+        message: str,
+        *,
+        channel: str | None = None,
+        sender: str | None = None,
+        thread_parent_id: str | None = None,
+    ) -> DaemonAction:
+        """Post a message to a channel."""
+        params: dict[str, Any] = {"message": message}
+        if channel is not None:
+            params["channel"] = channel
+        if sender is not None:
+            params["from"] = sender
+        if thread_parent_id is not None:
+            params["thread_parent_id"] = thread_parent_id
+        return DaemonAction(method="channel.post", params=params)
 
-    @classmethod
-    def spawn_coworker(cls, prompt: str, different_from: str | None = None) -> Action:
-        return cls("spawn_coworker", {"prompt": prompt, "different_from": different_from})
+    # -- Task ---------------------------------------------------------------
 
-    @classmethod
-    def fork_lead(cls, role: str, prompt: str) -> Action:
-        return cls("fork_lead", {"role": role, "prompt": prompt})
+    @staticmethod
+    def create_task(
+        subject: str,
+        *,
+        description: str = "",
+        channel: str | None = None,
+        blocked_by: list[str] | None = None,
+        model: str | None = None,
+    ) -> DaemonAction:
+        """Create a new task."""
+        params: dict[str, Any] = {"subject": subject}
+        if description:
+            params["description"] = description
+        if channel is not None:
+            params["channel"] = channel
+        if blocked_by is not None:
+            params["blocked_by"] = blocked_by
+        if model is not None:
+            params["model"] = model
+        return DaemonAction(method="task.create", params=params)
 
-    @classmethod
-    def complete_task(cls, task_id: str) -> Action:
-        return cls("complete_task", {"task_id": task_id})
+    @staticmethod
+    def complete_task(task_id: str) -> DaemonAction:
+        """Mark a task as done."""
+        return DaemonAction(method="task.done", params={"id": task_id})
 
-    @classmethod
-    def enable_auto_merge(cls, pr_number: int) -> Action:
-        return cls("enable_auto_merge", {"pr_number": pr_number})
+    # -- Coworker -----------------------------------------------------------
 
-    @classmethod
-    def check_pending(cls) -> Action:
-        return cls("check_pending", {})
+    @staticmethod
+    def nudge_coworker(
+        name: str,
+        message: str,
+        *,
+        sender: str | None = None,
+    ) -> DaemonAction:
+        """Send a nudge message to a coworker."""
+        params: dict[str, Any] = {"name": name, "message": message}
+        if sender is not None:
+            params["from"] = sender
+        return DaemonAction(method="coworker.nudge", params=params)
 
-    @classmethod
-    def http_post(cls, url: str, body: dict[str, Any]) -> Action:
-        return cls("http_post", {"url": url, "body": body})
+    @staticmethod
+    def spawn_coworker(
+        *,
+        prompt: str | None = None,
+        resume: bool = False,
+    ) -> DaemonAction:
+        """Spawn a new coworker session."""
+        params: dict[str, Any] = {"resume": resume}
+        if prompt is not None:
+            params["prompt"] = prompt
+        return DaemonAction(method="coworker.spawn", params=params)
+
+    # -- PR -----------------------------------------------------------------
+
+    @staticmethod
+    def spawn_reviewer(pr_number: int) -> DaemonAction:
+        """Spawn a reviewer for a pull request."""
+        return DaemonAction(method="pr.review", params={"pr": pr_number})
+
+    @staticmethod
+    def enable_auto_merge(pr_number: int) -> DaemonAction:
+        """Enable GitHub auto-merge on a pull request."""
+        return DaemonAction(method="pr.auto-merge", params={"pr": pr_number})
+
+    # -- Daemon -------------------------------------------------------------
+
+    @staticmethod
+    def check_pending() -> DaemonAction:
+        """Trigger immediate dispatch of pending tasks."""
+        return DaemonAction(method="daemon.check-pending", params={})

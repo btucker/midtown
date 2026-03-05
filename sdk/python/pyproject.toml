@@ -16,6 +16,9 @@ dependencies = [
 transitions = ["transitions>=0.9"]
 dev = ["pytest>=7.0"]
 
+[dependency-groups]
+dev = ["pytest>=8.4.2"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["midtown"]
 

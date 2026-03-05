@@ -42,15 +42,34 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
-from midtown.actions import Action
+from midtown.actions import Actions
 from midtown.hooks import (
     DaemonAction,
     HookContext,
     TaskHooks,
     WorkflowHooks,
+    get_plugin_manager,
     hookimpl,
     hookspec,
 )
+
+__all__ = [
+    # Hook system
+    "Actions",
+    "DaemonAction",
+    "HookContext",
+    "TaskHooks",
+    "WorkflowHooks",
+    "get_plugin_manager",
+    "hookimpl",
+    "hookspec",
+    # RPC client
+    "MidtownRPC",
+    "RpcError",
+    # Entry points
+    "run",
+    "run_loop",
+]
 
 
 class RpcError(Exception):
