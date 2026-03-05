@@ -26,6 +26,7 @@ mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
 mod rpc_task;
+mod rpc_workflow;
 pub(crate) mod sessions;
 pub(crate) mod sidecar;
 pub mod snapshot;
