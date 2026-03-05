@@ -32,6 +32,16 @@ the process alive, avoiding the ~300-800ms Python startup overhead per event.
 
 from __future__ import annotations
 
+from midtown.actions import Action
+from midtown.hooks import (
+    DaemonAction,
+    HookContext,
+    TaskHooks,
+    WorkflowHooks,
+    hookimpl,
+    hookspec,
+)
+
 import argparse
 import json
 import os
