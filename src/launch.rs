@@ -542,9 +542,11 @@ impl LaunchConfig {
                 self.pr_number,
             ),
             CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
-            CoworkerRole::Coworker => {
-                crate::agents::coworker_system_prompt(&self.name, project_name)
-            }
+            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
+                &self.name,
+                project_name,
+                self.channel.as_deref(),
+            ),
             CoworkerRole::ChannelLead {
                 channel_name,
                 domain_context,

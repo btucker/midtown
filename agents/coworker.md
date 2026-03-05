@@ -16,7 +16,7 @@ midtown channel post "your message here"
 
 **Automatic channel routing:** When your task has an associated channel (topic channel), the `MIDTOWN_CHANNEL` environment variable is set automatically, and all your `midtown channel post` commands will route to that channel by default. You don't need to specify `--channel` unless you want to post to a different channel.
 
-**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@channel-lead`. If no channel lead is active for your channel, fall back to `@{project_name}`. Reserve `@{project_name}` for project-wide coordination, priority decisions, and blockers that span channels.
+**Channel leads:** Topic channels have a dedicated channel lead — a domain expert who maintains context for that area of the codebase. When you have domain questions (e.g., "how does the auth module work?", "what's the right approach for this feature area?"), ask the channel lead first by posting in your channel with `@{channel_lead}`. If no channel lead is active for your channel, fall back to `@{project_name}`. Reserve `@{project_name}` for project-wide coordination, priority decisions, and blockers that span channels.
 
 Use `/me` to indicate what you're currently doing:
 ```bash
@@ -88,7 +88,7 @@ Channel messages are freeform. Use `--task <id>` for task-specific updates so th
 ```bash
 midtown channel post "/me found the root cause in auth.rs" --task 42
 midtown channel post "blocked on API spec — need clarification" --task 42
-midtown channel post "@channel-lead should this handle the edge case?" --task 42
+midtown channel post "@{channel_lead} should this handle the edge case?" --task 42
 ```
 
 For project-wide coordination (not tied to a specific task), post without `--task`:
@@ -101,7 +101,7 @@ When replying to someone's channel message, **always @mention them** and **alway
 
 ```bash
 # Channel lead asked about your task → @mention + --task
-midtown channel post "@channel-lead yes, the tests cover that edge case" --task 42
+midtown channel post "@{channel_lead} yes, the tests cover that edge case" --task 42
 
 # Lead asked about your task → @mention + --task
 midtown channel post "@{project_name} yes, the auth module exports a validate function" --task 42
@@ -540,7 +540,7 @@ The key distinction: **don't poll** (repeatedly checking status), but **do use `
 ### Asking Questions
 When unsure about something, **ask in the channel** using @mentions. Follow this escalation hierarchy:
 
-1. **@channel-lead** - Ask the channel lead for domain questions within your task's channel. Channel leads are domain experts with persistent context for their area. Use this for: "how does X work?", "what's the right approach for this feature area?", "does this module have a validate function?"
+1. **@{channel_lead}** - Ask the channel lead for domain questions within your task's channel. Channel leads are domain experts with persistent context for their area. Use this for: "how does X work?", "what's the right approach for this feature area?", "does this module have a validate function?"
 2. **@{project_name}** - Ask the Lead for project-wide coordination, priority decisions, and cross-channel blockers. **Only @{project_name} for genuine questions, decisions, or blockers** — not for routine status updates like "PR is ready" or "task complete" (the daemon handles those automatically).
 3. **@coworker** - Ask a specific coworker if they're actively working on something directly related to your task.
 
@@ -550,7 +550,7 @@ Collaboration is encouraged! Don't make assumptions - it's better to ask than to
 
 ```bash
 # Domain question → ask the channel lead first
-midtown channel post "@channel-lead how does the auth module handle token refresh?"
+midtown channel post "@{channel_lead} how does the auth module handle token refresh?"
 
 # Project coordination or cross-channel blocker → ask lead
 midtown channel post "@{project_name} should I handle the error case here, or let it bubble up?"

@@ -824,7 +824,7 @@ pub(crate) fn build_attach_shell_command(
             midtown::agents::reviewer_system_prompt(name, &repo_name, &repo_name, provider, None)
         }
         midtown::launch::CoworkerRole::Coworker => {
-            midtown::agents::coworker_system_prompt(name, &repo_name)
+            midtown::agents::coworker_system_prompt(name, &repo_name, None)
         }
         midtown::launch::CoworkerRole::ChannelLead {
             channel_name,

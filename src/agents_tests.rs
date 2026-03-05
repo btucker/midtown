@@ -10,15 +10,43 @@ fn test_main_lead_system_prompt_loads() {
 
 #[test]
 fn test_coworker_system_prompt_substitutes_name() {
-    let prompt = coworker_system_prompt("lexington", "midtown");
+    let prompt = coworker_system_prompt("lexington", "midtown", None);
     assert!(prompt.contains("**lexington**"));
     assert!(prompt.contains("git checkout -b lexington/"));
     assert!(!prompt.contains("{name}"));
 }
 
 #[test]
+fn test_coworker_system_prompt_channel_lead_defaults_to_project_name() {
+    let prompt = coworker_system_prompt("park", "midtown", None);
+    // With no channel_lead, {channel_lead} should resolve to project_name
+    assert!(
+        prompt.contains("@midtown"),
+        "When no channel_lead is provided, @{{channel_lead}} should resolve to project_name"
+    );
+    assert!(
+        !prompt.contains("{channel_lead}"),
+        "Coworker prompt should not contain unreplaced {{channel_lead}} placeholders"
+    );
+}
+
+#[test]
+fn test_coworker_system_prompt_channel_lead_substitutes_channel_name() {
+    let prompt = coworker_system_prompt("park", "midtown", Some("ops"));
+    // With channel_lead="ops", @{channel_lead} should resolve to @ops
+    assert!(
+        prompt.contains("@ops"),
+        "When channel_lead is provided, @{{channel_lead}} should resolve to that name"
+    );
+    assert!(
+        !prompt.contains("{channel_lead}"),
+        "Coworker prompt should not contain unreplaced {{channel_lead}} placeholders"
+    );
+}
+
+#[test]
 fn test_coworker_system_prompt_contains_required_sections() {
-    let prompt = coworker_system_prompt("park", "midtown");
+    let prompt = coworker_system_prompt("park", "midtown", None);
     assert!(prompt.contains("Channel Usage"));
     assert!(prompt.contains("Your Task"));
     assert!(prompt.contains("Git Workflow"));
@@ -62,7 +90,7 @@ fn test_common_prompt_included_in_lead() {
 
 #[test]
 fn test_common_prompt_included_in_coworker() {
-    let prompt = coworker_system_prompt("park", "midtown");
+    let prompt = coworker_system_prompt("park", "midtown", None);
     assert!(
         prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
         "Coworker prompt should include GitHub @mentions rule from common.md"
@@ -88,11 +116,15 @@ fn test_common_prompt_name_substitution_in_lead() {
         !prompt.contains("{name}"),
         "Lead prompt should not contain unreplaced {{name}} placeholders"
     );
+    assert!(
+        !prompt.contains("{channel_lead}"),
+        "Lead prompt should not contain unreplaced {{channel_lead}} placeholders"
+    );
 }
 
 #[test]
 fn test_common_prompt_name_substitution_in_coworker() {
-    let prompt = coworker_system_prompt("broadway", "midtown");
+    let prompt = coworker_system_prompt("broadway", "midtown", None);
     assert!(
         prompt.contains("<!-- midtown: broadway -->"),
         "Coworker prompt should have {{name}} replaced in common content"
@@ -261,6 +293,10 @@ fn test_reviewer_system_prompt_substitutes_escalation_target() {
         !prompt.contains("{escalation_target}"),
         "Reviewer system prompt should not contain unreplaced {{escalation_target}}"
     );
+    assert!(
+        !prompt.contains("{channel_lead}"),
+        "Reviewer system prompt should not contain unreplaced {{channel_lead}}"
+    );
 
     // project_name should still be substituted elsewhere (e.g., coworker prompt sections)
     assert!(
@@ -395,7 +431,7 @@ fn test_lead_notes_path_is_absolute() {
 
 #[test]
 fn test_coworker_prompt_prevents_orphaned_branches() {
-    let prompt = coworker_system_prompt("park", "midtown");
+    let prompt = coworker_system_prompt("park", "midtown", None);
 
     assert!(
         prompt.contains("Before pushing"),
@@ -434,7 +470,7 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
 
 #[test]
 fn test_coworker_prompt_requires_issue_comment_reviews() {
-    let prompt = coworker_system_prompt("park", "midtown");
+    let prompt = coworker_system_prompt("park", "midtown", None);
 
     assert!(
         prompt.contains("**Before merging**, complete ALL of these checks"),
@@ -579,7 +615,7 @@ fn test_all_task_prompts_include_reply_instruction() {
 
 #[test]
 fn test_coworker_prompt_uses_task_flag_for_threading() {
-    let prompt = coworker_system_prompt("park", "midtown");
+    let prompt = coworker_system_prompt("park", "midtown", None);
     assert!(
         prompt.contains("--task"),
         "Coworker prompt should document --task flag for auto-threading task-related posts"

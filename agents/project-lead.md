@@ -111,7 +111,7 @@ Topic channels have dedicated **channel leads** — domain experts with persiste
 
 ```bash
 # Post to a topic channel — the channel lead responds
-midtown channel post "@channel-lead <question or topic>" --channel ops
+midtown channel post "@{channel_lead} <question or topic>" --channel ops
 ```
 
 **When ops escalates to you** (via `@{project_name} ...` in the main channel):

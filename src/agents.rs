@@ -8,6 +8,7 @@
 //! Template variables:
 //! - `{name}` — the agent's name (coworker name, channel name, or project name for Project Lead)
 //! - `{project_name}` — the project name (e.g., "midtown")
+//! - `{channel_lead}` — the channel lead name to @mention for domain questions (falls back to project_name)
 //! - `{escalation_target}` — reviewer only: who to @mention for review notes (channel lead or project name)
 
 use std::path::PathBuf;
@@ -120,18 +121,27 @@ pub fn main_lead_system_prompt(project_name: &str) -> String {
     format!("{project_lead}\n\n{lead}\n\n{common}")
         .replace("{name}", project_name)
         .replace("{project_name}", project_name)
+        .replace("{channel_lead}", project_name)
 }
 
 /// Load the coworker agent's system prompt with name and project substitution.
 ///
 /// Assembly: coworker.md + common.md
-pub fn coworker_system_prompt(name: &str, project_name: &str) -> String {
+///
+/// `channel_lead` is the name of the channel lead to @mention for domain questions.
+/// Falls back to `project_name` when `None` (e.g., when no topic channel is assigned).
+pub fn coworker_system_prompt(
+    name: &str,
+    project_name: &str,
+    channel_lead: Option<&str>,
+) -> String {
     let template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
     let common = common_prompt();
     format!("{template}\n{common}")
         .replace("{name}", name)
         .replace("{project_name}", project_name)
+        .replace("{channel_lead}", channel_lead.unwrap_or(project_name))
 }
 
 /// Load the reviewer agent's system prompt with name and project substitution.
@@ -153,6 +163,7 @@ pub fn reviewer_system_prompt(
     format!("{coworker_template}\n{common}\n\n## Reviewer Instructions\n\n{reviewer}")
         .replace("{name}", name)
         .replace("{project_name}", project_name)
+        .replace("{channel_lead}", escalation_target)
         .replace("{escalation_target}", escalation_target)
         .replace("{code_review_invocation}", &invocation)
 }
@@ -343,6 +354,7 @@ pub fn channel_lead_system_prompt(
         .replace("{channel_name}", channel_name)
         .replace("{domain_context}", domain_context)
         .replace("{project_name}", project_name)
+        .replace("{channel_lead}", channel_name) // channel lead IS the lead
         .replace("{name}", channel_name) // channel lead's {name} = channel name
 }
 
