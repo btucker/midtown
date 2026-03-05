@@ -1712,18 +1712,22 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 state.send_push_notification(&title, &body, &tag);
             }
             Effect::CleanStaleBranches => {
+                // Fire-and-forget: branch cleanup runs git operations that can
+                // take minutes with thousands of branches. Don't block other effects.
                 let wt_manager = state.coworkers.worktree_manager().clone();
-                let cleaned =
-                    tokio::task::spawn_blocking(move || wt_manager.clean_stale_task_branches())
-                        .await
-                        .unwrap_or_default();
-                if !cleaned.is_empty() {
-                    info!(
-                        "Cleaned up {} stale task branch(es): {}",
-                        cleaned.len(),
-                        cleaned.join(", ")
-                    );
-                }
+                tokio::spawn(async move {
+                    let cleaned =
+                        tokio::task::spawn_blocking(move || wt_manager.clean_stale_task_branches())
+                            .await
+                            .unwrap_or_default();
+                    if !cleaned.is_empty() {
+                        info!(
+                            "Cleaned up {} stale task branch(es): {}",
+                            cleaned.len(),
+                            cleaned.join(", ")
+                        );
+                    }
+                });
             }
             Effect::CleanWorktreeTarget { name, working_dir } => {
                 let target_path = working_dir.join("target");
@@ -1786,10 +1790,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     removed
                 };
                 if let Some(assignment) = removed {
-                    // Remove the worktree directory using the primary worktree manager
+                    // Fire-and-forget: worktree directory removal runs git operations
+                    // that can block for a long time with many branches. Registry is
+                    // already updated above, so the state is consistent even if the
+                    // filesystem cleanup is still running.
                     let wt_mgr = state.coworkers.worktree_manager().clone();
                     let wt_id = assignment.worktree_id.clone();
-                    let task_id = assignment.task_id.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
                             warn!("Failed to remove task worktree {}: {}", wt_id, e);
@@ -1799,11 +1805,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 wt_id, pr_number
                             );
                         }
-                    })
-                    .await
-                    .ok();
+                    });
                     // Post to ops channel so the team sees what was cleaned up
-                    let task_ref = task_id
+                    let task_ref = assignment
+                        .task_id
                         .map(|id| format!(" (task !{})", id))
                         .unwrap_or_default();
                     let mut msg = Message::system(format!(
@@ -1837,10 +1842,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     removed
                 };
                 if let Some(assignment) = removed {
-                    // Remove the worktree directory
+                    // Fire-and-forget: directory removal runs slow git operations.
+                    // Registry is already updated above.
                     let wt_mgr = state.coworkers.worktree_manager().clone();
                     let wt_id = assignment.worktree_id.clone();
-                    let task_id = assignment.task_id.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
                             warn!("Failed to remove stale worktree {}: {}", wt_id, e);
@@ -1850,11 +1855,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 wt_id
                             );
                         }
-                    })
-                    .await
-                    .ok();
+                    });
                     // Post to ops channel so the team sees what was cleaned up
-                    let task_ref = task_id
+                    let task_ref = assignment
+                        .task_id
                         .map(|id| format!(" (task !{})", id))
                         .unwrap_or_default();
                     let mut msg = Message::system(format!(
