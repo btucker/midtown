@@ -876,18 +876,37 @@ async fn process_pr_issue_nudges(
 
             pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
 
+            let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
             let action = decide_pr_issue_action_with_handoff(
                 &owner,
                 active_coworkers,
                 idle_coworkers,
-                state.is_at_dev_limit(&channel_lead_names),
+                at_dev_limit,
                 pr_ctx.session_context.as_ref(),
                 &message,
             );
 
-            effects.extend(pr_action_to_effects(
-                action, pf.number, pf.title, issue_type, state, &pr_ctx,
-            ));
+            let action_name = pr_action_name(&action);
+
+            let new_effects =
+                pr_action_to_effects(action, pf.number, pf.title, issue_type, state, &pr_ctx);
+
+            log_pr_decision(&PrDecisionEntry {
+                repo_name: state.paths.dir_key(),
+                pr_number: pf.number,
+                title: pf.title,
+                owner: &owner,
+                issue_type,
+                action_name,
+                effects: &new_effects,
+                ctx: &pr_ctx,
+                owner_is_active: active_coworkers.contains(&owner),
+                owner_is_idle: idle_coworkers.contains(&owner),
+                at_dev_limit,
+                source: "polling",
+            });
+
+            effects.extend(new_effects);
         }
     }
 
@@ -1259,23 +1278,43 @@ async fn collect_green_with_feedback_effects(
         pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
         // Decide action using handoff-aware decision function (matches webhook path)
+        let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
         let action = crate::rules::decide_pr_issue_action_with_handoff(
             &owner,
             active_coworkers,
             idle_coworkers,
-            state.is_at_dev_limit(&channel_lead_names),
+            at_dev_limit,
             pr_ctx.session_context.as_ref(),
             &message,
         );
 
-        effects.extend(pr_action_to_effects(
+        let action_name = pr_action_name(&action);
+
+        let new_effects = pr_action_to_effects(
             action,
             pr_number,
             pf.title,
             PrIssueType::GreenWithFeedback,
             state,
             &pr_ctx,
-        ));
+        );
+
+        log_pr_decision(&PrDecisionEntry {
+            repo_name: state.paths.dir_key(),
+            pr_number,
+            title: pf.title,
+            owner: &owner,
+            issue_type: PrIssueType::GreenWithFeedback,
+            action_name,
+            effects: &new_effects,
+            ctx: &pr_ctx,
+            owner_is_active: active_coworkers.contains(&owner),
+            owner_is_idle: idle_coworkers.contains(&owner),
+            at_dev_limit,
+            source: "polling",
+        });
+
+        effects.extend(new_effects);
     }
 
     effects
@@ -3956,20 +3995,38 @@ pub(super) async fn handle_pr_comment_nudge(
     };
 
     // Decide action using pure decision function with handoff support
+    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let action = crate::rules::decide_pr_comment_action_with_handoff(
         &owner,
         &activity.actor,
         &active_coworkers,
         &idle_coworkers,
-        state.is_at_dev_limit(&channel_lead_names),
+        at_dev_limit,
         pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
+
+    let action_name = pr_action_name(&action);
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
     let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
     let mut effects = comment_action_to_effects(action, pr_number, "", state, &pr_ctx);
+
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: state.paths.dir_key(),
+        pr_number,
+        title: "",
+        owner: &owner,
+        issue_type: PrIssueType::ReviewComment,
+        action_name,
+        effects: &effects,
+        ctx: &pr_ctx,
+        owner_is_active: active_coworkers.contains(&owner),
+        owner_is_idle: idle_coworkers.contains(&owner),
+        at_dev_limit,
+        source: "webhook",
+    });
 
     // If this is a lead/* branch, also nudge the lead so they see review feedback
     if let Some(branch) = get_pr_branch_async(pr_number).await
@@ -4101,18 +4158,37 @@ pub(super) async fn handle_webhook_review_state_change(
         (ctx, ps.channel_lead_names())
     };
 
+    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
         &idle_coworkers,
-        state.is_at_dev_limit(&channel_lead_names),
+        at_dev_limit,
         pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
+    let action_name = pr_action_name(&action);
+
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
     let effects = pr_action_to_effects(action, pr_number, "", issue_type, state, &pr_ctx);
+
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: state.paths.dir_key(),
+        pr_number,
+        title: "",
+        owner: &owner,
+        issue_type,
+        action_name,
+        effects: &effects,
+        ctx: &pr_ctx,
+        owner_is_active: active_coworkers.contains(&owner),
+        owner_is_idle: idle_coworkers.contains(&owner),
+        at_dev_limit,
+        source: "webhook",
+    });
+
     super::effects::execute_effects(effects, state).await;
 }
 
@@ -4186,24 +4262,38 @@ pub(super) async fn handle_webhook_ci_failure(
         )
     };
 
+    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let action = crate::rules::decide_pr_issue_action_with_handoff(
         &owner,
         &active_coworkers,
         &idle_coworkers,
-        state.is_at_dev_limit(&channel_lead_names),
+        at_dev_limit,
         pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
-    info!(
-        "PR #{} CI failure: owner={}, action={:?}",
-        pr_number, owner, action
-    );
+    let action_name = pr_action_name(&action);
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
     let effects =
         pr_action_to_effects(action, pr_number, "", PrIssueType::CiFailed, state, &pr_ctx);
+
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: state.paths.dir_key(),
+        pr_number,
+        title: "",
+        owner: &owner,
+        issue_type: PrIssueType::CiFailed,
+        action_name,
+        effects: &effects,
+        ctx: &pr_ctx,
+        owner_is_active: active_coworkers.contains(&owner),
+        owner_is_idle: idle_coworkers.contains(&owner),
+        at_dev_limit,
+        source: "webhook",
+    });
+
     super::effects::execute_effects(effects, state).await;
 }
 
@@ -4638,6 +4728,159 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     }
 
     effects
+}
+
+// ---------------------------------------------------------------------------
+// PR decision logging
+// ---------------------------------------------------------------------------
+
+/// Extract the variant name of an Effect as a static string.
+///
+/// Used by `log_pr_decision` to build a human-readable summary of emitted
+/// effects without requiring `Serialize` on the Effect enum.
+fn effect_variant_name(e: &Effect) -> &'static str {
+    match e {
+        Effect::SpawnCoworker(_) => "SpawnCoworker",
+        Effect::ShutdownCoworker { .. } => "ShutdownCoworker",
+        Effect::ShutdownCoworkerWithCallbacks { .. } => "ShutdownCoworkerWithCallbacks",
+        Effect::ResumeCoworker { .. } => "ResumeCoworker",
+        Effect::DeliverMailboxMessage { .. } => "DeliverMailboxMessage",
+        Effect::PostToChannel { .. } => "PostToChannel",
+        Effect::PostSystemMessage { .. } => "PostSystemMessage",
+        Effect::BroadcastCoworkerUpdate { .. } => "BroadcastCoworkerUpdate",
+        Effect::BroadcastUniversalItems { .. } => "BroadcastUniversalItems",
+        Effect::RecordCooldown { .. } => "RecordCooldown",
+        Effect::SetUsageLimitNudge { .. } => "SetUsageLimitNudge",
+        Effect::ClearUsageLimitNudge => "ClearUsageLimitNudge",
+        Effect::ResetTaskToPending { .. } => "ResetTaskToPending",
+        Effect::ClearSessionForTask { .. } => "ClearSessionForTask",
+        Effect::ClearSavedSessionId { .. } => "ClearSavedSessionId",
+        Effect::ClearSessionWorkingDir { .. } => "ClearSessionWorkingDir",
+        Effect::SpawnCoworkerWithCallbacks { .. } => "SpawnCoworkerWithCallbacks",
+        Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
+        Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
+        Effect::RecordPrNudge { .. } => "RecordPrNudge",
+        Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
+        Effect::ClearPrBreakSession { .. } => "ClearPrBreakSession",
+        Effect::AssignReviewer { .. } => "AssignReviewer",
+        Effect::RemoveReviewerAssignment { .. } => "RemoveReviewerAssignment",
+        Effect::RecordReviewerEscalation { .. } => "RecordReviewerEscalation",
+        Effect::RecordOrphanedPrLeadNudge { .. } => "RecordOrphanedPrLeadNudge",
+        Effect::ClearOrphanedPrLeadNudge { .. } => "ClearOrphanedPrLeadNudge",
+        Effect::ClearOrphanedReviewerAssignments { .. } => "ClearOrphanedReviewerAssignments",
+        Effect::RerunWorkflow { .. } => "RerunWorkflow",
+        Effect::UpdatePrComment { .. } => "UpdatePrComment",
+        Effect::StorePrAuthorSession { .. } => "StorePrAuthorSession",
+        Effect::CompleteTask { .. } => "CompleteTask",
+        Effect::ClearBlockedBy { .. } => "ClearBlockedBy",
+        Effect::SetTaskPr { .. } => "SetTaskPr",
+        Effect::SendPushNotification { .. } => "SendPushNotification",
+        Effect::CleanStaleBranches => "CleanStaleBranches",
+        Effect::CleanWorktreeTarget { .. } => "CleanWorktreeTarget",
+        Effect::CleanupMergedWorktree { .. } => "CleanupMergedWorktree",
+        Effect::CleanupStaleWorktree { .. } => "CleanupStaleWorktree",
+        Effect::GarbageCollectState { .. } => "GarbageCollectState",
+        Effect::EnsureWorktree { .. } => "EnsureWorktree",
+        Effect::BindCoworkerToWorktree { .. } => "BindCoworkerToWorktree",
+        Effect::RegisterWorktreeAssignment { .. } => "RegisterWorktreeAssignment",
+        Effect::UpdateRateLimit(_) => "UpdateRateLimit",
+        Effect::CreateChannel { .. } => "CreateChannel",
+        Effect::ArchiveChannel { .. } => "ArchiveChannel",
+        Effect::MergeChannels { .. } => "MergeChannels",
+        Effect::AssignTaskChannel { .. } => "AssignTaskChannel",
+        Effect::UnassignTask { .. } => "UnassignTask",
+        Effect::ResetAbandonedTask { .. } => "ResetAbandonedTask",
+        Effect::CreateTask { .. } => "CreateTask",
+        Effect::SaveChannelLeadSession { .. } => "SaveChannelLeadSession",
+        Effect::MarkProfileLimited { .. } => "MarkProfileLimited",
+        Effect::ClearProfileLimit { .. } => "ClearProfileLimit",
+        Effect::AutoDetachCoworker { .. } => "AutoDetachCoworker",
+        Effect::NudgeChannelLead { .. } => "NudgeChannelLead",
+        Effect::NudgeSession { .. } => "NudgeSession",
+        Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
+        Effect::SpawnSession { .. } => "SpawnSession",
+        Effect::ShutdownSession { .. } => "ShutdownSession",
+        Effect::RecordSession { .. } => "RecordSession",
+        Effect::ReleaseName { .. } => "ReleaseName",
+        Effect::MergePr { .. } => "MergePr",
+        Effect::AutoMergePr { .. } => "AutoMergePr",
+        Effect::PostPrComment { .. } => "PostPrComment",
+        Effect::EmitWorkflowEvent(_) => "EmitWorkflowEvent",
+        Effect::RespawnFork { .. } => "RespawnFork",
+    }
+}
+
+/// Captures the full context of a single PR decision for JSONL logging.
+struct PrDecisionEntry<'a> {
+    repo_name: &'a str,
+    pr_number: u64,
+    title: &'a str,
+    owner: &'a str,
+    issue_type: PrIssueType,
+    action_name: &'a str,
+    effects: &'a [Effect],
+    ctx: &'a PrContext,
+    owner_is_active: bool,
+    owner_is_idle: bool,
+    at_dev_limit: bool,
+    /// "polling" or "webhook" — distinguishes the trigger source.
+    source: &'a str,
+}
+
+/// Log a single PR decision as a JSONL line to `~/.midtown/projects/<repo>/pr-decisions.jsonl`.
+///
+/// Each entry captures the full decision context: which PR, what issue was detected,
+/// what action the rules engine chose, and which effects were emitted. This creates
+/// a corpus for verifying functional equivalence when migrating to workflow scripts.
+///
+/// Logging failures are silently swallowed (debug-logged) — this must never crash the daemon.
+fn log_pr_decision(entry: &PrDecisionEntry<'_>) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let channel = entry.ctx.get_channel(entry.pr_number);
+    let task_id = entry.ctx.pr_task_associations.get(&entry.pr_number);
+
+    let json = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "pr": entry.pr_number,
+        "title": entry.title,
+        "owner": entry.owner,
+        "issue": entry.issue_type.to_string(),
+        "owner_active": entry.owner_is_active,
+        "owner_idle": entry.owner_is_idle,
+        "at_dev_limit": entry.at_dev_limit,
+        "has_active_reviewer": entry.ctx.has_active_reviewer,
+        "has_session_context": entry.ctx.session_context.is_some(),
+        "task_id": task_id,
+        "channel": channel,
+        "action": entry.action_name,
+        "source": entry.source,
+        "effect_count": entry.effects.len(),
+        "effects": entry.effects.iter().map(effect_variant_name).collect::<Vec<_>>(),
+    });
+
+    let dir = crate::paths::projects_dir_for_repo(entry.repo_name);
+    let path = dir.join("pr-decisions.jsonl");
+    if let Err(e) = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        let mut file = OpenOptions::new().append(true).create(true).open(&path)?;
+        writeln!(file, "{}", json)?;
+        Ok(())
+    })() {
+        debug!("Failed to write PR decision log: {}", e);
+    }
+}
+
+/// Extract a display name from a `PrAction` variant for logging.
+fn pr_action_name(action: &crate::rules::PrAction) -> &'static str {
+    match action {
+        crate::rules::PrAction::NudgeOwner { .. } => "NudgeOwner",
+        crate::rules::PrAction::SpawnOwner { .. } => "SpawnOwner",
+        crate::rules::PrAction::HandoffToCoworker { .. } => "HandoffToCoworker",
+        crate::rules::PrAction::PostToChannel { .. } => "PostToChannel",
+        crate::rules::PrAction::Skip { .. } => "Skip",
+    }
 }
 
 #[path = "pr_tests.rs"]

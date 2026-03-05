@@ -4959,3 +4959,120 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
         "Without workflow script, polling should use normal 45s delay and not skip PR at 60s old"
     );
 }
+
+// ── log_pr_decision ─────────────────────────────────────────────────────────
+
+#[test]
+fn log_pr_decision_writes_valid_jsonl() {
+    use crate::daemon::trackers::PrIssueType;
+    use std::collections::HashMap;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let ctx = PrContext {
+        pr_task_associations: HashMap::from([(42, "7".to_string())]),
+        task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
+        session_context: None,
+        task_session_id: None,
+        has_active_reviewer: false,
+    };
+
+    let effects = vec![
+        Effect::RecordPrNudge {
+            pr_number: 42,
+            issue_type: PrIssueType::Approved,
+        },
+        Effect::NudgeChannelLead {
+            channel_name: "installer".to_string(),
+            reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                message: "PR #42 approved".to_string(),
+            },
+        },
+    ];
+
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: "midtown",
+        pr_number: 42,
+        title: "Add feature X",
+        owner: "broadway",
+        issue_type: PrIssueType::Approved,
+        action_name: "NudgeOwner",
+        effects: &effects,
+        ctx: &ctx,
+        owner_is_active: true,
+        owner_is_idle: false,
+        at_dev_limit: false,
+        source: "polling",
+    });
+
+    let path = crate::paths::projects_dir_for_repo("midtown").join("pr-decisions.jsonl");
+    let content = std::fs::read_to_string(&path).expect("read decision log");
+    let entry: serde_json::Value = serde_json::from_str(content.trim()).expect("parse JSONL");
+
+    assert_eq!(entry["pr"], 42);
+    assert_eq!(entry["title"], "Add feature X");
+    assert_eq!(entry["owner"], "broadway");
+    assert_eq!(entry["issue"], "approved");
+    assert_eq!(entry["owner_active"], true);
+    assert_eq!(entry["owner_idle"], false);
+    assert_eq!(entry["at_dev_limit"], false);
+    assert_eq!(entry["has_active_reviewer"], false);
+    assert_eq!(entry["has_session_context"], false);
+    assert_eq!(entry["task_id"], "7");
+    assert_eq!(entry["channel"], "installer");
+    assert_eq!(entry["action"], "NudgeOwner");
+    assert_eq!(entry["source"], "polling");
+    assert_eq!(entry["effect_count"], 2);
+    assert_eq!(
+        entry["effects"],
+        serde_json::json!(["RecordPrNudge", "NudgeChannelLead"])
+    );
+    // Verify timestamp is present and non-null
+    assert!(entry["ts"].is_string(), "ts should be a string");
+}
+
+#[test]
+fn log_pr_decision_appends_multiple_entries() {
+    use crate::daemon::trackers::PrIssueType;
+    use std::collections::HashMap;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let ctx = PrContext {
+        pr_task_associations: HashMap::new(),
+        task_channel: HashMap::new(),
+        session_context: None,
+        task_session_id: None,
+        has_active_reviewer: false,
+    };
+
+    // Write two entries
+    for pr in [10, 20] {
+        log_pr_decision(&PrDecisionEntry {
+            repo_name: "midtown",
+            pr_number: pr,
+            title: "Test PR",
+            owner: "park",
+            issue_type: PrIssueType::CiFailed,
+            action_name: "Skip",
+            effects: &[],
+            ctx: &ctx,
+            owner_is_active: false,
+            owner_is_idle: false,
+            at_dev_limit: false,
+            source: "webhook",
+        });
+    }
+
+    let path = crate::paths::projects_dir_for_repo("midtown").join("pr-decisions.jsonl");
+    let content = std::fs::read_to_string(&path).expect("read decision log");
+    let lines: Vec<&str> = content.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "should have two JSONL lines");
+
+    let first: serde_json::Value = serde_json::from_str(lines[0]).expect("parse line 1");
+    let second: serde_json::Value = serde_json::from_str(lines[1]).expect("parse line 2");
+    assert_eq!(first["pr"], 10);
+    assert_eq!(second["pr"], 20);
+}
