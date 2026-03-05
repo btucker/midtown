@@ -2022,7 +2022,7 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
 }
 
 #[test]
-fn test_resolve_pr_owner_from_inputs_uses_task_pr_field() {
+fn test_resolve_pr_owner_chain_uses_task_pr_field() {
     let pr_task_associations: HashMap<u64, String> = HashMap::new();
     let session_task_map: HashMap<String, String> = HashMap::new();
     let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
@@ -2039,26 +2039,27 @@ fn test_resolve_pr_owner_from_inputs_uses_task_pr_field() {
         created_at: None,
     }];
 
-    let result = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
-        pr_number: 2047,
-        title: "fix coworker bug",
-        head_ref: "some/branch",
-        pr_task_associations: &pr_task_associations,
-        session_task_map: &session_task_map,
-        sessions: &sessions,
-        all_tasks: &all_tasks,
-        worktree_branch_owners: &branch_owners,
-    });
+    let result =
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(
+                    2047,
+                    "fix coworker bug",
+                    "some/branch",
+                    &all_tasks,
+                )
+            })
+            .or_else(|| coworker_from_branch("some/branch", &branch_owners));
 
     assert_eq!(
         result,
         Some("york".to_string()),
-        "resolve_pr_owner_from_inputs should fall back to task.pr owner when session data is missing"
+        "Resolution chain should fall back to task.pr owner when session data is missing"
     );
 }
 
 #[test]
-fn test_resolve_pr_owner_from_inputs_prefers_session_over_task_pr_field() {
+fn test_resolve_pr_owner_chain_prefers_session_over_task_pr_field() {
     let pr_task_associations: HashMap<u64, String> =
         [(2047, "555".to_string())].into_iter().collect();
     let session_task_map: HashMap<String, String> = [("555".to_string(), "sess-xyz".to_string())]
@@ -2095,16 +2096,17 @@ fn test_resolve_pr_owner_from_inputs_prefers_session_over_task_pr_field() {
         created_at: None,
     }];
 
-    let result = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
-        pr_number: 2047,
-        title: "Midtown !2047 something",
-        head_ref: "task-2047-fix",
-        pr_task_associations: &pr_task_associations,
-        session_task_map: &session_task_map,
-        sessions: &sessions,
-        all_tasks: &all_tasks,
-        worktree_branch_owners: &branch_owners,
-    });
+    let result =
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(
+                    2047,
+                    "Midtown !2047 something",
+                    "task-2047-fix",
+                    &all_tasks,
+                )
+            })
+            .or_else(|| coworker_from_branch("task-2047-fix", &branch_owners));
 
     assert_eq!(
         result,
@@ -2329,49 +2331,35 @@ fn test_pr_context_routing_only_no_task_session_id() {
     );
 }
 
-/// resolve_pr_owner_via_session should resolve through the full chain:
-/// PR# → pr_author_sessions → task_id → sessions → name
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_full_chain() {
-    use crate::github_state::PrAuthorSession;
+/// resolve_pr_owner_from_session should resolve through the full chain:
+/// PR# → pr_task_associations → task_id → session_task_map → session_id → session.name
+#[test]
+fn test_resolve_pr_owner_from_session_full_chain() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "100".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("100".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("100".to_string()),
+            current_name: Some("madison".to_string()),
+            preferred_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            is_running: true,
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
 
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    // Populate persistent state
-    {
-        let mut ps = state.persistent_state.lock().await;
-
-        // PR #42 → task "100"
-        ps.github.pr_author_sessions.insert(
-            42,
-            PrAuthorSession {
-                session_id: "old-session".to_string(),
-                branch: "lexington/fix-auth".to_string(),
-                original_author: "lexington".to_string(),
-                stored_at: chrono::Utc::now(),
-                task_id: Some("100".to_string()),
-            },
-        );
-
-        // Session "sess-abc" → task "100" → name "madison"
-        ps.sessions.insert(
-            "sess-abc".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-abc".to_string(),
-                task_id: Some("100".to_string()),
-                current_name: Some("madison".to_string()),
-                preferred_name: Some("madison".to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: Some("lexington/fix-auth".to_string()),
-                pr_number: Some(42),
-                is_running: true,
-                resume_on_startup: false,
-                ..Default::default()
-            },
-        );
-    }
-
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result,
         Some("madison".to_string()),
@@ -2379,56 +2367,47 @@ async fn test_resolve_pr_owner_via_session_full_chain() {
     );
 }
 
-/// resolve_pr_owner_via_session should return None when no pr_author_session exists.
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_returns_none_no_pr_session() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
+/// resolve_pr_owner_from_session should return None when no pr_task_association exists.
+#[test]
+fn test_resolve_pr_owner_from_session_returns_none_no_pr_association() {
+    let pr_task_associations: HashMap<u64, String> = HashMap::new();
+    let session_task_map: HashMap<String, String> = HashMap::new();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
 
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result, None,
-        "Should return None when no pr_author_session exists"
+        "Should return None when no pr_task_association exists"
     );
 }
 
-/// resolve_pr_owner_via_session falls back to preferred_name when current_name is None.
-#[tokio::test]
-async fn test_resolve_pr_owner_via_session_preferred_name_fallback() {
-    use crate::github_state::PrAuthorSession;
+/// resolve_pr_owner_from_session falls back to preferred_name when current_name is None.
+#[test]
+fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "100".to_string())].into_iter().collect();
+    let session_task_map: HashMap<String, String> = [("100".to_string(), "sess-abc".to_string())]
+        .into_iter()
+        .collect();
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "sess-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-abc".to_string(),
+            task_id: Some("100".to_string()),
+            preferred_name: Some("park".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            branch: Some("lexington/fix-auth".to_string()),
+            pr_number: Some(42),
+            resume_on_startup: false,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
 
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    {
-        let mut ps = state.persistent_state.lock().await;
-
-        ps.github.pr_author_sessions.insert(
-            42,
-            PrAuthorSession {
-                session_id: "old-session".to_string(),
-                branch: "lexington/fix-auth".to_string(),
-                original_author: "lexington".to_string(),
-                stored_at: chrono::Utc::now(),
-                task_id: Some("100".to_string()),
-            },
-        );
-
-        // Session with no current_name but has preferred_name (suspended)
-        ps.sessions.insert(
-            "sess-abc".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-abc".to_string(),
-                task_id: Some("100".to_string()),
-                preferred_name: Some("park".to_string()),
-                working_dir: "/tmp/test".to_string(),
-                branch: Some("lexington/fix-auth".to_string()),
-                pr_number: Some(42),
-                resume_on_startup: false,
-                ..Default::default()
-            },
-        );
-    }
-
-    let result = resolve_pr_owner_via_session(&state, 42).await;
+    let result =
+        resolve_pr_owner_from_session(42, &pr_task_associations, &session_task_map, &sessions);
     assert_eq!(
         result,
         Some("park".to_string()),

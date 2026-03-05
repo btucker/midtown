@@ -62,38 +62,6 @@ fn resolve_pr_owner_from_session(
         .or_else(|| session.preferred_name.clone())
 }
 
-/// Try to resolve PR owner via session-centric path using persistent state.
-///
-/// Builds a temporary task_id → session_id map from ps.sessions, then chains:
-/// PR# → pr_task_associations → task_id → session_id → session.name
-///
-/// Returns `Some(name)` if the full chain resolves, `None` otherwise.
-/// Callers should fall back to branch-based lookup when this returns `None`.
-#[cfg(test)]
-async fn resolve_pr_owner_via_session(state: &DaemonState, pr_number: u64) -> Option<String> {
-    let ps = state.persistent_state.lock().await;
-    let pr_task_associations = ps.github.pr_to_task_map();
-
-    // Build task_id → session_id reverse index from sessions map
-    let session_task_map: HashMap<String, String> = ps
-        .sessions
-        .iter()
-        .filter_map(|(session_id, record)| {
-            record
-                .task_id
-                .as_ref()
-                .map(|task_id| (task_id.clone(), session_id.clone()))
-        })
-        .collect();
-
-    resolve_pr_owner_from_session(
-        pr_number,
-        &pr_task_associations,
-        &session_task_map,
-        &ps.sessions,
-    )
-}
-
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -466,46 +434,16 @@ pub(super) fn detect_abandoned_pr_tasks(
 /// worktree registry's branch_owners map.
 /// Returns `None` if neither path yields an owner.
 fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
-    let inputs = PrOwnerResolveInputs {
-        pr_number: pf.number,
-        title: pf.title,
-        head_ref: pf.head_ref,
-        pr_task_associations: &snap.pr.pr_task_associations,
-        session_task_map: &snap.session_task_map,
-        sessions: &snap.sessions,
-        all_tasks: &snap.all_tasks,
-        worktree_branch_owners: &snap.worktree_branch_owners,
-    };
-    resolve_pr_owner_from_inputs(&inputs)
-}
-
-struct PrOwnerResolveInputs<'a> {
-    pr_number: u64,
-    title: &'a str,
-    head_ref: &'a str,
-    pr_task_associations: &'a HashMap<u64, String>,
-    session_task_map: &'a HashMap<String, String>,
-    sessions: &'a HashMap<String, super::state::SessionRecord>,
-    all_tasks: &'a [crate::tasks::Task],
-    worktree_branch_owners: &'a HashMap<String, String>,
-}
-
-fn resolve_pr_owner_from_inputs(input: &PrOwnerResolveInputs<'_>) -> Option<String> {
     resolve_pr_owner_from_session(
-        input.pr_number,
-        input.pr_task_associations,
-        input.session_task_map,
-        input.sessions,
+        pf.number,
+        &snap.pr.pr_task_associations,
+        &snap.session_task_map,
+        &snap.sessions,
     )
     .or_else(|| {
-        resolve_pr_owner_from_task_metadata(
-            input.pr_number,
-            input.title,
-            input.head_ref,
-            input.all_tasks,
-        )
+        resolve_pr_owner_from_task_metadata(pf.number, pf.title, pf.head_ref, &snap.all_tasks)
     })
-    .or_else(|| coworker_from_branch(input.head_ref, input.worktree_branch_owners))
+    .or_else(|| coworker_from_branch(pf.head_ref, &snap.worktree_branch_owners))
 }
 
 fn extract_task_id_from_head_ref(head_ref: &str) -> Option<u64> {
@@ -549,7 +487,11 @@ fn resolve_pr_owner_from_task_metadata(
         .and_then(|task| task.owner.clone())
 }
 
-async fn resolve_pr_owner_for_webhook(
+/// Resolve PR owner from persistent state (used by webhook handlers).
+///
+/// Locks persistent_state once, tries session → task metadata → branch →
+/// PR worktree registry → fallback.
+async fn resolve_pr_owner_from_state(
     state: &DaemonState,
     pr_number: u64,
     title: &str,
@@ -557,6 +499,7 @@ async fn resolve_pr_owner_for_webhook(
     owner_fallback: Option<&str>,
 ) -> Option<String> {
     let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let head = head_ref.unwrap_or("");
 
     let owner = {
         let ps = state.persistent_state.lock().await;
@@ -585,25 +528,22 @@ async fn resolve_pr_owner_for_webhook(
             })
             .collect();
 
-        let owner = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
+        resolve_pr_owner_from_session(
             pr_number,
-            title,
-            head_ref: head_ref.unwrap_or(""),
-            pr_task_associations: &pr_task_associations,
-            session_task_map: &session_task_map,
-            sessions: &ps.sessions,
-            all_tasks: &all_tasks,
-            worktree_branch_owners: &branch_owners,
-        });
-
-        owner.or_else(|| {
+            &pr_task_associations,
+            &session_task_map,
+            &ps.sessions,
+        )
+        .or_else(|| resolve_pr_owner_from_task_metadata(pr_number, title, head, &all_tasks))
+        .or_else(|| coworker_from_branch(head, &branch_owners))
+        .or_else(|| {
             ps.worktree_registry
                 .get_by_pr(pr_number)
                 .and_then(|assignment| assignment.current_coworker.clone())
         })
     };
 
-    owner.or_else(|| owner_fallback.map(|owner| owner.to_string()))
+    owner.or_else(|| owner_fallback.map(|o| o.to_string()))
 }
 
 // ============================================================================
@@ -2725,24 +2665,39 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         .cloned()
         .collect();
 
-    let (pr_ctx, all_tasks, pr_task_associations, session_task_map, sessions, is_at_dev_limit) = {
+    let (
+        pr_ctx,
+        all_tasks,
+        pr_task_associations,
+        session_task_map,
+        sessions,
+        is_at_dev_limit,
+        pr_author_names,
+    ) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
         let pr_task_associations = ps.github.pr_to_task_map();
-        let session_task_map = ps
+        let session_task_map: HashMap<String, String> = ps
             .sessions
             .iter()
             .filter_map(|(session_id, record)| {
                 record
                     .task_id
                     .as_ref()
-                    .map(|task_id| (session_id.clone(), task_id.clone()))
+                    .map(|task_id| (task_id.clone(), session_id.clone()))
             })
             .collect();
         let sessions = ps.sessions.clone();
         let pr_ctx = PrContext::routing_only(&ps);
         let channel_lead_names = ps.channel_lead_names();
         let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+        // PR author fallback: maps PR# → original author name from stored author sessions.
+        let pr_author_names: HashMap<u64, String> = ps
+            .github
+            .pr_author_sessions
+            .iter()
+            .map(|(pr, s)| (*pr, s.original_author.clone()))
+            .collect();
 
         (
             pr_ctx,
@@ -2751,6 +2706,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             session_task_map,
             sessions,
             is_at_dev_limit,
+            pr_author_names,
         )
     };
 
@@ -2856,15 +2812,21 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 continue;
             }
 
-            let owner = resolve_pr_owner_from_inputs(&PrOwnerResolveInputs {
+            let owner = resolve_pr_owner_from_session(
                 pr_number,
-                title: pf.title,
-                head_ref: pf.head_ref,
-                pr_task_associations: &pr_task_associations,
-                session_task_map: &session_task_map,
-                sessions: &sessions,
-                all_tasks: &all_tasks,
-                worktree_branch_owners: branch_owners,
+                &pr_task_associations,
+                &session_task_map,
+                &sessions,
+            )
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, &all_tasks)
+            })
+            .or_else(|| coworker_from_branch(pf.head_ref, branch_owners))
+            .or_else(|| {
+                // Fallback: check pr_author_sessions for the original PR creator.
+                // This covers cases where the session record is gone but we stored
+                // who created the PR.
+                pr_author_names.get(&pr_number).cloned()
             });
 
             if let Some(owner) = owner {
@@ -3723,7 +3685,7 @@ pub(super) async fn handle_pr_comment_nudge(
     }
 
     // Resolve owner via session/task/worktree data, with webhook owner as fallback.
-    let owner = resolve_pr_owner_for_webhook(
+    let owner = resolve_pr_owner_from_state(
         state,
         pr_number,
         "",
@@ -3989,7 +3951,7 @@ pub(super) async fn handle_webhook_review_state_change(
 
     // Resolve owner via session/task/worktree data, with webhook owner as fallback.
     let owner =
-        resolve_pr_owner_for_webhook(state, pr_number, "", None, change.owner_coworker.as_deref())
+        resolve_pr_owner_from_state(state, pr_number, "", None, change.owner_coworker.as_deref())
             .await;
 
     let Some(owner) = owner else {
@@ -4105,7 +4067,7 @@ pub(super) async fn handle_webhook_ci_failure(
     }
 
     // Resolve owner via session/task/worktree data, with webhook owner as fallback.
-    let owner = resolve_pr_owner_for_webhook(
+    let owner = resolve_pr_owner_from_state(
         state,
         pr_number,
         "",

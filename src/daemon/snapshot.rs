@@ -518,6 +518,20 @@ pub struct WorldSnapshot {
     /// stop), this is derived from persistent state and survives daemon restarts.
     #[serde(default)]
     pub limited_pool_profiles: HashSet<String>,
+
+    // ── Dispatch pre-filters ──────────────────────────────────────────────
+    /// Tasks that should not be spawned/recovered due to PR status or completion.
+    ///
+    /// Pre-computed from `all_tasks` during snapshot collection. Checks:
+    /// - Task is already completed
+    /// - Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
+    /// - Task has an explicit `task.pr` pointing to a merged PR
+    /// - Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+    ///
+    /// Dispatch checks `pr_protected_tasks.contains(&task_id)` instead of calling
+    /// `should_recover_task` at each site.
+    #[serde(default)]
+    pub pr_protected_tasks: HashSet<String>,
 }
 
 /// Read the last N lines from the daemon log file.
@@ -587,6 +601,27 @@ impl WorldSnapshot {
     ) -> Option<&crate::daemon::state::SessionRecord> {
         let session_id = self.session_task_map.get(task_id)?;
         self.sessions.get(session_id)
+    }
+
+    /// Check whether a worktree is bound to a different ACTIVE coworker.
+    ///
+    /// Returns `Some(bound_coworker_name)` if the worktree's registered coworker
+    /// is active and differs from `intended_coworker`. Returns `None` if safe to
+    /// proceed (no collision).
+    pub fn worktree_collision(&self, worktree_id: &str, intended_coworker: &str) -> Option<String> {
+        let assignment = self.worktree_registry.get(worktree_id)?;
+        let bound_coworker = assignment.current_coworker.as_deref()?;
+
+        if bound_coworker.eq_ignore_ascii_case(intended_coworker) {
+            return None;
+        }
+
+        let bound_lower = bound_coworker.to_lowercase();
+        if self.coworkers.active_names.contains(&bound_lower) {
+            return Some(bound_coworker.to_string());
+        }
+
+        None
     }
 
     /// Build a [`crate::rules::StuckExemptions`] view from this snapshot.
@@ -1236,6 +1271,23 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // ── Dispatch pre-filters ──────────────────────────────────────────────
+    // Pre-compute which tasks should be skipped during dispatch/recovery due
+    // to PR status or task completion. This moves the per-task filtering out
+    // of dispatch decision functions so they can use a simple HashSet::contains.
+    let pr_protected_tasks: HashSet<String> = all_tasks
+        .iter()
+        .filter(|task| {
+            super::dispatch::is_task_pr_protected(
+                task,
+                &merged_pr_numbers,
+                &tasks_with_open_prs,
+                &github_open_pr_task_ids,
+            )
+        })
+        .map(|task| task.id.clone())
+        .collect();
+
     let snapshot = WorldSnapshot {
         coworkers: SnapshotCoworkerState {
             active_coworkers,
@@ -1325,6 +1377,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         stale_working_dir_sessions,
         session_profile_map,
         limited_pool_profiles,
+        pr_protected_tasks,
     };
 
     // Log full snapshot at trace level for debugging and test case generation
@@ -1392,6 +1445,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
         limited_pool_profiles: HashSet::new(),
+        pr_protected_tasks: HashSet::new(),
     }
 }
 

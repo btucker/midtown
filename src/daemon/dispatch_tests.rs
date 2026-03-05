@@ -160,15 +160,13 @@ fn test_duplicate_worker_sorting_with_unknown_times() {
 }
 
 #[test]
-fn test_should_recover_task_with_explicit_pr_association() {
+fn test_is_task_pr_protected_with_explicit_pr_association() {
     // Bug context: Task 1142 had "PR #940 fix insufficient" in the subject as context,
     // not as the actual task's PR. The task's real PR would be different.
-    // should_recover_task() should use the explicit pr field, not extract_pr_numbers_from_text().
+    // is_task_pr_protected() should use the explicit pr field, not extract_pr_numbers_from_text().
     use std::collections::HashSet;
-    use std::path::Path;
 
     let merged_prs: HashSet<u64> = vec![940].into_iter().collect();
-    let repo_path = Path::new("/tmp/test-repo");
 
     // Task with PR #940 mentioned in subject as context, but explicit pr field is None
     // (because the task's actual work will create a different PR)
@@ -185,19 +183,11 @@ fn test_should_recover_task_with_explicit_pr_association() {
         created_at: None,
     };
 
-    // EXPECTED: should_recover_task returns true (allow recovery)
-    // ACTUAL (before fix): returns false because extract_pr_numbers_from_text finds #940 in subject
     let tasks_with_open_prs = HashMap::new();
-    let result = should_recover_task(
-        &task,
-        &merged_prs,
-        repo_path,
-        &tasks_with_open_prs,
-        &HashMap::new(),
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new());
     assert!(
         result,
-        "should_recover_task should return true when explicit pr field is None, even if merged PR mentioned in text"
+        "task should NOT be pr-protected when explicit pr field is None, even if merged PR mentioned in text"
     );
 
     // Now test with explicit PR association
@@ -206,16 +196,15 @@ fn test_should_recover_task_with_explicit_pr_association() {
         ..task
     };
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task_with_pr,
         &merged_prs,
-        repo_path,
         &tasks_with_open_prs,
         &HashMap::new(),
     );
     assert!(
         !result,
-        "should_recover_task should return false when explicit pr field matches merged PR"
+        "task should be pr-protected when explicit pr field matches merged PR"
     );
 }
 
@@ -2555,11 +2544,11 @@ fn make_test_state() -> (
 }
 
 // ======================================================================
-// should_recover_task (pure decision function) tests
+// is_task_pr_protected (pure decision function) tests
 // ======================================================================
 
 #[test]
-fn test_should_recover_task_skips_completed_tasks() {
+fn test_is_task_pr_protected_skips_completed_tasks() {
     use crate::tasks::{Task, TaskStatus};
 
     let completed_task = Task {
@@ -2577,19 +2566,18 @@ fn test_should_recover_task_skips_completed_tasks() {
     let merged_prs = HashSet::new();
     let tasks_with_open_prs = HashMap::new();
     assert!(
-        !should_recover_task(
+        is_task_pr_protected(
             &completed_task,
             &merged_prs,
-            std::path::Path::new("."),
             &tasks_with_open_prs,
             &HashMap::new(),
         ),
-        "Should NOT recover a completed task"
+        "Completed task should be treated as pr-protected (not recoverable)"
     );
 }
 
 #[test]
-fn test_should_recover_task_with_contextual_pr_mention_in_subject() {
+fn test_is_task_pr_protected_with_contextual_pr_mention_in_subject() {
     use crate::tasks::{Task, TaskStatus};
 
     // Task !1120 mentions PR #923 in subject, but PR #923 is NOT the task's PR.
@@ -2611,21 +2599,15 @@ fn test_should_recover_task_with_contextual_pr_mention_in_subject() {
     let merged_prs: HashSet<u64> = [923].into_iter().collect();
     let tasks_with_open_prs = HashMap::new();
 
-    // With explicit PR associations: should NOT recover because task.pr = Some(923) and PR #923 is merged
+    // With explicit PR associations: should be pr-protected because task.pr = Some(923) and PR #923 is merged
     assert!(
-        !should_recover_task(
-            &task,
-            &merged_prs,
-            std::path::Path::new("."),
-            &tasks_with_open_prs,
-            &HashMap::new(),
-        ),
-        "Should NOT recover a task whose PR is already merged (explicit pr field)"
+        is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new(),),
+        "Task whose PR is already merged should be pr-protected (explicit pr field)"
     );
 }
 
 #[test]
-fn test_should_recover_task_with_contextual_pr_mention_in_description() {
+fn test_is_task_pr_protected_with_contextual_pr_mention_in_description() {
     use crate::tasks::{Task, TaskStatus};
 
     // Task mentions PR #925 in description as context
@@ -2645,46 +2627,11 @@ fn test_should_recover_task_with_contextual_pr_mention_in_description() {
     let merged_prs: HashSet<u64> = [925].into_iter().collect();
     let tasks_with_open_prs = HashMap::new();
 
-    // With explicit PR associations: should NOT recover because task.pr = Some(925) and PR #925 is merged
+    // With explicit PR associations: should be pr-protected because task.pr = Some(925) and PR #925 is merged
     assert!(
-        !should_recover_task(
-            &task,
-            &merged_prs,
-            std::path::Path::new("."),
-            &tasks_with_open_prs,
-            &HashMap::new(),
-        ),
-        "Should NOT recover a task whose PR is already merged (explicit pr field)"
+        is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new(),),
+        "Task whose PR is already merged should be pr-protected (explicit pr field)"
     );
-}
-
-// ============================================================================
-// Pure parsing function tests (no I/O required)
-// ============================================================================
-
-#[test]
-fn test_parse_pr_merged_state_merged() {
-    assert!(super::parse_pr_merged_state("MERGED\n"));
-    assert!(super::parse_pr_merged_state("MERGED"));
-    assert!(super::parse_pr_merged_state("  MERGED  "));
-}
-
-#[test]
-fn test_parse_pr_merged_state_open() {
-    assert!(!super::parse_pr_merged_state("OPEN\n"));
-    assert!(!super::parse_pr_merged_state("OPEN"));
-}
-
-#[test]
-fn test_parse_pr_merged_state_closed() {
-    assert!(!super::parse_pr_merged_state("CLOSED\n"));
-    assert!(!super::parse_pr_merged_state("CLOSED"));
-}
-
-#[test]
-fn test_parse_pr_merged_state_empty() {
-    assert!(!super::parse_pr_merged_state(""));
-    assert!(!super::parse_pr_merged_state("  "));
 }
 
 // ============================================================================
@@ -2692,7 +2639,7 @@ fn test_parse_pr_merged_state_empty() {
 // ============================================================================
 
 #[test]
-fn test_should_not_recover_task_with_open_pr_via_github_title() {
+fn test_is_task_pr_protected_with_open_pr_via_github_title() {
     // Scenario: Task !1233 has no pr field, no entry in tasks_with_open_prs,
     // but there's an open PR #1089 with "[Midtown !1233]" in the title.
     // The github_open_pr_task_ids snapshot data prevents duplicate recovery.
@@ -2715,10 +2662,9 @@ fn test_should_not_recover_task_with_open_pr_via_github_title() {
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("1233".to_string(), 1089u64); // PR #1089 has [Midtown !1233]
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task,
         &merged_prs,
-        std::path::Path::new("."),
         &tasks_with_open_prs,
         &github_open_pr_task_ids,
     );
@@ -2730,7 +2676,7 @@ fn test_should_not_recover_task_with_open_pr_via_github_title() {
 }
 
 #[test]
-fn test_should_recover_task_when_github_title_has_no_match() {
+fn test_is_task_pr_protected_when_github_title_has_no_match() {
     // Scenario: Task !42 has no PR association anywhere — not in pr field,
     // not in tasks_with_open_prs, not in github_open_pr_task_ids.
     use crate::tasks::{Task, TaskStatus};
@@ -2751,19 +2697,21 @@ fn test_should_recover_task_when_github_title_has_no_match() {
     let tasks_with_open_prs = HashMap::new();
     let github_open_pr_task_ids = HashMap::new(); // No title matches
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task,
         &merged_prs,
-        std::path::Path::new("."),
         &tasks_with_open_prs,
         &github_open_pr_task_ids,
     );
 
-    assert!(result, "Should recover task when no PR found in any source");
+    assert!(
+        result,
+        "Task should not be pr-protected when no PR found in any source"
+    );
 }
 
 #[test]
-fn test_should_not_recover_task_github_title_takes_precedence_over_no_pr_field() {
+fn test_is_task_pr_protected_github_title_takes_precedence_over_no_pr_field() {
     // Scenario: Task !55 has no pr field (not set yet), tasks_with_open_prs is empty
     // (stale after restart), but github_open_pr_task_ids has a match.
     // This is the exact scenario that caused duplicate work after daemon restart.
@@ -2786,10 +2734,9 @@ fn test_should_not_recover_task_github_title_takes_precedence_over_no_pr_field()
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("55".to_string(), 200u64);
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task,
         &merged_prs,
-        std::path::Path::new("."),
         &tasks_with_open_prs,
         &github_open_pr_task_ids,
     );
@@ -2801,7 +2748,7 @@ fn test_should_not_recover_task_github_title_takes_precedence_over_no_pr_field()
 }
 
 #[test]
-fn test_should_recover_task_allows_active_in_progress_task() {
+fn test_is_task_pr_protected_allows_active_in_progress_task() {
     use crate::tasks::{Task, TaskStatus};
 
     let task = Task {
@@ -2819,19 +2766,13 @@ fn test_should_recover_task_allows_active_in_progress_task() {
     let merged_prs = HashSet::new();
     let tasks_with_open_prs = HashMap::new();
     assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            std::path::Path::new("."),
-            &tasks_with_open_prs,
-            &HashMap::new(),
-        ),
-        "Should recover an active in-progress task with no merged PR"
+        !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new(),),
+        "Active in-progress task with no merged PR should not be pr-protected"
     );
 }
 
 #[test]
-fn test_should_recover_task_allows_task_with_unmerged_pr() {
+fn test_is_task_pr_protected_allows_task_with_unmerged_pr() {
     use crate::tasks::{Task, TaskStatus};
 
     let task = Task {
@@ -2852,56 +2793,13 @@ fn test_should_recover_task_allows_task_with_unmerged_pr() {
     let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
     let tasks_with_open_prs = HashMap::new();
     assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            std::path::Path::new("."),
-            &tasks_with_open_prs,
-            &HashMap::new(),
-        ),
-        "Should recover a task whose PR is NOT yet merged (cache miss, API fails)"
+        !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new(),),
+        "Task whose PR is NOT yet merged should not be pr-protected"
     );
 }
 
 #[test]
-#[ignore] // Obsolete test - no longer does GitHub API checks for contextual PR mentions
-fn test_should_recover_task_checks_github_when_cache_stale() {
-    use crate::tasks::{Task, TaskStatus};
-
-    // This test is obsolete after the fix for issue #1147.
-    // The new behavior no longer checks GitHub API for contextual PR mentions.
-    // It only skips recovery when pr_task_associations contains the canonical link.
-    let task = Task {
-        id: "1129".to_string(),
-        subject: "Fix task !1129 [Midtown !1129]".to_string(),
-        description: Some("PR #935".to_string()),
-        status: TaskStatus::InProgress,
-        owner: Some("riverside".to_string()),
-        blocked_by: vec![],
-        channel: None,
-        pr: None,
-        created_at: None,
-    };
-
-    // PR #935 is NOT in the cache
-    let merged_prs: HashSet<u64> = HashSet::new();
-    let tasks_with_open_prs = HashMap::new();
-
-    // New behavior: SHOULD recover because PR #935 is just a contextual mention (no explicit pr field)
-    assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            std::path::Path::new("."),
-            &tasks_with_open_prs,
-            &HashMap::new(),
-        ),
-        "Should recover task with contextual PR mention (no longer checks GitHub API)"
-    );
-}
-
-#[test]
-fn test_should_recover_task_with_bare_hash_pr_reference() {
+fn test_is_task_pr_protected_with_bare_hash_pr_reference() {
     use crate::tasks::{Task, TaskStatus};
 
     // Task with bare "#904" format (no "PR #" prefix)
@@ -2919,28 +2817,21 @@ fn test_should_recover_task_with_bare_hash_pr_reference() {
     };
 
     let merged_prs: HashSet<u64> = [904].into_iter().collect();
-    let repo_path = std::path::Path::new("/tmp/test-repo");
     let tasks_with_open_prs = HashMap::new();
 
-    // With explicit PR associations: should NOT recover because task.pr = Some(904) and PR #904 is merged
+    // With explicit PR associations: should be pr-protected because task.pr = Some(904) and PR #904 is merged
     assert!(
-        !should_recover_task(
-            &task,
-            &merged_prs,
-            repo_path,
-            &tasks_with_open_prs,
-            &HashMap::new()
-        ),
-        "Should NOT recover a task whose PR (#904) is already merged (explicit pr field)"
+        is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new()),
+        "Task whose PR (#904) is already merged should be pr-protected (explicit pr field)"
     );
 }
 
 #[test]
-fn test_should_recover_task_recovers_multi_pr_with_only_some_merged() {
+fn test_is_task_pr_protected_recovers_multi_pr_with_only_some_merged() {
     use crate::tasks::{Task, TaskStatus};
 
     // Task referencing PRs #901, #902, #903, but only #901 is merged
-    // should_recover_task() should return true (task needs recovery)
+    // Task should not be pr-protected (needs recovery)
     // because auto-completion won't fire until ALL PRs are merged
     let task = Task {
         id: "1123".to_string(),
@@ -2956,26 +2847,19 @@ fn test_should_recover_task_recovers_multi_pr_with_only_some_merged() {
 
     // Only #901 is merged; #902 and #903 are still open
     let merged_prs: HashSet<u64> = [901].into_iter().collect();
-    let repo_path = std::path::Path::new("/tmp/test-repo");
     let tasks_with_open_prs = HashMap::new();
     assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            repo_path,
-            &tasks_with_open_prs,
-            &HashMap::new()
-        ),
-        "Should recover task with multi-PR reference where only SOME PRs are merged"
+        !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new()),
+        "Task with multi-PR reference where only SOME PRs are merged should not be pr-protected"
     );
 }
 
 #[test]
-fn test_should_recover_task_with_multi_pr_when_all_merged() {
+fn test_is_task_pr_protected_with_multi_pr_when_all_merged() {
     use crate::tasks::{Task, TaskStatus};
 
     // Meta-task referencing PRs #901, #902, #903, and ALL are merged
-    // With explicit PR associations: should_recover_task() returns true because
+    // With explicit PR associations: is_task_pr_protected() returns false because
     // it only checks the explicit pr field (which is None for meta-tasks).
     // Auto-completion will handle cleanup when all PRs are merged.
     let task = Task {
@@ -2992,28 +2876,21 @@ fn test_should_recover_task_with_multi_pr_when_all_merged() {
 
     // All PRs are merged, but they're not the task's canonical PR
     let merged_prs: HashSet<u64> = [901, 902, 903].into_iter().collect();
-    let repo_path = std::path::Path::new("/tmp/test-repo");
     let tasks_with_open_prs = HashMap::new();
 
-    // New behavior: SHOULD recover because pr field is None (contextual mentions only)
+    // New behavior: should NOT be pr-protected because pr field is None (contextual mentions only)
     assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            repo_path,
-            &tasks_with_open_prs,
-            &HashMap::new()
-        ),
-        "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
+        !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new()),
+        "Task with no explicit pr field should not be pr-protected (auto-completion will handle cleanup)"
     );
 }
 
 #[test]
-fn test_should_recover_task_with_pr_in_subject_only() {
+fn test_is_task_pr_protected_with_pr_in_subject_only() {
     use crate::tasks::{Task, TaskStatus};
 
     // Task with PR reference only in subject (not description)
-    // With explicit PR associations: should_recover_task() returns true because
+    // With explicit PR associations: is_task_pr_protected() returns false because
     // it only checks the explicit pr field (which is None).
     // If this task is actually FOR PR #905, it should have pr: Some(905).
     let task = Task {
@@ -3029,19 +2906,12 @@ fn test_should_recover_task_with_pr_in_subject_only() {
     };
 
     let merged_prs: HashSet<u64> = [905].into_iter().collect();
-    let repo_path = std::path::Path::new("/tmp/test-repo");
     let tasks_with_open_prs = HashMap::new();
 
-    // New behavior: SHOULD recover because pr field is None (contextual mentions only)
+    // New behavior: should NOT be pr-protected because pr field is None (contextual mentions only)
     assert!(
-        should_recover_task(
-            &task,
-            &merged_prs,
-            repo_path,
-            &tasks_with_open_prs,
-            &HashMap::new()
-        ),
-        "Should recover task with no explicit pr field (auto-completion will handle cleanup)"
+        !is_task_pr_protected(&task, &merged_prs, &tasks_with_open_prs, &HashMap::new()),
+        "Task with no explicit pr field should not be pr-protected (auto-completion will handle cleanup)"
     );
 }
 
@@ -3122,6 +2992,8 @@ fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
             tasks_with_open_prs,
             ..Default::default()
         },
+        // Task is PR-protected (has open PR, detected during snapshot collection)
+        pr_protected_tasks: ["2050".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
         ..snapshot::minimal_snapshot_for_test()
@@ -3169,6 +3041,8 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
             github_open_pr_task_ids,
             ..Default::default()
         },
+        // Task is PR-protected (GitHub title-match detected during snapshot collection)
+        pr_protected_tasks: ["2051".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
         ..snapshot::minimal_snapshot_for_test()
@@ -3280,7 +3154,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
 
     let now = chrono::Utc::now();
     // Lexington stopped far enough back to be outside the grace period (not recently stopped)
-    // so orphan recovery will still pick it up (should_recover_task allows recovery)
+    // so orphan recovery will still pick it up (is_task_pr_protected returns false)
     let lexington_stopped = now - Duration::seconds(60);
 
     let mut snap = snapshot::WorldSnapshot {
@@ -3519,7 +3393,7 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
 // already have open PRs.
 
 #[test]
-fn test_should_recover_task_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
+fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
     // Orphan recovery also needs to skip tasks with open PRs (separate path from pending dispatch).
     use crate::tasks::{Task, TaskStatus};
 
@@ -3540,22 +3414,21 @@ fn test_should_recover_task_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
     tasks_with_open_prs.insert("1313".to_string(), 1156u64); // Task has open PR #1156
     let github_open_pr_task_ids = HashMap::new();
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task,
         &merged_prs,
-        std::path::Path::new("."),
         &tasks_with_open_prs,
         &github_open_pr_task_ids,
     );
 
     assert!(
         !result,
-        "Should NOT recover task !1313 - it has open PR #1156 in tasks_with_open_prs"
+        "Task !1313 should be pr-protected - it has open PR #1156 in tasks_with_open_prs"
     );
 }
 
 #[test]
-fn test_should_recover_task_skips_tasks_with_open_pr_in_github_open_pr_task_ids() {
+fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_github_open_pr_task_ids() {
     // Defense-in-depth: Even if tasks_with_open_prs is empty (stale),
     // github_open_pr_task_ids should prevent recovery.
     use crate::tasks::{Task, TaskStatus};
@@ -3577,17 +3450,16 @@ fn test_should_recover_task_skips_tasks_with_open_pr_in_github_open_pr_task_ids(
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("1313".to_string(), 1156u64); // Found via GitHub PR title
 
-    let result = should_recover_task(
+    let result = !is_task_pr_protected(
         &task,
         &merged_prs,
-        std::path::Path::new("."),
         &tasks_with_open_prs,
         &github_open_pr_task_ids,
     );
 
     assert!(
         !result,
-        "Should NOT recover task !1313 - it has open PR #1156 via github_open_pr_task_ids"
+        "Task !1313 should be pr-protected - it has open PR #1156 via github_open_pr_task_ids"
     );
 }
 
@@ -3743,7 +3615,7 @@ fn test_dispatch_via_sessions_skips_running_session() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -3777,7 +3649,7 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Should have at least a SpawnCoworkerWithCallbacks effect
     let has_spawn = effects.iter().any(|e| {
@@ -3808,23 +3680,7 @@ fn test_dispatch_via_sessions_handles_tasks_without_sessions() {
         HashMap::new(), // no session_task_map
     );
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
-        if task_id == "42" {
-            Some(crate::tasks::Task {
-                id: "42".to_string(),
-                subject: "Add auth endpoint".to_string(),
-                status: crate::tasks::TaskStatus::InProgress,
-                owner: Some("lexington".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            })
-        } else {
-            None
-        }
-    });
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Should have a SpawnCoworkerWithCallbacks with Fresh session mode
     let has_fresh_spawn = effects.iter().any(|e| {
@@ -3852,23 +3708,7 @@ fn test_dispatch_via_sessions_no_session_respects_dev_limit() {
     );
     snap.is_at_dev_limit = true;
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
-        if task_id == "42" {
-            Some(crate::tasks::Task {
-                id: task_id.to_string(),
-                subject: "Add auth".to_string(),
-                status: crate::tasks::TaskStatus::InProgress,
-                owner: Some("lexington".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            })
-        } else {
-            None
-        }
-    });
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -3889,26 +3729,10 @@ fn test_dispatch_via_sessions_no_session_skips_merged_pr() {
         HashMap::new(),
         HashMap::new(),
     );
-    // Mark PR #100 as merged
-    snap.pr.merged_pr_numbers.insert(100);
+    // Mark task 42 as PR-protected (merged PR detected during snapshot collection)
+    snap.pr_protected_tasks.insert("42".to_string());
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
-        if task_id == "42" {
-            Some(crate::tasks::Task {
-                id: task_id.to_string(),
-                subject: "Add auth".to_string(),
-                status: crate::tasks::TaskStatus::InProgress,
-                owner: Some("lexington".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: Some(100), // explicit PR that is merged
-                created_at: None,
-            })
-        } else {
-            None
-        }
-    });
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -3934,23 +3758,7 @@ fn test_dispatch_via_sessions_no_session_skips_recently_stopped() {
         .coworker_stop_times
         .insert("lexington".to_string(), snap.now_utc);
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
-        if task_id == "42" {
-            Some(crate::tasks::Task {
-                id: task_id.to_string(),
-                subject: "Add auth".to_string(),
-                status: crate::tasks::TaskStatus::InProgress,
-                owner: Some("lexington".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            })
-        } else {
-            None
-        }
-    });
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -3962,7 +3770,7 @@ fn test_dispatch_via_sessions_no_session_skips_recently_stopped() {
 #[test]
 fn test_dispatch_via_sessions_no_session_skips_completed_task() {
     // Task that is already completed should not be recovered.
-    let snap = make_session_dispatch_snapshot(
+    let mut snap = make_session_dispatch_snapshot(
         vec![(
             "42".to_string(),
             "Add auth".to_string(),
@@ -3971,24 +3779,10 @@ fn test_dispatch_via_sessions_no_session_skips_completed_task() {
         HashMap::new(),
         HashMap::new(),
     );
+    // Completed tasks are PR-protected during snapshot collection
+    snap.pr_protected_tasks.insert("42".to_string());
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |task_id| {
-        if task_id == "42" {
-            Some(crate::tasks::Task {
-                id: task_id.to_string(),
-                subject: "Add auth".to_string(),
-                status: crate::tasks::TaskStatus::Completed, // already completed
-                owner: Some("lexington".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            })
-        } else {
-            None
-        }
-    });
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -4022,7 +3816,7 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     // Verify the spawn uses the preferred name "park"
     let spawn_config = effects.iter().find_map(|e| {
@@ -4068,7 +3862,7 @@ fn test_dispatch_via_sessions_uses_session_working_dir() {
         session_task_map,
     );
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     let spawn_config = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
@@ -4113,7 +3907,7 @@ fn test_dispatch_via_sessions_respects_cooldown() {
     // Simulate cooldown active (pre-evaluated in snapshot)
     snap.session_dispatch_cooldown_active = true;
 
-    let effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
         effects.is_empty(),
@@ -4175,7 +3969,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Step 1: Session dispatch recovers the task
-    let session_effects = dispatch_via_sessions_for_test(&snap, None, |_| None);
+    let session_effects = dispatch_via_sessions_for_test(&snap);
     assert!(
         !session_effects.is_empty(),
         "Session dispatch should produce effects for stopped session"

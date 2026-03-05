@@ -76,28 +76,6 @@ fn prepare_task_worktree(
     }
 }
 
-/// Check whether this task worktree is currently bound to a different ACTIVE
-/// coworker, and therefore should be skipped for this spawn.
-fn worktree_collision_with_active_coworker(
-    snap: &snapshot::WorldSnapshot,
-    worktree_id: &str,
-    coworker: &str,
-) -> Option<String> {
-    let assignment = snap.worktree_registry.get(worktree_id)?;
-    let bound_coworker = assignment.current_coworker.as_deref()?;
-
-    if bound_coworker.eq_ignore_ascii_case(coworker) {
-        return None;
-    }
-
-    let bound_lower = bound_coworker.to_lowercase();
-    if snap.coworkers.active_names.contains(&bound_lower) {
-        return Some(bound_coworker.to_string());
-    }
-
-    None
-}
-
 // ============================================================================
 // Plan content helpers
 // ============================================================================
@@ -231,78 +209,66 @@ fn find_session_for_task<'a>(
 // Orphan task recovery
 // ============================================================================
 
-/// Parse PR state from `gh pr view --jq '.state'` output.
+/// Determine if a task should be skipped for recovery/dispatch due to PR status.
 ///
-/// Returns `true` if the state is "MERGED", `false` otherwise.
-fn parse_pr_merged_state(stdout: &str) -> bool {
-    stdout.trim() == "MERGED"
-}
-
-/// Check if a specific PR is merged by querying GitHub directly.
+/// Returns `true` if the task is "protected" — it should NOT be recovered/spawned.
+/// Used by `collect_world_snapshot()` to pre-compute `pr_protected_tasks` and by
+/// the integration test helper `should_recover_task_test_helper`.
 ///
-/// This bypasses the cached merged PR list to avoid race conditions where:
-/// 1. A PR merges
-/// 2. Auto-completion fails (or hasn't run yet)
-/// 3. Coworker shuts down
-/// 4. Orphan recovery runs before the next merged PR cache refresh (5 min interval)
-/// 5. Coworker gets recovered and creates duplicate PR
-///
-/// Returns `true` if the PR is merged, `false` if open/closed, `None` if the check fails.
-fn is_pr_merged(pr_number: u64, repo_path: &std::path::Path) -> Option<bool> {
-    let output = std::process::Command::new("gh")
-        .current_dir(repo_path)
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "state",
-            "--jq",
-            ".state",
-        ])
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let state = String::from_utf8_lossy(&output.stdout);
-            Some(parse_pr_merged_state(&state))
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            debug!(
-                "Failed to check PR #{} state via gh CLI: {}",
-                pr_number,
-                stderr.trim()
-            );
-            None
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
-            None
-        }
-    }
-}
-
-/// Determine whether an orphaned task should be recovered.
-///
-/// Production dispatch uses `should_recover_task_optional_repo` (which handles
-/// optional repo_path). This version is kept for the integration test helper
-/// `should_recover_task_test_helper` and the legacy `check_and_recover_orphans`
-/// test path.
-fn should_recover_task(
+/// Checks (in order):
+/// 1. Task is already completed
+/// 2. Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
+/// 3. Task has an explicit `task.pr` pointing to a merged PR
+/// 4. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+pub(crate) fn is_task_pr_protected(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
-    repo_path: &std::path::Path,
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
-    should_recover_task_optional_repo(
-        task,
-        merged_pr_numbers,
-        Some(repo_path),
-        tasks_with_open_prs,
-        github_open_pr_task_ids,
-    )
+    // Completed tasks are always protected
+    if task.status == crate::tasks::TaskStatus::Completed {
+        debug!("Skipping recovery for task !{}: already completed", task.id);
+        return true;
+    }
+
+    // Open PR via pr_task_associations (unless the PR was merged)
+    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
+        if !merged_pr_numbers.contains(&pr_number) {
+            debug!(
+                "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+                task.id, pr_number
+            );
+            return true;
+        } else {
+            debug!(
+                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
+                task.id, pr_number
+            );
+        }
+    }
+
+    // Explicit PR that's been merged
+    if let Some(pr_number) = task.pr
+        && merged_pr_numbers.contains(&pr_number)
+    {
+        debug!(
+            "Skipping recovery for task !{}: explicit PR #{} is in merged cache",
+            task.id, pr_number
+        );
+        return true;
+    }
+
+    // Defense-in-depth: GitHub title pattern match
+    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
+        info!(
+            "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
+            task.id, open_pr
+        );
+        return true;
+    }
+
+    false
 }
 
 /// Check for orphaned tasks and auto-recover coworkers.
@@ -318,7 +284,7 @@ fn should_recover_task(
 fn check_and_recover_orphans_with_task_lookup<F>(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
-    task_lookup: F,
+    _task_lookup: F,
 ) -> Vec<effects::Effect>
 where
     F: Fn(&str) -> Option<crate::tasks::Task>,
@@ -332,15 +298,6 @@ where
     if snap.in_progress_tasks.is_empty() {
         return vec![];
     }
-
-    // Get primary repo path for GitHub API calls
-    // NOTE: This is a pre-existing impurity (I/O for PR merge status checks).
-    // The cooldown checks have been moved to the snapshot; the repo_path usage
-    // remains here until should_recover_task() is fully migrated to snapshot data.
-    let repo_path = state
-        .all_repo_paths
-        .first()
-        .expect("daemon state must have at least one repo path");
 
     // Filter out in_progress tasks whose PRs have already been merged, that
     // have open PRs (via pr_task_associations), or that are already completed.
@@ -362,19 +319,15 @@ where
                 );
                 return false;
             }
-            // Read full task from disk to check both subject and description for PR number
-            let task = match task_lookup(task_id) {
-                Some(t) => t,
-                None => return true, // Task doesn't exist on disk? Keep it for recovery attempt
-            };
-
-            should_recover_task(
-                &task,
-                &snap.pr.merged_pr_numbers,
-                repo_path,
-                &snap.pr.tasks_with_open_prs,
-                &snap.pr.github_open_pr_task_ids,
-            )
+            // Skip tasks that are PR-protected (pre-computed in snapshot)
+            if snap.pr_protected_tasks.contains(task_id) {
+                debug!(
+                    "Orphan recovery skipping task !{} — PR-protected",
+                    task_id
+                );
+                return false;
+            }
+            true
         })
         .cloned()
         .collect();
@@ -642,42 +595,26 @@ where
 /// by `collect_world_snapshot()`.
 pub(super) fn dispatch_via_sessions(
     snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
+    _state: &DaemonState,
 ) -> Vec<effects::Effect> {
-    let repo_path = state.all_repo_paths.first().map(|p| p.as_path());
-    dispatch_via_sessions_with_task_lookup(snap, repo_path, crate::tasks::read_task)
+    dispatch_via_sessions_inner(snap)
 }
 
 /// Internal implementation of dispatch_via_sessions, testable without DaemonState.
 #[cfg(test)]
-pub(super) fn dispatch_via_sessions_for_test<F>(
+pub(super) fn dispatch_via_sessions_for_test(
     snap: &snapshot::WorldSnapshot,
-    repo_path: Option<&std::path::Path>,
-    task_lookup: F,
-) -> Vec<effects::Effect>
-where
-    F: Fn(&str) -> Option<crate::tasks::Task>,
-{
-    dispatch_via_sessions_with_task_lookup(snap, repo_path, task_lookup)
+) -> Vec<effects::Effect> {
+    dispatch_via_sessions_inner(snap)
 }
 
 /// Snapshot-only dispatch_via_sessions for integration tests (no DaemonState needed).
-///
-/// Uses `crate::tasks::read_task` for task lookup and no repo_path (skips
-/// direct GitHub PR merge checks).
 #[doc(hidden)]
 pub fn dispatch_via_sessions_snapshot_only(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
-    dispatch_via_sessions_with_task_lookup(snap, None, crate::tasks::read_task)
+    dispatch_via_sessions_inner(snap)
 }
 
-fn dispatch_via_sessions_with_task_lookup<F>(
-    snap: &snapshot::WorldSnapshot,
-    repo_path: Option<&std::path::Path>,
-    task_lookup: F,
-) -> Vec<effects::Effect>
-where
-    F: Fn(&str) -> Option<crate::tasks::Task>,
-{
+fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
     // Check cooldown - skip if we dispatched too recently
     if snap.session_dispatch_cooldown_active {
         debug!("Session dispatch cooldown active");
@@ -813,9 +750,7 @@ where
         // Uses prepare_task_worktree to keep the worktree registry current and
         // emit EnsureWorktree / BindCoworkerToWorktree effects.
         let wt = prepare_task_worktree(task_id, task_subject, &snap.repo_name, snap);
-        if let Some(bound_coworker) =
-            worktree_collision_with_active_coworker(snap, &wt.worktree_id, coworker_name)
-        {
+        if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, coworker_name) {
             debug!(
                 "Session dispatch: skipping task !{} because worktree {} is bound to active coworker {}",
                 task_id, wt.worktree_id, bound_coworker
@@ -985,19 +920,10 @@ where
         None => return effects,
     };
 
-    // Read full task from disk to apply should_recover_task filtering
-    // (PR merge checks, completed check, open PR checks).
-    if let Some(task) = task_lookup(&recovery.task_id)
-        && !should_recover_task_optional_repo(
-            &task,
-            &snap.pr.merged_pr_numbers,
-            repo_path,
-            &snap.pr.tasks_with_open_prs,
-            &snap.pr.github_open_pr_task_ids,
-        )
-    {
+    // Check pre-computed PR protection (snapshot-level filtering).
+    if snap.pr_protected_tasks.contains(&recovery.task_id) {
         debug!(
-            "Task !{} failed should_recover_task filtering — skipping fresh spawn",
+            "Task !{} is PR-protected — skipping fresh spawn",
             recovery.task_id
         );
         return effects;
@@ -1041,9 +967,7 @@ where
         &snap.repo_name,
         snap,
     );
-    if let Some(bound_coworker) =
-        worktree_collision_with_active_coworker(snap, &wt.worktree_id, &recovery.owner)
-    {
+    if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &recovery.owner) {
         debug!(
             "Session dispatch: skipping fallback spawn for task !{} because worktree {} is bound to active coworker {}",
             recovery.task_id, wt.worktree_id, bound_coworker
@@ -1125,88 +1049,6 @@ where
     effects.extend(pre_spawn);
 
     effects
-}
-
-/// Variant of `should_recover_task` that accepts an optional repo_path.
-/// When repo_path is None, skips the `is_pr_merged` direct GitHub check
-/// (used in tests where GitHub API is unavailable).
-fn should_recover_task_optional_repo(
-    task: &crate::tasks::Task,
-    merged_pr_numbers: &HashSet<u64>,
-    repo_path: Option<&std::path::Path>,
-    tasks_with_open_prs: &HashMap<String, u64>,
-    github_open_pr_task_ids: &HashMap<String, u64>,
-) -> bool {
-    // Check if task is already completed
-    if task.status == crate::tasks::TaskStatus::Completed {
-        debug!("Skipping recovery for task !{}: already completed", task.id);
-        return false;
-    }
-
-    // Check if this task has an open PR tracked via pr_task_associations.
-    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
-        if !merged_pr_numbers.contains(&pr_number) {
-            debug!(
-                "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
-                task.id, pr_number
-            );
-            return false;
-        } else {
-            debug!(
-                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
-                task.id, pr_number
-            );
-        }
-    }
-
-    // Check if this task has an explicit PR association that's already merged.
-    if let Some(pr_number) = task.pr {
-        // Check cache first (fast path)
-        if merged_pr_numbers.contains(&pr_number) {
-            debug!(
-                "Skipping recovery for task !{}: explicit PR #{} is in merged cache",
-                task.id, pr_number
-            );
-            return false;
-        }
-
-        // Cache miss — check GitHub directly (safety net against stale cache).
-        // Only attempt when repo_path is available (skipped in tests).
-        if let Some(path) = repo_path {
-            match is_pr_merged(pr_number, path) {
-                Some(true) => {
-                    info!(
-                        "Skipping recovery for task !{}: explicit PR #{} is merged (direct check)",
-                        task.id, pr_number
-                    );
-                    return false;
-                }
-                Some(false) => {
-                    debug!(
-                        "PR #{} is open/closed (not merged), allowing recovery for task !{}",
-                        pr_number, task.id
-                    );
-                }
-                None => {
-                    warn!(
-                        "Failed to check PR #{} merge status for task !{}, allowing recovery",
-                        pr_number, task.id
-                    );
-                }
-            }
-        }
-    }
-
-    // Defense-in-depth: Check if GitHub has an open PR with [Midtown !{task_id}] in the title.
-    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
-        info!(
-            "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
-            task.id, open_pr
-        );
-        return false;
-    }
-
-    true
 }
 
 /// Gather data and build effects for nudging coworkers discovered on daemon startup.
@@ -1686,9 +1528,7 @@ fn dispatch_owned_pending_tasks(
 
                 let wt = prepare_task_worktree(tid, subj, &state.repo_name, snap);
 
-                if let Some(bound_coworker) =
-                    worktree_collision_with_active_coworker(snap, &wt.worktree_id, o)
-                {
+                if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, o) {
                     debug!(
                         "Pending owned task !{}: skipping {} because worktree {} is bound to active coworker {}",
                         tid, o, wt.worktree_id, bound_coworker
@@ -1902,18 +1742,10 @@ fn dispatch_unowned_pending_tasks(
             continue;
         }
 
-        // Match orphan recovery behavior: skip tasks that are currently associated
-        // with an open PR (tracked in snapshot state), including defense-in-depth
-        // title-based detection from GitHub.
-        if !should_recover_task_optional_repo(
-            task,
-            &snap.pr.merged_pr_numbers,
-            state.all_repo_paths.first().map(|p| p.as_path()),
-            &snap.pr.tasks_with_open_prs,
-            &snap.pr.github_open_pr_task_ids,
-        ) {
+        // Skip tasks that are PR-protected (pre-computed in snapshot).
+        if snap.pr_protected_tasks.contains(&task.id) {
             debug!(
-                "Skipping dispatch for pending task !{} due PR-protection guard",
+                "Skipping dispatch for pending task !{} — PR-protected",
                 task.id
             );
             continue;
@@ -1945,7 +1777,7 @@ fn dispatch_unowned_pending_tasks(
                 let coworker_name = record.preferred_name.clone().unwrap_or_default();
 
                 if let Some(bound_coworker) =
-                    worktree_collision_with_active_coworker(snap, &wt.worktree_id, &coworker_name)
+                    snap.worktree_collision(&wt.worktree_id, &coworker_name)
                 {
                     debug!(
                         "Pending task !{}: skipping resume spawn for {} because worktree {} is bound to active coworker {}",
@@ -2157,9 +1989,7 @@ fn dispatch_unowned_pending_tasks(
         } else {
             // Spawn a new coworker — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, &state.repo_name, snap);
-            if let Some(bound_coworker) =
-                worktree_collision_with_active_coworker(snap, &wt.worktree_id, &coworker_name)
-            {
+            if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &coworker_name) {
                 debug!(
                     "Pending task !{}: skipping fresh spawn for {} because worktree {} is bound to active coworker {}",
                     task.id, coworker_name, wt.worktree_id, bound_coworker
@@ -2403,19 +2233,20 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
 // Task unassignment for PRs in review
 // ============================================================================
 
-// Test helper function exposed for integration tests
+// Test helper function exposed for integration tests.
+// `repo_path` is kept in the signature for backward compatibility but unused —
+// the direct GitHub API safety net (`is_pr_merged`) has been removed.
 #[doc(hidden)]
 pub fn should_recover_task_test_helper(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
-    repo_path: &std::path::Path,
+    _repo_path: &std::path::Path,
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
-    should_recover_task(
+    !is_task_pr_protected(
         task,
         merged_pr_numbers,
-        repo_path,
         tasks_with_open_prs,
         github_open_pr_task_ids,
     )

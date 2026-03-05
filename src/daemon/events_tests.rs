@@ -424,7 +424,6 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         auth_provider: crate::auth::AuthProvider::Claude,
         escalation_target: None,
         persisted_initial_prompt: None,
-        escalation_target: None,
     };
     config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
 
@@ -443,7 +442,6 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         auth_provider: crate::auth::AuthProvider::Claude,
         escalation_target: None,
         persisted_initial_prompt: None,
-        escalation_target: None,
     };
 
     let spawn_session = Effect::SpawnSession {
