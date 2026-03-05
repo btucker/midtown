@@ -22,6 +22,7 @@
 //! |-------|--------|
 //! | task | `task.created`, `task.assigned`, `task.completed` |
 //! | pr | `pr.opened`, `pr.approved`, `pr.changes_requested`, `pr.merged`, `pr.ci_passed`, `pr.ci_failed`, `pr.conflict`, `pr.auto_merge` |
+//! | reviewer | `reviewer.complete` |
 //! | coworker | `coworker.idle`, `coworker.stuck`, `coworker.message` |
 //! | channel | `channel.message` |
 //! | timer | `timer.tick` |
@@ -182,6 +183,18 @@ pub enum WorkflowEvent {
         pr_number: u64,
     },
 
+    /// A reviewer finished reviewing a PR.
+    ///
+    /// Emitted when `collect_reviewer_effects` detects a completed review on an
+    /// open PR. The workflow script can customise the author notification message
+    /// or add additional side effects (e.g. auto-merge gating, team pings).
+    #[serde(rename = "reviewer.complete")]
+    ReviewerComplete {
+        channel: String,
+        task_id: String,
+        pr_number: u64,
+    },
+
     // ── Coworker lifecycle ───────────────────────────────────────────────────
     /// A coworker finished its current turn and is now idle.
     ///
@@ -262,6 +275,7 @@ impl WorkflowEvent {
             | Self::PrCiFailed { channel, .. }
             | Self::PrConflict { channel, .. }
             | Self::PrAutoMerge { channel, .. }
+            | Self::ReviewerComplete { channel, .. }
             | Self::CoworkerIdle { channel, .. }
             | Self::CoworkerStuck { channel, .. }
             | Self::CoworkerMessage { channel, .. }
@@ -283,7 +297,8 @@ impl WorkflowEvent {
             | Self::PrCiPassed { task_id, .. }
             | Self::PrCiFailed { task_id, .. }
             | Self::PrConflict { task_id, .. }
-            | Self::PrAutoMerge { task_id, .. } => Some(task_id),
+            | Self::PrAutoMerge { task_id, .. }
+            | Self::ReviewerComplete { task_id, .. } => Some(task_id),
             Self::CoworkerIdle { task_id, .. }
             | Self::CoworkerStuck { task_id, .. }
             | Self::CoworkerMessage { task_id, .. } => task_id.as_deref(),
