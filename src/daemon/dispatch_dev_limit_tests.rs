@@ -173,7 +173,7 @@ fn make_test_state_with_max(max_coworkers: usize) -> crate::daemon::DaemonState 
     crate::daemon::DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
-        "test-repo".to_string(),
+        crate::paths::ProjectPaths::with_project_name("test-repo", "test-repo"),
         vec![base_dir.clone()],
         channel_router,
         None,
@@ -472,7 +472,7 @@ fn test_dispatch_excludes_channel_leads_from_dev_count() {
 // Regression tests: legacy "lead" session excluded from dev limit
 //
 // Before the consolidation fix, is_at_dev_limit() and is_at_coworker_limit()
-// only excluded sessions named after the repo (state.repo_name). Legacy
+// only excluded sessions named after the repo (state.project_name). Legacy
 // sessions named "lead" were incorrectly counted as dev slots.
 // ============================================================================
 

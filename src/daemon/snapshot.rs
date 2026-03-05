@@ -423,8 +423,14 @@ pub struct WorldSnapshot {
     pub is_at_dev_limit: bool,
     /// Current wall-clock time.
     pub now_utc: DateTime<Utc>,
-    /// Repository name.
-    pub repo_name: String,
+    /// Filesystem directory key (e.g., "midtown.nosync"). Used for path construction,
+    /// config lookups, and task storage operations.
+    #[serde(alias = "repo_name")]
+    pub dir_key: String,
+    /// Logical project name (e.g., "midtown"). Used for lead identity checks,
+    /// channel routing, session naming, and display.
+    #[serde(default)]
+    pub project_name: String,
     /// Default channel name (e.g., "midtown"). Used by pure decision functions
     /// to construct `NudgeChannelLead` effects that route to the project lead.
     #[serde(default)]
@@ -581,6 +587,16 @@ impl WorldSnapshot {
 
     /// Look up the topic channel for a PR via its associated task.
     ///
+    /// Backward-compatibility fixup for snapshots serialized before the
+    /// `repo_name` → `dir_key` + `project_name` split. Old JSON has a single
+    /// `repo_name` field which serde maps to `dir_key` via `#[serde(alias)]`.
+    /// `project_name` defaults to `""` — this method copies `dir_key` into it.
+    pub fn fixup_legacy_fields(&mut self) {
+        if self.project_name.is_empty() && !self.dir_key.is_empty() {
+            self.project_name = self.dir_key.clone();
+        }
+    }
+
     /// Chains `pr_task_associations` (PR# → task_id) and `task_channel`
     /// (task_id → channel name). Analogous to `PrContext::get_channel()`
     /// on the async side — use this in synchronous decision functions that
@@ -590,10 +606,10 @@ impl WorldSnapshot {
         self.task_channel.get(task_id).cloned()
     }
 
-    /// Look up the topic channel for a PR, falling back to the repo name.
+    /// Look up the topic channel for a PR, falling back to the project name.
     pub fn channel_for_pr_or_default(&self, pr_number: u64) -> String {
         self.channel_for_pr(pr_number)
-            .unwrap_or_else(|| self.repo_name.clone())
+            .unwrap_or_else(|| self.project_name.clone())
     }
 
     /// Look up the session record for a task, if one exists.
@@ -675,7 +691,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
     let running_coworkers = state.coworkers.list_running();
-    let session_name = format!("midtown-{}", state.repo_name);
+    let session_name = format!("midtown-{}", state.project_name);
 
     let coworker_snapshots: Vec<CoworkerSnapshot> = active_coworkers
         .iter()
@@ -744,7 +760,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Task state ──────────────────────────────────────────────────────
     // IMPORTANT: Use _for_repo variants to avoid dependency on cwd.
     // The daemon may run from a directory where detect_repo_name() fails,
-    // but state.repo_name is set correctly at startup. Using cwd-based
+    // but state.paths.dir_key() is set correctly at startup. Using cwd-based
     // task reads causes the daemon to read from the wrong task directory
     // (or "default") and miss pending tasks, preventing dispatch (see #1288).
     //
@@ -754,7 +770,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // causing the same task to appear in both in_progress_tasks AND
     // pending_tasks_without_owners — bypassing the dispatch exclusion set
     // and leading to duplicate task assignment.
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(&state.repo_name));
+    let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
     let in_progress_tasks: Vec<(String, String, String)> = all_tasks
         .iter()
         .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
@@ -1000,7 +1016,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
     // ── Dependency state ──────────────────────────────────────────────────
     let coworkers_with_unblocked_deps =
-        crate::tasks::get_coworkers_with_unblocked_dependents_for_repo(&state.repo_name);
+        crate::tasks::get_coworkers_with_unblocked_dependents_for_repo(state.paths.dir_key());
 
     // ── Usage limit state ────────────────────────────────────────────────
     let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
@@ -1059,7 +1075,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
 
     // ── Channel state ──────────────────────────────────────────────────
-    let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+    let base_dir = state.paths.base_dir().to_path_buf();
     let archived_channels: HashSet<String> = {
         crate::channel::Channel::list_archived(&base_dir)
             .unwrap_or_default()
@@ -1128,7 +1144,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
     // ── Lead session refresh interval ──────────────────────────────────
     let lead_session_refresh_interval_secs = {
-        let cfg = crate::config::get_project_daemon_config(&state.repo_name);
+        let cfg = crate::config::get_project_daemon_config(state.paths.dir_key());
         std::env::var("MIDTOWN_LEAD_SESSION_REFRESH_INTERVAL")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1141,7 +1157,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         channel_lead_sessions.keys().cloned().collect();
     let is_at_coworker_limit = state.is_at_coworker_limit(&channel_lead_names);
     let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let repo_name = state.repo_name.clone();
+    let dir_key = state.paths.dir_key().to_string();
+    let project_name = state.project_name.clone();
     let default_channel = state.channel_router.default_channel_name().to_string();
     let repo_owner = state.repo_owner.clone();
 
@@ -1380,7 +1397,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         is_at_coworker_limit,
         is_at_dev_limit,
         now_utc,
-        repo_name,
+        dir_key,
+        project_name,
         default_channel,
         repo_owner,
         topic_sessions,
@@ -1449,7 +1467,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),

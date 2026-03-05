@@ -68,7 +68,7 @@ pub(super) async fn chat_monitor_loop(
                                     // handled in handle_channel_post to avoid double-nudging.
                                     if !state.is_user_sender(&msg.from) {
                                         let msg_lower = msg.content.to_lowercase();
-                                        let lead_mention = format!("@{}", state.repo_name).to_lowercase();
+                                        let lead_mention = format!("@{}", state.project_name).to_lowercase();
                                         if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
                                             let nudge_text = format!(
                                                 "{} ({}): {}",
@@ -79,7 +79,7 @@ pub(super) async fn chat_monitor_loop(
                                             state.nudge_lead(&nudge_text).await;
                                             info!(
                                                 "Nudged lead about @{} mention in {} message",
-                                                state.repo_name,
+                                                state.project_name,
                                                 msg.from
                                             );
                                         }
@@ -161,11 +161,12 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     // the task system is the authoritative source for task-to-owner mapping.
     let task_owner: Option<String> = extract_task_id(&msg.content).and_then(|tid| {
         debug!("Found task ID !{} in message", tid);
-        let owner = crate::tasks::get_in_progress_tasks_with_subjects_for_repo(&state.repo_name)
-            .into_iter()
-            .find(|(task_id, _, _)| task_id == &tid)
-            .map(|(_, _, owner)| owner)
-            .filter(|o| !o.is_empty());
+        let owner =
+            crate::tasks::get_in_progress_tasks_with_subjects_for_repo(state.paths.dir_key())
+                .into_iter()
+                .find(|(task_id, _, _)| task_id == &tid)
+                .map(|(_, _, owner)| owner)
+                .filter(|o| !o.is_empty());
         if owner.is_none() {
             debug!(
                 "No in-progress task !{} found, falling back to name-based routing",
@@ -236,7 +237,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let name_session_map: std::collections::HashMap<String, String> =
             state.name_to_session.lock().unwrap().clone();
         let effects =
-            mention_action_to_effects(action, &target_name, &state.repo_name, &name_session_map);
+            mention_action_to_effects(action, &target_name, &state.project_name, &name_session_map);
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -254,7 +255,7 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
     );
 
     // Nudge the lead (unless the lead sent the message)
-    if !msg.from.eq_ignore_ascii_case(&state.repo_name) {
+    if !msg.from.eq_ignore_ascii_case(&state.project_name) {
         let should_nudge_lead = state.cooldowns.lock().unwrap().check_and_record(
             "chat_at_all_lead",
             &msg.id,

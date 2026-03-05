@@ -185,7 +185,7 @@ pub(super) async fn handle_auth_switch(
         // For per-project switch, check the project config's auth_profile (not the effective profile).
         // This is distinct from `active_profile_for_project_with_provider()`, which falls back to the
         // global profile. Using the wrong function here would create false positive "already on profile".
-        let path = crate::config::project_config_path(&state.repo_name);
+        let path = crate::config::project_config_path(state.paths.dir_key());
         if let Some(config) = crate::config::FullProjectConfig::load_from(&path)
             && crate::auth::project_profile_override(&config.project, provider) == Some(profile)
         {
@@ -227,7 +227,7 @@ pub(super) async fn handle_auth_switch(
         }
     } else {
         // Per-project switch: update this project's config
-        let path = crate::config::project_config_path(&state.repo_name);
+        let path = crate::config::project_config_path(state.paths.dir_key());
         let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
         crate::auth::set_project_profile_override(
             &mut config.project,
@@ -253,14 +253,14 @@ pub(super) async fn handle_auth_switch(
     let running_coworkers: Vec<crate::coworker::Coworker> =
         filter_coworkers_by_provider(&state.coworkers.list(), provider)
             .into_iter()
-            .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.repo_name))
+            .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.project_name))
             .collect();
 
     let current_lead = state
         .coworkers
         .list()
         .into_iter()
-        .find(|cw| super::helpers::is_project_lead(&cw.name, &state.repo_name));
+        .find(|cw| super::helpers::is_project_lead(&cw.name, &state.project_name));
     let current_lead_provider = current_lead.as_ref().map(|cw| cw.provider);
 
     let shutdown_count = running_coworkers.len();
@@ -334,7 +334,7 @@ pub(super) async fn handle_auth_switch(
     // Re-launch lead only if it currently runs on the switched provider.
     // Target provider always comes from role-based config (lead provider).
     let configured_lead_provider = crate::config::get_execution_provider_for_role(
-        &state.repo_name,
+        state.paths.dir_key(),
         crate::config::ExecutionRole::Lead,
     );
     let lead_relaunch_status = if current_lead_provider == Some(provider) {
@@ -347,16 +347,16 @@ pub(super) async fn handle_auth_switch(
                 state.coworkers.deregister(lead_name);
             }
         }
-        let mut lead_config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
+        let mut lead_config = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
         lead_config.auth_provider = configured_lead_provider;
         lead_config.model = super::helpers::resolve_model_for_role(
-            &state.repo_name,
+            state.paths.dir_key(),
             lead_config.auth_provider,
             &lead_config.role,
         );
         lead_config.auth_profile_dir =
             Some(crate::auth::active_profile_dir_for_project_with_provider(
-                &state.repo_name,
+                state.paths.dir_key(),
                 configured_lead_provider,
             ));
         match state.spawn_coworker(&lead_config).await {
@@ -384,10 +384,10 @@ pub(super) async fn handle_auth_switch(
             coworker,
             &reviewer_pr_by_name,
             &channel_lead_session_names,
-            &state.repo_name,
+            state.paths.dir_key(),
         );
         let target_provider =
-            crate::config::get_execution_provider_for_role(&state.repo_name, role);
+            crate::config::get_execution_provider_for_role(state.paths.dir_key(), role);
         let resume_compatible = can_resume_between_providers(coworker.provider, target_provider);
 
         let mut config = match role {
@@ -397,7 +397,7 @@ pub(super) async fn handle_auth_switch(
                         // restart_count=0: auth rotation is not a restart, fresh context
                         crate::launch::LaunchConfig::reviewer(
                             coworker.name.clone(),
-                            &state.repo_name,
+                            state.paths.dir_key(),
                             pr_number,
                             0,
                             target_provider,
@@ -420,15 +420,15 @@ pub(super) async fn handle_auth_switch(
                     }
                     reviewer
                 } else if resume_compatible {
-                    build_coworker_relaunch_config(coworker, &state.repo_name)
+                    build_coworker_relaunch_config(coworker, state.paths.dir_key())
                 } else {
-                    build_fresh_coworker_relaunch_config(coworker, &state.repo_name, None)
+                    build_fresh_coworker_relaunch_config(coworker, state.paths.dir_key(), None)
                 }
             }
             crate::config::ExecutionRole::ChannelLead => {
                 let mut channel_lead = crate::launch::LaunchConfig::channel_lead(
                     coworker.name.clone(),
-                    &state.repo_name,
+                    state.paths.dir_key(),
                     if resume_compatible {
                         crate::launch::SessionMode::Resume
                     } else {
@@ -439,10 +439,12 @@ pub(super) async fn handle_auth_switch(
                 channel_lead.model = coworker.model.clone();
                 channel_lead
             }
-            _ if resume_compatible => build_coworker_relaunch_config(coworker, &state.repo_name),
+            _ if resume_compatible => {
+                build_coworker_relaunch_config(coworker, state.paths.dir_key())
+            }
             _ => build_fresh_coworker_relaunch_config(
                 coworker,
-                &state.repo_name,
+                state.paths.dir_key(),
                 task_id_by_coworker
                     .get(&coworker.name.to_lowercase())
                     .map(String::as_str),
@@ -452,10 +454,13 @@ pub(super) async fn handle_auth_switch(
             config.working_dir = Some(std::path::PathBuf::from(&coworker.working_dir));
         }
         config.auth_provider = target_provider;
-        config.model =
-            super::helpers::resolve_model_for_role(&state.repo_name, target_provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            target_provider,
+            &config.role,
+        );
         config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
-            &state.repo_name,
+            state.paths.dir_key(),
             target_provider,
         ));
 
@@ -556,7 +561,7 @@ pub(super) async fn handle_auth_pool_toggle(
         );
     }
 
-    let path = crate::config::project_config_path(&state.repo_name);
+    let path = crate::config::project_config_path(state.paths.dir_key());
     let mut config = crate::config::FullProjectConfig::load_from(&path).unwrap_or_default();
 
     // P1: Only initialize the list when enabling. When disabling, operate on

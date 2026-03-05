@@ -106,7 +106,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             coworkers_with_active_tools: &active_tool_guards,
             now_utc: snap.now_utc,
             minimum_lifetime: MINIMUM_COWORKER_LIFETIME,
-            repo_name: &snap.repo_name,
+            repo_name: &snap.project_name,
             channel_lead_names: &channel_lead_names,
             reviewing_phase_coworkers: &snap.reviewer.reviewing_phase_coworkers,
         };
@@ -212,7 +212,7 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
             .as_deref()
             .and_then(|id| snap.task_channel.get(id))
             .cloned()
-            .unwrap_or_else(|| snap.repo_name.clone());
+            .unwrap_or_else(|| snap.project_name.clone());
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerIdle {
                 channel: idle_channel,
@@ -321,7 +321,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                     auto_output: false,
                 });
                 effects.push(Effect::nudge_channel_lead(
-                    &snap.repo_name,
+                    &snap.project_name,
                     format!(
                         "Task !{} has hit the stuck restart safety cap ({} in {} minutes). Please investigate manually.",
                         restart.task_id,
@@ -363,7 +363,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
         // Emit a workflow event so channel scripts can react to the stuck detection.
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
-                channel: channel.clone().unwrap_or_else(|| snap.repo_name.clone()),
+                channel: channel.clone().unwrap_or_else(|| snap.project_name.clone()),
                 task_id: Some(restart.task_id.clone()),
                 coworker: restart.name.clone(),
             },
@@ -371,7 +371,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
 
         let mut config = crate::launch::LaunchConfig::coworker(
             restart.name.clone(),
-            state.repo_name.clone(),
+            state.paths.dir_key().to_string(),
             crate::launch::SessionMode::Fresh,
             Some(prompt),
         );
@@ -573,7 +573,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             auto_output: false,
         });
         effects.push(Effect::nudge_channel_lead(
-            &snap.repo_name,
+            &snap.project_name,
             format!(
                 "Reviewer {} is stuck on PR #{} after {} restarts. Please investigate.",
                 name, pr_number, restart_count
@@ -669,7 +669,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             auto_output: false,
         });
         effects.push(Effect::nudge_channel_lead(
-            &snap.repo_name,
+            &snap.project_name,
             format!(
                 "Reviewer {} failed to post a review for PR #{} after {} attempts. \
                  Escalated to ops — please investigate.",
@@ -1061,14 +1061,14 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
         ));
         // Restart the project lead immediately (don't wait for ensure_lead_alive
         // cooldown), so the user-facing lead recovers within the same tick.
-        if name.eq_ignore_ascii_case(&snap.repo_name) {
-            let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
+        if name.eq_ignore_ascii_case(&snap.project_name) {
+            let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
             config.model = super::helpers::resolve_model_for_role(
-                &snap.repo_name,
+                &snap.dir_key,
                 config.auth_provider,
                 &config.role,
             );
-            let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
+            let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
             if lead_wt.exists() {
                 config.working_dir = Some(lead_wt);
             }
@@ -1138,7 +1138,7 @@ pub(super) async fn check_and_respawn_dead_processes(
 
         let mut config = crate::launch::LaunchConfig::coworker(
             respawn.name.clone(),
-            state.repo_name.clone(),
+            state.paths.dir_key().to_string(),
             crate::launch::SessionMode::Fresh,
             Some(prompt),
         );
@@ -1185,7 +1185,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         .coworkers
         .active_coworkers
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
+        .any(|c| c.name.eq_ignore_ascii_case(&snap.project_name));
 
     if lead_registered {
         return vec![];
@@ -1196,7 +1196,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if snap
         .coworkers
         .attached_coworkers
-        .contains_key(&snap.repo_name.to_lowercase())
+        .contains_key(&snap.project_name.to_lowercase())
     {
         return vec![];
     }
@@ -1207,7 +1207,7 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     if let Some(stop_time) = snap
         .coworkers
         .coworker_stop_times
-        .get(&snap.repo_name.to_lowercase())
+        .get(&snap.project_name.to_lowercase())
     {
         let since_stop = snap.now_utc.signed_duration_since(*stop_time);
         if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
@@ -1222,10 +1222,10 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     warn!("Lead session is not running — respawning");
 
-    let mut config = crate::launch::LaunchConfig::lead(&snap.repo_name, None);
+    let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
     config.model =
-        super::helpers::resolve_model_for_role(&snap.repo_name, config.auth_provider, &config.role);
-    let lead_wt = crate::paths::lead_worktree_path(&snap.repo_name);
+        super::helpers::resolve_model_for_role(&snap.dir_key, config.auth_provider, &config.role);
+    let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
     }
@@ -1257,7 +1257,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     if snap
         .coworkers
         .attached_coworkers
-        .contains_key(&snap.repo_name.to_lowercase())
+        .contains_key(&snap.project_name.to_lowercase())
     {
         return vec![];
     }
@@ -1267,7 +1267,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
         .coworkers
         .active_coworkers
         .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
+        .find(|c| c.name.eq_ignore_ascii_case(&snap.project_name));
 
     let lead = match lead {
         Some(l) => l,
@@ -1278,7 +1278,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     let start_time = match snap
         .coworkers
         .coworker_start_times
-        .get(&snap.repo_name.to_lowercase())
+        .get(&snap.project_name.to_lowercase())
     {
         Some(t) => t,
         None => return vec![],
@@ -1355,7 +1355,7 @@ pub(super) async fn check_and_fire_reminders(
     build_reminder_effects(
         &ps.reminders.reminders,
         &open_pr_coworkers,
-        &snap.repo_name,
+        &snap.dir_key,
         &snap.default_channel,
     )
 }
@@ -1364,20 +1364,20 @@ pub(super) async fn check_and_fire_reminders(
 fn build_reminder_effects(
     reminders: &[crate::reminders::Reminder],
     open_pr_coworkers: &[String],
-    repo_name: &str,
+    dir_key: &str,
     default_channel: &str,
 ) -> Vec<Effect> {
     let fired: Vec<&crate::reminders::Reminder> = reminders
         .iter()
         .filter(|r| !r.fired && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers))
         .collect();
-    effects_for_fired_reminders(&fired, repo_name, default_channel)
+    effects_for_fired_reminders(&fired, dir_key, default_channel)
 }
 
 /// Build effects for reminders that have already been evaluated as firing.
 fn effects_for_fired_reminders(
     fired: &[&crate::reminders::Reminder],
-    repo_name: &str,
+    dir_key: &str,
     default_channel: &str,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
@@ -1405,7 +1405,7 @@ fn effects_for_fired_reminders(
     if !fired_ids.is_empty() {
         effects.push(Effect::MarkRemindersFired {
             fired_ids,
-            repo_name: repo_name.to_string(),
+            dir_key: dir_key.to_string(),
         });
     }
 
@@ -1586,7 +1586,7 @@ fn build_reviewer_respawn_effects(
     let mut effects = Vec::new();
 
     let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-    let wt_path = crate::paths::worktrees_dir_for_repo(&snap.repo_name).join(&worktree_id);
+    let wt_path = crate::paths::worktrees_dir_for_repo(&snap.dir_key).join(&worktree_id);
 
     // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
     if let Some(&comment_id) = snap
@@ -1597,7 +1597,7 @@ fn build_reviewer_respawn_effects(
         let repo_full_name = format!(
             "{}/{}",
             snap.repo_owner.as_deref().unwrap_or("unknown"),
-            snap.repo_name
+            snap.project_name
         );
         let abandoned_body = format!(
             "<!-- midtown: midtown -->\n\n\
@@ -1616,12 +1616,12 @@ fn build_reviewer_respawn_effects(
     }
 
     let reviewer_provider = crate::config::get_execution_provider_for_role(
-        &snap.repo_name,
+        &snap.dir_key,
         crate::config::ExecutionRole::Reviewer,
     );
     let mut config = crate::launch::LaunchConfig::reviewer(
         name.to_string(),
-        &snap.repo_name,
+        &snap.dir_key,
         pr_number,
         new_restart_count,
         reviewer_provider,

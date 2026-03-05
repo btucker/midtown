@@ -164,7 +164,7 @@ fn make_test_state() -> (
     let state = DaemonState::new(
         "/tmp/test-rpc-session.sock".into(),
         cm,
-        "test-repo".to_string(),
+        crate::paths::ProjectPaths::with_project_name("test-repo", "test-repo"),
         vec![base_dir],
         channel_router,
         None,
@@ -822,7 +822,7 @@ async fn test_handle_session_fork_returns_pending_during_spawn_window() {
 }
 
 /// Channel resolution: when `channel_hint` is None AND the session has no channel
-/// field, the fork should fall back to `state.repo_name` (the main channel).
+/// field, the fork should fall back to `state.project_name` (the main channel).
 /// This is the non-channel-lead case — e.g. the project lead forking.
 #[tokio::test]
 async fn test_create_fork_session_falls_back_to_repo_name() {

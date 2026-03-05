@@ -445,8 +445,11 @@ pub(crate) struct DaemonState {
     coworker_records: tokio::sync::RwLock<HashMap<String, crate::rules::CoworkerRecord>>,
     /// Tracker to avoid spamming the same PR issues
     pr_issue_tracker: Mutex<PrIssueTracker>,
-    /// Repository name (primary repo)
-    repo_name: String,
+    /// Logical project name (e.g., "midtown"). Used for channel names,
+    /// session identity, display, team names.
+    project_name: String,
+    /// Consolidated project paths + filesystem dir_key.
+    paths: crate::paths::ProjectPaths,
     /// Repository owner (extracted from git remote URL at startup).
     /// Used by pure decision functions to determine if a PR is authored by the lead.
     repo_owner: Option<String>,
@@ -809,7 +812,10 @@ impl DaemonState {
     /// Called when a user message arrives while the lead is dead.
     pub(crate) fn clear_lead_respawn_cooldown(&self) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
-        if stop_times.remove(&self.repo_name.to_lowercase()).is_some() {
+        if stop_times
+            .remove(&self.project_name.to_lowercase())
+            .is_some()
+        {
             tracing::info!("Cleared lead respawn cooldown — user message while lead is dead");
         }
     }
@@ -885,7 +891,7 @@ impl DaemonState {
                 ps.channel_lead_sessions
                     .entry(ops_channel.to_string())
                     .or_insert_with(String::new);
-                if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                     tracing::error!(
                         "Failed to save daemon state before spawning ops channel lead: {}",
                         e
@@ -895,7 +901,7 @@ impl DaemonState {
 
             let config = crate::launch::LaunchConfig::channel_lead(
                 ops_channel,
-                &self.repo_name,
+                self.paths.dir_key(),
                 session_mode,
                 "",
             );
@@ -908,7 +914,7 @@ impl DaemonState {
                     let mut ps = self.persistent_state.lock().await;
                     ps.channel_lead_sessions
                         .insert(ops_channel.to_string(), session_id);
-                    if let Err(e) = ps.save_for_repo(&self.repo_name) {
+                    if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                         tracing::error!(
                             "Failed to save daemon state after ops channel lead spawn: {}",
                             e
@@ -1007,7 +1013,7 @@ impl DaemonState {
         // Clear the inbox for this name so the next session that gets
         // allocated this name does not inherit unread messages from this session.
         {
-            let team_name = crate::mailbox::team_name_for_repo(&self.repo_name);
+            let team_name = crate::mailbox::team_name_for_repo(&self.project_name);
             if let Err(e) = crate::mailbox::clear_inbox(&team_name, name) {
                 warn!(
                     "cleanup_coworker_state: failed to clear inbox for '{}': {}",
@@ -1075,7 +1081,7 @@ impl DaemonState {
                 changed = true;
             }
 
-            if changed && let Err(e) = ps.save_for_repo(&self.repo_name) {
+            if changed && let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                 tracing::warn!(
                     "Failed to save persistent state after cleanup for coworker '{}': {}",
                     name,
@@ -1112,7 +1118,7 @@ impl DaemonState {
         &self,
         config: &crate::launch::LaunchConfig,
     ) -> Option<String> {
-        let execution = crate::config::get_project_execution_config(&self.repo_name);
+        let execution = crate::config::get_project_execution_config(self.paths.dir_key());
         let pool = match &config.role {
             crate::launch::CoworkerRole::Coworker => execution.coworker_profiles,
             crate::launch::CoworkerRole::Reviewer => execution.reviewer_profiles,
@@ -1138,7 +1144,7 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                helpers::is_non_lead_coworker(&cw.name, &self.repo_name, channel_lead_names)
+                helpers::is_non_lead_coworker(&cw.name, &self.project_name, channel_lead_names)
             })
             .count();
         non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
@@ -1158,7 +1164,7 @@ impl DaemonState {
             .list_running()
             .iter()
             .filter(|cw| {
-                helpers::is_non_lead_coworker(&cw.name, &self.repo_name, channel_lead_names)
+                helpers::is_non_lead_coworker(&cw.name, &self.project_name, channel_lead_names)
             })
             .count();
         non_lead_count >= self.max_coworkers
@@ -1288,7 +1294,7 @@ impl DaemonState {
     fn new(
         socket_path: PathBuf,
         coworkers: CoworkerManager,
-        repo_name: String,
+        paths: crate::paths::ProjectPaths,
         all_repo_paths: Vec<PathBuf>,
         channel_router: crate::ChannelRouter,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
@@ -1297,14 +1303,17 @@ impl DaemonState {
         default_branch: String,
         shutdown_tx: broadcast::Sender<()>,
     ) -> crate::Result<Self> {
+        let dir_key = paths.dir_key();
+        let project_name = paths.project_name().to_string();
+
         // Load unified persistent state (migrates from legacy files if needed)
-        let persistent_state = state::DaemonPersistentState::load_for_repo(&repo_name)
-            .unwrap_or_else(|e| {
+        let persistent_state =
+            state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_else(|e| {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
 
-        let user_display_name = config::get_user_display_name_for_project(&repo_name);
+        let user_display_name = config::get_user_display_name_for_project(dir_key);
 
         // Extract repo owner from git remote URL (once at startup, no API call needed).
         // Used by pure decision functions to determine if a PR is lead-authored.
@@ -1325,8 +1334,8 @@ impl DaemonState {
             info!("Detected repo owner: {}", owner);
         }
 
-        // Clone repo_name for session_manager before moving it into Self
-        let session_manager_repo_name = repo_name.clone();
+        // Clone dir_key for session_manager before moving paths into Self
+        let session_manager_repo_name = dir_key.to_string();
 
         // Build NamePool from all known coworker names and restore state from persisted sessions.
         let all_names: Vec<&str> = crate::coworker::AVENUE_NAMES
@@ -1383,7 +1392,8 @@ impl DaemonState {
             socket_path,
             coworker_records: tokio::sync::RwLock::new(HashMap::new()),
             pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
-            repo_name,
+            project_name,
+            paths,
             repo_owner,
             default_branch,
             all_repo_paths,
@@ -1486,14 +1496,14 @@ impl DaemonState {
                         .entry(email.clone())
                         .or_default()
                         .last_used_at = Some(chrono::Utc::now());
-                    let _ = ps.save_for_repo(&self.repo_name);
+                    let _ = ps.save_for_repo(self.paths.dir_key());
                 }
                 c.auth_profile_dir = Some(crate::auth::profile_dir_for(c.auth_provider, &email));
             } else {
                 // No pool configured or all profiles limited — fall back to single profile.
                 c.auth_profile_dir =
                     Some(crate::auth::active_profile_dir_for_project_with_provider(
-                        &self.repo_name,
+                        self.paths.dir_key(),
                         c.auth_provider,
                     ));
             }
@@ -1521,7 +1531,7 @@ impl DaemonState {
         let (working_dir, launch_config) = self.coworkers.prepare_spawn(&config)?;
 
         // Build headless config from the unified launch config
-        let mut headless_config = launch_config.to_headless_config(&self.repo_name);
+        let mut headless_config = launch_config.to_headless_config(&self.paths);
         headless_config.cwd = Some(working_dir.clone());
 
         // Write role-appropriate settings file for Claude-platform sessions.
@@ -1711,7 +1721,7 @@ impl DaemonState {
                     ..Default::default()
                 },
             );
-            if let Err(e) = ps.save_for_repo(&self.repo_name) {
+            if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                 warn!("Failed to save persistent state after spawn: {}", e);
             }
         }
@@ -1850,10 +1860,11 @@ impl DaemonState {
     /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
     /// the disk-based reader cannot see coworker task lists.
     pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
-        let mut busy: HashSet<String> = crate::tasks::get_busy_coworkers_for_repo(&self.repo_name)
-            .into_iter()
-            .map(|n| n.to_lowercase())
-            .collect();
+        let mut busy: HashSet<String> =
+            crate::tasks::get_busy_coworkers_for_repo(self.paths.dir_key())
+                .into_iter()
+                .map(|n| n.to_lowercase())
+                .collect();
         busy.extend(self.get_busy_coworker_names());
         busy.into_iter().collect()
     }
@@ -2154,21 +2165,21 @@ impl DaemonState {
     /// First tries the headless session_manager path (lead running headless).
     /// Falls back to the headed intercom queue (lead attached interactively).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_alive(&self.repo_name).await {
+        if self.session_manager.is_alive(&self.project_name).await {
             if let Err(e) = self
                 .session_manager
-                .send_message(&self.repo_name, message)
+                .send_message(&self.project_name, message)
                 .await
             {
                 tracing::debug!(
                     "Failed to nudge lead via session_manager ({}), falling back to headed intercom",
                     e
                 );
-                self.enqueue_headed_nudge(&self.repo_name, message).await;
+                self.enqueue_headed_nudge(&self.project_name, message).await;
             }
         } else {
             // Lead is attached interactively — use headed intercom
-            self.enqueue_headed_nudge(&self.repo_name, message).await;
+            self.enqueue_headed_nudge(&self.project_name, message).await;
         }
     }
 }
@@ -2646,7 +2657,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
             }
         }
 
-        persistent.save_for_repo(&state.repo_name)?;
+        persistent.save_for_repo(state.paths.dir_key())?;
         info!(
             "Persisted {} running session(s); {} total session record(s) retained",
             running_count,
@@ -2669,7 +2680,7 @@ async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
 
     // For NoteReviewTick, populate stale channel notes (hourly, not on hot path)
     if matches!(event, events::DaemonEvent::NoteReviewTick) {
-        let base_dir = crate::paths::projects_dir_for_repo(&snap.repo_name);
+        let base_dir = crate::paths::projects_dir_for_repo(&snap.dir_key);
         let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
         snap.stale_channel_notes =
             crate::channel::find_stale_notes(&base_dir, snap.now_utc, threshold);
@@ -2813,13 +2824,26 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             .unwrap_or_else(|| "default".to_string())
     });
 
-    // Load project config once — used for project name, repo paths, and worktree managers.
-    let full_project_config = crate::config::load_full_project_config(&repo_name);
+    // Construct ProjectPaths — carries both dir_key and project_name.
+    let paths = crate::paths::ProjectPaths::new(&repo_name);
+    let project_name = config
+        .project_name
+        .clone()
+        .unwrap_or_else(|| paths.project_name().to_string());
+    // Re-create paths with the final project_name (may differ from auto-derived if --project was used)
+    let paths = crate::paths::ProjectPaths::with_project_name(paths.dir_key(), &project_name);
+    info!(
+        "Project: dir_key={}, project_name={}",
+        paths.dir_key(),
+        paths.project_name()
+    );
 
-    // Derive project name: explicit --project flag > config.toml [project].name > repo name.
+    // Load project config once — used for project name, repo paths, and worktree managers.
+    let full_project_config = crate::config::load_full_project_config(paths.dir_key());
+
     // Create channel router for the repo
-    let channel_base_dir = crate::paths::projects_dir_for_repo(&repo_name);
-    let channel_router = crate::ChannelRouter::new(&channel_base_dir, &repo_name);
+    let channel_base_dir = crate::paths::projects_dir_for_repo(paths.dir_key());
+    let channel_router = crate::ChannelRouter::new(&channel_base_dir, paths.project_name());
     info!("Channel base: {}", channel_base_dir.display());
 
     // Create seed channels if configured
@@ -2909,7 +2933,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         let webhook_config = WebhookConfig {
             port,
             secret: config.webhook_secret.clone(),
-            repo: repo_name.clone(),
+            repo: paths.project_name().to_string(),
         };
         match start_webhook_server(
             webhook_config,
@@ -2951,7 +2975,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let state = Arc::new(DaemonState::new(
         config.socket_path.clone(),
         coworker_manager,
-        repo_name.clone(),
+        paths.clone(),
         all_repo_paths,
         channel_router,
         web_updates_tx,
@@ -2968,7 +2992,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     );
 
     // Recover coworker workflow state from their state files across daemon restarts.
-    startup::recover_coworker_records(&repo_name, &state.coworkers, &state.coworker_records).await;
+    startup::recover_coworker_records(paths.dir_key(), &state.coworkers, &state.coworker_records)
+        .await;
 
     // Collect PIDs of sessions we intend to recover BEFORE running the zombie scanner.
     // The scanner must skip these — they are intentionally detached processes that
@@ -3004,12 +3029,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
     // Check Claude auth status before spawning any sessions.
     // Gives immediate feedback in the log if auth is expired/missing.
-    startup::check_claude_auth_status(&repo_name);
+    startup::check_claude_auth_status(paths.dir_key());
 
     // Recover coworker sessions from session records. Channel leads are recovered
     // separately below.
     let (session_recovery_effects, recovered_session_ids) =
-        startup::recover_from_session_records(&state.persistent_state, &repo_name).await;
+        startup::recover_from_session_records(&state.persistent_state, paths.dir_key()).await;
     if !session_recovery_effects.is_empty() {
         info!(
             "Executing {} session record recovery effect(s)",
@@ -3023,7 +3048,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let _ = startup::recover_channel_lead_session_mappings(&state.persistent_state).await;
     {
         let ps = state.persistent_state.lock().await;
-        if let Err(e) = ps.save_for_repo(&repo_name) {
+        if let Err(e) = ps.save_for_repo(paths.dir_key()) {
             warn!(
                 "Failed to save recovered channel lead mappings on startup: {}",
                 e
@@ -3039,7 +3064,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     startup::clear_stale_running_sessions(&state.persistent_state, &recovered_session_ids).await;
     {
         let ps = state.persistent_state.lock().await;
-        if let Err(e) = ps.save_for_repo(&repo_name) {
+        if let Err(e) = ps.save_for_repo(paths.dir_key()) {
             warn!(
                 "Failed to save persistent state after clearing stale session flags: {}",
                 e
@@ -3261,7 +3286,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 if let Some(pr_number) = webhook_event.needs_review {
                     let mut ps = state.persistent_state.lock().await;
                     ps.github.record_webhook_event(pr_number);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to persist webhook event record: {}", e);
                     }
                     debug!(
@@ -3302,7 +3327,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         pr_effects.push(effects::Effect::SetTaskPr {
                             task_id: task_id.to_string(),
                             pr_number: pr_opened.pr_number,
-                            repo_name: state.repo_name.clone(),
+                            dir_key: state.paths.dir_key().to_string(),
                         });
                         info!(
                             "Auto-setting PR #{} association for task !{}",
@@ -3370,7 +3395,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             let task_id_str = task_id.to_string();
                             let task = crate::tasks::read_task_for_repo(
                                 &task_id_str,
-                                &state.repo_name,
+                                state.paths.dir_key(),
                             );
                             let ps = state.persistent_state.lock().await;
                             let channel = ps.task_channel.get(&task_id_str).cloned();
@@ -3387,7 +3412,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         let completion_effects = dispatch::build_task_completion_effects(
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
-                            &state.repo_name,
+                            state.paths.dir_key(),
                             task_channel,
                             task_event_ctx,
                         );
@@ -3506,7 +3531,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                     let mut ps = state.persistent_state.lock().await;
                     ps.ci_stats.record_duration(&duration.check_name, duration.duration_secs);
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save daemon-state.json after recording CI duration: {}", e);
                     }
                 }
@@ -3652,7 +3677,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
                 if needs_persist_save {
                     let ps = state.persistent_state.lock().await;
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("Failed to save persistent state after session_id backfill: {}", e);
                     }
                 }
@@ -3666,7 +3691,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let lead_effects = stream::process_lead_output(
                         &events,
                         &ps.channel_lead_sessions,
-                        &state.repo_name,
+                        &state.project_name,
                         &fork_bound_channels,
                     );
 
@@ -3680,7 +3705,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         .unwrap()
                         .keys()
                         .filter(|name| {
-                            *name != &state.repo_name
+                            *name != &state.project_name
                                 && !ps.channel_lead_sessions.contains_key(*name)
                                 && !fork_bound_channels.contains_key(*name)
                         })
@@ -3693,7 +3718,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let universal_effects = stream::process_universal_events(
                         &events,
                         &ps.channel_lead_sessions,
-                        &state.repo_name,
+                        &state.project_name,
                         &fork_bound_channels,
                         &fork_bound_threads,
                         &coworker_names,
@@ -3805,7 +3830,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 );
                             }
                         }
-                        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                             warn!("Failed to save persistent state after clearing session_id: {}", e);
                         }
                     }
@@ -3957,7 +3982,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Periodic channel log rotation (rotates all active channels)
             _ = channel_rotation_interval.tick() => {
-                let base_dir = crate::paths::projects_dir_for_repo(&state.repo_name);
+                let base_dir = state.paths.base_dir().to_path_buf();
                 let all_channels = crate::channel::Channel::list(&base_dir, false, None)
                     .unwrap_or_default();
                 for channel_info in all_channels {

@@ -26,7 +26,7 @@ pub(super) async fn handle_reminder_create(
         message.to_string(),
     );
 
-    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
         error!("Failed to save daemon-state.json: {}", e);
     }
 
@@ -72,7 +72,7 @@ pub(super) async fn handle_reminder_cancel(
 ) -> Response {
     let mut ps = state.persistent_state.lock().await;
     if ps.reminders.cancel(reminder_id) {
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             error!("Failed to save daemon-state.json: {}", e);
         }
         let msg = format!("Reminder {} cancelled.", reminder_id);

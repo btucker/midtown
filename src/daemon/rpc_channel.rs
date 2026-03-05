@@ -259,7 +259,7 @@ pub(super) async fn handle_channel_post(
 
     // Track last activity time for coworker (used for silent coworker detection)
     // and emit workflow events for channel messages.
-    if is_coworker_sender(from, &state.repo_name) {
+    if is_coworker_sender(from, &state.project_name) {
         let mut records = state.coworker_records.write().await;
         records
             .entry(from.to_string())
@@ -381,25 +381,25 @@ pub(super) async fn handle_channel_post(
             // so the user isn't left in silence. We check both headless (session_manager)
             // and interactive (attached_coworkers) paths — if either is live, the lead
             // is reachable and we skip the expedite.
-            let lead_is_dead = !state.session_manager.is_alive(&state.repo_name).await
+            let lead_is_dead = !state.session_manager.is_alive(&state.project_name).await
                 && !state
                     .attached_coworkers
                     .lock()
                     .unwrap()
-                    .contains_key(&state.repo_name.to_lowercase());
+                    .contains_key(&state.project_name.to_lowercase());
             if lead_is_dead {
                 let should_expedite = {
                     let cooldowns = state.cooldowns.lock().unwrap();
                     cooldowns.check(
                         "lead_dead_expedite",
-                        &state.repo_name,
+                        &state.project_name,
                         Duration::from_secs(30),
                     )
                 };
                 if should_expedite {
                     {
                         let mut cooldowns = state.cooldowns.lock().unwrap();
-                        cooldowns.record("lead_dead_expedite", &state.repo_name);
+                        cooldowns.record("lead_dead_expedite", &state.project_name);
                     }
                     info!("Lead is dead — expediting respawn on user message");
                     state.expedite_lead_respawn_on_user_message().await;
@@ -426,9 +426,9 @@ pub(super) async fn handle_channel_post(
 
     // Nudge the Lead when a coworker explicitly mentions @lead or @{project_name}
     let content_lower = content.to_lowercase();
-    let project_mention = format!("@{}", state.repo_name).to_lowercase();
+    let project_mention = format!("@{}", state.project_name).to_lowercase();
     if !state.is_user_sender(from)
-        && is_coworker_sender(from, &state.repo_name)
+        && is_coworker_sender(from, &state.project_name)
         && (content_lower.contains("@lead") || content_lower.contains(&project_mention))
     {
         // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
@@ -454,7 +454,7 @@ pub(super) async fn handle_channel_post(
                      To read recent thread context:\n  \
                      midtown channel read --last 50 --channel {channel_name}",
                     from,
-                    state.repo_name,
+                    state.project_name,
                     msg.thread_anchor_id(),
                     summary
                 )
@@ -462,14 +462,14 @@ pub(super) async fn handle_channel_post(
                 format!(
                     "{} mentioned @{} ({}): {}",
                     from,
-                    state.repo_name,
+                    state.project_name,
                     msg.thread_anchor_id(),
                     summary
                 )
             };
             info!(
                 "Nudging Lead about @{} mention from {}",
-                state.repo_name, from
+                state.project_name, from
             );
             state.nudge_lead(&nudge_msg).await;
         }
@@ -596,7 +596,7 @@ pub(super) async fn handle_channel_archive(
                         "Removed channel lead session for archived channel '{}'",
                         name
                     );
-                    if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save daemon state after removing channel lead: {}",
                             e
@@ -746,7 +746,7 @@ pub(super) async fn handle_channel_rename(
             }
         }
 
-        if let Err(e) = ps.save_for_repo(&state.repo_name) {
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!(
                 "Failed to save daemon state after renaming channel '{}' to '{}': {}",
                 old, new, e
@@ -790,7 +790,8 @@ pub(super) fn handle_channel_list(
     state: &DaemonState,
 ) -> Response {
     let base_dir = state.channel_router.base_dir();
-    let channels = match crate::Channel::list(base_dir, include_archived, Some(&state.repo_name)) {
+    let channels = match crate::Channel::list(base_dir, include_archived, Some(&state.project_name))
+    {
         Ok(ch) => ch,
         Err(e) => {
             error!("Failed to list channels: {}", e);

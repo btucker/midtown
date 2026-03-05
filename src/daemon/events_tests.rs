@@ -117,7 +117,7 @@ fn make_assign_and_spawn(name: &str) -> Effect {
     Effect::AssignAndSpawn {
         task_id: "1".to_string(),
         owner: name.to_string(),
-        repo_name: "test".to_string(),
+        dir_key: "test".to_string(),
         config,
         on_success: vec![],
         on_failure: vec![],
@@ -185,7 +185,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
     let spawn1 = Effect::AssignAndSpawn {
         task_id: "123".to_string(),
         owner: "lexington".to_string(),
-        repo_name: "test".to_string(),
+        dir_key: "test".to_string(),
         config: config1,
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
@@ -205,7 +205,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
     let spawn2 = Effect::AssignAndSpawn {
         task_id: "456".to_string(),
         owner: "lexington".to_string(),
-        repo_name: "test".to_string(),
+        dir_key: "test".to_string(),
         config: config2,
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
@@ -333,7 +333,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
     let dispatch_spawn = Effect::AssignAndSpawn {
         task_id: "123".to_string(),
         owner: "york".to_string(),
-        repo_name: "test".to_string(),
+        dir_key: "test".to_string(),
         config: config_york,
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
@@ -458,7 +458,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
     let assign_spawn = Effect::AssignAndSpawn {
         task_id: "123".to_string(),
         owner: "york".to_string(),
-        repo_name: "test".to_string(),
+        dir_key: "test".to_string(),
         config: config_york,
         on_success: vec![],
         on_failure: vec![],

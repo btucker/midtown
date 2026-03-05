@@ -194,20 +194,43 @@ Prompts are assembled from composable markdown files in `agents/` and loaded at 
 
 **Task-based @mention routing:** When a lead @mentions a coworker and includes a task ID (`!N`), the daemon's `route_mentions()` in `chat.rs` resolves the actual session to nudge by looking up the task owner from the task system (`crate::tasks::get_in_progress_tasks_with_subjects_for_repo`). If the resolved owner is running, the nudge is routed to them instead of the @mentioned name — this ensures feedback reaches the correct session even if coworker names have been reassigned. Example: `@park !42 here's your review feedback` routes to whoever is working on task 42. Falls back to name-based routing when the task ID is not found or the owner is not running. **Note:** `Coworker.current_task` is a display-only field (always `None` in storage, populated dynamically for API responses); the task system file store is the authoritative source for task ownership.
 
+## Project Identity: `dir_key` vs `project_name`
+
+Two distinct identifiers travel through the codebase:
+
+| Concept | Example | Used for |
+|---------|---------|----------|
+| `dir_key` | `"midtown.nosync"` | Filesystem paths (`~/.midtown/projects/<dir_key>/`), config file lookup, task storage |
+| `project_name` | `"midtown"` | Channel names, session names, team names, lead identity checks, display |
+
+These are carried together in `ProjectPaths` (`src/paths.rs`), which consolidates ~20 path functions and both identifiers:
+
+```rust
+pub struct ProjectPaths { dir_key, project_name, base, state_base }
+```
+
+**Resolution**: `ProjectPaths::new(dir_key)` reads `[project].name` from `config.toml`. If not set, auto-derives by replacing dots with hyphens (`midtown.nosync` → `midtown-nosync`).
+
+**DaemonState** carries `paths: ProjectPaths` (for filesystem operations) and `project_name: String` (for identity). The old `repo_name` field is removed.
+
+**WorldSnapshot** carries both `dir_key` and `project_name` as separate fields. Decision functions use `snap.dir_key` for path/config/task operations and `snap.project_name` for identity checks. Old JSON fixtures with `repo_name` are supported via `#[serde(alias = "repo_name")]` on `dir_key`.
+
+**Effect enum** fields that carry the filesystem key are named `dir_key` (e.g., `CompleteTask { task_id, dir_key }`, `AssignAndSpawn { ..., dir_key, ... }`).
+
 ## Main Lead Session Identity
 
-The main lead session name equals the repo name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
+The main lead session name equals the project name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
 
-- **Spawn**: `LaunchConfig::lead()` sets `name = repo_name.clone()` (`src/launch.rs`)
-- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.repo_name` (`src/daemon/health.rs`)
+- **Spawn**: `LaunchConfig::lead()` sets `name` from the `dir_key` param (`src/launch.rs`)
+- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.project_name` (`src/daemon/health.rs`)
 - **Dispatch**: coworker-limit checks use `is_project_lead()` (`src/daemon/dispatch.rs`)
-- **Effects**: auto-detach suffix check and skip-filter use `state.repo_name` (`src/daemon/effects.rs`)
-- **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `repo_name.to_lowercase()`
-- **Attached key**: `attached_coworkers` entries for the lead are keyed by `repo_name` (lowercase)
+- **Effects**: auto-detach suffix check uses `state.project_name` (`src/daemon/effects.rs`)
+- **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `project_name.to_lowercase()`
+- **Attached key**: `attached_coworkers` entries for the lead are keyed by `project_name` (lowercase)
 
-All lead-identity checks use `helpers::is_project_lead(name, repo_name)` (`src/daemon/helpers.rs`), which accepts both the canonical repo name and the legacy `"lead"` string for backward compatibility with older sessions. This single helper is used by `rpc_coworker.rs`, `rpc_status.rs`, `dispatch.rs`, `mod.rs`, and `pr.rs` to ensure consistent behavior. The `coworkers.status` API (in `rpc_coworker.rs`) uses `is_lead_health_active(health, repo_name)` to check both health-map keys. Per-channel-lead activity is computed by `build_channel_leads_working()`, which maps each registered channel lead name to a bool via `is_session_actively_working()`.
+All lead-identity checks use `helpers::is_project_lead(name, project_name)` (`src/daemon/helpers.rs`), which accepts both the canonical project name and the legacy `"lead"` string for backward compatibility with older sessions. This single helper is used by `rpc_coworker.rs`, `rpc_status.rs`, `dispatch.rs`, `mod.rs`, and `pr.rs` to ensure consistent behavior. The `coworkers.status` API (in `rpc_coworker.rs`) uses `is_lead_health_active(health, project_name)` to check both health-map keys. Per-channel-lead activity is computed by `build_channel_leads_working()`, which maps each registered channel lead name to a bool via `is_session_actively_working()`.
 
-**Backward-compat guard — `is_project_lead()`**: In `helpers.rs`, `is_project_lead(name, repo_name)` encapsulates the two-condition check for lead sessions: it returns `true` if the name equals the repo name *or* the legacy literal `"lead"` (case-insensitive). All code that needs to identify or exclude the lead session should call this helper rather than inlining the two-condition check. Current callers: `handle_coworker_list()`, `handle_coworkers_status()`, `handle_coworker_report_state()` (all in `rpc_coworker.rs`), and `handle_status()` (`rpc_status.rs`).
+**Backward-compat guard — `is_project_lead()`**: In `helpers.rs`, `is_project_lead(name, project_name)` encapsulates the two-condition check for lead sessions: it returns `true` if the name equals the project name *or* the legacy literal `"lead"` (case-insensitive). All code that needs to identify or exclude the lead session should call this helper rather than inlining the two-condition check. Current callers: `handle_coworker_list()`, `handle_coworkers_status()`, `handle_coworker_report_state()` (all in `rpc_coworker.rs`), and `handle_status()` (`rpc_status.rs`).
 
 ## Provider Resolution
 

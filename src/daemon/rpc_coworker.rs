@@ -66,7 +66,7 @@ pub(super) async fn handle_coworker_spawn(
     };
 
     // Build headless launch config
-    let team = crate::mailbox::team_name_for_repo(&state.repo_name);
+    let team = crate::mailbox::team_name_for_repo(&state.project_name);
     let config = crate::launch::LaunchConfig {
         name,
         session_mode: if resume {
@@ -81,7 +81,7 @@ pub(super) async fn handle_coworker_spawn(
         team_name: Some(team),
         working_dir: None,
         model: super::helpers::resolve_model_for_role(
-            &state.repo_name,
+            state.paths.dir_key(),
             provider,
             &crate::launch::CoworkerRole::Coworker,
         ),
@@ -131,7 +131,7 @@ pub(super) async fn handle_lead_spawn(
     // Idempotent: if lead is already running, return success.
     // Project lead session name is repo-based ("midtown"), with legacy "lead"
     // retained only for backward compatibility.
-    if state.session_manager.is_alive(&state.repo_name).await
+    if state.session_manager.is_alive(&state.project_name).await
         || state.session_manager.is_alive("lead").await
     {
         return Response::success(
@@ -143,13 +143,14 @@ pub(super) async fn handle_lead_spawn(
         );
     }
 
-    let mut config = crate::launch::LaunchConfig::lead(&state.repo_name, None);
+    let mut config = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
     config.auth_provider = provider;
-    config.model = super::helpers::resolve_model_for_role(&state.repo_name, provider, &config.role);
+    config.model =
+        super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
 
     // Use the canonical lead worktree path so spawn_coworker uses it
     // instead of falling through to the legacy coworker-named path.
-    let lead_wt = crate::paths::lead_worktree_path(&state.repo_name);
+    let lead_wt = state.paths.lead_worktree();
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
     }
@@ -250,7 +251,7 @@ pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> 
         .coworkers
         .list()
         .iter()
-        .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.repo_name))
+        .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.project_name))
         .map(|cw| {
             // Look up current task from task storage (case-insensitive)
             let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
@@ -338,7 +339,7 @@ pub(super) async fn handle_coworker_report_state(
         if let Some(ref tid) = effective_task_id {
             if let Err(e) = crate::tasks::update_task_fields_for_repo(
                 tid,
-                &state.repo_name,
+                state.paths.dir_key(),
                 None,
                 None,
                 None,
@@ -365,7 +366,7 @@ pub(super) async fn handle_coworker_report_state(
     if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
         // Project lead must remain available for user interaction; ignore idle
         // self-reports instead of sending it on break.
-        if super::helpers::is_project_lead(name, &state.repo_name) {
+        if super::helpers::is_project_lead(name, &state.project_name) {
             info!(
                 "Project lead {} reported idle; keeping lead session active",
                 name
@@ -492,7 +493,7 @@ pub(super) async fn handle_coworker_report_state(
                     "Task !{} reported completed by {} with no PR — completing directly",
                     tid, name
                 );
-                match crate::tasks::complete_task_for_repo(tid, &state.repo_name) {
+                match crate::tasks::complete_task_for_repo(tid, state.paths.dir_key()) {
                     Err(e) => {
                         warn!("Failed to complete task !{}: {}", tid, e);
                         // Don't proceed with downstream cleanup (blocked_by,
@@ -501,7 +502,7 @@ pub(super) async fn handle_coworker_report_state(
                     }
                     Ok(()) => {
                         if let Err(e) =
-                            crate::tasks::clear_blocked_by_for_repo(tid, &state.repo_name)
+                            crate::tasks::clear_blocked_by_for_repo(tid, state.paths.dir_key())
                         {
                             warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
                         }
@@ -511,7 +512,7 @@ pub(super) async fn handle_coworker_report_state(
                             if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(tid) {
                                 ps.worktree_registry
                                     .mark_completed(&wt_id, chrono::Utc::now());
-                                if let Err(e) = ps.save_for_repo(&state.repo_name) {
+                                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                     warn!("Failed to save worktree completion timestamp: {}", e);
                                 }
                             }
@@ -742,7 +743,7 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
 
     // Source 2: task.pr field on disk (survives daemon restarts)
     // Must verify via GitHub API since task.pr is never cleared on PR close.
-    if let Some(task) = crate::tasks::read_task_for_repo(task_id, &state.repo_name)
+    if let Some(task) = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key())
         && let Some(pr_num) = task.pr
     {
         let repo_path = state.all_repo_paths.first().cloned();
@@ -827,7 +828,7 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
 
     // Read health once for both main-lead and per-channel-lead activity checks
     let health_guard = state.headless_health.read().unwrap();
-    let lead_working = is_lead_health_active(&health_guard, &state.repo_name);
+    let lead_working = is_lead_health_active(&health_guard, &state.project_name);
     let channel_leads_working = build_channel_leads_working(&health_guard, &channel_lead_names);
     drop(health_guard);
 
@@ -918,7 +919,7 @@ async fn build_coworkers_data(
             // The lead session itself is also excluded: it uses either the legacy
             // "lead" name or the canonical repo name (e.g., "midtown").
             if is_channel_lead(&cw.name, &channel_lead_names)
-                || super::helpers::is_project_lead(&cw.name, &state.repo_name)
+                || super::helpers::is_project_lead(&cw.name, &state.project_name)
             {
                 return None;
             }

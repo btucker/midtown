@@ -114,7 +114,8 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -275,7 +276,8 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -468,7 +470,8 @@ fn test_check_for_usage_limits_with_reset_time() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -584,7 +587,8 @@ fn test_check_for_usage_limits_already_scheduled() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -735,7 +739,8 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: chrono::Utc::now(),
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -763,8 +768,8 @@ fn ensure_lead_alive_respawns_missing_lead() {
     assert_eq!(effects.len(), 1, "Should spawn lead when missing");
     // After rename, lead session name = repo name (test-repo in test snapshots)
     assert!(
-        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
-        "Should spawn a lead config with the repo name"
+        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.project_name),
+        "Should spawn a lead config with the project name"
     );
 }
 
@@ -775,7 +780,7 @@ fn ensure_lead_alive_no_op_when_lead_registered() {
     // After rename, lead session name = repo name (test-repo in test snapshots)
     snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
-        name: snap.repo_name.clone(),
+        name: snap.project_name.clone(),
         status: CoworkerStatus::Running,
         working_dir: "/tmp/test".to_string(),
         started_at: chrono::Utc::now(),
@@ -795,7 +800,7 @@ fn ensure_lead_alive_cooldown_prevents_respawn_loop() {
     // Lead stopped 1 minute ago — within the 5-minute cooldown
     // Key is the repo name (not "lead") after rename
     snap.coworkers.coworker_stop_times.insert(
-        snap.repo_name.to_lowercase(),
+        snap.project_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(1),
     );
     let effects = ensure_lead_alive(&snap);
@@ -811,7 +816,7 @@ fn ensure_lead_alive_respawns_after_cooldown() {
     // Lead stopped 10 minutes ago — past the 5-minute cooldown.
     // Key is the repo name (lowercase) after the rename; using "lead" would not be found.
     snap.coworkers.coworker_stop_times.insert(
-        snap.repo_name.to_lowercase(),
+        snap.project_name.to_lowercase(),
         chrono::Utc::now() - chrono::Duration::minutes(10),
     );
     let effects = ensure_lead_alive(&snap);
@@ -828,7 +833,7 @@ fn ensure_lead_alive_skips_when_attached() {
     // After rename, lead is keyed by repo name (lowercase)
     snap.coworkers
         .attached_coworkers
-        .insert(snap.repo_name.to_lowercase(), chrono::Utc::now());
+        .insert(snap.project_name.to_lowercase(), chrono::Utc::now());
     let effects = ensure_lead_alive(&snap);
     assert!(
         effects.is_empty(),
@@ -854,8 +859,8 @@ fn ensure_lead_alive_respawns_immediately_when_stop_time_cleared() {
         "ensure_lead_alive should respawn immediately when no stop time exists"
     );
     assert!(
-        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
-        "Effect should be SpawnCoworker with repo name"
+        matches!(&effects[0], Effect::SpawnCoworker(config) if config.name == snap.project_name),
+        "Effect should be SpawnCoworker with project name"
     );
 }
 
@@ -993,7 +998,7 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
     let started = snap.now_utc - chrono::Duration::minutes(91);
     let lead = Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
-        name: snap.repo_name.clone(), // lead session name = repo name
+        name: snap.project_name.clone(), // lead session name = project name
         status: CoworkerStatus::Running,
         working_dir: "/tmp/test".to_string(),
         started_at: started,
@@ -1006,7 +1011,7 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
     snap.coworkers.active_coworkers.push(lead);
     snap.coworkers
         .coworker_start_times
-        .insert(snap.repo_name.to_lowercase(), started);
+        .insert(snap.project_name.to_lowercase(), started);
 
     let effects = maybe_refresh_lead_session(&snap);
     assert_eq!(
@@ -1019,7 +1024,7 @@ fn test_maybe_refresh_lead_session_triggers_when_old() {
         "First effect should be PostToChannel from midtown"
     );
     assert!(
-        matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == &snap.repo_name),
+        matches!(&effects[1], Effect::ShutdownCoworker { name, .. } if name == &snap.project_name),
         "Second effect should be ShutdownCoworker for the repo-named lead"
     );
 }
@@ -1355,15 +1360,16 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
     );
     let mut snap: super::snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+    snap.fixup_legacy_fields();
 
-    let lead_name = snap.repo_name.to_lowercase();
+    let lead_name = snap.project_name.to_lowercase();
 
     // Precondition: lead is not registered (dead)
     let lead_registered = snap
         .coworkers
         .active_coworkers
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case(&snap.repo_name));
+        .any(|c| c.name.eq_ignore_ascii_case(&snap.project_name));
     assert!(
         !lead_registered,
         "Lead should not be registered in snapshot"
@@ -1407,7 +1413,7 @@ fn snapshot_lead_not_responding_cooldown_blocks_respawn_until_cleared() {
         "ensure_lead_alive should respawn after stop time is cleared"
     );
     assert!(
-        matches!(&effects_after_clear[0], Effect::SpawnCoworker(config) if config.name == snap.repo_name),
+        matches!(&effects_after_clear[0], Effect::SpawnCoworker(config) if config.name == snap.project_name),
         "Effect should be SpawnCoworker with repo name (lead session name = repo name)"
     );
 }
@@ -1653,7 +1659,8 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: now,
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -1777,7 +1784,8 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         is_at_coworker_limit: false,
         is_at_dev_limit: false,
         now_utc: now,
-        repo_name: "test-repo".to_string(),
+        dir_key: "test-repo".to_string(),
+        project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
@@ -1853,7 +1861,8 @@ fn test_idle_shutdown_uses_process_health_when_active_tools_missing() {
 
     let mut snap = snapshot::minimal_snapshot_for_test();
     snap.now_utc = now;
-    snap.repo_name = "test-repo".to_string();
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
     snap.coworkers.active_coworkers = vec![coworker.clone()];
     snap.coworkers.running_coworkers = vec![coworker];
     snap.coworkers.coworker_snapshots = vec![cw_snap];
@@ -2183,8 +2192,9 @@ fn stuck_reviewer_no_events_detected_from_snapshot() {
     let fixture = include_str!(
         "../../tests/fixtures/snapshot/snapshot-reviewer-stuck-no-review-pr1338-20260220-011159.json"
     );
-    let snap: super::snapshot::WorldSnapshot =
+    let mut snap: super::snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
+    snap.fixup_legacy_fields();
 
     // Preconditions: both reviewers have been alive 31+ minutes with no stream events
     assert!(
@@ -2412,7 +2422,8 @@ fn check_and_restart_dead_reviewers_emits_respawn_and_escalation_in_same_tick() 
 #[test]
 fn unrecoverable_session_error_restarts_project_lead_immediately() {
     let mut snap = empty_snap();
-    snap.repo_name = "midtown".to_string();
+    snap.dir_key = "midtown".to_string();
+    snap.project_name = "midtown".to_string();
     snap.default_channel = "midtown".to_string();
     snap.health
         .tool_name_conflict_coworkers
@@ -2454,7 +2465,8 @@ fn unrecoverable_session_error_restarts_project_lead_immediately() {
 #[test]
 fn unrecoverable_session_error_does_not_force_spawn_for_non_lead() {
     let mut snap = empty_snap();
-    snap.repo_name = "midtown".to_string();
+    snap.dir_key = "midtown".to_string();
+    snap.project_name = "midtown".to_string();
     snap.health
         .tool_name_conflict_coworkers
         .insert("lexington".to_string());
@@ -2511,7 +2523,8 @@ fn test_idle_shutdown_emits_coworker_idle_workflow_event() {
     snap.coworkers.coworker_snapshots = vec![cw_snap];
     snap.name_session_map
         .insert("amsterdam".to_string(), "sess-abc-123".to_string());
-    snap.repo_name = "test-repo".to_string();
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
 
     // Give the coworker a task and channel
     snap.in_progress_tasks = vec![(
@@ -2593,7 +2606,8 @@ fn test_stuck_reviewer_restart_emits_coworker_stuck_workflow_event() {
     snap.pr.pr_task_associations.insert(99u64, "55".to_string());
     snap.task_channel
         .insert("55".to_string(), "proj-reviews".to_string());
-    snap.repo_name = "test-repo".to_string();
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
 
     let effects = check_and_restart_stuck_reviewers(&snap);
 

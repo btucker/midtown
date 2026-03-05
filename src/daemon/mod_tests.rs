@@ -1314,7 +1314,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::AssignAndSpawn {
             task_id: "874".to_string(),
             owner: "park".to_string(),
-            repo_name: "test-repo".to_string(),
+            dir_key: "test-repo".to_string(),
             config: crate::launch::LaunchConfig::coworker(
                 "park".to_string(),
                 "test-repo".to_string(),
@@ -1517,7 +1517,7 @@ fn make_cleanup_test_state() -> (
     let state = DaemonState::new(
         "/tmp/test-cleanup.sock".into(),
         cm,
-        "test-repo".to_string(),
+        crate::paths::ProjectPaths::with_project_name("test-repo", "test-repo"),
         vec![base_dir.clone()],
         channel_router,
         None,

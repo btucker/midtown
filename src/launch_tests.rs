@@ -4,6 +4,10 @@ use crate::launch::{CoworkerRole, LaunchConfig, SessionMode, inject_session_id_e
 use crate::paths;
 use std::fs;
 
+fn test_paths(dir_key: &str, project_name: &str) -> paths::ProjectPaths {
+    paths::ProjectPaths::with_project_name(dir_key, project_name)
+}
+
 #[test]
 fn test_launch_config_ops_channel_lead_model() {
     let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
@@ -41,7 +45,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
     };
 
     // Convert to headless config (this should save the system prompt)
-    let headless = config.to_headless_config("test-repo");
+    let headless = config.to_headless_config(&test_paths("test-repo", "test-repo"));
 
     // Verify the system prompt file was created
     let prompt_file = paths::lead_system_prompt_file("test-repo");
@@ -120,7 +124,7 @@ fn test_channel_lead_disallowed_tools_contains_code_modification_tools() {
 #[test]
 fn test_channel_lead_headless_config_has_disallowed_tools() {
     let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "");
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         !headless.disallowed_tools.is_empty(),
         "Channel lead should have disallowed tools"
@@ -148,7 +152,7 @@ fn test_channel_lead_headless_config_has_disallowed_tools() {
 #[test]
 fn test_coworker_headless_config_has_no_disallowed_tools() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless.disallowed_tools.is_empty(),
         "Coworker should not have disallowed tools"
@@ -160,7 +164,7 @@ fn test_reviewer_headless_config_has_no_disallowed_tools() {
     use crate::auth::AuthProvider;
 
     let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless.disallowed_tools.is_empty(),
         "Reviewer should not have disallowed tools"
@@ -170,7 +174,7 @@ fn test_reviewer_headless_config_has_no_disallowed_tools() {
 #[test]
 fn test_lead_headless_config_has_no_disallowed_tools() {
     let config = LaunchConfig::lead("myrepo", None);
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless.disallowed_tools.is_empty(),
         "Lead should not have disallowed tools"
@@ -203,7 +207,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         persisted_initial_prompt: None,
     };
 
-    let headless = config.to_headless_config("myrepo");
+    let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
     assert!(
         headless.disallowed_tools.is_empty(),
         "Codex channel lead should NOT have disallowed_tools (Codex doesn't support them; \
@@ -235,7 +239,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         persisted_initial_prompt: None,
     };
 
-    let headless = config.to_headless_config("myrepo");
+    let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
     assert!(
         !headless.disallowed_tools.is_empty(),
         "Claude channel lead should still have disallowed_tools"
@@ -248,7 +252,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
 fn test_to_headless_config_reviewer_escalation_target() {
     // Without escalation_target, falls back to project_name
     let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless.system_prompt.contains("@midtown [Review Note]"),
         "Without escalation_target, review notes should @mention project name"
@@ -258,7 +262,7 @@ fn test_to_headless_config_reviewer_escalation_target() {
     let mut config =
         LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
     config.escalation_target = Some("daemon-core".to_string());
-    let headless = config.to_headless_config("midtown");
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless
             .system_prompt

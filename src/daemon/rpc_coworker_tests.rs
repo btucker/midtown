@@ -57,7 +57,7 @@ fn make_test_state() -> (
     let state = DaemonState::new(
         "/tmp/test-rpc-coworker.sock".into(),
         cm,
-        "test-repo".to_string(),
+        crate::paths::ProjectPaths::with_project_name("test-repo", "test-repo"),
         vec![base_dir],
         channel_router,
         None,
@@ -325,7 +325,7 @@ async fn test_coworker_questions_returns_pending_questions() {
 
 #[tokio::test]
 async fn test_coworker_list_excludes_lead_session() {
-    // The lead session is named after the repo (state.repo_name = "test-repo").
+    // The lead session is named after the repo (state.project_name = "test-repo").
     // handle_coworker_list must not include it in the response.
     let (state, _tmp, _guard) = make_test_state();
 
@@ -557,7 +557,7 @@ async fn test_report_state_pr_number_writes_task_pr() {
 
     // Create the task file on disk so update_task_fields_for_repo can write to it.
     let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
     let task_id = "9901"; // unique ID unlikely to conflict with real tasks
@@ -659,7 +659,7 @@ async fn test_completed_without_pr_marks_task_done() {
 
     // Create a task file on disk in in_progress status
     let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
     let task_id = "9950";
@@ -734,7 +734,7 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
 
     // Create a task file on disk WITH a pr field set
     let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
     let task_id = "9952";
@@ -803,7 +803,7 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
 
     // Create a task file on disk
     let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(&state.repo_name);
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
     let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
     std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
     let task_id = "9951";

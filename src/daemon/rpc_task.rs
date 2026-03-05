@@ -247,10 +247,14 @@ pub(super) async fn handle_task_request(
 ) -> Response {
     let channel_message = format!(
         "@{} [Task Request] from {}: \"{}\"",
-        state.repo_name, from, message
+        state.project_name, from, message
     );
 
-    let msg = Message::new(&state.repo_name, channel_message.clone(), MessageType::Text);
+    let msg = Message::new(
+        &state.project_name,
+        channel_message.clone(),
+        MessageType::Text,
+    );
 
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
         warn!("Failed to post task request to channel: {}", e);
@@ -286,7 +290,7 @@ pub(super) async fn handle_task_create(
     thread_id: Option<&str>,
     state: &DaemonState,
 ) -> Response {
-    let repo_name = state.repo_name.clone();
+    let dir_key = state.paths.dir_key().to_string();
 
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
@@ -296,7 +300,7 @@ pub(super) async fn handle_task_create(
     // active channel lead, so we redirect to ops. The effective channel is stored
     // in both the task JSON and ps.task_channel so all downstream routing
     // (MIDTOWN_CHANNEL injection, insight posting, thread routing) is consistent.
-    let requested_channel = channel.unwrap_or(&repo_name);
+    let requested_channel = channel.unwrap_or(&state.project_name);
     let is_archived = state.channel_router.is_channel_archived(requested_channel);
     let is_ops_archived = is_archived
         && state
@@ -320,7 +324,7 @@ pub(super) async fn handle_task_create(
         description,
         &active_form,
         "",
-        &repo_name,
+        &dir_key,
         blocked_by,
         Some(effective_channel),
         pr,
@@ -344,7 +348,7 @@ pub(super) async fn handle_task_create(
             &task_id,
             Some(effective_channel),
             false,
-        ) && let Err(e) = ps.save_for_repo(&repo_name)
+        ) && let Err(e) = ps.save_for_repo(&dir_key)
         {
             warn!("Failed to save task channel mapping: {}", e);
         }
@@ -355,7 +359,7 @@ pub(super) async fn handle_task_create(
         let mut ps = state.persistent_state.lock().await;
         match apply_task_model_mapping(&mut ps.task_model, &task_id, model, false) {
             Ok(changed) => {
-                if changed && let Err(e) = ps.save_for_repo(&repo_name) {
+                if changed && let Err(e) = ps.save_for_repo(&dir_key) {
                     warn!("Failed to save task model mapping: {}", e);
                 }
             }
@@ -384,7 +388,7 @@ pub(super) async fn handle_task_create(
             ps.task_thread_id.insert(task_id.clone(), tid.to_string());
             changed = true;
         }
-        if changed && let Err(e) = ps.save_for_repo(&repo_name) {
+        if changed && let Err(e) = ps.save_for_repo(&dir_key) {
             warn!(
                 "Failed to save task plan/execution_skill/thread_id mapping: {}",
                 e
@@ -418,7 +422,7 @@ pub(super) async fn handle_task_create(
                 // scripts can post into the task's thread.
                 event_thread_id = Some(announcement_message_id);
             }
-            if let Err(e) = ps.save_for_repo(&repo_name) {
+            if let Err(e) = ps.save_for_repo(&dir_key) {
                 warn!("Failed to save task message_id mapping: {}", e);
             }
         }
@@ -483,11 +487,11 @@ pub(super) async fn handle_task_update(
         return Response::error(id, RpcError::new(-32602, format!("Invalid status: {}", s)));
     }
 
-    let repo_name = state.repo_name.clone();
+    let dir_key = state.paths.dir_key().to_string();
 
     if let Err(e) = crate::tasks::update_task_fields_for_repo(
         task_id,
-        &repo_name,
+        &dir_key,
         owner,
         status,
         description,
@@ -540,7 +544,7 @@ pub(super) async fn handle_task_update(
         }
 
         // Save if any mapping changed
-        if needs_save && let Err(e) = ps.save_for_repo(&repo_name) {
+        if needs_save && let Err(e) = ps.save_for_repo(&dir_key) {
             warn!("Failed to save task mappings: {}", e);
         }
     }
@@ -563,9 +567,9 @@ pub(super) async fn handle_task_done(
     task_id: &str,
     state: &DaemonState,
 ) -> Response {
-    let repo_name = state.repo_name.clone();
+    let dir_key = state.paths.dir_key().to_string();
 
-    if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &repo_name) {
+    if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &dir_key) {
         return Response::error(
             id,
             RpcError::new(-32603, format!("Failed to complete task: {}", e)),
@@ -578,7 +582,7 @@ pub(super) async fn handle_task_done(
         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(task_id) {
             ps.worktree_registry
                 .mark_completed(&wt_id, chrono::Utc::now());
-            if let Err(e) = ps.save_for_repo(&repo_name) {
+            if let Err(e) = ps.save_for_repo(&dir_key) {
                 warn!("Failed to save worktree completion timestamp: {}", e);
             }
         }
@@ -588,7 +592,7 @@ pub(super) async fn handle_task_done(
     state.clear_task_assignment_by_task(task_id);
 
     // Unblock dependent tasks
-    if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &repo_name) {
+    if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &dir_key) {
         warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
     }
 
@@ -676,7 +680,7 @@ pub(super) async fn handle_task_claim(
     }
 
     let task_subject = task.subject.clone();
-    let repo_name = state.repo_name.clone();
+    let dir_key = state.paths.dir_key().to_string();
 
     // Write owner and status directly to disk (with retry on transient failures).
     // Disk write happens BEFORE in-memory recording so that a failure leaves
@@ -686,7 +690,7 @@ pub(super) async fn handle_task_claim(
     for attempt in 0..3 {
         match crate::tasks::update_task_fields_for_repo(
             task_id,
-            &repo_name,
+            &dir_key,
             Some(from),
             Some("in_progress"),
             None,
