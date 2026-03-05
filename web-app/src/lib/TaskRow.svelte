@@ -78,7 +78,7 @@
 </script>
 
 <button
-  class="task-row flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent pr-0 rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
+  class="task-row w-full flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent pr-0 rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
