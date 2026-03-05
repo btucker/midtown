@@ -479,6 +479,14 @@ PR-to-coworker resolution uses two paths depending on context:
 
 Key functions: `determine_pr_coworker()` (webhook.rs, frontmatter-only), `resolve_pr_owner()` (pr.rs, session + branch map), `coworker_from_branch()` (helpers.rs, pure map lookup).
 
+### PR Decision Logging
+
+Every PR decision (both polling and webhook paths) is logged as a JSONL line to `~/.midtown/projects/<repo>/pr-decisions.jsonl`. Each entry captures the full decision context: PR number, detected issue type, owner state (active/idle), action chosen by the rules engine, and the effects emitted. The `source` field distinguishes `"polling"` from `"webhook"` triggers.
+
+Call sites: `process_pr_issue_nudges` (polling), `collect_review_feedback_effects` (polling), `handle_pr_comment_nudge` (webhook), `handle_webhook_review_state_change` (webhook), `handle_webhook_ci_failure` (webhook). All use `log_pr_decision()` with a `PrDecisionEntry` struct.
+
+This corpus enables verifying functional equivalence when migrating PR workflow logic from Rust to Python workflow scripts. Logging failures are silently swallowed — they must never crash the daemon.
+
 ## Webhook Ports
 
 Each project daemon runs its own webhook server for GitHub integration. Port 47022 is reserved for the shared multi-project webserver. Per-project daemons auto-assign ports starting at 47023, persisting the assignment in the project's `config.toml` for stability across restarts.

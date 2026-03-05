@@ -4958,6 +4958,8 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
         !effects.is_empty(),
         "Without workflow script, polling should use normal 45s delay and not skip PR at 60s old"
     );
+}
+
 // ── log_pr_decision ─────────────────────────────────────────────────────────
 
 #[test]
@@ -4989,19 +4991,20 @@ fn log_pr_decision_writes_valid_jsonl() {
         },
     ];
 
-    log_pr_decision(
-        "midtown",
-        42,
-        "Add feature X",
-        "broadway",
-        PrIssueType::Approved,
-        "NudgeOwner",
-        &effects,
-        &ctx,
-        true,
-        false,
-        false,
-    );
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: "midtown",
+        pr_number: 42,
+        title: "Add feature X",
+        owner: "broadway",
+        issue_type: PrIssueType::Approved,
+        action_name: "NudgeOwner",
+        effects: &effects,
+        ctx: &ctx,
+        owner_is_active: true,
+        owner_is_idle: false,
+        at_dev_limit: false,
+        source: "polling",
+    });
 
     let path = crate::paths::projects_dir_for_repo("midtown").join("pr-decisions.jsonl");
     let content = std::fs::read_to_string(&path).expect("read decision log");
@@ -5019,6 +5022,7 @@ fn log_pr_decision_writes_valid_jsonl() {
     assert_eq!(entry["task_id"], "7");
     assert_eq!(entry["channel"], "installer");
     assert_eq!(entry["action"], "NudgeOwner");
+    assert_eq!(entry["source"], "polling");
     assert_eq!(entry["effect_count"], 2);
     assert_eq!(
         entry["effects"],
@@ -5046,19 +5050,20 @@ fn log_pr_decision_appends_multiple_entries() {
 
     // Write two entries
     for pr in [10, 20] {
-        log_pr_decision(
-            "midtown",
-            pr,
-            "Test PR",
-            "park",
-            PrIssueType::CiFailed,
-            "Skip",
-            &[],
-            &ctx,
-            false,
-            false,
-            false,
-        );
+        log_pr_decision(&PrDecisionEntry {
+            repo_name: "midtown",
+            pr_number: pr,
+            title: "Test PR",
+            owner: "park",
+            issue_type: PrIssueType::CiFailed,
+            action_name: "Skip",
+            effects: &[],
+            ctx: &ctx,
+            owner_is_active: false,
+            owner_is_idle: false,
+            at_dev_limit: false,
+            source: "webhook",
+        });
     }
 
     let path = crate::paths::projects_dir_for_repo("midtown").join("pr-decisions.jsonl");
