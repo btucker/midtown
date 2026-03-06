@@ -1,4 +1,4 @@
-"""CLI entrypoint for the workflow daemon: ``python -m midtown.daemon``."""
+"""CLI entrypoint for the workflow daemon: ``python -m midtown``."""
 
 from __future__ import annotations
 

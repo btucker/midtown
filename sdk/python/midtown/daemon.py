@@ -271,3 +271,9 @@ class WorkflowDaemon:
             "actions": [dataclasses.asdict(a) for a in actions],
             "default_prevented": False,
         }
+
+
+if __name__ == "__main__":
+    from midtown.__main__ import main
+
+    main()
