@@ -286,6 +286,19 @@ pub fn channel_lead_disallowed_tools() -> Vec<String> {
         .collect()
 }
 
+/// Disallowed tools for channel lead **fork sessions** (thread-scoped).
+///
+/// Fork sessions have narrower context and are historically more prone to
+/// ignoring prompt-based restrictions (see PR #1667). `Edit` is re-added to
+/// the hard-block list here because forks don't need to maintain notes — only
+/// the top-level channel lead session does.
+pub fn channel_lead_fork_disallowed_tools() -> Vec<String> {
+    ["Edit", "Write", "NotebookEdit"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 impl LaunchConfig {
     /// Create a config for a standard coworker.
     ///

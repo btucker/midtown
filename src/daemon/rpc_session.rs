@@ -1217,7 +1217,7 @@ pub(super) fn build_fork_config(
         disallowed_tools: if is_channel_lead
             && !matches!(auth_provider, crate::auth::AuthProvider::Codex)
         {
-            crate::launch::channel_lead_disallowed_tools()
+            crate::launch::channel_lead_fork_disallowed_tools()
         } else {
             vec![]
         },

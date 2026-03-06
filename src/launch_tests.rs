@@ -124,6 +124,20 @@ fn test_channel_lead_disallowed_tools_contains_code_modification_tools() {
 }
 
 #[test]
+fn test_channel_lead_fork_disallowed_tools_includes_edit() {
+    use crate::launch::channel_lead_fork_disallowed_tools;
+
+    let tools = channel_lead_fork_disallowed_tools();
+    // Fork sessions re-add Edit to the hard-block list because forks have
+    // narrower context and historically ignored prompt-based restrictions
+    // (see PR #1667).
+    assert!(tools.contains(&"Edit".to_string()));
+    assert!(tools.contains(&"Write".to_string()));
+    assert!(tools.contains(&"NotebookEdit".to_string()));
+    assert!(!tools.contains(&"Bash".to_string()));
+}
+
+#[test]
 fn test_channel_lead_headless_config_has_disallowed_tools() {
     let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "");
     let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
