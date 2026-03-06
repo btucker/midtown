@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import logging
-import uuid
+import types
 from pathlib import Path
 from typing import Any
 
-import pluggy
-
-from midtown.hooks import HookContext, TaskHooks, WorkflowHooks
+from midtown.actions import Actions
+from midtown.hooks import DaemonAction, HookContext, get_plugin_manager
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +34,8 @@ class WorkflowDaemon:
         self.socket_path = socket_path
         self.plugin_dirs = plugin_dirs
 
-        # Set up plugin manager
-        self.pm = pluggy.PluginManager("midtown")
-        self.pm.add_hookspecs(WorkflowHooks)
-        self.pm.add_hookspecs(TaskHooks)
+        # Set up plugin manager using the shared factory
+        self.pm = get_plugin_manager()
 
         # Track loaded plugins for hot-reload
         self._loaded_plugins: dict[Path, Any] = {}
@@ -66,17 +62,18 @@ class WorkflowDaemon:
     def load_plugin(self, path: Path) -> None:
         """Load and register a single plugin file."""
         try:
-            # Use a unique module name each time to bypass __pycache__
-            # bytecode caching, which can serve stale code on hot-reload.
-            module_name = f"{path.stem}_{uuid.uuid4().hex[:8]}"
-            spec = importlib.util.spec_from_file_location(module_name, path)
-            if spec and spec.loader:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                self.pm.register(module)
-                self._loaded_plugins[path] = module
-                self._mtimes[path] = path.stat().st_mtime
-                logger.info("Loaded plugin: %s", path)
+            # Read source directly and compile to bypass bytecode caching.
+            # importlib.util.spec_from_file_location keys .pyc files by
+            # source path, so unique module names don't help on hot-reload.
+            source = path.read_text()
+            code = compile(source, str(path), "exec")
+            module = types.ModuleType(path.stem)
+            module.__file__ = str(path)
+            exec(code, module.__dict__)  # noqa: S102
+            self.pm.register(module)
+            self._loaded_plugins[path] = module
+            self._mtimes[path] = path.stat().st_mtime
+            logger.info("Loaded plugin: %s", path)
         except Exception:
             logger.exception("Failed to load plugin %s", path)
 
@@ -98,46 +95,71 @@ class WorkflowDaemon:
                 changed.append(path)
         return changed
 
+    def _find_deleted(self) -> list[Path]:
+        """Return paths of tracked plugins whose files no longer exist."""
+        return [p for p in self._mtimes if not p.exists()]
+
     def reload_changed(self) -> None:
         """Hot-reload any plugins whose files have changed on disk."""
+        # Unload deleted plugins
+        for path in self._find_deleted():
+            self.unload_plugin(path)
+
         for path in self.check_for_changes():
+            old_mtime = self._mtimes.get(path)
             self.unload_plugin(path)
             self.load_plugin(path)
+            # If load failed, preserve tracking so the plugin is retried
+            # on the next check when the file is fixed.
+            if path not in self._mtimes and old_mtime is not None:
+                self._mtimes[path] = old_mtime
 
     def dispatch_event(
         self,
         event_type: str,
         event: dict[str, Any],
-        context: HookContext,
-    ) -> tuple[list[dict[str, Any]], bool]:
+        *,
+        task_id: str | None = None,
+        task_state: str | None = None,
+        prev_task_state: str | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> list[DaemonAction]:
         """Dispatch an event to all registered hook implementations.
 
-        Converts *event_type* (e.g. ``"pr.opened"``) to a hook method name
-        (``on_pr_opened``) and calls all implementations, collecting returned
-        :class:`Action` objects.
+        Constructs a :class:`HookContext` and invokes both the global
+        ``on_event`` hook and the event-specific hook (e.g. ``on_pr_opened``).
 
-        Returns ``(actions, default_prevented)`` where *actions* is a list of
-        serialised action dicts and *default_prevented* indicates whether any
-        plugin called :meth:`HookContext.prevent_default`.
+        Returns a flat list of :class:`DaemonAction` objects from all plugins.
         """
-        hook_name = f"on_{event_type.replace('.', '_')}"
+        ctx = HookContext(
+            event_type=event_type,
+            event=event,
+            task_id=task_id,
+            task_state=task_state,
+            prev_task_state=prev_task_state,
+            coworker=event.get("coworker", ""),
+            pr_number=event.get("pr_number"),
+            channel=event.get("channel", ""),
+            state=state or {},
+            actions=Actions(),
+        )
 
-        hook = getattr(self.pm.hook, hook_name, None)
-        if not hook:
-            return [], False
+        all_actions: list[DaemonAction] = []
 
-        results = hook(event=event, context=context)
-
-        all_actions: list[dict[str, Any]] = []
-        for result in results:
+        # Global on_event hook
+        for result in self.pm.hook.on_event(ctx=ctx):
             if result:
-                for action in result:
-                    all_actions.append({
-                        "type": action.type,
-                        "args": action.args,
-                    })
+                all_actions.extend(result)
 
-        return all_actions, context.is_default_prevented()
+        # Event-specific hook
+        hook_name = f"on_{event_type.replace('.', '_')}"
+        hook = getattr(self.pm.hook, hook_name, None)
+        if hook:
+            for result in hook(ctx=ctx):
+                if result:
+                    all_actions.extend(result)
+
+        return all_actions
 
     async def run(self) -> None:
         """Main event loop (placeholder).
