@@ -120,7 +120,7 @@ pub async fn evaluate_tick(
             // happens on the next tick, once ensure_lead_alive sees the entry is gone.
             effects.extend(super::health::detect_stale_attached_sessions(snap));
             effects.extend(super::health::ensure_lead_alive(snap));
-            effects.extend(super::health::ensure_channel_leads_alive(snap, state).await);
+            effects.extend(super::health::ensure_channel_leads_alive(snap));
             effects.extend(super::health::check_and_fire_reminders(snap, state).await);
             dedup_spawn_effects(effects)
         }

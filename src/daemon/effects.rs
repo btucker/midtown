@@ -11,7 +11,7 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
-pub(super) async fn load_channel_lead_context(
+async fn load_channel_lead_context(
     base_dir: PathBuf,
     channel_name: &str,
     project_root: PathBuf,
@@ -482,6 +482,13 @@ pub enum Effect {
         channel_name: String,
         session_id: String,
     },
+    /// Respawn a channel lead that died unexpectedly.
+    ///
+    /// Defers I/O (loading domain context, agents.md, skill bodies) to the
+    /// effect executor, keeping `ensure_channel_leads_alive()` a pure decision
+    /// function. The executor loads context via `load_channel_lead_context()`
+    /// and spawns a fresh session.
+    RespawnChannelLead { channel_name: String },
     /// Mark an auth profile as usage-limited in persistent `profile_pool_state`.
     ///
     /// Emitted by `check_for_usage_limits()` when a coworker with a pool-selected
@@ -2532,6 +2539,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to save daemon state after saving channel lead session: {}",
                         e
                     );
+                }
+            }
+            Effect::RespawnChannelLead { channel_name } => {
+                let base_dir = state.paths.base_dir().to_path_buf();
+                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                let dir_key = state.paths.dir_key().to_string();
+                let (domain_context, agents_md, skill_bodies) =
+                    load_channel_lead_context(base_dir, &channel_name, project_root, &dir_key)
+                        .await;
+
+                let mut config = crate::launch::LaunchConfig::channel_lead(
+                    &channel_name,
+                    state.paths.dir_key(),
+                    crate::launch::SessionMode::Fresh,
+                    &domain_context,
+                    agents_md,
+                    skill_bodies,
+                );
+                config.model = super::helpers::resolve_model_for_role(
+                    state.paths.dir_key(),
+                    config.auth_provider,
+                    &config.role,
+                );
+
+                let name = config.name.clone();
+                match state.spawn_coworker(&config).await {
+                    Ok(_) => {
+                        info!("Respawned channel lead '{}' successfully", name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to respawn channel lead '{}': {}", name, e);
+                    }
                 }
             }
             // ── Session-centric effects ──────────────────────────────────

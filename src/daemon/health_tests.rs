@@ -3980,4 +3980,81 @@ fn test_channel_lead_respawn_skipped_when_attached() {
         is_attached,
         "ops is attached — ensure_channel_leads_alive should skip respawn"
     );
+
+    // Directly verify the pure function returns no effects
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "attached channel lead should not produce respawn effects"
+    );
+}
+
+/// Direct test: ensure_channel_leads_alive emits RespawnChannelLead when
+/// a channel lead is in channel_lead_sessions but not in active_coworkers
+/// and has no cooldown or interactive attachment.
+#[test]
+fn test_ensure_channel_leads_alive_emits_respawn_effect() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // No active coworkers, no stop time, no attachment → should respawn
+    let effects = ensure_channel_leads_alive(&snap);
+    assert_eq!(effects.len(), 1, "expected exactly one respawn effect");
+    match &effects[0] {
+        Effect::RespawnChannelLead { channel_name } => {
+            assert_eq!(channel_name, "ops");
+        }
+        other => panic!("expected RespawnChannelLead, got {:?}", other),
+    }
+}
+
+/// Direct test: ensure_channel_leads_alive returns empty when the channel
+/// lead is already registered as an active coworker.
+#[test]
+fn test_ensure_channel_leads_alive_noop_when_registered() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "ops".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: String::new(),
+        profile: String::new(),
+        provider: crate::auth::AuthProvider::Claude,
+    });
+
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "registered channel lead should not produce respawn effects"
+    );
+}
+
+/// Direct test: cooldown prevents respawn within LEAD_RESPAWN_COOLDOWN window.
+#[test]
+fn test_ensure_channel_leads_alive_respects_cooldown() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Stopped 1 second ago — within the 5-minute cooldown
+    let recent_stop = snap.now_utc - chrono::Duration::seconds(1);
+    snap.coworkers
+        .coworker_stop_times
+        .insert("ops".to_string(), recent_stop);
+
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "recently stopped channel lead should not be respawned during cooldown"
+    );
 }
