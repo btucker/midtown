@@ -351,6 +351,7 @@ fn mention_action_to_effects(
                 repo_name.to_string(),
                 crate::launch::SessionMode::Resume,
                 Some(message),
+                None,
             );
             vec![Effect::SpawnCoworkerWithCallbacks {
                 config,

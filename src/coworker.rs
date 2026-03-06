@@ -863,6 +863,7 @@ mod tests {
             "test-repo",
             crate::launch::SessionMode::Fresh,
             None,
+            None,
         );
         let result = manager.prepare_spawn(&config);
         assert!(result.is_err());
@@ -873,6 +874,7 @@ mod tests {
             "lexington",
             "test-repo",
             crate::launch::SessionMode::Resume,
+            None,
             None,
         );
         let result = manager.prepare_spawn(&resume_config);

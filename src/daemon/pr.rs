@@ -1519,13 +1519,13 @@ fn pr_action_to_effects(
                     }
                 }
             };
-            let mut config = crate::launch::LaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
+                ctx.pr_task_associations.get(&pr_number).cloned(),
             );
-            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -2565,11 +2565,10 @@ fn comment_action_to_effects(
                 state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
+                ctx.pr_task_associations.get(&pr_number).cloned(),
             );
             // Use Opus for review feedback responses (higher quality needed to understand feedback)
             config.model = "opus".to_string();
-            // Pass the PR's linked task ID so the coworker knows its task
-            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -3541,11 +3540,10 @@ fn review_complete_action_to_effects(
                 state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
+                ctx.pr_task_associations.get(&pr_number).cloned(),
             );
             // Use Opus for review feedback responses (higher quality needed to understand feedback)
             config.model = "opus".to_string();
-            // Pass the PR's linked task ID so the coworker knows its task
-            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -4141,13 +4139,13 @@ pub(super) async fn handle_pr_comment_nudge(
             )]
         } else if let Some(session_id) = reviewer_session_id {
             // Reviewer stopped — resume their session with the follow-up context
-            let mut config = crate::launch::LaunchConfig::coworker(
+            let config = crate::launch::LaunchConfig::coworker(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::ResumeSession(session_id.clone()),
                 Some(nudge_msg),
+                task_id,
             );
-            config.task_id = task_id;
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),
                 session_id,

@@ -319,6 +319,7 @@ impl LaunchConfig {
         dir_key: impl Into<String>,
         session_mode: SessionMode,
         initial_prompt: Option<String>,
+        task_id: Option<String>,
     ) -> Self {
         let repo = dir_key.into();
         let project_name = crate::paths::project_name_for_dir_key(&repo);
@@ -345,7 +346,7 @@ impl LaunchConfig {
             auth_profile_dir: None,
             auth_provider,
             escalation_target: None,
-            task_id: None,
+            task_id,
             persisted_initial_prompt: None,
         }
     }
@@ -866,7 +867,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_fresh_coworker() {
-        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let headless = config.to_headless_config(&test_paths());
 
         assert!(headless.persist_session);
@@ -887,7 +888,7 @@ mod tests {
     fn test_to_headless_config_resume_session() {
         let config = LaunchConfig {
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
-            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
+            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
         };
         let headless = config.to_headless_config(&test_paths());
 
@@ -921,7 +922,7 @@ mod tests {
     fn test_to_headless_config_setting_sources_handled_by_platform() {
         // setting_sources is now always None on HeadlessConfig — the platform
         // arg builder unconditionally adds --setting-sources project,local.
-        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let headless = config.to_headless_config(&test_paths());
         assert_eq!(
             headless.setting_sources, None,
@@ -950,6 +951,7 @@ mod tests {
             "myrepo".to_string(),
             SessionMode::Fresh,
             Some("Do the thing".to_string()),
+            None,
         );
         assert_eq!(config.name, "park");
         assert_eq!(config.session_mode, SessionMode::Fresh);
@@ -1012,6 +1014,7 @@ mod tests {
             "myrepo",
             SessionMode::Resume,
             Some("task prompt".to_string()),
+            None,
         );
         let retry = config.as_fresh_retry();
         assert_eq!(retry.session_mode, SessionMode::Fresh);
@@ -1023,7 +1026,7 @@ mod tests {
 
     #[test]
     fn test_shell_command_fresh_session() {
-        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
@@ -1041,7 +1044,7 @@ mod tests {
     fn test_shell_command_resume_session() {
         let config = LaunchConfig {
             session_mode: SessionMode::ResumeSession("abc-123".to_string()),
-            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
+            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -1056,7 +1059,7 @@ mod tests {
 
     #[test]
     fn test_shell_command_agent_teams_flags() {
-        let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None, None);
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
             std::path::Path::new("/tmp/prompt.md"),
@@ -1084,7 +1087,7 @@ mod tests {
     fn test_shell_command_no_agent_teams_without_team() {
         let config = LaunchConfig {
             team_name: None,
-            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
+            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
         };
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -1103,7 +1106,7 @@ mod tests {
 
     #[test]
     fn test_shell_command_includes_task_id_env() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         config.task_id = Some("42".to_string());
         let result = config.to_shell_command(
             std::path::Path::new("/tmp/settings.json"),
@@ -1121,7 +1124,7 @@ mod tests {
 
     #[test]
     fn test_channel_routing_env_var() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         config.channel = Some("task-42".to_string());
         let headless = config.to_headless_config(&test_paths());
 
@@ -1134,7 +1137,7 @@ mod tests {
 
     #[test]
     fn test_task_id_env_var_set_when_present() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         config.task_id = Some("2113".to_string());
         let headless = config.to_headless_config(&test_paths());
 
@@ -1146,7 +1149,7 @@ mod tests {
 
     #[test]
     fn test_task_id_env_var_absent_when_none() {
-        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let headless = config.to_headless_config(&test_paths());
 
         assert!(
@@ -1157,7 +1160,7 @@ mod tests {
 
     #[test]
     fn test_no_channel_routing_when_none() {
-        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let headless = config.to_headless_config(&test_paths());
 
         // Verify MIDTOWN_CHANNEL env var is not set when channel is None
@@ -1166,7 +1169,7 @@ mod tests {
 
     #[test]
     fn test_to_headless_config_uses_codex_home_for_codex_provider() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         config.auth_provider = crate::auth::AuthProvider::Codex;
         config.auth_profile_dir = Some(std::path::PathBuf::from("/tmp/midtown-codex-profile"));
 
@@ -1193,7 +1196,7 @@ mod tests {
         )
         .expect("write base url");
 
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         config.auth_provider = crate::auth::AuthProvider::Zai;
         config.auth_profile_dir = Some(dir.path().to_path_buf());
         config.model = "haiku".to_string();
@@ -1263,7 +1266,7 @@ mod tests {
     // Tests for apply_task_model method
     #[test]
     fn test_apply_task_model_sets_both_model_and_provider() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let mut map = std::collections::HashMap::new();
         map.insert("42".to_string(), "codex/o3".to_string());
 
@@ -1279,7 +1282,7 @@ mod tests {
 
     #[test]
     fn test_apply_task_model_no_change_when_task_not_in_map() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let original_model = config.model.clone();
         let original_provider = config.auth_provider;
         let map = std::collections::HashMap::new();
@@ -1295,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_apply_task_model_no_change_on_invalid_format() {
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let original_model = config.model.clone();
         let original_provider = config.auth_provider;
         let mut map = std::collections::HashMap::new();
@@ -1316,7 +1319,7 @@ mod tests {
     #[test]
     fn test_apply_task_model_no_change_on_empty_model_string() {
         // Bug fix test: "claude/" should not update config
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let original_model = config.model.clone();
         let original_provider = config.auth_provider;
         let mut map = std::collections::HashMap::new();

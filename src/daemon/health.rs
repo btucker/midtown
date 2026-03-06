@@ -386,6 +386,7 @@ pub(super) async fn check_and_restart_stuck_coworkers(
             state.paths.dir_key().to_string(),
             crate::launch::SessionMode::Fresh,
             Some(prompt),
+            Some(restart.task_id.clone()),
         );
         config.channel = channel.clone();
 
@@ -1230,6 +1231,7 @@ pub(super) async fn check_and_respawn_dead_processes(
             state.paths.dir_key().to_string(),
             crate::launch::SessionMode::Fresh,
             Some(prompt),
+            Some(respawn.task_id.clone()),
         );
         config.channel = channel.clone();
 
