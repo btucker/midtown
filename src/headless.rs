@@ -233,9 +233,9 @@ pub enum StreamEvent {
     #[serde(rename = "progress")]
     Progress {
         data: serde_json::Value,
-        #[serde(rename = "parentToolUseID")]
+        #[serde(rename = "parentToolUseID", alias = "parent_tool_use_id")]
         parent_tool_use_id: Option<String>,
-        #[serde(rename = "toolUseID")]
+        #[serde(rename = "toolUseID", alias = "tool_use_id")]
         tool_use_id: Option<String>,
         #[serde(flatten)]
         extra: serde_json::Value,

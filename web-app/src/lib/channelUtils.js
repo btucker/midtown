@@ -201,12 +201,12 @@ export function getTaskThreadIds(kanban) {
 }
 
 /**
- * Build a Set of threadParentIds from completed tasks (done column).
+ * Build a Set of threadParentIds from completed tasks.
  */
 export function getCompletedTaskThreadIds(kanban) {
 	const ids = new Set();
-	const done = kanban.done || [];
-	for (const task of done) {
+	const completed = kanban.completedTasks || [];
+	for (const task of completed) {
 		if (task.thread_id) ids.add(task.thread_id);
 		if (task.message_id) ids.add(task.message_id);
 	}

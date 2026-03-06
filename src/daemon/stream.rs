@@ -540,11 +540,21 @@ pub fn process_agent_output(
             }
 
             // Post top-level tool blocks, tagged with tool_use_id from the first block.
+            // Include a tool name summary (e.g. "[Bash, Read]") for TUI visibility,
+            // since the terminal renderer only displays msg.content, not tool_data.
             if !top_level_blocks.is_empty() {
                 let tool_use_id = top_level_blocks.first().and_then(|b| b.call_id.clone());
+                let tool_summary = format!(
+                    "[{}]",
+                    top_level_blocks
+                        .iter()
+                        .map(|b| b.tool_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: String::new(),
+                    message: tool_summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -577,9 +587,17 @@ pub fn process_agent_output(
 
             // Post sub-agent tool blocks as thread replies (grouped by parent_tool_use_id).
             for (parent_id, blocks) in sub_agent_blocks {
+                let tool_summary = format!(
+                    "[{}]",
+                    blocks
+                        .iter()
+                        .map(|b| b.tool_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: String::new(),
+                    message: tool_summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,

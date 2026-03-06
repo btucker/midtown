@@ -1288,9 +1288,9 @@ fn test_process_agent_output_empty_text_not_posted() {
         Effect::PostToChannel {
             message, tool_data, ..
         } => {
-            assert!(
-                message.is_empty(),
-                "DM tool message should have empty content"
+            assert_eq!(
+                message, "[Read]",
+                "DM tool message should have tool name summary for TUI visibility"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
@@ -1473,9 +1473,9 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
             auto_output,
             ..
         } => {
-            assert!(
-                message.is_empty(),
-                "DM tool message should have empty content"
+            assert_eq!(
+                message, "[Bash]",
+                "DM tool message should have tool name summary for TUI visibility"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);

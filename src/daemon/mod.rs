@@ -2259,6 +2259,13 @@ impl DaemonState {
             if ps.channel_lead_sessions.contains_key(name) {
                 return true;
             }
+            // Persisted session record (covers stopped coworkers whose
+            // coworker_records entry was cleaned up but SessionRecord remains).
+            if ps.sessions.values().any(|r| {
+                r.current_name.as_deref() == Some(name) || r.preferred_name.as_deref() == Some(name)
+            }) {
+                return true;
+            }
         }
         // Active fork
         if self.fork_bound_threads.lock().unwrap().contains_key(name) {

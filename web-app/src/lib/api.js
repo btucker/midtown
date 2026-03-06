@@ -492,6 +492,7 @@ function updateKanbanData(data) {
 	kanbanData.set({
 		backlog: tasks.filter((t) => t.status === "pending"),
 		inProgress: tasks.filter((t) => t.status === "in_progress"),
+		completedTasks: tasks.filter((t) => t.status === "completed"),
 		review: prs.map((pr) => ({
 			number: pr.number,
 			title: pr.title,

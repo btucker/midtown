@@ -2410,4 +2410,36 @@ async fn test_is_known_agent_name_checks_all_registries() {
         .unwrap()
         .insert("auth-web-a1b2".to_string(), "thread-1".to_string());
     assert!(state.is_known_agent_name("auth-web-a1b2").await);
+
+    // Persisted session record with preferred_name (stopped coworker)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-stopped".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-stopped".to_string(),
+                preferred_name: Some("stopped-cw".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                coworker_type: "dev".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+    assert!(state.is_known_agent_name("stopped-cw").await);
+
+    // Persisted session record with current_name
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-active-rec".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-active-rec".to_string(),
+                current_name: Some("active-rec".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                coworker_type: "dev".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+    assert!(state.is_known_agent_name("active-rec").await);
 }

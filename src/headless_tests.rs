@@ -350,6 +350,33 @@ fn test_stream_event_parsing_progress_agent_progress() {
 }
 
 #[test]
+fn test_stream_event_parsing_progress_snake_case_parent_tool_use_id() {
+    // Some Claude Code versions may emit snake_case parent_tool_use_id on progress events.
+    // The serde(alias) should capture it in the named field, not drop it into extra.
+    let json = r#"{"type":"progress","data":{"type":"agent_progress","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_child","name":"Read","input":{"path":"foo.rs"}}]}},"agentId":"agent-1"},"parent_tool_use_id":"toolu_parent_agent","tool_use_id":"toolu_child"}"#;
+    let event: StreamEvent = serde_json::from_str(json).unwrap();
+    match event {
+        StreamEvent::Progress {
+            parent_tool_use_id,
+            tool_use_id,
+            ..
+        } => {
+            assert_eq!(
+                parent_tool_use_id.as_deref(),
+                Some("toolu_parent_agent"),
+                "snake_case parent_tool_use_id should be parsed via alias"
+            );
+            assert_eq!(
+                tool_use_id.as_deref(),
+                Some("toolu_child"),
+                "snake_case tool_use_id should be parsed via alias"
+            );
+        }
+        _ => panic!("Expected Progress event, got {event:?}"),
+    }
+}
+
+#[test]
 fn test_stream_event_parsing_unknown_type_is_not_error() {
     // Regression: Claude CLI added `rate_limit_event` which caused 17k+ parse
     // failures because StreamEvent only recognized system/assistant/user/result.
