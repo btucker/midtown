@@ -938,8 +938,8 @@ pub(super) async fn handle_channel_read(
                 obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
             }
             if let Some(ref tool_data) = m.tool_data {
-                obj["tool_data"] = serde_json::to_value(tool_data)
-                    .expect("ToolBlock serialization is infallible");
+                obj["tool_data"] =
+                    serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
             }
             if let Some(ref provider) = m.provider {
                 obj["provider"] = serde_json::Value::String(provider.clone());
