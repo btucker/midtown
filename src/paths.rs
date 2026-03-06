@@ -111,11 +111,21 @@ pub fn set_test_midtown_data_dir(path: PathBuf) -> TestMidtownDataDirGuard {
 
 /// Detect the current git repository name.
 ///
-/// Uses `git rev-parse --git-common-dir` to handle worktrees correctly,
-/// since worktrees share the main repo's .git directory.
+/// If `MIDTOWN_DIR_KEY` is set (injected by the daemon when spawning leads
+/// and coworkers), returns that value directly — pinning project identity
+/// regardless of CWD. This prevents cross-project data leaks when a session
+/// `cd`s into a different repo.
 ///
-/// Returns `None` if not in a git repository.
+/// Otherwise falls back to CWD-based git detection using
+/// `git rev-parse --git-common-dir` to handle worktrees correctly.
+///
+/// Returns `None` if not in a git repository (and no env override).
 pub fn detect_repo_name() -> Option<String> {
+    if let Ok(dir_key) = std::env::var("MIDTOWN_DIR_KEY")
+        && !dir_key.is_empty()
+    {
+        return Some(dir_key);
+    }
     let cwd = std::env::current_dir().ok()?;
     detect_repo_name_from_dir(&cwd)
 }
