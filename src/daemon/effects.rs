@@ -3676,6 +3676,21 @@ async fn respawn_fork(
     // Create SessionRecord for the new fork
     {
         let mut ps = state.persistent_state.lock().await;
+        // Clear current_name/preferred_name on any old session records that
+        // still claim this name. Same cleanup as SpawnSession (PR #1819) —
+        // prevents ambiguous find-by-name lookups when multiple records share
+        // the same name. Must check both fields because rpc_auth.rs matches
+        // sessions by either preferred_name or current_name.
+        for record in ps.sessions.values_mut() {
+            if record.session_id != fork_session_id
+                && (record.preferred_name.as_deref() == Some(&name)
+                    || record.current_name.as_deref() == Some(&name))
+            {
+                record.is_running = false;
+                record.current_name = None;
+                record.preferred_name = None;
+            }
+        }
         ps.sessions.insert(
             fork_session_id.clone(),
             crate::daemon::state::SessionRecord {
