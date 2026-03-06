@@ -157,6 +157,9 @@ jobs:
       - name: Install dependencies
         run: cd web-app && npm ci
 
+      - name: Lint
+        run: cd web-app && npx biome check .
+
       - name: Run tests
         run: cd web-app && npm test
 
