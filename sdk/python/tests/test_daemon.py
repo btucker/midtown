@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from midtown.daemon import WorkflowDaemon
+from midtown.daemon import DispatchResult, WorkflowDaemon
 
 
 # Helper to create a plugin that implements on_pr_opened via the new API.
@@ -193,8 +193,8 @@ class TestHotReload:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert actions[0].params["message"] == "v1"
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions[0].params["message"] == "v1"
 
             # Update plugin
             time.sleep(0.05)
@@ -202,8 +202,8 @@ class TestHotReload:
 
             daemon.reload_changed()
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert actions[0].params["message"] == "v2"
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions[0].params["message"] == "v2"
 
     def test_reload_preserves_tracking_on_failure(self) -> None:
         """A temporary import error should not permanently disable a plugin."""
@@ -233,9 +233,9 @@ class TestHotReload:
 
             daemon.reload_changed()
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert len(actions) == 1
-            assert actions[0].params["message"] == "v2"
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "v2"
 
     def test_deleted_plugin_is_unloaded(self) -> None:
         """Deleting a plugin file should unregister its hooks."""
@@ -261,8 +261,9 @@ class TestHotReload:
             assert plugin_file not in daemon._mtimes
 
             # Hooks should no longer fire
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert actions == []
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions == []
+            assert not result.default_prevented
 
 
 class TestEventDispatch:
@@ -288,11 +289,12 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 123})
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 123})
 
-            assert len(actions) == 1
-            assert actions[0].method == "channel.post"
-            assert "123" in actions[0].params["message"]
+            assert len(result.actions) == 1
+            assert result.actions[0].method == "channel.post"
+            assert "123" in result.actions[0].params["message"]
+            assert not result.default_prevented
 
     def test_dispatch_unknown_event_returns_empty(self) -> None:
         daemon = WorkflowDaemon(
@@ -300,8 +302,9 @@ class TestEventDispatch:
             plugin_dirs=[],
         )
 
-        actions = daemon.dispatch_event("unknown.event", {})
-        assert actions == []
+        result = daemon.dispatch_event("unknown.event", {})
+        assert result.actions == []
+        assert not result.default_prevented
 
     def test_dispatch_no_matching_hook_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -315,8 +318,8 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.merged", {})
-            assert actions == []
+            result = daemon.dispatch_event("pr.merged", {})
+            assert result.actions == []
 
     def test_multiple_plugins_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -337,10 +340,10 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
 
-            assert len(actions) == 2
-            methods = {a.method for a in actions}
+            assert len(result.actions) == 2
+            methods = {a.method for a in result.actions}
             assert "channel.post" in methods
             assert "coworker.nudge" in methods
 
@@ -363,10 +366,10 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
 
-            assert len(actions) == 1
-            assert actions[0].params["message"] == "hello"
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "hello"
 
     def test_action_serialization(self) -> None:
         """Dispatch returns DaemonAction objects with method and params."""
@@ -390,15 +393,15 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event(
+            result = daemon.dispatch_event(
                 "task.completed", {"task_id": "42"}, task_id="42"
             )
 
-            assert len(actions) == 2
-            assert actions[0].method == "channel.post"
-            assert actions[0].params == {"message": "done!"}
-            assert actions[1].method == "daemon.check-pending"
-            assert actions[1].params == {}
+            assert len(result.actions) == 2
+            assert result.actions[0].method == "channel.post"
+            assert result.actions[0].params == {"message": "done!"}
+            assert result.actions[1].method == "daemon.check-pending"
+            assert result.actions[1].params == {}
 
     def test_on_event_hook_fires_for_all_events(self) -> None:
         """The global on_event hook should fire alongside specific hooks."""
@@ -420,10 +423,10 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
 
-            assert len(actions) == 2
-            messages = {a.params["message"] for a in actions}
+            assert len(result.actions) == 2
+            messages = {a.params["message"] for a in result.actions}
             assert "global" in messages
             assert "specific" in messages
 
@@ -447,14 +450,14 @@ class TestEventDispatch:
                 plugin_dirs=[plugin_dir],
             )
 
-            actions = daemon.dispatch_event(
+            result = daemon.dispatch_event(
                 "pr.opened",
                 {"pr_number": 42},
                 task_id="7",
             )
 
-            assert len(actions) == 1
-            assert actions[0].params["message"] == "pr.opened:42:7"
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "pr.opened:42:7"
 
 
 # ---------------------------------------------------------------------------
@@ -778,3 +781,119 @@ class TestSocketServer:
                     await server_task
                 except asyncio.CancelledError:
                     pass
+
+
+class TestPreventDefault:
+    """Tests for the prevent_default() / is_default_prevented() API."""
+
+    def test_prevent_default(self) -> None:
+        """Plugin calling prevent_default() sets default_prevented in result."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            (plugin_dir / "blocker.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_auto_merge(ctx):\n"
+                "    ctx.prevent_default()\n"
+                "    return []\n"
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.auto_merge", {"pr_number": 1})
+
+            assert result.default_prevented is True
+            assert result.actions == []
+
+    def test_prevent_default_with_replacement_actions(self) -> None:
+        """Plugin can prevent_default and return replacement actions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            (plugin_dir / "replacer.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                "    ctx.prevent_default()\n"
+                '    return [ctx.actions.post_to_channel("custom handling")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+
+            assert result.default_prevented is True
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "custom handling"
+
+    def test_prevent_default_shared_across_plugins(self) -> None:
+        """If one plugin calls prevent_default, later plugins can see it.
+
+        Pluggy uses LIFO order (last registered = first called).
+        Files load alphabetically, so plugin_z loads last -> runs first.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # plugin_z loads last -> runs first in LIFO -> calls prevent_default
+            (plugin_dir / "plugin_z.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                "    ctx.prevent_default()\n"
+                '    return [ctx.actions.post_to_channel("blocked")]\n'
+            )
+            # plugin_a loads first -> runs second in LIFO -> sees prevention
+            (plugin_dir / "plugin_a.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                "    if ctx.is_default_prevented():\n"
+                '        return [ctx.actions.post_to_channel("saw prevention")]\n'
+                "    return []\n"
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+
+            assert result.default_prevented is True
+            assert len(result.actions) == 2
+            messages = [a.params["message"] for a in result.actions]
+            assert "blocked" in messages
+            assert "saw prevention" in messages
+
+    def test_no_prevent_default_by_default(self) -> None:
+        """Default dispatch without prevent_default keeps default_prevented False."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            (plugin_dir / "passthrough.py").write_text(_plugin_source("hello"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+
+            assert result.default_prevented is False
+            assert len(result.actions) == 1

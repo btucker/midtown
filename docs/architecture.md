@@ -762,22 +762,23 @@ The SDK provides a [pluggy](https://pluggy.readthedocs.io/)-based hook system (`
 
 - `WorkflowHooks` — 18 hook specs covering task lifecycle (`on_task_created`, `on_task_assigned`, `on_task_completed`, `on_task_phase_complete`), PR lifecycle (`on_pr_opened`, `on_pr_approved`, `on_pr_changes_requested`, `on_pr_merged`, `on_pr_ci_passed`, `on_pr_ci_failed`, `on_pr_conflict`, `on_pr_auto_merge`), coworker events (`on_coworker_spawned`, `on_coworker_idle`, `on_coworker_stuck`, `on_coworker_message`), fork leads (`on_fork_lead_spawned`, `on_fork_lead_idle`), channel messages (`on_channel_message`), and timer ticks (`on_timer_tick`).
 - `TaskHooks` — 3 hook specs for customizing task prompts: `get_system_prompt()`, `get_author_prompt()`, `get_reviewer_prompt()`.
-- `HookContext` — Context object passed to every workflow hook invocation. Contains `channel`, `task_id`, `thread_id`, `message_id`, `rpc` (MidtownRPC client), and `daemon_actions` (what the daemon would do by default). Plugins can call `context.prevent_default()` to suppress the daemon's built-in behavior.
-- `DaemonAction` — Describes what the daemon's compiled-in behavior would do for an event (passed in `HookContext.daemon_actions`).
-- `Action` — Returned by hook implementations to request daemon actions. Factory methods: `post_to_channel()`, `nudge_coworker()`, `spawn_reviewer()`, `spawn_coworker()`, `fork_lead()`, `complete_task()`, `enable_auto_merge()`, `check_pending()`, `http_post()`.
+- `HookContext` — Context object passed to every workflow hook invocation. Fields: `event_type`, `event`, `task_id`, `task_state`, `prev_task_state`, `coworker`, `pr_number`, `channel`, `state`, `actions`. Plugins can call `ctx.prevent_default()` to suppress the daemon's built-in behavior; check with `ctx.is_default_prevented()`.
+- `DaemonAction` — A side-effect command returned by hook implementations (frozen dataclass with `method` and `params`).
+- `DispatchResult` — Return type of `WorkflowDaemon.dispatch_event()`. Contains `actions: list[DaemonAction]` and `default_prevented: bool`.
+- `Actions` — Factory class for constructing `DaemonAction` objects. Methods: `post_to_channel()`, `nudge_coworker()`, `spawn_reviewer()`, `spawn_coworker()`, `complete_task()`, `enable_auto_merge()`, `check_pending()`, `create_task()`, `update_task()`.
 
 **Plugin registration:** Plugins are classes with `@hookimpl`-decorated methods matching the hook spec signatures. Multiple plugins can respond to the same hook — pluggy collects all return values.
 
 ```python
-from midtown import hookimpl, Action, HookContext
+from midtown import hookimpl, HookContext, DaemonAction
 
 class MyPlugin:
     @hookimpl
-    def on_pr_opened(self, event: dict, context: HookContext):
-        return [Action.post_to_channel(f"PR #{event['pr_number']} opened!")]
+    def on_pr_opened(self, ctx: HookContext) -> list[DaemonAction]:
+        return [ctx.actions.post_to_channel(f"PR #{ctx.pr_number} opened!")]
 ```
 
-**Exports:** All hook types are re-exported from the top-level `midtown` package: `Action`, `DaemonAction`, `HookContext`, `WorkflowHooks`, `TaskHooks`, `hookimpl`, `hookspec`.
+**Exports:** All hook types are re-exported from the top-level `midtown` package: `Actions`, `DaemonAction`, `DispatchResult`, `HookContext`, `WorkflowHooks`, `TaskHooks`, `hookimpl`, `hookspec`.
 
 ### Reference Implementation
 

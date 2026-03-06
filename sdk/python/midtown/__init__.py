@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from midtown.actions import Actions
+from midtown.daemon import DispatchResult
 from midtown.hooks import (
     DaemonAction,
     HookContext,
@@ -57,6 +58,7 @@ __all__ = [
     # Hook system
     "Actions",
     "DaemonAction",
+    "DispatchResult",
     "HookContext",
     "TaskHooks",
     "WorkflowHooks",

@@ -112,6 +112,41 @@ class TestActions:
         )
 
 
+class TestPreventDefault:
+    """Tests for the prevent_default / is_default_prevented API on HookContext."""
+
+    def test_default_not_prevented(self) -> None:
+        ctx = HookContext(event_type="pr.opened", event={})
+        assert ctx.is_default_prevented() is False
+
+    def test_prevent_default(self) -> None:
+        ctx = HookContext(event_type="pr.opened", event={})
+        ctx.prevent_default()
+        assert ctx.is_default_prevented() is True
+
+    def test_prevent_default_idempotent(self) -> None:
+        ctx = HookContext(event_type="pr.opened", event={})
+        ctx.prevent_default()
+        ctx.prevent_default()
+        assert ctx.is_default_prevented() is True
+
+    def test_no_camel_case_methods(self) -> None:
+        """Regression guard: camelCase method names must not exist on HookContext.
+
+        PR #1795 review explicitly renamed these from camelCase to snake_case
+        per PEP 8 conventions. This test prevents re-introduction.
+        """
+        ctx = HookContext(event_type="test", event={})
+        assert not hasattr(ctx, "preventDefault"), (
+            "camelCase 'preventDefault' found on HookContext — "
+            "use 'prevent_default' (snake_case per PEP 8)"
+        )
+        assert not hasattr(ctx, "isDefaultPrevented"), (
+            "camelCase 'isDefaultPrevented' found on HookContext — "
+            "use 'is_default_prevented' (snake_case per PEP 8)"
+        )
+
+
 class TestPluginManager:
     def test_creates_manager_with_specs(self) -> None:
         pm = get_plugin_manager()
@@ -189,6 +224,7 @@ class TestExports:
         from midtown import (  # noqa: F401
             Actions,
             DaemonAction,
+            DispatchResult,
             HookContext,
             TaskHooks,
             WorkflowHooks,
@@ -203,6 +239,7 @@ class TestExports:
         for name in [
             "Actions",
             "DaemonAction",
+            "DispatchResult",
             "HookContext",
             "TaskHooks",
             "WorkflowHooks",
