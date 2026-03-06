@@ -367,6 +367,11 @@ impl<'a> PrFields<'a> {
             .unwrap_or("")
     }
 
+    /// Get the PR body text.
+    pub fn body(&self) -> &str {
+        self.json.get("body").and_then(|b| b.as_str()).unwrap_or("")
+    }
+
     /// Get the mergeable status (e.g., "MERGEABLE", "CONFLICTING").
     pub fn mergeable(&self) -> &str {
         self.json

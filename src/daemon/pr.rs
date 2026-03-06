@@ -444,6 +444,7 @@ fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
         resolve_pr_owner_from_task_metadata(pf.number, pf.title, pf.head_ref, &snap.all_tasks)
     })
     .or_else(|| coworker_from_branch(pf.head_ref, &snap.worktree_branch_owners))
+    .or_else(|| resolve_pr_owner_from_body(pf.body()))
 }
 
 fn extract_task_id_from_head_ref(head_ref: &str) -> Option<u64> {
@@ -487,10 +488,33 @@ fn resolve_pr_owner_from_task_metadata(
         .and_then(|task| task.owner.clone())
 }
 
+/// Extract coworker name from PR body `<!-- midtown: name -->` frontmatter.
+///
+/// This is a crash-resilient fallback: the frontmatter lives on GitHub and
+/// survives daemon restarts, auth storms, and session record loss. All
+/// coworker PRs include this frontmatter per the system prompt convention.
+fn resolve_pr_owner_from_body(body: &str) -> Option<String> {
+    let marker = "midtown:";
+    let marker_pos = body.find(marker)?;
+    let before = &body[..marker_pos];
+    if !before.contains("<!--") {
+        return None;
+    }
+    let after_marker = &body[marker_pos + marker.len()..];
+    let end = after_marker.find("-->")?;
+    let name = after_marker[..end].trim();
+    // Ignore "midtown" — that's the lead, not a coworker
+    if name.is_empty() || name.eq_ignore_ascii_case("midtown") {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// Resolve PR owner from persistent state (used by webhook handlers).
 ///
 /// Locks persistent_state once, tries session → task metadata → branch →
-/// PR worktree registry → fallback.
+/// PR worktree registry → body frontmatter → fallback.
 async fn resolve_pr_owner_from_state(
     state: &DaemonState,
     pr_number: u64,
@@ -1050,7 +1074,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,author",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,author,body",
         ])
         .output()
         .await?;
@@ -2977,6 +3001,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 // This covers cases where the session record is gone but we stored
                 // who created the PR.
                 pr_author_names.get(&pr_number).cloned()
+            })
+            .or_else(|| {
+                // Crash-resilient fallback: parse <!-- midtown: name --> from the PR
+                // body. This survives daemon restarts and auth storms since the
+                // frontmatter lives on GitHub, not in daemon memory.
+                resolve_pr_owner_from_body(pf.body())
             });
 
             if let Some(owner) = owner {
