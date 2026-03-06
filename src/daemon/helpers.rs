@@ -419,6 +419,26 @@ pub fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
     issues
 }
 
+/// Resolve the effective status of a statusCheckRollup entry.
+///
+/// Check runs use `conclusion` (uppercase: SUCCESS, FAILURE, PENDING).
+/// Commit statuses (e.g. Codecov) use `state` (lowercase: success, failure, pending).
+/// Returns the status as an uppercase string, or empty if neither field is present.
+fn resolve_check_status(check: &serde_json::Value) -> String {
+    let conclusion = check
+        .get("conclusion")
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if !conclusion.is_empty() {
+        return conclusion.to_uppercase();
+    }
+    check
+        .get("state")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_uppercase()
+}
+
 /// Check if a PR is eligible for daemon-assisted auto-merge.
 ///
 /// A PR is auto-mergeable when:
@@ -441,27 +461,14 @@ pub fn is_auto_mergeable(pr: &serde_json::Value) -> bool {
     }
 
     if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
-        let has_failure = checks.iter().any(|check| {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            conclusion == "FAILURE"
-        });
-        if has_failure {
-            return false;
-        }
-
-        // Ensure all checks have completed (no pending/in-progress checks)
-        let has_pending = checks.iter().any(|check| {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            conclusion.is_empty() || conclusion == "PENDING"
-        });
-        if has_pending {
-            return false;
+        for check in checks {
+            let status = resolve_check_status(check);
+            if status == "FAILURE" || status == "ERROR" {
+                return false;
+            }
+            if status.is_empty() || status == "PENDING" {
+                return false;
+            }
         }
     }
 
@@ -478,14 +485,15 @@ pub fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
             return true;
         }
         for check in checks {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            if conclusion == "FAILURE" || conclusion == "CANCELLED" || conclusion == "TIMED_OUT" {
+            let status = resolve_check_status(check);
+            if status == "FAILURE"
+                || status == "ERROR"
+                || status == "CANCELLED"
+                || status == "TIMED_OUT"
+            {
                 return false;
             }
-            if conclusion.is_empty() || conclusion == "PENDING" {
+            if status.is_empty() || status == "PENDING" {
                 return false; // Still running
             }
         }

@@ -389,6 +389,38 @@ fn auto_merge_succeeds_when_all_conditions_met() {
     );
 }
 
+#[test]
+fn auto_mergeable_with_commit_status_success() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "success"}
+        ],
+        "reviewDecision": "APPROVED"
+    });
+
+    assert!(
+        is_auto_mergeable(&pr),
+        "approved PR with commit status state=success should be auto-mergeable"
+    );
+}
+
+#[test]
+fn not_auto_mergeable_with_commit_status_pending() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "pending"}
+        ],
+        "reviewDecision": "APPROVED"
+    });
+
+    assert!(
+        !is_auto_mergeable(&pr),
+        "approved PR with commit status state=pending should not be auto-mergeable"
+    );
+}
+
 // -------------------------------------------------------------------------
 // all_ci_checks_passed — verifies CI status for PR break decisions
 // -------------------------------------------------------------------------
@@ -461,6 +493,67 @@ fn ci_passed_with_no_checks() {
     assert!(
         all_ci_checks_passed(&pr),
         "no CI checks configured = considered passing"
+    );
+}
+
+#[test]
+fn ci_passed_with_commit_status_success() {
+    // Commit statuses (like Codecov) use `state` instead of `conclusion`
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "success"}
+        ]
+    });
+
+    assert!(
+        all_ci_checks_passed(&pr),
+        "commit status with state=success should count as passed"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_failure() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "failure"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=failure should count as failed"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_pending() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "pending"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=pending should count as pending"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_error() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "error"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=error should count as failed"
     );
 }
 
