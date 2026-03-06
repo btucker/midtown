@@ -751,7 +751,7 @@ Response format:
 
 **Plugin discovery:** `paths::discover_plugin_dirs()` scans for `.py` files (excluding `_`-prefixed) in `<project>/.midtown/plugins/` and `~/.midtown/projects/<repo>/plugins/`. The manager only starts when at least one directory has plugin files.
 
-**Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for it to exit, then cleans up the socket file.
+**Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for graceful exit, then escalates to SIGKILL if needed, then cleans up the socket file.
 
 **State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()` with discovered plugin dirs, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
 

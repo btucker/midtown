@@ -296,6 +296,11 @@ impl ProjectPaths {
         self.state_base.join("daemon.sock")
     }
 
+    /// Plugin daemon socket: `~/.local/state/midtown/<dir_key>/plugin-daemon.sock`.
+    pub fn plugin_daemon_socket(&self) -> PathBuf {
+        self.state_base.join("plugin-daemon.sock")
+    }
+
     /// Daemon log directory: `~/.midtown/projects/<dir_key>/logs/`.
     pub fn daemon_log_dir(&self) -> PathBuf {
         self.base.join("logs")

@@ -8,9 +8,9 @@
 //! - Spawned when plugin files are detected in discovery paths.
 //! - Waits for `{"ready":true}` on stdout before dispatching events.
 //! - Auto-restarts with exponential backoff on crash.
-//! - Killed (SIGTERM) on Rust daemon shutdown.
+//! - Gracefully stopped (SIGTERM → wait → SIGKILL) on Rust daemon shutdown.
 //!
-//! The socket path lives at `<state_dir>/workflow-daemon.sock`.
+//! The socket path lives at `<state_dir>/plugin-daemon.sock`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,14 +45,14 @@ struct DaemonProcess {
 /// when plugins are detected, monitors its health, and restarts it with
 /// exponential backoff on crashes.
 pub(crate) struct PluginDaemonManager {
+    /// Socket path is immutable after construction, so it lives outside the mutex.
+    socket_path: PathBuf,
     inner: Mutex<PluginDaemonInner>,
 }
 
 struct PluginDaemonInner {
     /// Running daemon process, if any.
     process: Option<DaemonProcess>,
-    /// Unix socket path the Python daemon listens on.
-    socket_path: PathBuf,
     /// Plugin directories passed to `--plugin-dirs`.
     plugin_dirs: Vec<PathBuf>,
     /// Path to the Python SDK (for `uv run`).
@@ -68,9 +68,9 @@ impl PluginDaemonManager {
     /// [`ensure_running`] to start it when plugins are detected.
     pub fn new(socket_path: PathBuf, plugin_dirs: Vec<PathBuf>, sdk_path: PathBuf) -> Self {
         Self {
+            socket_path: socket_path.clone(),
             inner: Mutex::new(PluginDaemonInner {
                 process: None,
-                socket_path,
                 plugin_dirs,
                 sdk_path,
                 crash_count: 0,
@@ -83,13 +83,7 @@ impl PluginDaemonManager {
     /// Used by Phase 2.4 (bidirectional event dispatch) to connect to the daemon.
     #[allow(dead_code)]
     pub fn socket_path(&self) -> PathBuf {
-        // Safe: we only need the socket_path which is set at construction.
-        // We use try_lock to avoid blocking if something else holds the lock.
-        // Fall back should never happen since socket_path doesn't change.
-        self.inner
-            .try_lock()
-            .map(|inner| inner.socket_path.clone())
-            .unwrap_or_default()
+        self.socket_path.clone()
     }
 
     /// Returns true if plugin directories are configured (non-empty).
@@ -128,7 +122,7 @@ impl PluginDaemonManager {
             }
         }
 
-        match spawn_plugin_daemon(&inner.socket_path, &inner.plugin_dirs, &inner.sdk_path).await {
+        match spawn_plugin_daemon(&self.socket_path, &inner.plugin_dirs, &inner.sdk_path).await {
             Ok(proc) => {
                 inner.process = Some(proc);
                 inner.crash_count = 0;
@@ -172,12 +166,28 @@ impl PluginDaemonManager {
         let mut inner = self.inner.lock().await;
         if let Some(mut proc) = inner.process.take() {
             info!("Shutting down plugin daemon");
-            // Send SIGTERM via kill, then wait briefly for exit.
-            let _ = proc.child.kill().await;
-            let _ = tokio::time::timeout(Duration::from_secs(3), proc.child.wait()).await;
+            // Send SIGTERM for graceful shutdown, then wait up to 3s.
+            if let Some(pid) = proc.child.id() {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                match tokio::time::timeout(Duration::from_secs(3), proc.child.wait()).await {
+                    Ok(_) => {
+                        info!("Plugin daemon exited gracefully after SIGTERM");
+                    }
+                    Err(_) => {
+                        warn!("Plugin daemon did not exit after SIGTERM, sending SIGKILL");
+                        let _ = proc.child.kill().await;
+                    }
+                }
+            } else {
+                // No PID available (already exited), just clean up.
+                let _ = proc.child.kill().await;
+            }
         }
         // Clean up the socket file.
-        let _ = std::fs::remove_file(&inner.socket_path);
+        let _ = std::fs::remove_file(&self.socket_path);
     }
 
     /// Update the plugin directories. If they changed, restart the daemon.
