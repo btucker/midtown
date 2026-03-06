@@ -662,11 +662,13 @@ export function handleUpdate(update) {
         if (msg.from !== 'user' && msg.from !== get(userSenderName)) {
           // Auto-track: if the parent message was sent by the user, track
           // the thread in the sidebar so the user sees replies to their messages.
+          // Pass undefined for replyCount so trackThread initializes to 0 for new
+          // entries (or preserves existing) — the update block below handles the +1.
           const channelMsgs = get(messagesByChannel)[channelName]
           const parentMsg = channelMsgs?.find((m) => m.id === msg.thread_parent_id)
           const uName = get(userSenderName)
           if (parentMsg && (parentMsg.from === 'user' || parentMsg.from === uName)) {
-            trackThread(msg.thread_parent_id, channelName, parentMsg.content, parentMsg.reply_count)
+            trackThread(msg.thread_parent_id, channelName, parentMsg.content)
           }
 
           const tracked = get(trackedThreads)

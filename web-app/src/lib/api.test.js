@@ -1106,6 +1106,38 @@ describe('handleUpdate — auto-track threads when someone replies to user messa
     expect(tracked[parentId]).toBeTruthy()
     expect(tracked[parentId].channelName).toBe('web')
     expect(tracked[parentId].subject).toContain('my question about auth')
+    // replyCount should match the parent's reply_count (1 after the WS handler
+    // incremented it), not double-count from the subsequent update block.
+    expect(tracked[parentId].replyCount).toBe(1)
+  })
+
+  it('does not double-count replyCount on first auto-tracked reply', () => {
+    // Send two replies — replyCount should be exactly 2, not 3 or 4
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-a',
+        from: 'coworker',
+        content: 'first reply',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-b',
+        from: 'coworker',
+        content: 'second reply',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:01Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    expect(tracked[parentId].replyCount).toBe(2)
   })
 
   it('increments unread count on the first auto-tracked reply', () => {
