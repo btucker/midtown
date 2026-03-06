@@ -912,6 +912,8 @@ impl DaemonState {
                 self.paths.dir_key(),
                 session_mode,
                 "",
+                None,
+                vec![],
             );
 
             match self.spawn_coworker(&config).await {

@@ -943,3 +943,191 @@ fn test_discover_plugin_dirs_skips_dir_without_skill_md() {
     let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert!(dirs.is_empty());
 }
+
+// ── AGENTS.md discovery tests ───────────────────────────────────────────────
+
+#[test]
+fn test_agents_md_for_channel_none_when_no_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let result = agents_md_for_channel("web", &project_root, "nonexistent-repo-agents-test");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_agents_md_for_channel_finds_channel_specific_in_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let agents_dir = project_root.join(".midtown").join("channels").join("web");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    std::fs::write(agents_dir.join("AGENTS.md"), "# Web Workflow").unwrap();
+
+    let result = agents_md_for_channel("web", &project_root, "nonexistent-repo-agents-test");
+    assert_eq!(result.as_deref(), Some("# Web Workflow"));
+}
+
+#[test]
+fn test_agents_md_for_channel_finds_project_wide_in_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let midtown_dir = project_root.join(".midtown");
+    std::fs::create_dir_all(&midtown_dir).unwrap();
+    std::fs::write(midtown_dir.join("AGENTS.md"), "# Project Workflow").unwrap();
+
+    let result = agents_md_for_channel("web", &project_root, "nonexistent-repo-agents-test");
+    assert_eq!(result.as_deref(), Some("# Project Workflow"));
+}
+
+#[test]
+fn test_agents_md_for_channel_channel_specific_wins_over_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+
+    // Create channel-specific AGENTS.md
+    let channel_dir = project_root.join(".midtown").join("channels").join("auth");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("AGENTS.md"), "# Auth Channel").unwrap();
+
+    // Create project-wide AGENTS.md
+    let midtown_dir = project_root.join(".midtown");
+    std::fs::write(midtown_dir.join("AGENTS.md"), "# Project Wide").unwrap();
+
+    let result = agents_md_for_channel("auth", &project_root, "nonexistent-repo-agents-test");
+    assert_eq!(result.as_deref(), Some("# Auth Channel"));
+}
+
+#[test]
+fn test_agents_md_for_channel_skips_empty_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let channel_dir = project_root.join(".midtown").join("channels").join("web");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("AGENTS.md"), "   \n  ").unwrap();
+
+    let result = agents_md_for_channel("web", &project_root, "nonexistent-repo-agents-test");
+    assert!(result.is_none());
+}
+
+// ── SKILL.md body collection tests ──────────────────────────────────────────
+
+#[test]
+fn test_collect_skill_md_bodies_empty_dirs() {
+    let results = collect_skill_md_bodies(&[]);
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_collect_skill_md_bodies_extracts_body_and_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+    let tdw_dir = plugin_dir.join("tdw");
+    std::fs::create_dir_all(&tdw_dir).unwrap();
+    std::fs::write(
+        tdw_dir.join("SKILL.md"),
+        "---\nname: tdw\ndescription: Test-Driven Writing\n---\n# TDW\n\nTDW is great.",
+    )
+    .unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "tdw");
+    assert!(results[0].1.contains("# TDW"));
+    assert!(results[0].1.contains("TDW is great."));
+    // Body should NOT contain frontmatter
+    assert!(!results[0].1.contains("---"));
+}
+
+#[test]
+fn test_collect_skill_md_bodies_falls_back_to_dir_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+    let my_plugin = plugin_dir.join("my-plugin");
+    std::fs::create_dir_all(&my_plugin).unwrap();
+    // SKILL.md with no name in frontmatter
+    std::fs::write(
+        my_plugin.join("SKILL.md"),
+        "---\ndescription: A plugin\n---\n# My Plugin Body",
+    )
+    .unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "my-plugin");
+    assert!(results[0].1.contains("# My Plugin Body"));
+}
+
+#[test]
+fn test_collect_skill_md_bodies_skips_empty_body() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+    let skill_dir = plugin_dir.join("empty");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    // SKILL.md with frontmatter but no body
+    std::fs::write(skill_dir.join("SKILL.md"), "---\nname: empty\n---\n").unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_collect_skill_md_bodies_no_frontmatter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+    let skill_dir = plugin_dir.join("plain");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    // SKILL.md with no frontmatter at all
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "# Plain Plugin\n\nJust content.",
+    )
+    .unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, "plain"); // falls back to dir name
+    assert!(results[0].1.contains("# Plain Plugin"));
+}
+
+#[test]
+fn test_collect_skill_md_bodies_multiple_plugins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+
+    // Plugin A
+    let a_dir = plugin_dir.join("alpha");
+    std::fs::create_dir_all(&a_dir).unwrap();
+    std::fs::write(
+        a_dir.join("SKILL.md"),
+        "---\nname: alpha\n---\n# Alpha Plugin",
+    )
+    .unwrap();
+
+    // Plugin B
+    let b_dir = plugin_dir.join("beta");
+    std::fs::create_dir_all(&b_dir).unwrap();
+    std::fs::write(
+        b_dir.join("SKILL.md"),
+        "---\nname: beta\n---\n# Beta Plugin",
+    )
+    .unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert_eq!(results.len(), 2);
+    let names: Vec<&str> = results.iter().map(|(n, _)| n.as_str()).collect();
+    assert!(names.contains(&"alpha"));
+    assert!(names.contains(&"beta"));
+}
+
+#[test]
+fn test_collect_skill_md_bodies_skips_bare_py_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugin_dir = tmp.path().join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    // Bare .py files should be ignored (no SKILL.md to extract body from)
+    std::fs::write(plugin_dir.join("hooks.py"), "# hooks").unwrap();
+
+    let results = collect_skill_md_bodies(&[plugin_dir]);
+    assert!(results.is_empty());
+}

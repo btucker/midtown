@@ -330,11 +330,19 @@ pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
 /// Load the channel lead system prompt with channel name and domain context substitution.
 ///
 /// Assembly: channel-lead.md + lead.md + common.md (+ ops-channel-lead.md for "ops" channel)
+///           + AGENTS.md (workflow facilitation) + SKILL.md bodies (plugin-specific knowledge)
+///
 /// For channel leads, `{name}` = channel_name.
+///
+/// `agents_md` is optional workflow facilitation content from the project's `AGENTS.md`.
+/// `skill_bodies` is a list of `(plugin_name, skill_body)` pairs from discovered plugins'
+/// `SKILL.md` files — these tell the channel lead WHAT each workflow/plugin does.
 pub fn channel_lead_system_prompt(
     channel_name: &str,
     domain_context: &str,
     project_name: &str,
+    agents_md: Option<&str>,
+    skill_bodies: &[(String, String)],
 ) -> String {
     let template = load_prompt_file("channel-lead.md")
         .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
@@ -348,6 +356,22 @@ pub fn channel_lead_system_prompt(
         let ops_extra = load_prompt_file("ops-channel-lead.md")
             .unwrap_or_else(|| DEFAULT_OPS_CHANNEL_LEAD_PROMPT.to_string());
         prompt = format!("{prompt}\n\n{ops_extra}");
+    }
+
+    // Append AGENTS.md — workflow facilitation instructions (HOW to facilitate)
+    if let Some(agents) = agents_md {
+        let agents = agents.trim();
+        if !agents.is_empty() {
+            prompt = format!("{prompt}\n\n## Workflow Facilitation\n\n{agents}");
+        }
+    }
+
+    // Append SKILL.md bodies — plugin-specific workflow knowledge (WHAT each plugin does)
+    for (name, body) in skill_bodies {
+        let body = body.trim();
+        if !body.is_empty() {
+            prompt = format!("{prompt}\n\n## Plugin: {name}\n\n{body}");
+        }
     }
 
     prompt

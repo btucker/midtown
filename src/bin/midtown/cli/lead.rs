@@ -68,9 +68,15 @@ pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
         midtown::launch::CoworkerRole::ChannelLead {
             channel_name,
             domain_context,
-        } => {
-            midtown::agents::channel_lead_system_prompt(channel_name, domain_context, &project_name)
-        }
+            agents_md,
+            skill_bodies,
+        } => midtown::agents::channel_lead_system_prompt(
+            channel_name,
+            domain_context,
+            &project_name,
+            agents_md.as_deref(),
+            skill_bodies,
+        ),
         _ => unreachable!("LaunchConfig::lead() always produces Lead or ChannelLead role"),
     };
 

@@ -435,6 +435,8 @@ pub(super) async fn handle_auth_switch(
                         crate::launch::SessionMode::Fresh
                     },
                     "",
+                    None,
+                    vec![],
                 );
                 channel_lead.model = coworker.model.clone();
                 channel_lead

@@ -319,7 +319,8 @@ fn test_reviewer_system_prompt_escalation_falls_back_to_project_name() {
 
 #[test]
 fn test_channel_lead_system_prompt_substitutes_channel_name() {
-    let prompt = channel_lead_system_prompt("web-interface", "No context yet.", "midtown");
+    let prompt =
+        channel_lead_system_prompt("web-interface", "No context yet.", "midtown", None, &[]);
     assert!(
         prompt.contains("#web-interface"),
         "Channel lead prompt should contain the channel name with # prefix"
@@ -337,7 +338,7 @@ fn test_channel_lead_system_prompt_substitutes_channel_name() {
 #[test]
 fn test_channel_lead_system_prompt_substitutes_domain_context() {
     let context = "Active tasks: !42 Add WebSocket reconnect. Recent PRs: #99 merged.";
-    let prompt = channel_lead_system_prompt("daemon-core", context, "midtown");
+    let prompt = channel_lead_system_prompt("daemon-core", context, "midtown", None, &[]);
     assert!(
         prompt.contains(context),
         "Channel lead prompt should inject domain context"
@@ -350,7 +351,7 @@ fn test_channel_lead_system_prompt_substitutes_domain_context() {
 
 #[test]
 fn test_channel_lead_system_prompt_contains_required_sections() {
-    let prompt = channel_lead_system_prompt("tui", "No context.", "midtown");
+    let prompt = channel_lead_system_prompt("tui", "No context.", "midtown", None, &[]);
     assert!(
         prompt.contains("Identity"),
         "Channel lead prompt should have Identity section"
@@ -371,7 +372,8 @@ fn test_channel_lead_system_prompt_contains_required_sections() {
 
 #[test]
 fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
-    let prompt = channel_lead_system_prompt("github-integration", "No context.", "midtown");
+    let prompt =
+        channel_lead_system_prompt("github-integration", "No context.", "midtown", None, &[]);
     assert!(
         prompt.contains("@midtown"),
         "Channel lead prompt should mention @midtown for escalation"
@@ -380,7 +382,7 @@ fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
 
 #[test]
 fn test_channel_lead_notes_path_is_absolute() {
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown");
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, &[]);
     assert!(
         prompt.contains("~/.midtown/projects/midtown/channels/web/notes/"),
         "Channel lead prompt should use absolute project-level path for notes, got: {}",
@@ -397,7 +399,7 @@ fn test_channel_lead_notes_path_is_absolute() {
 
 #[test]
 fn test_channel_lead_notes_triggers_present() {
-    let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown");
+    let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown", None, &[]);
     assert!(
         prompt.contains("When to Write Notes"),
         "Channel lead prompt should have a 'When to Write Notes' section with actionable triggers"
@@ -676,5 +678,114 @@ fn test_reviewer_launch_prompt_codex_invocation() {
     assert!(
         !prompt.contains("/code-review"),
         "Codex launch prompt should avoid slash command"
+    );
+}
+
+// ── AGENTS.md + SKILL.md injection tests ────────────────────────────────────
+
+#[test]
+fn test_channel_lead_system_prompt_without_agents_or_skills() {
+    // When no AGENTS.md or SKILL.md content is provided, prompt should not contain
+    // the "Workflow Facilitation" or "Plugin:" sections.
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, &[]);
+    assert!(
+        !prompt.contains("## Workflow Facilitation"),
+        "No AGENTS.md content should mean no Workflow Facilitation section"
+    );
+    assert!(
+        !prompt.contains("## Plugin:"),
+        "No SKILL.md content should mean no Plugin sections"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_with_agents_md() {
+    let agents = "Use `/study` to begin research.\n\nPhase transitions happen automatically.";
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents), &[]);
+    assert!(
+        prompt.contains("## Workflow Facilitation"),
+        "AGENTS.md content should add Workflow Facilitation section"
+    );
+    assert!(
+        prompt.contains("Use `/study` to begin research."),
+        "AGENTS.md content should be injected into the prompt"
+    );
+    assert!(
+        prompt.contains("Phase transitions happen automatically."),
+        "Full AGENTS.md body should appear"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_with_skill_bodies() {
+    let skills = vec![
+        (
+            "tdw".to_string(),
+            "# TDW\n\nTest-Driven Writing workflow.".to_string(),
+        ),
+        (
+            "jira".to_string(),
+            "# Jira Integration\n\nSync with Jira.".to_string(),
+        ),
+    ];
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, &skills);
+    assert!(
+        prompt.contains("## Plugin: tdw"),
+        "Each plugin should have a named section"
+    );
+    assert!(
+        prompt.contains("# TDW"),
+        "TDW skill body should be injected"
+    );
+    assert!(
+        prompt.contains("## Plugin: jira"),
+        "Jira plugin should have a named section"
+    );
+    assert!(
+        prompt.contains("Sync with Jira."),
+        "Jira skill body should be injected"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_with_both_agents_and_skills() {
+    let agents = "Facilitation instructions here.";
+    let skills = vec![(
+        "spec-kitty".to_string(),
+        "Spec validation tool.".to_string(),
+    )];
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents), &skills);
+
+    // Both sections present
+    assert!(prompt.contains("## Workflow Facilitation"));
+    assert!(prompt.contains("Facilitation instructions here."));
+    assert!(prompt.contains("## Plugin: spec-kitty"));
+    assert!(prompt.contains("Spec validation tool."));
+
+    // Facilitation section should come before plugin sections
+    let facilitation_pos = prompt.find("## Workflow Facilitation").unwrap();
+    let plugin_pos = prompt.find("## Plugin: spec-kitty").unwrap();
+    assert!(
+        facilitation_pos < plugin_pos,
+        "Workflow Facilitation should appear before Plugin sections"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_skips_empty_agents_md() {
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some("  \n  "), &[]);
+    assert!(
+        !prompt.contains("## Workflow Facilitation"),
+        "Empty AGENTS.md content should not add a section"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_skips_empty_skill_body() {
+    let skills = vec![("empty".to_string(), "   \n  ".to_string())];
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, &skills);
+    assert!(
+        !prompt.contains("## Plugin: empty"),
+        "Empty skill body should not add a section"
     );
 }
