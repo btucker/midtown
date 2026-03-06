@@ -1267,6 +1267,11 @@ async fn test_channel_workflow_returns_channel_repo_script() {
     let data = &result.0;
     assert_eq!(data["script_source"], "channel-repo");
     assert_eq!(data["script_content"], "# channel repo workflow");
+    // Custom workflow without --diagram support should return null mermaid
+    assert!(
+        data["mermaid"].is_null(),
+        "Expected null mermaid for custom workflow without --diagram"
+    );
 }
 
 #[tokio::test]
@@ -1298,6 +1303,10 @@ async fn test_channel_workflow_returns_channel_local_script() {
     let data = &result.0;
     assert_eq!(data["script_source"], "channel-local");
     assert_eq!(data["script_content"], "# channel local workflow");
+    assert!(
+        data["mermaid"].is_null(),
+        "Expected null mermaid for custom workflow without --diagram"
+    );
 }
 
 #[tokio::test]
@@ -1323,6 +1332,10 @@ async fn test_channel_workflow_returns_project_repo_script() {
     let data = &result.0;
     assert_eq!(data["script_source"], "project-repo");
     assert_eq!(data["script_content"], "# project repo workflow");
+    assert!(
+        data["mermaid"].is_null(),
+        "Expected null mermaid for custom workflow without --diagram"
+    );
 }
 
 #[tokio::test]

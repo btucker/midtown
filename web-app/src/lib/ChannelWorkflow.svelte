@@ -2,7 +2,7 @@
   import { activeChannel, activeProject } from './store.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
 
-  /** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
+  /** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
   let data = $state(null)
   let loading = $state(false)
   let error = $state('')
@@ -62,12 +62,14 @@
   {:else if data}
     <div class="workflow-content">
       <!-- Workflow diagram -->
-      <section class="workflow-section">
-        <h2 class="section-title">State Machine</h2>
-        <div class="diagram-container">
-          <MermaidDiagram code={data.mermaid} />
-        </div>
-      </section>
+      {#if data.mermaid}
+        <section class="workflow-section">
+          <h2 class="section-title">State Machine</h2>
+          <div class="diagram-container">
+            <MermaidDiagram code={data.mermaid} />
+          </div>
+        </section>
+      {/if}
 
       <!-- Workflow source info -->
       <section class="workflow-section">

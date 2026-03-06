@@ -2149,11 +2149,14 @@ async fn api_channel_workflow(
         };
 
     // Generate the mermaid diagram. For custom workflows, invoke `uv run <script> --diagram`.
-    // Fall back to the embedded default if invocation fails or the script doesn't support it.
-    let mermaid = if let Some(ref path) = script_path {
-        generate_workflow_diagram(path).unwrap_or_else(|| DEFAULT_WORKFLOW_MERMAID.to_string())
+    // If a custom workflow doesn't support --diagram, return null rather than the default
+    // diagram (which would be misleading since it represents a different state machine).
+    let mermaid: Option<String> = if script_path.is_some() {
+        script_path
+            .as_ref()
+            .and_then(|path| generate_workflow_diagram(path))
     } else {
-        DEFAULT_WORKFLOW_MERMAID.to_string()
+        Some(DEFAULT_WORKFLOW_MERMAID.to_string())
     };
 
     // Discover plugins using the full 4-level priority from paths.rs
