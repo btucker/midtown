@@ -125,7 +125,11 @@ onDestroy(() => {
           <span class="text-muted-foreground">{$repoStatus.repoName}</span>
         {/if}
         {#if $repoStatus.commitHash}
-          <span class="text-link-default">{$repoStatus.commitHash}</span>
+          {#if $repoStatus.fullName}
+            <a href="https://github.com/{$repoStatus.fullName}/commit/{$repoStatus.commitHash}" target="_blank" rel="noopener" class="text-link-default hover:underline">{$repoStatus.commitHash}</a>
+          {:else}
+            <span class="text-link-default">{$repoStatus.commitHash}</span>
+          {/if}
         {/if}
         {#if $repoStatus.commitTime}
           <span class="text-muted-foreground">{formatRelativeTime($repoStatus.commitTime)}</span>
@@ -133,7 +137,11 @@ onDestroy(() => {
         <span style="color: {ci.color}">{ci.char}</span>
         {#if $repoStatus.releaseTag}
           <span class="text-muted-foreground">Releases:</span>
-          <span class="text-link-default">{$repoStatus.releaseTag}</span>
+          {#if $repoStatus.fullName}
+            <a href="https://github.com/{$repoStatus.fullName}/releases/tag/{$repoStatus.releaseTag}" target="_blank" rel="noopener" class="text-link-default hover:underline">{$repoStatus.releaseTag}</a>
+          {:else}
+            <span class="text-link-default">{$repoStatus.releaseTag}</span>
+          {/if}
           {#if $repoStatus.releaseTime}
             <span class="text-muted-foreground">{formatRelativeTime($repoStatus.releaseTime)}</span>
           {/if}
@@ -149,7 +157,11 @@ onDestroy(() => {
       <div class="flex items-center gap-2 px-4 pb-2 text-[0.7rem] font-mono border-t border-border">
         <span class="text-muted-foreground">{repo.label || repo.fullName || ''}</span>
         {#if repo.commitHash}
-          <span class="text-link-default">{repo.commitHash}</span>
+          {#if repo.fullName}
+            <a href="https://github.com/{repo.fullName}/commit/{repo.commitHash}" target="_blank" rel="noopener" class="text-link-default hover:underline">{repo.commitHash}</a>
+          {:else}
+            <span class="text-link-default">{repo.commitHash}</span>
+          {/if}
         {/if}
         {#if repo.commitTime}
           <span class="text-muted-foreground">{formatRelativeTime(repo.commitTime)}</span>
@@ -159,7 +171,11 @@ onDestroy(() => {
         {/if}
         {#if repo.releaseTag}
           <span class="text-muted-foreground">Releases:</span>
-          <span class="text-link-default">{repo.releaseTag}</span>
+          {#if repo.fullName}
+            <a href="https://github.com/{repo.fullName}/releases/tag/{repo.releaseTag}" target="_blank" rel="noopener" class="text-link-default hover:underline">{repo.releaseTag}</a>
+          {:else}
+            <span class="text-link-default">{repo.releaseTag}</span>
+          {/if}
           {#if repo.releaseTime}
             <span class="text-muted-foreground">{formatRelativeTime(repo.releaseTime)}</span>
           {/if}
