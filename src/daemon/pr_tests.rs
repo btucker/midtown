@@ -5160,3 +5160,86 @@ fn log_pr_decision_appends_multiple_entries() {
     assert_eq!(first["pr"], 10);
     assert_eq!(second["pr"], 20);
 }
+
+/// Bug !2124: When a user-authored PR (lead/* branch) has a completed review,
+/// the daemon resolves the owner to a coworker via task metadata and spawns them
+/// to "address review feedback." The coworker sees a clean review, goes idle,
+/// and after the 10-minute cooldown the cycle repeats.
+///
+/// Fix: the review-complete path should check `is_lead_branch` and route to
+/// `@user` instead of spawning a coworker.
+#[tokio::test]
+async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 1834u64;
+    // Key: this is a lead/* branch (user-authored PR)
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "lead/essay",
+        "title": "feat: Add essay [Midtown !1834]",
+        "body": "",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+        // Store a PR author session that resolves the owner to "columbus".
+        // This simulates the scenario where task metadata links the PR to
+        // a coworker, causing the owner resolution chain to find "columbus"
+        // even though it's a lead/* (user-authored) branch.
+        ps.github.store_pr_author_session(
+            pr_number,
+            "sess-1834",
+            "lead/essay",
+            "columbus",
+            "feat: Add essay [Midtown !1834]",
+        );
+    }
+
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Should NOT spawn a coworker — this is a user-authored PR
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::NudgeSession { .. }
+        )),
+        "Bug !2124: Should not spawn/nudge a coworker for a user-authored (lead/*) PR. \
+         The daemon was looping because it spawned coworkers who immediately went idle. \
+         Got: {:#?}",
+        effects
+    );
+
+    // Should notify the user via @user channel message
+    assert!(
+        effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel {
+                message,
+                ..
+            } if message.contains("@user")
+        )),
+        "Should post @user notification for user-authored PR review completion, got: {:#?}",
+        effects
+    );
+}
