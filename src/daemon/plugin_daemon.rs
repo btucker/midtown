@@ -14,12 +14,17 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
+use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
+
+/// How long to wait for a plugin dispatch response over the socket.
+const DISPATCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait for `{"ready":true}` on stdout after spawning.
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -29,6 +34,33 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 /// Base backoff for the first restart attempt.
 const BASE_BACKOFF: Duration = Duration::from_millis(500);
+
+/// A single action returned by a Python plugin, deserialized from JSON.
+///
+/// Maps directly to the Python `DaemonAction(method=..., params=...)` dataclass.
+/// The `method` field is an RPC method name like `"channel.post"` or `"coworker.nudge"`.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PluginAction {
+    pub method: String,
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+/// Result of dispatching an event to the Python plugin daemon.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PluginDispatchResult {
+    /// Whether the dispatch succeeded on the Python side.
+    pub ok: bool,
+    /// Error message from the Python side (only when `ok` is false).
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Actions returned by all plugins, concatenated.
+    #[serde(default)]
+    pub actions: Vec<PluginAction>,
+    /// Whether any plugin called `ctx.prevent_default()`.
+    #[serde(default)]
+    pub default_prevented: bool,
+}
 
 /// Internal state of the plugin daemon process.
 struct DaemonProcess {
@@ -47,6 +79,10 @@ struct DaemonProcess {
 pub(crate) struct PluginDaemonManager {
     /// Socket path is immutable after construction, so it lives outside the mutex.
     socket_path: PathBuf,
+    /// Whether plugin directories are configured (non-empty). Set once at construction,
+    /// readable without acquiring the mutex. Used by sync code in `pr.rs` to decide
+    /// whether to take the script-authoritative path.
+    has_plugins_flag: AtomicBool,
     inner: Mutex<PluginDaemonInner>,
 }
 
@@ -67,8 +103,10 @@ impl PluginDaemonManager {
     /// Create a new manager. Does not spawn the daemon yet — call
     /// [`ensure_running`] to start it when plugins are detected.
     pub fn new(socket_path: PathBuf, plugin_dirs: Vec<PathBuf>, sdk_path: PathBuf) -> Self {
+        let has_plugins = !plugin_dirs.is_empty();
         Self {
             socket_path: socket_path.clone(),
+            has_plugins_flag: AtomicBool::new(has_plugins),
             inner: Mutex::new(PluginDaemonInner {
                 process: None,
                 plugin_dirs,
@@ -87,8 +125,9 @@ impl PluginDaemonManager {
     }
 
     /// Returns true if plugin directories are configured (non-empty).
-    pub async fn has_plugins(&self) -> bool {
-        !self.inner.lock().await.plugin_dirs.is_empty()
+    /// Sync-safe: reads an atomic flag, no mutex needed.
+    pub fn has_plugins(&self) -> bool {
+        self.has_plugins_flag.load(Ordering::Relaxed)
     }
 
     /// Ensure the daemon is running. If it's not running and we're past
@@ -200,6 +239,8 @@ impl PluginDaemonManager {
             new = ?new_dirs,
             "Plugin directories changed"
         );
+        self.has_plugins_flag
+            .store(!new_dirs.is_empty(), Ordering::Relaxed);
         inner.plugin_dirs = new_dirs;
         // Kill the current daemon so it restarts with new dirs.
         if let Some(mut proc) = inner.process.take() {
@@ -211,10 +252,78 @@ impl PluginDaemonManager {
 
     /// Check whether the daemon is currently running.
     /// Used by Phase 2.4 (bidirectional dispatch) and tests.
-    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         self.inner.lock().await.process.is_some()
     }
+
+    /// Send a workflow event to the Python plugin daemon and await the response.
+    ///
+    /// Connects to the plugin daemon's Unix socket, sends the event as
+    /// newline-delimited JSON, and reads the response. Returns `None` if the
+    /// daemon is not running or the connection/dispatch fails (caller should
+    /// fall back to compiled-in behavior).
+    ///
+    /// The request format matches what the Python `WorkflowDaemon._process_request`
+    /// expects: `{"type": "pr.opened", "event": {...}, ...}`.
+    pub async fn send_event(&self, event_json: &str) -> Option<PluginDispatchResult> {
+        if !self.is_running().await {
+            return None;
+        }
+
+        let socket_path = self.socket_path.clone();
+        match tokio::time::timeout(
+            DISPATCH_TIMEOUT,
+            send_event_to_socket(&socket_path, event_json),
+        )
+        .await
+        {
+            Ok(Ok(result)) => Some(result),
+            Ok(Err(e)) => {
+                warn!("Plugin daemon dispatch error: {}", e);
+                None
+            }
+            Err(_timeout) => {
+                warn!(
+                    "Plugin daemon dispatch timed out after {}s",
+                    DISPATCH_TIMEOUT.as_secs()
+                );
+                None
+            }
+        }
+    }
+}
+
+/// Send an event to the plugin daemon over the Unix socket and parse the response.
+///
+/// Opens a new connection per event (matching the Python server's one-request-per-connection
+/// model in `_handle_connection`).
+async fn send_event_to_socket(
+    socket_path: &Path,
+    event_json: &str,
+) -> Result<PluginDispatchResult, io::Error> {
+    let stream = tokio::net::UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    // Send the event as a single line of JSON.
+    writer.write_all(event_json.as_bytes()).await?;
+    if !event_json.ends_with('\n') {
+        writer.write_all(b"\n").await?;
+    }
+    writer.shutdown().await?;
+
+    // Read the response line.
+    let mut buf_reader = BufReader::new(reader);
+    let mut response_line = String::new();
+    buf_reader.read_line(&mut response_line).await?;
+
+    if response_line.is_empty() {
+        return Err(io::Error::other(
+            "plugin daemon closed connection without responding",
+        ));
+    }
+
+    serde_json::from_str::<PluginDispatchResult>(&response_line)
+        .map_err(|e| io::Error::other(format!("invalid plugin daemon response: {e}")))
 }
 
 /// Spawn the Python plugin daemon process.

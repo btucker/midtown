@@ -547,15 +547,14 @@ pub enum Effect {
         reviewer_name: String,
         body: String,
     },
-    /// Invoke the channel's workflow script with a domain event.
+    /// Dispatch a workflow event to the Python plugin daemon.
     ///
-    /// When a workflow script exists for the event's channel (resolved via
-    /// `paths::workflow_script_for_channel`), the daemon spawns it as
-    /// `uv run <script> --event <json> --state <state_file> --socket <socket>`.
-    /// If no script is found, this effect is a no-op.
+    /// When plugins are configured, sends the event over the Unix socket to the
+    /// long-running Python daemon. The daemon dispatches to all registered hooks
+    /// and returns actions + a `default_prevented` flag.
     ///
-    /// On non-zero exit or spawn failure, the script's stderr is posted to the
-    /// channel as a system message so failures are visible in the chat log.
+    /// Returned actions are converted to `Effect` variants and executed. If no
+    /// plugins are configured, this effect is a no-op.
     EmitWorkflowEvent(crate::workflow::WorkflowEvent),
 
     /// Respawn a dead fork session bound to a thread.
@@ -3056,7 +3055,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
 
             Effect::EmitWorkflowEvent(event) => {
-                invoke_workflow_script(state, event).await;
+                dispatch_workflow_event(state, event).await;
             }
 
             Effect::RespawnFork {
@@ -3302,32 +3301,29 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     }
 }
 
-/// Invoke the channel's workflow script for a `WorkflowEvent`.
+/// Dispatch a workflow event to the Python plugin daemon.
 ///
-/// Tries the persistent sidecar first (fast path: ~5-20ms per event). If the
-/// script doesn't support sidecar mode or the sidecar is in backoff, falls back
-/// to the subprocess-per-event model (~300-800ms per event).
+/// If the plugin daemon is running, sends the event over the Unix socket and
+/// awaits a response containing plugin actions and a `default_prevented` flag.
+/// Returned actions are converted to `Effect` variants and executed immediately.
 ///
-/// Resolves the script path using the 4-level priority order in `paths.rs`.
-/// If no script is found, returns immediately (no-op).
+/// If the daemon is not running or no plugins are configured, this is a no-op
+/// (the daemon's compiled-in behavior runs unmodified).
 ///
-/// On non-zero exit or I/O failure the script's stderr is posted to the event's
-/// channel as a system message so workflow errors surface in the chat log.
-async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::WorkflowEvent) {
+/// On dispatch errors, a system message is posted to the event's channel so
+/// failures are visible in the chat log.
+async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::WorkflowEvent) {
     let channel = event.channel().to_string();
 
-    // Resolve the workflow script path (4-level priority order).
-    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-    let script_path =
-        crate::paths::workflow_script_for_channel(&channel, &project_root, state.paths.dir_key());
-    let Some(script) = script_path else {
-        // No workflow script configured for this channel — silent no-op.
+    if !state.plugin_daemon.has_plugins() {
+        // No plugins configured — silent no-op.
         return;
-    };
+    }
 
-    // Serialize the event to JSON for the --event flag.
-    let event_json = match serde_json::to_string(&event) {
-        Ok(json) => json,
+    // Build the request JSON matching the Python daemon's expected format.
+    // The Python `_process_request` expects: {"type": "pr.opened", "event": {...}, ...}
+    let event_json = match serde_json::to_value(&event) {
+        Ok(val) => val,
         Err(e) => {
             warn!(
                 "Failed to serialize WorkflowEvent for channel '{}': {}",
@@ -3337,171 +3333,173 @@ async fn invoke_workflow_script(state: &DaemonState, event: crate::workflow::Wor
         }
     };
 
-    let state_file = crate::paths::workflow_state_file(&channel, state.paths.dir_key());
+    let event_type = event_json
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-    // Fast path: try the persistent sidecar.
-    match state
-        .workflow_sidecar
-        .send_event(&script, &event_json, &state_file)
-        .await
-    {
-        Ok(true) => {
-            debug!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: delivered via sidecar"
-            );
-            return;
-        }
-        Ok(false) => {
-            // Script doesn't support sidecar mode or sidecar is in backoff.
-            // Fall through to subprocess.
-            debug!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: sidecar unavailable, falling back to subprocess"
-            );
-        }
+    let request = serde_json::json!({
+        "type": event_type,
+        "event": event_json,
+        "task_id": event.task_id(),
+    });
+    let request_str = match serde_json::to_string(&request) {
+        Ok(s) => s,
         Err(e) => {
-            // Sidecar delivered the event but the handler returned an error.
-            warn!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: sidecar error: {}",
-                e
-            );
-            post_workflow_error(state, &channel, &script, &e).await;
-            return;
-        }
-    }
-
-    // Slow path: subprocess-per-event fallback.
-    invoke_workflow_script_subprocess(state, &channel, &script, &event_json, &state_file).await;
-}
-
-/// Subprocess-per-event fallback for `invoke_workflow_script`.
-///
-/// Spawns `uv run <script> --event <json> --state <state_file> --socket <socket>`
-/// with a 30-second timeout.
-async fn invoke_workflow_script_subprocess(
-    state: &DaemonState,
-    channel: &str,
-    script: &std::path::Path,
-    event_json: &str,
-    state_file: &std::path::Path,
-) {
-    let socket = &state.socket_path;
-
-    debug!(
-        channel = %channel,
-        script = %script.display(),
-        "invoke_workflow_script: spawning uv run (subprocess)"
-    );
-
-    let child = tokio::process::Command::new("uv")
-        .args([
-            "run",
-            script.to_str().unwrap_or_default(),
-            "--event",
-            event_json,
-            "--state",
-            state_file.to_str().unwrap_or_default(),
-            "--socket",
-            socket.to_str().unwrap_or_default(),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        // Kill the subprocess if the future is dropped (e.g. 30s timeout fires).
-        // Without this, timed-out processes survive and can accumulate as orphans.
-        .kill_on_drop(true)
-        .spawn();
-
-    let child = match child {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: failed to spawn uv: {}",
-                e
-            );
-            post_workflow_error(state, channel, script, &format!("spawn error: {e}")).await;
+            warn!("Failed to serialize plugin dispatch request: {}", e);
             return;
         }
     };
 
-    let result =
-        tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output()).await;
+    let result = state.plugin_daemon.send_event(&request_str).await;
 
-    match result {
-        Err(_timeout) => {
-            // wait_with_output consumed `child`; the future was dropped by the timeout,
-            // `kill_on_drop(true)` ensures the subprocess is killed when the
-            // future is dropped here.
-            warn!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: timed out after 30s"
-            );
-            post_workflow_error(
-                state,
-                channel,
-                script,
-                "workflow script timed out after 30s",
-            )
-            .await;
-        }
-        Ok(Err(e)) => {
-            warn!(
-                channel = %channel,
-                script = %script.display(),
-                "invoke_workflow_script: wait_with_output error: {}",
-                e
-            );
-            post_workflow_error(state, channel, script, &format!("I/O error: {e}")).await;
-        }
-        Ok(Ok(output)) => {
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stderr = stderr.trim();
-                warn!(
-                    channel = %channel,
-                    script = %script.display(),
-                    exit = ?output.status,
-                    "invoke_workflow_script: non-zero exit"
-                );
-                let detail = if stderr.is_empty() {
-                    format!("exited with {}", output.status)
-                } else {
-                    format!("exited with {}: {}", output.status, stderr)
-                };
-                post_workflow_error(state, channel, script, &detail).await;
-            } else {
+    let Some(dispatch_result) = result else {
+        // Plugin daemon not running or connection failed — fall through to
+        // daemon's compiled-in behavior (which already ran via the inline
+        // effects path in pr.rs/dispatch.rs).
+        debug!(
+            channel = %channel,
+            event_type = %event_type,
+            "dispatch_workflow_event: plugin daemon unavailable, skipping"
+        );
+        return;
+    };
+
+    if !dispatch_result.ok {
+        let error_msg = dispatch_result
+            .error
+            .unwrap_or_else(|| "unknown error".to_string());
+        warn!(
+            channel = %channel,
+            event_type = %event_type,
+            "dispatch_workflow_event: plugin dispatch error: {}",
+            error_msg
+        );
+        post_plugin_error(state, &channel, &error_msg).await;
+        return;
+    }
+
+    debug!(
+        channel = %channel,
+        event_type = %event_type,
+        action_count = dispatch_result.actions.len(),
+        default_prevented = dispatch_result.default_prevented,
+        "dispatch_workflow_event: received plugin response"
+    );
+
+    // Convert plugin actions to Effect variants and execute them.
+    let effects = plugin_actions_to_effects(&dispatch_result.actions, state);
+    if !effects.is_empty() {
+        // Use Box::pin to execute effects recursively without growing the stack.
+        Box::pin(execute_effects(effects, state)).await;
+    }
+}
+
+/// Convert a list of plugin actions (from the Python daemon) to Effect variants.
+///
+/// Each `PluginAction` has a `method` (RPC method name like `"channel.post"`)
+/// and `params` (JSON object with method-specific arguments). This maps them
+/// to the corresponding `Effect` variants in the daemon's effect pipeline.
+///
+/// Unknown methods are logged and skipped.
+fn plugin_actions_to_effects(
+    actions: &[super::plugin_daemon::PluginAction],
+    state: &DaemonState,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for action in actions {
+        match action.method.as_str() {
+            "channel.post" => {
+                let message = action
+                    .params
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let channel = action
+                    .params
+                    .get("channel")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                effects.push(Effect::PostSystemMessage { message, channel });
+            }
+
+            "coworker.nudge" => {
+                let name = action
+                    .params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let message = action
+                    .params
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !name.is_empty() {
+                    effects.push(Effect::nudge_session(
+                        state.session_id_for_name(&name),
+                        message,
+                    ));
+                }
+            }
+
+            "task.done" => {
+                let task_id = action
+                    .params
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !task_id.is_empty() {
+                    effects.push(Effect::CompleteTask {
+                        task_id,
+                        dir_key: state.paths.dir_key().to_string(),
+                    });
+                }
+            }
+
+            "pr.auto-merge" => {
+                let pr_number = action
+                    .params
+                    .get("pr")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                if pr_number > 0 {
+                    effects.push(Effect::AutoMergePr {
+                        pr_number,
+                        title: String::new(),
+                    });
+                }
+            }
+
+            "daemon.check-pending" => {
+                // Trigger re-evaluation on the next tick — no dedicated effect needed.
+                debug!("Plugin requested check-pending (will fire on next tick)");
+            }
+
+            other => {
                 debug!(
-                    channel = %channel,
-                    script = %script.display(),
-                    "invoke_workflow_script: completed successfully"
+                    method = other,
+                    "plugin_actions_to_effects: unknown action method, skipping"
                 );
             }
         }
     }
+
+    effects
 }
 
-/// Post a workflow script error to its channel as a system message.
-async fn post_workflow_error(
-    state: &DaemonState,
-    channel: &str,
-    script: &std::path::Path,
-    detail: &str,
-) {
-    let mut msg = crate::message::Message::system(format!(
-        "⚠️ Workflow script error ({}): {}",
-        script.file_name().unwrap_or_default().to_string_lossy(),
-        detail
-    ));
+/// Post a plugin dispatch error to its channel as a system message.
+async fn post_plugin_error(state: &DaemonState, channel: &str, detail: &str) {
+    let mut msg = crate::message::Message::system(format!("⚠️ Plugin dispatch error: {}", detail));
     msg.channel = Some(channel.to_string());
     if let Err(e) = state.send_and_broadcast_async(&msg).await {
-        warn!("Failed to post workflow error message: {}", e);
+        warn!("Failed to post plugin error message: {}", e);
     }
 }
 

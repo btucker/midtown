@@ -964,9 +964,9 @@ fn clear_session_working_dir_noop_for_missing_session() {
     );
 }
 
-// ── invoke_workflow_script ────────────────────────────────────────────────────
+// ── dispatch_workflow_event ───────────────────────────────────────────────────
 
-/// Build a minimal DaemonState for workflow-script tests.
+/// Build a minimal DaemonState for workflow dispatch tests.
 ///
 /// Returns the state, the project root temp dir (which becomes `all_repo_paths[0]`),
 /// and the midtown base dir guard (must stay alive for the test's duration).
@@ -1028,15 +1028,15 @@ fn make_workflow_test_state(
 }
 
 #[tokio::test]
-async fn emit_workflow_event_noop_when_no_script_configured() {
+async fn dispatch_workflow_event_noop_when_no_plugins() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
 
     let event = crate::workflow::WorkflowEvent::TimerTick {
         channel: "test-channel".into(),
     };
 
-    // No workflow.py anywhere → function should return without posting anything.
-    invoke_workflow_script(&state, event).await;
+    // No plugins configured → function should return without posting anything.
+    dispatch_workflow_event(&state, event).await;
 
     // The channel JSONL should not exist (no messages were written).
     let channel_file = crate::paths::projects_dir_for_repo("myrepo")
@@ -1046,126 +1046,110 @@ async fn emit_workflow_event_noop_when_no_script_configured() {
         .join("current.jsonl");
     assert!(
         !channel_file.exists(),
-        "no channel message should be written when no workflow script is configured"
+        "no channel message should be written when no plugins are configured"
     );
 }
 
-#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
-#[tokio::test]
-async fn emit_workflow_event_posts_error_on_nonzero_exit() {
-    use std::os::unix::fs::PermissionsExt;
+#[test]
+fn plugin_actions_to_effects_channel_post() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-actions");
 
-    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
-    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-err");
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "channel.post".to_string(),
+        params: serde_json::json!({"message": "hello from plugin", "channel": "test-ch"}),
+    }];
 
-    // Write a workflow script that exits non-zero with a stderr message.
-    let script_dir = project_dir
-        .path()
-        .join(".midtown")
-        .join("channels")
-        .join("err-channel");
-    std::fs::create_dir_all(&script_dir).unwrap();
-    let script = script_dir.join("workflow.py");
-    std::fs::write(
-        &script,
-        "#!/bin/sh\necho 'something went wrong' >&2\nexit 1",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    // Write a fake `uv` that strips "run" and exec's the script directly.
-    let bin_dir = project_dir.path().join("fake-bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake_uv = bin_dir.join("uv");
-    std::fs::write(&fake_uv, "#!/bin/sh\nshift\nexec \"$@\"").unwrap();
-    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
-    }
-
-    let event = crate::workflow::WorkflowEvent::TimerTick {
-        channel: "err-channel".into(),
-    };
-    invoke_workflow_script(&state, event).await;
-
-    unsafe {
-        std::env::set_var("PATH", &original_path);
-    }
-
-    // A system message should have been written to the err-channel JSONL.
-    // The channel router uses project_dir as its base_dir, so messages land in
-    // project_dir/channels/<channel>/history/current.jsonl (not ~/.midtown/...).
-    let channel_file = project_dir
-        .path()
-        .join("channels")
-        .join("err-channel")
-        .join("history")
-        .join("current.jsonl");
-    assert!(
-        channel_file.exists(),
-        "error message should be written to the channel when the script fails"
-    );
-    let content = std::fs::read_to_string(&channel_file).unwrap();
-    assert!(
-        content.contains("workflow.py"),
-        "error message should identify the script; got: {content}"
-    );
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(
+        &effects[0],
+        Effect::PostSystemMessage { message, channel }
+            if message == "hello from plugin" && *channel == Some("test-ch".to_string())
+    ));
 }
 
-#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
-#[tokio::test]
-async fn emit_workflow_event_no_error_message_on_success() {
-    use std::os::unix::fs::PermissionsExt;
+#[test]
+fn plugin_actions_to_effects_nudge_coworker() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-nudge");
 
-    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
-    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-ok");
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "coworker.nudge".to_string(),
+        params: serde_json::json!({"name": "lexington", "message": "PR approved"}),
+    }];
 
-    // Write a workflow script that exits 0 (success).
-    let script_dir = project_dir
-        .path()
-        .join(".midtown")
-        .join("channels")
-        .join("ok-channel");
-    std::fs::create_dir_all(&script_dir).unwrap();
-    let script = script_dir.join("workflow.py");
-    std::fs::write(&script, "#!/bin/sh\nexit 0").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(&effects[0], Effect::NudgeSession { .. }));
+}
 
-    // Write a fake `uv` that strips "run" and exec's the script directly.
-    let bin_dir = project_dir.path().join("fake-bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake_uv = bin_dir.join("uv");
-    std::fs::write(&fake_uv, "#!/bin/sh\nshift\nexec \"$@\"").unwrap();
-    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+#[test]
+fn plugin_actions_to_effects_task_done() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-done");
 
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
-    }
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "task.done".to_string(),
+        params: serde_json::json!({"id": "42"}),
+    }];
 
-    let event = crate::workflow::WorkflowEvent::TimerTick {
-        channel: "ok-channel".into(),
-    };
-    invoke_workflow_script(&state, event).await;
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(
+        &effects[0],
+        Effect::CompleteTask { task_id, .. } if task_id == "42"
+    ));
+}
 
-    unsafe {
-        std::env::set_var("PATH", &original_path);
-    }
+#[test]
+fn plugin_actions_to_effects_auto_merge() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-merge");
 
-    // No error message should have been written (success = silent).
-    // Channel router base_dir = project_dir.path(), so messages would be here.
-    let channel_file = project_dir
-        .path()
-        .join("channels")
-        .join("ok-channel")
-        .join("history")
-        .join("current.jsonl");
-    assert!(
-        !channel_file.exists(),
-        "no channel message should be written on successful script exit"
-    );
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "pr.auto-merge".to_string(),
+        params: serde_json::json!({"pr": 123}),
+    }];
+
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert_eq!(effects.len(), 1);
+    assert!(matches!(
+        &effects[0],
+        Effect::AutoMergePr { pr_number, .. } if *pr_number == 123
+    ));
+}
+
+#[test]
+fn plugin_actions_to_effects_unknown_method_skipped() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-unk");
+
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "unknown.method".to_string(),
+        params: serde_json::json!({}),
+    }];
+
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert!(effects.is_empty(), "unknown methods should be skipped");
+}
+
+#[test]
+fn plugin_actions_to_effects_multiple_actions() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-multi");
+
+    let actions = vec![
+        super::super::plugin_daemon::PluginAction {
+            method: "channel.post".to_string(),
+            params: serde_json::json!({"message": "first"}),
+        },
+        super::super::plugin_daemon::PluginAction {
+            method: "channel.post".to_string(),
+            params: serde_json::json!({"message": "second"}),
+        },
+        super::super::plugin_daemon::PluginAction {
+            method: "pr.auto-merge".to_string(),
+            params: serde_json::json!({"pr": 99}),
+        },
+    ];
+
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert_eq!(effects.len(), 3);
 }
 
 // ---------------------------------------------------------------------------
