@@ -1705,6 +1705,8 @@ fn test_tool_block_serialization() {
         input: json!({"file_path": "src/main.rs", "old_string": "a", "new_string": "b"}),
         output: None,
         error: false,
+        call_id: None,
+        parent_tool_use_id: None,
     };
     let json = serde_json::to_string(&block).unwrap();
     assert!(json.contains("\"tool_name\":\"Edit\""));
@@ -1726,6 +1728,8 @@ fn test_tool_block_with_output_serialization() {
         input: json!({"command": "echo hi"}),
         output: Some(json!("hi\n")),
         error: false,
+        call_id: None,
+        parent_tool_use_id: None,
     };
     let json = serde_json::to_string(&block).unwrap();
     let parsed: crate::message::ToolBlock = serde_json::from_str(&json).unwrap();
@@ -1846,4 +1850,266 @@ fn test_process_coworker_output_no_insight_in_regular_text() {
         .filter(|e| matches!(e, Effect::PostInsight { .. }))
         .collect();
     assert!(insight_effects.is_empty());
+}
+
+// ── Sub-agent threading tests ───────────────────────────────────────
+
+#[test]
+fn test_extract_tool_blocks_includes_call_id() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_abc123",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::User {
+            message: json!({
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_abc123",
+                    "content": "file1\nfile2"
+                }]
+            }),
+            extra: json!(null),
+        },
+    ];
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].tool_name, "Bash");
+    assert_eq!(blocks[0].call_id, Some("toolu_abc123".to_string()));
+    assert!(blocks[0].parent_tool_use_id.is_none());
+}
+
+#[test]
+fn test_extract_tool_blocks_captures_parent_tool_use_id() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_child",
+                "name": "Read",
+                "input": {"file_path": "src/main.rs"}
+            }]
+        }),
+        session_id: None,
+        extra: json!({"parentToolUseID": "toolu_parent_agent"}),
+    }];
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].call_id, Some("toolu_child".to_string()));
+    assert_eq!(
+        blocks[0].parent_tool_use_id,
+        Some("toolu_parent_agent".to_string())
+    );
+}
+
+#[test]
+fn test_process_coworker_output_splits_subagent_tool_blocks() {
+    // Top-level tool_use + sub-agent tool_use (with parentToolUseID)
+    let events_vec = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_parent",
+                    "name": "Agent",
+                    "input": {"prompt": "investigate"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_child",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!({"parentToolUseID": "toolu_parent"}),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    // Should have separate effects: top-level tool block + sub-agent tool block
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    assert_eq!(channel_effects.len(), 2);
+
+    // First effect: top-level tool block with tool_use_id set
+    if let Effect::PostToChannel {
+        tool_data,
+        tool_use_id,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(*tool_use_id, Some("toolu_parent".to_string()));
+        assert!(parent_tool_use_id.is_none());
+        let blocks = tool_data.as_ref().unwrap();
+        assert_eq!(blocks[0].tool_name, "Agent");
+    } else {
+        panic!("Expected PostToChannel");
+    }
+
+    // Second effect: sub-agent tool block with parent_tool_use_id set
+    if let Effect::PostToChannel {
+        tool_data,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[1]
+    {
+        assert_eq!(*parent_tool_use_id, Some("toolu_parent".to_string()));
+        let blocks = tool_data.as_ref().unwrap();
+        assert_eq!(blocks[0].tool_name, "Bash");
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_process_coworker_output_splits_subagent_text() {
+    let events_vec = vec![
+        // Top-level text
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Starting agent..."}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        // Sub-agent text (with parentToolUseID)
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Reading files..."}]
+            }),
+            session_id: None,
+            extra: json!({"parentToolUseID": "toolu_parent"}),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    assert_eq!(channel_effects.len(), 2);
+
+    // Top-level text
+    if let Effect::PostToChannel {
+        message,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(message, "Starting agent...");
+        assert!(parent_tool_use_id.is_none());
+    } else {
+        panic!("Expected PostToChannel");
+    }
+
+    // Sub-agent text as thread reply
+    if let Effect::PostToChannel {
+        message,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[1]
+    {
+        assert_eq!(message, "Reading files...");
+        assert_eq!(*parent_tool_use_id, Some("toolu_parent".to_string()));
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_process_coworker_output_no_subagent_when_no_parent_id() {
+    // All events are top-level (no parentToolUseID)
+    let events_vec = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "Read",
+                    "input": {"file_path": "foo.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    // All blocks should be in a single top-level effect
+    assert_eq!(channel_effects.len(), 1);
+    if let Effect::PostToChannel {
+        tool_data,
+        tool_use_id,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(*tool_use_id, Some("toolu_1".to_string()));
+        assert!(parent_tool_use_id.is_none());
+        assert_eq!(tool_data.as_ref().unwrap().len(), 2);
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_get_parent_tool_use_id_extracts_from_extra() {
+    let extra = json!({"parentToolUseID": "toolu_abc"});
+    assert_eq!(
+        get_parent_tool_use_id(&extra),
+        Some("toolu_abc".to_string())
+    );
+}
+
+#[test]
+fn test_get_parent_tool_use_id_returns_none_when_absent() {
+    assert!(get_parent_tool_use_id(&json!(null)).is_none());
+    assert!(get_parent_tool_use_id(&json!({})).is_none());
+    assert!(get_parent_tool_use_id(&json!({"provider": "claude"})).is_none());
 }

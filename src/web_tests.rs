@@ -86,6 +86,7 @@ fn test_web_update_serialization() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -405,6 +406,7 @@ fn test_task_1191_channel_switching_requirements() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -429,6 +431,7 @@ fn test_task_1191_channel_switching_requirements() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     assert_eq!(msg_default.channel, "myproject");
 
@@ -720,6 +723,7 @@ fn test_channel_message_data_with_thread_parent_id() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("thread_parent_id"));
@@ -745,6 +749,7 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("thread_parent_id"));
@@ -771,6 +776,7 @@ fn test_channel_message_data_includes_reply_metadata_when_present() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("\"reply_count\":3"));
@@ -797,6 +803,7 @@ fn test_channel_message_data_reply_metadata_omitted_when_none() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("reply_count"));

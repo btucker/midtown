@@ -721,6 +721,15 @@ pub(crate) struct DaemonState {
     /// Ephemeral — not persisted across daemon restarts. Entries are added
     /// on spawn and removed in `cleanup_coworker_state`.
     pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
+    /// Maps `tool_use_id → channel message_id` for DM channel sub-agent threading.
+    ///
+    /// When a DM message carries `tool_use_id` (from a top-level tool_use block),
+    /// the PostToChannel executor registers the mapping here. Sub-agent events in
+    /// later drain cycles reference the tool_use_id via `parentToolUseID` to post
+    /// as thread replies under the original tool call message.
+    ///
+    /// Cleaned up in `cleanup_coworker_state` when a coworker shuts down.
+    pub(crate) dm_tool_threads: std::sync::Mutex<HashMap<String, String>>,
     /// Per-channel locks for workflow state file writes.
     ///
     /// Prevents TOCTOU races when concurrent `set_state` calls for different plugin
@@ -1457,6 +1466,7 @@ impl DaemonState {
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
+            dm_tool_threads: std::sync::Mutex::new(HashMap::new()),
             plugin_daemon,
         })
     }
@@ -3926,6 +3936,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                             });
                         } else {
                             debug!("Fork respawn cooldown active for {}", name);

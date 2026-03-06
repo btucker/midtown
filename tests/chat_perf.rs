@@ -158,6 +158,7 @@ fn generate_messages(count: usize) -> Vec<Message> {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         })
         .collect()
 }
@@ -181,6 +182,7 @@ fn generate_long_messages(count: usize) -> Vec<Message> {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         })
         .collect()
 }
@@ -205,6 +207,7 @@ fn test_single_message_render_latency() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
 
     let current_tasks = HashMap::new();
@@ -652,6 +655,7 @@ fn test_unicode_message_rendering() {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         })
         .collect();
 

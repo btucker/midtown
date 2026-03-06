@@ -294,6 +294,9 @@ pub struct ChannelMessageData {
     /// AI provider that produced this message (e.g., "claude", "codex").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The tool_use `id` from the first tool block, for sub-agent thread lookup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -662,6 +665,7 @@ async fn api_channel_history(
                         nudge_type: m.nudge_type.clone(),
                         tool_data: m.tool_data.clone(),
                         provider: m.provider.clone(),
+                        tool_use_id: m.tool_use_id.clone(),
                     }
                 })
                 .collect()
@@ -731,6 +735,7 @@ async fn api_channel_history(
                         nudge_type: m.nudge_type,
                         tool_data: m.tool_data.clone(),
                         provider: m.provider.clone(),
+                        tool_use_id: m.tool_use_id.clone(),
                     }
                 })
                 .collect()
@@ -2493,6 +2498,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         nudge_type: message.nudge_type.clone(),
         tool_data: message.tool_data.clone(),
         provider: message.provider.clone(),
+        tool_use_id: message.tool_use_id.clone(),
     })
 }
 

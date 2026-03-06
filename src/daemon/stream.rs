@@ -125,6 +125,8 @@ pub fn process_lead_output(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             });
         }
     }
@@ -143,6 +145,8 @@ pub fn process_lead_output(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 });
             }
         }
@@ -162,6 +166,8 @@ pub fn process_lead_output(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 });
             }
         }
@@ -191,11 +197,26 @@ fn detect_provider(events: &[StreamEvent]) -> Option<String> {
     }
 }
 
+/// Extract `parentToolUseID` from a stream event's `extra` field.
+///
+/// Claude Code's `--output-format stream-json` emits this on every event
+/// that originates inside a sub-agent, linking it back to the parent tool_use.
+fn get_parent_tool_use_id(extra: &serde_json::Value) -> Option<String> {
+    extra
+        .get("parentToolUseID")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Extract structured ToolBlock data from stream events.
 ///
 /// Pairs `tool_use` blocks from Assistant events with `tool_result` blocks
 /// from User events by `call_id`. The raw input/output JSON is preserved
 /// so the client can render tool-specific UI.
+///
+/// Each ToolBlock carries `call_id` (the tool_use block's `id`) and
+/// `parent_tool_use_id` (from the event's `parentToolUseID` field) for
+/// sub-agent thread resolution.
 fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
     // Collect tool results keyed by call_id.
     let mut results: HashMap<String, (serde_json::Value, bool)> = HashMap::new();
@@ -224,10 +245,11 @@ fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
     // Extract tool calls with their results.
     let mut blocks = Vec::new();
     for event in events {
-        if let StreamEvent::Assistant { message, .. } = event
+        if let StreamEvent::Assistant { message, extra, .. } = event
             && let Some(content) = message.get("content")
             && let Some(arr) = content.as_array()
         {
+            let parent_tool_use_id = get_parent_tool_use_id(extra);
             for block in arr {
                 if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                     let name = block
@@ -252,6 +274,8 @@ fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
                         input,
                         output,
                         error,
+                        call_id: Some(call_id),
+                        parent_tool_use_id: parent_tool_use_id.clone(),
                     });
                 }
             }
@@ -291,6 +315,31 @@ fn extract_tool_result_json(block: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Extract assistant text, split by parentToolUseID.
+///
+/// Returns `(top_level_text, sub_agent_texts)` where `sub_agent_texts` is
+/// a map of `parent_tool_use_id → aggregated text` for sub-agent prose.
+fn extract_assistant_text_split(events: &[StreamEvent]) -> (String, HashMap<String, String>) {
+    let mut top_level = String::new();
+    let mut sub_agent: HashMap<String, String> = HashMap::new();
+
+    for event in events {
+        if let StreamEvent::Assistant { message, extra, .. } = event {
+            let text = extract_text_blocks(message);
+            if text.is_empty() {
+                continue;
+            }
+            if let Some(parent_id) = get_parent_tool_use_id(extra) {
+                sub_agent.entry(parent_id).or_default().push_str(&text);
+            } else {
+                top_level.push_str(&text);
+            }
+        }
+    }
+
+    (top_level, sub_agent)
+}
+
 /// Process coworker output and generate DM channel posting effects.
 ///
 /// DM channels are a complete stream of the agent — text AND tool calls.
@@ -298,9 +347,13 @@ fn extract_tool_result_json(block: &serde_json::Value) -> serde_json::Value {
 /// (there's no distinction between "auto" and "explicit" output).
 ///
 /// For each coworker session, posts:
-/// - Text output (assistant prose) with provider metadata
-/// - Structured tool calls as `tool_data` on the message (raw JSON for client rendering)
+/// - Top-level text output (assistant prose) with provider metadata
 /// - Extracted `★ Insight` blocks as `PostInsight` effects (routed to the task's channel)
+/// - Top-level tool calls as `tool_data`, tagged with `tool_use_id` for thread parent lookup
+/// - Sub-agent text and tool calls with `parent_tool_use_id` for thread reply resolution
+///
+/// Effects are ordered: top-level (thread parents) first, sub-agent (thread children) second,
+/// so the effect executor can resolve thread parents before children reference them.
 ///
 /// `coworker_names` is the set of active coworker session names (excluding the
 /// main lead, channel leads, and fork-bound sessions).
@@ -315,8 +368,11 @@ pub fn process_coworker_output(
             let dm_channel = format!("dm-{}", name);
             let provider = detect_provider(coworker_events);
 
-            // Post text output (assistant prose).
-            let trimmed = extract_assistant_text(coworker_events).trim().to_string();
+            // Split text by parentToolUseID.
+            let (top_text, sub_agent_texts) = extract_assistant_text_split(coworker_events);
+
+            // Post top-level text output (assistant prose).
+            let trimmed = top_text.trim().to_string();
             if !trimmed.is_empty() {
                 // Extract insights from the text before posting to DM.
                 for insight in extract_insights(&trimmed) {
@@ -335,21 +391,76 @@ pub fn process_coworker_output(
                     nudge_type: None,
                     tool_data: None,
                     provider: provider.clone(),
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 });
             }
 
-            // Post structured tool calls for client-side rendering.
-            let tool_blocks = extract_tool_blocks(coworker_events);
-            if !tool_blocks.is_empty() {
+            // Split tool blocks into top-level vs sub-agent.
+            let all_blocks = extract_tool_blocks(coworker_events);
+            let mut top_level_blocks = Vec::new();
+            let mut sub_agent_blocks: HashMap<String, Vec<ToolBlock>> = HashMap::new();
+
+            for block in all_blocks {
+                if let Some(ref parent_id) = block.parent_tool_use_id {
+                    sub_agent_blocks
+                        .entry(parent_id.clone())
+                        .or_default()
+                        .push(block);
+                } else {
+                    top_level_blocks.push(block);
+                }
+            }
+
+            // Post top-level tool blocks, tagged with tool_use_id from the first block.
+            if !top_level_blocks.is_empty() {
+                let tool_use_id = top_level_blocks.first().and_then(|b| b.call_id.clone());
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
                     message: String::new(),
-                    channel: Some(dm_channel),
+                    channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
                     nudge_type: None,
-                    tool_data: Some(tool_blocks),
+                    tool_data: Some(top_level_blocks),
                     provider: provider.clone(),
+                    tool_use_id,
+                    parent_tool_use_id: None,
+                });
+            }
+
+            // Post sub-agent text as thread replies (grouped by parent_tool_use_id).
+            for (parent_id, text) in &sub_agent_texts {
+                let trimmed = text.trim().to_string();
+                if !trimmed.is_empty() {
+                    effects.push(Effect::PostToChannel {
+                        sender: name.clone(),
+                        message: trimmed,
+                        channel: Some(dm_channel.clone()),
+                        auto_output: false,
+                        message_type: None,
+                        nudge_type: None,
+                        tool_data: None,
+                        provider: provider.clone(),
+                        tool_use_id: None,
+                        parent_tool_use_id: Some(parent_id.clone()),
+                    });
+                }
+            }
+
+            // Post sub-agent tool blocks as thread replies (grouped by parent_tool_use_id).
+            for (parent_id, blocks) in sub_agent_blocks {
+                effects.push(Effect::PostToChannel {
+                    sender: name.clone(),
+                    message: String::new(),
+                    channel: Some(dm_channel.clone()),
+                    auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
+                    tool_data: Some(blocks),
+                    provider: provider.clone(),
+                    tool_use_id: None,
+                    parent_tool_use_id: Some(parent_id),
                 });
             }
         }

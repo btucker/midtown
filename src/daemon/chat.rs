@@ -363,6 +363,8 @@ fn mention_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 }],
                 on_failure: vec![Effect::PostToChannel {
                     sender: "midtown".to_string(),
@@ -373,6 +375,8 @@ fn mention_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 }],
             }]
         }
@@ -391,6 +395,8 @@ fn mention_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 }]
             } else {
                 vec![]

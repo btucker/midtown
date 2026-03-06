@@ -325,6 +325,7 @@ fn test_messages_sorted_by_timestamp() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     writeln!(file, "{}", serde_json::to_string(&new_msg).unwrap()).unwrap();
 
@@ -342,6 +343,7 @@ fn test_messages_sorted_by_timestamp() {
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     };
     writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
 
@@ -520,6 +522,7 @@ fn test_rotate_archives_old_messages() {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -539,6 +542,7 @@ fn test_rotate_archives_old_messages() {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             };
             writeln!(file, "{}", serde_json::to_string(&msg).unwrap()).unwrap();
         }
@@ -612,6 +616,7 @@ fn test_rotate_resets_cursors() {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }
@@ -672,6 +677,7 @@ fn test_needs_rotation() {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
         file.write_all(existing.as_bytes()).unwrap();
@@ -1469,6 +1475,7 @@ fn test_rotate_writes_archive_to_history_dir() {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }
@@ -1820,6 +1827,7 @@ fn make_message(id: &str, content: &str, timestamp: chrono::DateTime<chrono::Utc
         nudge_type: None,
         tool_data: None,
         provider: None,
+        tool_use_id: None,
     }
 }
 
@@ -1995,6 +2003,7 @@ fn test_read_all_after_rotation_preserves_history() {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         };
         writeln!(file, "{}", serde_json::to_string(&old_msg).unwrap()).unwrap();
     }
