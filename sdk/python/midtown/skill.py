@@ -33,7 +33,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Match YAML frontmatter delimited by --- on its own line.
-_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+# The trailing \n after closing --- is optional to handle files
+# that end immediately after the frontmatter block.
+_FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 
 
 @dataclass

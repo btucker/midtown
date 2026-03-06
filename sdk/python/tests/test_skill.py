@@ -90,6 +90,13 @@ class TestParseFrontmatter:
         assert meta.raw["count"] == 42
         assert meta.raw["ratio"] == 3.14
 
+    def test_no_trailing_newline(self) -> None:
+        """Frontmatter without trailing newline after closing --- should parse."""
+        text = "---\nname: test\nmetadata:\n  midtown_order: 42\n---"
+        meta = parse_skill_frontmatter(text)
+        assert meta.name == "test"
+        assert meta.order == 42
+
 
 class TestParseSkillFile:
     """Tests for parse_skill_file."""

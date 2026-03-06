@@ -355,6 +355,68 @@ class TestPluginUnloading:
         daemon.unload_plugin(Path("/nonexistent/plugin.py"))
 
 
+    def test_unload_agentskills_cleans_metadata(self) -> None:
+        """Unloading an AgentSkills plugin should remove its _skill_metadata."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "tdw"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: tdw\nmetadata:\n  midtown_order: 50\n---\n# TDW\n"
+            )
+            hooks_file = scripts_dir / "hooks.py"
+            hooks_file.write_text(_plugin_source("from tdw"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert len(daemon._skill_metadata) == 1
+            assert skill_dir in daemon._skill_metadata
+
+            # Delete the hooks file and reload — metadata should be cleaned up
+            hooks_file.unlink()
+            daemon.reload_changed()
+
+            assert len(daemon._loaded_plugins) == 0
+            assert len(daemon._skill_metadata) == 0
+
+    def test_reload_agentskills_updates_metadata(self) -> None:
+        """Hot-reload of AgentSkills should re-parse SKILL.md metadata."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "tdw"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: tdw\nmetadata:\n  midtown_order: 50\n---\n# TDW\n"
+            )
+            hooks_file = scripts_dir / "hooks.py"
+            hooks_file.write_text(_plugin_source("v1"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert daemon._skill_metadata[skill_dir].order == 50
+
+            # Update SKILL.md and hooks file
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: tdw\nmetadata:\n  midtown_order: 10\n---\n# TDW v2\n"
+            )
+            time.sleep(0.05)
+            hooks_file.write_text(_plugin_source("v2"))
+
+            daemon.reload_changed()
+
+            assert daemon._skill_metadata[skill_dir].order == 10
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions[0].params["message"] == "v2"
+
+
 class TestHotReload:
     """Tests for mtime-based hot-reload."""
 
