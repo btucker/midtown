@@ -1773,10 +1773,12 @@ fn test_respawn_fork_clears_old_record_current_name() {
     // --- This is the cleanup that respawn_fork must perform ---
     for record in ps.sessions.values_mut() {
         if record.session_id != new_fork_session_id
-            && record.current_name.as_deref() == Some(new_fork_name)
+            && (record.preferred_name.as_deref() == Some(new_fork_name)
+                || record.current_name.as_deref() == Some(new_fork_name))
         {
             record.is_running = false;
             record.current_name = None;
+            record.preferred_name = None;
         }
     }
 
@@ -1808,11 +1810,15 @@ fn test_respawn_fork_clears_old_record_current_name() {
         },
     );
 
-    // Verify: old record must have current_name cleared
+    // Verify: old record must have both name fields cleared
     let old = ps.sessions.get("old-fork-sess").unwrap();
     assert!(
         old.current_name.is_none(),
         "Old fork record should have current_name cleared after respawn"
+    );
+    assert!(
+        old.preferred_name.is_none(),
+        "Old fork record should have preferred_name cleared after respawn"
     );
     assert!(
         !old.is_running,
@@ -1824,14 +1830,120 @@ fn test_respawn_fork_clears_old_record_current_name() {
     assert_eq!(new.current_name.as_deref(), Some("fork-investigate"));
     assert!(new.is_running);
 
-    // Verify: only one record claims the name
+    // Verify: only one record claims the name (via either field)
     let name_count = ps
         .sessions
         .values()
-        .filter(|r| r.current_name.as_deref() == Some("fork-investigate"))
+        .filter(|r| {
+            r.current_name.as_deref() == Some("fork-investigate")
+                || r.preferred_name.as_deref() == Some("fork-investigate")
+        })
         .count();
     assert_eq!(
         name_count, 1,
         "Exactly one session record should claim the fork name"
     );
+}
+
+/// When an old fork record has `current_name: None` but `preferred_name` still
+/// set, the cleanup must still clear `preferred_name`. Otherwise `rpc_auth.rs`
+/// (which matches on both fields) would find an ambiguous match.
+#[test]
+fn test_respawn_fork_clears_old_record_preferred_name_only() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+
+    let mut ps = DaemonPersistentState::default();
+
+    // Old record: current_name already cleared but preferred_name still set
+    let old_record = SessionRecord {
+        session_id: "old-fork-sess".to_string(),
+        task_id: None,
+        current_name: None,
+        preferred_name: Some("fork-investigate".to_string()),
+        working_dir: "/tmp/old".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: false,
+        created_at: chrono::Utc::now(),
+        resume_on_startup: false,
+        bound_thread_id: Some("thread-123".to_string()),
+        last_active: chrono::Utc::now(),
+        purpose: "old fork".to_string(),
+        pid: None,
+        channel: None,
+        provider: None,
+        platform: None,
+        profile: None,
+    };
+    ps.sessions
+        .insert(old_record.session_id.clone(), old_record);
+
+    let new_fork_name = "fork-investigate";
+    let new_fork_session_id = "new-fork-sess";
+
+    // Same cleanup as respawn_fork — must match on preferred_name too
+    for record in ps.sessions.values_mut() {
+        if record.session_id != new_fork_session_id
+            && (record.preferred_name.as_deref() == Some(new_fork_name)
+                || record.current_name.as_deref() == Some(new_fork_name))
+        {
+            record.is_running = false;
+            record.current_name = None;
+            record.preferred_name = None;
+        }
+    }
+
+    ps.sessions.insert(
+        new_fork_session_id.to_string(),
+        SessionRecord {
+            session_id: new_fork_session_id.to_string(),
+            task_id: None,
+            current_name: Some(new_fork_name.to_string()),
+            preferred_name: Some(new_fork_name.to_string()),
+            working_dir: "/tmp/new".to_string(),
+            branch: None,
+            pr_number: None,
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: true,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+            bound_thread_id: Some("thread-123".to_string()),
+            last_active: chrono::Utc::now(),
+            purpose: "respawned fork".to_string(),
+            pid: None,
+            channel: None,
+            provider: None,
+            platform: None,
+            profile: None,
+        },
+    );
+
+    // Old record's preferred_name must be cleared
+    let old = ps.sessions.get("old-fork-sess").unwrap();
+    assert!(
+        old.preferred_name.is_none(),
+        "Old record with preferred_name-only should have it cleared"
+    );
+
+    // No ambiguous match: only the new record should match a find-by-name
+    let matches: Vec<_> = ps
+        .sessions
+        .values()
+        .filter(|r| {
+            r.current_name.as_deref() == Some("fork-investigate")
+                || r.preferred_name.as_deref() == Some("fork-investigate")
+        })
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "Only the new fork should match find-by-name; got {} matches",
+        matches.len()
+    );
+    assert_eq!(matches[0].session_id, "new-fork-sess");
 }
