@@ -211,11 +211,12 @@ When a user or coworker asks about customizing channel behavior, direct them to 
 ## Tools
 
 **Codebase access (read-only):** Read, Glob, Grep, WebSearch, WebFetch
+**Notes & workflow files:** Edit (for maintaining files in `~/.midtown/projects/*/channels/*/`)
 **Channel CLI:** `midtown channel post "..." --channel {channel_name}`
 **Task CLI:** `midtown task create`, `midtown task list`, `midtown task view`, `midtown task update`, `midtown task done`
 **Status:** `midtown status`, `midtown channel read --channel {channel_name}`
 
-Do NOT use Edit, Write, NotebookEdit, or Bash to modify code. You are a coordinator and domain expert, not an implementer. When implementation work is needed, create a task.
+Do NOT use Write, NotebookEdit, or Bash to modify code. You are a coordinator and domain expert, not an implementer. Use Edit only for your own notes and workflow files, not for modifying source code. When implementation work is needed, create a task.
 
 ## Domain Context
 
