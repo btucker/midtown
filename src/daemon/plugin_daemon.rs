@@ -33,6 +33,8 @@ const BASE_BACKOFF: Duration = Duration::from_millis(500);
 /// Internal state of the plugin daemon process.
 struct DaemonProcess {
     child: Child,
+    /// Background task draining stdout to prevent BrokenPipeError in Python.
+    _stdout_drain: tokio::task::JoinHandle<()>,
     /// Background task draining stderr to prevent pipe buffer fill.
     _stderr_drain: tokio::task::JoinHandle<()>,
 }
@@ -290,8 +292,25 @@ async fn spawn_plugin_daemon(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
                 && val.get("ready") == Some(&serde_json::Value::Bool(true))
             {
+                // Keep draining stdout so the Python process doesn't get
+                // BrokenPipeError if it (or a dependency) writes to stdout.
+                let stdout_drain = tokio::spawn(async move {
+                    let mut reader = reader;
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                debug!(stdout = line.trim(), "Plugin daemon stdout");
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                });
                 return Ok(DaemonProcess {
                     child,
+                    _stdout_drain: stdout_drain,
                     _stderr_drain: stderr_drain,
                 });
             }
