@@ -52,6 +52,7 @@ Side effects
 * ``pr.auto_merge``      — enable GitHub auto-merge (approved + CI green, no active reviewer)
 * ``pr.ci_passed``       — nudge author if in ``in_review`` or ``approved``: CI green, please merge;
                            retry reviewer spawn (gated by PR_REVIEW_DELAY_SECS age check)
+* ``reviewer.complete``  — nudge author: review is complete, please address feedback and merge
 * ``pr.merged``          — complete the associated task
 * ``coworker.idle``      — call ``daemon.check-pending`` so pending tasks start immediately;
                            also advance ``in_progress`` tasks to ``merged`` and call
@@ -329,6 +330,17 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
     elif event_type == "pr.merged" and task_id:
         # Mark the task done so downstream blocked tasks become unblocked.
         rpc.complete_task(task_id)
+
+    elif event_type == "reviewer.complete" and pr_number:
+        # A reviewer finished reviewing a PR.  Nudge the PR author so they
+        # address any feedback and merge when ready.
+        author = _get_task_data(state, task_id or "").get("pr_author", coworker)
+        if author:
+            rpc.nudge_coworker(
+                author,
+                f"Your PR #{pr_number} has a completed review — please address "
+                "any feedback and merge if appropriate.",
+            )
 
     elif event_type == "coworker.idle":
         # Coworker finished — dispatch pending tasks immediately so there's no
