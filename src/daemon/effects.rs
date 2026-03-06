@@ -11,6 +11,32 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
+async fn load_channel_lead_context(
+    base_dir: PathBuf,
+    channel_name: &str,
+    project_root: PathBuf,
+    dir_key: &str,
+) -> (String, Option<String>, Vec<(String, String)>) {
+    let channel = channel_name.to_string();
+    let channel_for_warn = channel.clone();
+    let dk = dir_key.to_string();
+    tokio::task::spawn_blocking(move || {
+        let notes = crate::channel::load_channel_notes(&base_dir, &channel);
+        let agents = crate::paths::agents_md_for_channel(&channel, &project_root, &dk);
+        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, &dk, Some(&channel));
+        let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
+        (notes, agents, skills)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        warn!(
+            "Channel lead discovery task failed for '{}': {}",
+            channel_for_warn, e
+        );
+        (String::new(), None, vec![])
+    })
+}
+
 fn build_resume_handoff_prompt(
     name: &str,
     dir_key: &str,
@@ -2080,33 +2106,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                     }
-                    let notes_base = base_dir.clone();
-                    let notes_channel = name.clone();
-                    let dir_key = state.paths.dir_key().to_string();
-                    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-                    let discover_channel = name.clone();
-                    let (domain_context, agents_md, skill_bodies) =
-                        tokio::task::spawn_blocking(move || {
-                            let notes =
-                                crate::channel::load_channel_notes(&notes_base, &notes_channel);
-                            let agents = crate::paths::agents_md_for_channel(
-                                &discover_channel,
-                                &project_root,
-                                &dir_key,
-                            );
-                            let plugin_dirs = crate::paths::discover_plugin_dirs(
-                                &project_root,
-                                &dir_key,
-                                Some(&discover_channel),
-                            );
-                            let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
-                            (notes, agents, skills)
-                        })
-                        .await
-                        .unwrap_or_else(|e| {
-                            warn!("Channel lead discovery task failed for '{}': {}", name, e);
-                            (String::new(), None, vec![])
-                        });
+                    let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                        base_dir.clone(),
+                        &name,
+                        state.all_repo_paths.first().cloned().unwrap_or_default(),
+                        state.paths.dir_key(),
+                    )
+                    .await;
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         state.paths.dir_key(),
@@ -2824,36 +2830,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => false,
                     };
 
-                    let notes_base = state.paths.base_dir().to_path_buf();
-                    let notes_channel = channel_name.clone();
-                    let dir_key = state.paths.dir_key().to_string();
-                    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-                    let discover_channel = channel_name.clone();
-                    let (domain_context, agents_md, skill_bodies) =
-                        tokio::task::spawn_blocking(move || {
-                            let notes =
-                                crate::channel::load_channel_notes(&notes_base, &notes_channel);
-                            let agents = crate::paths::agents_md_for_channel(
-                                &discover_channel,
-                                &project_root,
-                                &dir_key,
-                            );
-                            let plugin_dirs = crate::paths::discover_plugin_dirs(
-                                &project_root,
-                                &dir_key,
-                                Some(&discover_channel),
-                            );
-                            let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
-                            (notes, agents, skills)
-                        })
-                        .await
-                        .unwrap_or_else(|e| {
-                            warn!(
-                                "Channel lead discovery task failed for '{}': {}",
-                                channel_name, e
-                            );
-                            (String::new(), None, vec![])
-                        });
+                    let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                        state.paths.base_dir().to_path_buf(),
+                        &channel_name,
+                        state.all_repo_paths.first().cloned().unwrap_or_default(),
+                        state.paths.dir_key(),
+                    )
+                    .await;
 
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
