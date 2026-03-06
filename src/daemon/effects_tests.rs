@@ -1673,3 +1673,59 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
         );
     }
 }
+
+// ============================================================================
+// RespawnFork initial_prompt preservation tests
+// ============================================================================
+
+/// When `RespawnFork` carries an `initial_prompt`, the respawned fork's nudge
+/// should include the original message (not generic "crash recovery" framing).
+/// This test verifies the Effect can be constructed with the field and that the
+/// pattern match in execute_effects destructures correctly.
+#[test]
+fn test_respawn_fork_effect_carries_initial_prompt() {
+    let effect = Effect::RespawnFork {
+        fork_name: "fork-investigate-auth".to_string(),
+        thread_parent_id: "msg-abc123".to_string(),
+        channel: Some("daemon-core".to_string()),
+        working_dir: Some("/tmp/worktree".to_string()),
+        auth_provider: crate::auth::AuthProvider::Claude,
+        is_channel_lead: true,
+        initial_prompt: Some("Investigate the auth bug in the login flow".to_string()),
+    };
+
+    // Verify the initial_prompt is preserved through pattern matching
+    if let Effect::RespawnFork { initial_prompt, .. } = &effect {
+        assert_eq!(
+            initial_prompt.as_deref(),
+            Some("Investigate the auth bug in the login flow"),
+            "RespawnFork should carry the original initial_prompt"
+        );
+    } else {
+        panic!("Expected RespawnFork variant");
+    }
+}
+
+/// When `RespawnFork` has `initial_prompt: None`, it should fall back to
+/// generic framing (the pre-fix behavior).
+#[test]
+fn test_respawn_fork_effect_without_initial_prompt() {
+    let effect = Effect::RespawnFork {
+        fork_name: "fork-some-thread".to_string(),
+        thread_parent_id: "msg-xyz789".to_string(),
+        channel: Some("daemon-core".to_string()),
+        working_dir: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        is_channel_lead: false,
+        initial_prompt: None,
+    };
+
+    if let Effect::RespawnFork { initial_prompt, .. } = &effect {
+        assert!(
+            initial_prompt.is_none(),
+            "RespawnFork without preserved context should have None initial_prompt"
+        );
+    } else {
+        panic!("Expected RespawnFork variant");
+    }
+}

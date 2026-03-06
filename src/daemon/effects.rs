@@ -574,6 +574,10 @@ pub enum Effect {
         working_dir: Option<String>,
         auth_provider: crate::auth::AuthProvider,
         is_channel_lead: bool,
+        /// The original nudge message from when the fork was first created.
+        /// When present, crash recovery resends this instead of generic framing,
+        /// so the respawned fork retains context about what it was supposed to do.
+        initial_prompt: Option<String>,
     },
 }
 
@@ -3062,6 +3066,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 working_dir,
                 auth_provider,
                 is_channel_lead,
+                initial_prompt,
             } => {
                 respawn_fork(
                     state,
@@ -3071,6 +3076,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     working_dir.as_deref(),
                     auth_provider,
                     is_channel_lead,
+                    initial_prompt.as_deref(),
                 )
                 .await;
             }
@@ -3581,6 +3587,7 @@ fn auto_detach_suffix_message(
 /// Builds a fresh fork HeadlessConfig (no parent resume), spawns it via
 /// SessionManager, and re-establishes the topic_sessions and reverse-map
 /// bindings so the thread continues routing to the new fork.
+#[allow(clippy::too_many_arguments)]
 async fn respawn_fork(
     state: &DaemonState,
     fork_name: &str,
@@ -3589,6 +3596,7 @@ async fn respawn_fork(
     working_dir: Option<&str>,
     auth_provider: crate::auth::AuthProvider,
     is_channel_lead: bool,
+    initial_prompt: Option<&str>,
 ) {
     // Build a fork config. We pass an empty calling_session_id and override
     // resume_session_id to None — crash recovery spawns fresh, not from parent.
@@ -3640,7 +3648,7 @@ async fn respawn_fork(
                 working_dir: working_dir.unwrap_or_default().to_string(),
                 branch: None,
                 pr_number: None,
-                initial_prompt: None,
+                initial_prompt: initial_prompt.map(String::from),
                 is_reviewer: false,
                 coworker_type: if is_channel_lead {
                     "channel-lead".to_string()
@@ -3702,7 +3710,16 @@ async fn respawn_fork(
     // Send an initial nudge so the fork has a message to act on.
     // Without this, the fork session sits idle forever with no initial prompt
     // (same issue as the original fork creation path — see rpc_session.rs).
-    let nudge_message = if is_channel_lead {
+    //
+    // Priority: preserved initial_prompt (from the original fork) > generic framing.
+    // This ensures crash-recovered forks retain context about their original task
+    // instead of getting confused by generic "crash recovery" framing.
+    let nudge_message = if let Some(prompt) = initial_prompt {
+        Some(format!(
+            "{}\n\n(This is a crash recovery session — the previous fork for this thread exited unexpectedly.)",
+            prompt
+        ))
+    } else if is_channel_lead {
         channel
             .map(|ch| {
                 format!(

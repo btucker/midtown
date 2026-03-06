@@ -3859,7 +3859,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         };
                         if should_respawn {
                             // Get fork metadata from persistent state (record persists after cleanup)
-                            let (working_dir, auth_provider, is_channel_lead) =
+                            let (working_dir, auth_provider, is_channel_lead, initial_prompt) =
                                 if let Some(ref sid) = session_id_for_cleanup {
                                     let ps = state.persistent_state.lock().await;
                                     if let Some(record) = ps.sessions.get(sid) {
@@ -3873,12 +3873,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                                 .provider
                                                 .unwrap_or(crate::auth::AuthProvider::Claude),
                                             record.coworker_type == "channel-lead",
+                                            record.initial_prompt.clone(),
                                         )
                                     } else {
-                                        (None, crate::auth::AuthProvider::Claude, false)
+                                        (None, crate::auth::AuthProvider::Claude, false, None)
                                     }
                                 } else {
-                                    (None, crate::auth::AuthProvider::Claude, false)
+                                    (None, crate::auth::AuthProvider::Claude, false, None)
                                 };
 
                             warn!(
@@ -3893,6 +3894,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 working_dir,
                                 auth_provider,
                                 is_channel_lead,
+                                initial_prompt,
                             });
                             fork_respawn_effects.push(effects::Effect::RecordCooldown {
                                 category: "process_respawn".to_string(),

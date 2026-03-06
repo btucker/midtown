@@ -1618,6 +1618,17 @@ pub(super) async fn handle_session_fork(
                 }
             };
             if let Some(message) = nudge_message {
+                // Persist the nudge message as initial_prompt so crash recovery
+                // can resend it instead of generic "crash recovery" framing.
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&sid) {
+                        record.initial_prompt = Some(message.clone());
+                    }
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                        warn!("session.fork: failed to persist initial_prompt: {}", e);
+                    }
+                }
                 let nudge = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
                     reason: crate::daemon::wake_reason::WakeReason::Nudge { message },
@@ -1738,6 +1749,19 @@ pub(super) async fn handle_session_fork_thread(
             // Send framing nudge to fresh forks
             if !is_existing {
                 let framing = super::rpc_channel::fork_initial_framing(channel);
+                // Persist the framing as initial_prompt for crash recovery
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&sid) {
+                        record.initial_prompt = Some(framing.clone());
+                    }
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                        warn!(
+                            "session.fork_thread: failed to persist initial_prompt: {}",
+                            e
+                        );
+                    }
+                }
                 let framing_effect = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
                     reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
