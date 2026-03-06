@@ -179,6 +179,7 @@ fn test_to_cli_args_resume_includes_all_flags() {
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
@@ -253,6 +254,7 @@ fn test_to_cli_args_fresh_generates_session_id() {
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
@@ -296,6 +298,7 @@ fn test_to_cli_args_coworker_restricts_settings() {
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
@@ -474,6 +477,7 @@ fn test_to_cli_args_includes_model_flag() {
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
@@ -514,6 +518,7 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
         auth_profile_dir: None,
         auth_provider: midtown::auth::AuthProvider::Claude,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
