@@ -1035,8 +1035,12 @@ async fn dispatch_workflow_event_noop_when_no_plugins() {
         channel: "test-channel".into(),
     };
 
-    // No plugins configured → function should return without posting anything.
-    dispatch_workflow_event(&state, event).await;
+    // No plugins configured → function should return false (no default_prevented).
+    let default_prevented = dispatch_workflow_event(&state, event).await;
+    assert!(
+        !default_prevented,
+        "default_prevented should be false when no plugins are configured"
+    );
 
     // The channel JSONL should not exist (no messages were written).
     let channel_file = crate::paths::projects_dir_for_repo("myrepo")
@@ -1150,6 +1154,38 @@ fn plugin_actions_to_effects_multiple_actions() {
 
     let effects = plugin_actions_to_effects(&actions, &state);
     assert_eq!(effects.len(), 3);
+}
+
+#[test]
+fn plugin_actions_to_effects_channel_post_empty_message_skipped() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-empty-msg");
+
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "channel.post".to_string(),
+        params: serde_json::json!({"channel": "test-ch"}),
+    }];
+
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert!(
+        effects.is_empty(),
+        "channel.post with missing message should be skipped"
+    );
+}
+
+#[test]
+fn plugin_actions_to_effects_channel_post_blank_message_skipped() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-blank-msg");
+
+    let actions = vec![super::super::plugin_daemon::PluginAction {
+        method: "channel.post".to_string(),
+        params: serde_json::json!({"message": "", "channel": "test-ch"}),
+    }];
+
+    let effects = plugin_actions_to_effects(&actions, &state);
+    assert!(
+        effects.is_empty(),
+        "channel.post with empty string message should be skipped"
+    );
 }
 
 // ---------------------------------------------------------------------------

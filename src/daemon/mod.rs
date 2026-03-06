@@ -722,8 +722,6 @@ pub(crate) struct DaemonState {
     /// Ephemeral — not persisted across daemon restarts. Entries are added
     /// on spawn and removed in `cleanup_coworker_state`.
     pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
-    /// Manages persistent workflow sidecar processes.
-    ///
     /// Per-channel locks for workflow state file writes.
     ///
     /// Prevents TOCTOU races when concurrent `set_state` calls for different plugin

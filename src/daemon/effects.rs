@@ -3055,7 +3055,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
 
             Effect::EmitWorkflowEvent(event) => {
-                dispatch_workflow_event(state, event).await;
+                let _default_prevented = dispatch_workflow_event(state, event).await;
+                // When default_prevented is true, the plugin has taken full ownership
+                // of this event — compiled-in behavior is suppressed. Currently pr.rs
+                // already skips inline effects when plugins are configured, so this
+                // flag confirms the plugin's intent. Future: use this to conditionally
+                // re-emit compiled-in fallback effects when default_prevented is false.
             }
 
             Effect::RespawnFork {
@@ -3307,17 +3312,25 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
 /// awaits a response containing plugin actions and a `default_prevented` flag.
 /// Returned actions are converted to `Effect` variants and executed immediately.
 ///
+/// Returns `true` if a plugin set `default_prevented`, meaning the daemon's
+/// compiled-in behavior for this event should be suppressed. Returns `false`
+/// if no plugins are configured, the daemon is unavailable, or no plugin
+/// called `prevent_default()`.
+///
 /// If the daemon is not running or no plugins are configured, this is a no-op
 /// (the daemon's compiled-in behavior runs unmodified).
 ///
-/// On dispatch errors, a system message is posted to the event's channel so
-/// failures are visible in the chat log.
-async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::WorkflowEvent) {
+/// On dispatch errors or daemon unavailability, a system message is posted to
+/// the event's channel so failures are visible in the chat log.
+async fn dispatch_workflow_event(
+    state: &DaemonState,
+    event: crate::workflow::WorkflowEvent,
+) -> bool {
     let channel = event.channel().to_string();
 
     if !state.plugin_daemon.has_plugins() {
         // No plugins configured — silent no-op.
-        return;
+        return false;
     }
 
     // Build the request JSON matching the Python daemon's expected format.
@@ -3329,7 +3342,7 @@ async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::Wo
                 "Failed to serialize WorkflowEvent for channel '{}': {}",
                 channel, e
             );
-            return;
+            return false;
         }
     };
 
@@ -3348,22 +3361,32 @@ async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::Wo
         Ok(s) => s,
         Err(e) => {
             warn!("Failed to serialize plugin dispatch request: {}", e);
-            return;
+            return false;
         }
     };
 
     let result = state.plugin_daemon.send_event(&request_str).await;
 
     let Some(dispatch_result) = result else {
-        // Plugin daemon not running or connection failed — fall through to
-        // daemon's compiled-in behavior (which already ran via the inline
-        // effects path in pr.rs/dispatch.rs).
-        debug!(
+        // Plugin daemon not running or connection failed. When has_plugins()
+        // returned true, pr.rs took the script-authoritative path and skipped
+        // compiled-in inline effects. Post an error so the failure is visible.
+        warn!(
             channel = %channel,
             event_type = %event_type,
-            "dispatch_workflow_event: plugin daemon unavailable, skipping"
+            "dispatch_workflow_event: plugin daemon unavailable, event dropped"
         );
-        return;
+        post_plugin_error(
+            state,
+            &channel,
+            &format!(
+                "Plugin daemon unavailable for event `{}` — event was not processed. \
+                 Compiled-in behavior was skipped because plugins are configured.",
+                event_type
+            ),
+        )
+        .await;
+        return false;
     };
 
     if !dispatch_result.ok {
@@ -3377,7 +3400,7 @@ async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::Wo
             error_msg
         );
         post_plugin_error(state, &channel, &error_msg).await;
-        return;
+        return false;
     }
 
     debug!(
@@ -3394,6 +3417,8 @@ async fn dispatch_workflow_event(state: &DaemonState, event: crate::workflow::Wo
         // Use Box::pin to execute effects recursively without growing the stack.
         Box::pin(execute_effects(effects, state)).await;
     }
+
+    dispatch_result.default_prevented
 }
 
 /// Convert a list of plugin actions (from the Python daemon) to Effect variants.
@@ -3418,6 +3443,10 @@ fn plugin_actions_to_effects(
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                if message.is_empty() {
+                    debug!("plugin_actions_to_effects: channel.post with empty message, skipping");
+                    continue;
+                }
                 let channel = action
                     .params
                     .get("channel")
