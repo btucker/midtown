@@ -1519,12 +1519,13 @@ fn pr_action_to_effects(
                     }
                 }
             };
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
             );
+            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -4106,10 +4107,12 @@ pub(super) async fn handle_pr_comment_nudge(
             pr_number, activity.actor
         );
 
-        // Look up the reviewer assignment from persistent state
-        let reviewer_info = {
+        // Look up the reviewer assignment and task association from persistent state
+        let (reviewer_info, task_id) = {
             let ps = state.persistent_state.lock().await;
-            ps.github.pr_reviewers.get(&pr_number).cloned()
+            let reviewer = ps.github.pr_reviewers.get(&pr_number).cloned();
+            let tid = ps.github.pr_to_task_map().get(&pr_number).cloned();
+            (reviewer, tid)
         };
 
         let Some(assignment) = reviewer_info else {
@@ -4138,12 +4141,13 @@ pub(super) async fn handle_pr_comment_nudge(
             )]
         } else if let Some(session_id) = reviewer_session_id {
             // Reviewer stopped — resume their session with the follow-up context
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::ResumeSession(session_id.clone()),
                 Some(nudge_msg),
             );
+            config.task_id = task_id;
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),
                 session_id,
