@@ -499,6 +499,73 @@ class TestMidtownOrder:
             assert messages == ["priority", "bare"]
 
 
+    def test_order_preserved_after_hot_reload(self) -> None:
+        """Touching a high-order plugin should not make it run before a low-order one."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # AgentSkills plugin with order=10 (should always execute first)
+            early_dir = plugin_dir / "early"
+            scripts1 = early_dir / "scripts"
+            scripts1.mkdir(parents=True)
+            (early_dir / "SKILL.md").write_text(
+                "---\nname: early\nmetadata:\n  midtown_order: 10\n---\n"
+            )
+            (scripts1 / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("early")]\n'
+            )
+
+            # AgentSkills plugin with order=100 (should always execute second)
+            late_dir = plugin_dir / "late"
+            scripts2 = late_dir / "scripts"
+            scripts2.mkdir(parents=True)
+            (late_dir / "SKILL.md").write_text(
+                "---\nname: late\nmetadata:\n  midtown_order: 100\n---\n"
+            )
+            late_hooks = scripts2 / "hooks.py"
+            late_hooks.write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("late")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            # Before reload: order should be correct
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            messages = [a.params["message"] for a in result.actions]
+            assert messages == ["early", "late"]
+
+            # Touch the HIGH-order plugin (order=100) to trigger reload.
+            # Without the fix, this plugin would be re-registered last,
+            # making it run first in pluggy's LIFO order.
+            time.sleep(0.05)
+            late_hooks.write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("late_v2")]\n'
+            )
+
+            daemon.reload_changed()
+
+            # After reload: order must still be correct
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            messages = [a.params["message"] for a in result.actions]
+            assert messages == ["early", "late_v2"]
+
+
 class TestHotReload:
     """Tests for mtime-based hot-reload."""
 

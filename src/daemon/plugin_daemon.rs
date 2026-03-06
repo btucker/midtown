@@ -274,9 +274,23 @@ impl PluginDaemonManager {
         );
         self.has_plugins_flag.store(true, Ordering::Relaxed);
         inner.plugin_dirs = merged;
-        // Kill the current daemon so it restarts with new dirs.
+        // Gracefully stop the current daemon so it restarts with new dirs.
+        // Use SIGTERM with timeout, consistent with shutdown().
         if let Some(mut proc) = inner.process.take() {
-            let _ = proc.child.kill().await;
+            if let Some(pid) = proc.child.id() {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                if tokio::time::timeout(Duration::from_secs(3), proc.child.wait())
+                    .await
+                    .is_err()
+                {
+                    let _ = proc.child.kill().await;
+                }
+            } else {
+                let _ = proc.child.kill().await;
+            }
         }
         inner.crash_count = 0;
         inner.last_crash = None;

@@ -219,13 +219,56 @@ class WorkflowDaemon:
         """Return paths of tracked plugins whose files no longer exist."""
         return [p for p in self._mtimes if not p.exists()]
 
+    def _get_plugin_order(self, path: Path) -> int:
+        """Return the midtown_order for a loaded plugin.
+
+        AgentSkills plugins use their SKILL.md order; bare .py plugins
+        default to 1000.
+        """
+        skill_dir = self._hooks_to_skill_dir.get(path)
+        if skill_dir is not None:
+            meta = self._skill_metadata.get(skill_dir)
+            if meta is not None:
+                return meta.order
+        return 1000
+
+    def _reorder_plugins(self) -> None:
+        """Unregister all plugins from pluggy and re-register in order.
+
+        Pluggy dispatches in LIFO order, so we register in descending
+        midtown_order so that lower-order plugins run first.
+        """
+        # Build list of (order, path, module) for all loaded plugins.
+        entries = []
+        for path, module in list(self._loaded_plugins.items()):
+            order = self._get_plugin_order(path)
+            entries.append((order, path, module))
+
+        # Unregister all from pluggy (but keep our tracking dicts intact).
+        for _, _, module in entries:
+            self.pm.unregister(module)
+
+        # Re-register in descending order (lowest order registers last → runs first).
+        entries.sort(key=lambda t: t[0], reverse=True)
+        for _, path, module in entries:
+            plugin_name = getattr(module, "__name__", path.stem)
+            self.pm.register(module, name=plugin_name)
+
     def reload_changed(self) -> None:
-        """Hot-reload any plugins whose files have changed on disk."""
+        """Hot-reload any plugins whose files have changed on disk.
+
+        After reloading, all plugins are re-registered in midtown_order
+        to preserve correct execution order (pluggy LIFO).
+        """
         # Unload deleted plugins
         for path in self._find_deleted():
             self.unload_plugin(path)
 
-        for path in self.check_for_changes():
+        changed = self.check_for_changes()
+        if not changed:
+            return
+
+        for path in changed:
             old_mtime = self._mtimes.get(path)
             # Remember if this was an AgentSkills plugin so we can
             # re-load it correctly (re-parsing SKILL.md for metadata).
@@ -241,6 +284,10 @@ class WorkflowDaemon:
             # on the next check when the file is fixed.
             if path not in self._mtimes and old_mtime is not None:
                 self._mtimes[path] = old_mtime
+
+        # Re-register all plugins in correct midtown_order to maintain
+        # execution order after LIFO disruption from individual reloads.
+        self._reorder_plugins()
 
     def dispatch_event(
         self,
