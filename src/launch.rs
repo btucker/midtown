@@ -100,6 +100,12 @@ pub struct LaunchConfig {
     /// the reviewer system prompt is replaced with this value (typically the channel
     /// lead name). Falls back to `project_name` when `None`.
     pub escalation_target: Option<String>,
+    /// Task ID associated with this session (e.g., "2113").
+    ///
+    /// When set, `MIDTOWN_TASK_ID` env var is injected so the spawned session
+    /// knows its task ID without parsing PR titles. Reviewers use the PR's linked
+    /// task, and coworkers use their assigned task.
+    pub task_id: Option<String>,
     /// Override for the `initial_prompt` stored in `SessionRecord` at spawn time.
     ///
     /// When `Some`, `spawn_coworker` persists this value instead of `initial_prompt`.
@@ -339,6 +345,7 @@ impl LaunchConfig {
             auth_profile_dir: None,
             auth_provider,
             escalation_target: None,
+            task_id: None,
             persisted_initial_prompt: None,
         }
     }
@@ -382,6 +389,7 @@ impl LaunchConfig {
             auth_profile_dir: None,
             auth_provider,
             escalation_target: None,
+            task_id: None,
             persisted_initial_prompt: None,
         }
     }
@@ -432,6 +440,7 @@ impl LaunchConfig {
                 auth_profile_dir: None,
                 auth_provider,
                 escalation_target: None,
+                task_id: None,
                 persisted_initial_prompt: None,
             }
         }
@@ -491,6 +500,7 @@ impl LaunchConfig {
             auth_profile_dir: None,
             auth_provider,
             escalation_target: None,
+            task_id: None,
             persisted_initial_prompt: None,
         }
     }
@@ -552,6 +562,7 @@ impl LaunchConfig {
             auth_profile_dir: None,
             auth_provider,
             escalation_target: None,
+            task_id: None,
             persisted_initial_prompt: None,
         }
     }
@@ -626,7 +637,7 @@ impl LaunchConfig {
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
 
-        let env = build_agent_env_vars(
+        let mut env = build_agent_env_vars(
             &self.name,
             &self.role,
             &self.team_name,
@@ -634,6 +645,11 @@ impl LaunchConfig {
             self.auth_provider,
             &config_dir,
         );
+
+        // Inject MIDTOWN_TASK_ID so spawned sessions know their task
+        if let Some(ref tid) = self.task_id {
+            env.insert("MIDTOWN_TASK_ID".to_string(), tid.clone());
+        }
 
         // Channel leads get hard tool restrictions — they are coordinators,
         // not implementers. This is enforced at the CLI level via --disallowedTools
@@ -724,7 +740,7 @@ impl LaunchConfig {
             .clone()
             .unwrap_or_else(|| crate::auth::current_profile_dir_for(self.auth_provider));
 
-        let env_map = build_agent_env_vars(
+        let mut env_map = build_agent_env_vars(
             &self.name,
             &self.role,
             &self.team_name,
@@ -732,6 +748,11 @@ impl LaunchConfig {
             self.auth_provider,
             &config_dir,
         );
+
+        // Inject MIDTOWN_TASK_ID so spawned sessions know their task
+        if let Some(ref tid) = self.task_id {
+            env_map.insert("MIDTOWN_TASK_ID".to_string(), tid.clone());
+        }
 
         // Convert env map to shell export format (key='value')
         let env_parts: Vec<String> = env_map
@@ -1081,6 +1102,24 @@ mod tests {
     }
 
     #[test]
+    fn test_shell_command_includes_task_id_env() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.task_id = Some("42".to_string());
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+            std::path::Path::new("/tmp/test-repo"),
+            "midtown",
+        );
+        assert!(
+            result.shell_command.contains("MIDTOWN_TASK_ID='42'"),
+            "Shell command should contain MIDTOWN_TASK_ID='42', got: {}",
+            result.shell_command
+        );
+    }
+
+    #[test]
     fn test_channel_routing_env_var() {
         let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
         config.channel = Some("task-42".to_string());
@@ -1090,6 +1129,29 @@ mod tests {
         assert_eq!(
             headless.env.get("MIDTOWN_CHANNEL"),
             Some(&"task-42".to_string())
+        );
+    }
+
+    #[test]
+    fn test_task_id_env_var_set_when_present() {
+        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        config.task_id = Some("2113".to_string());
+        let headless = config.to_headless_config(&test_paths());
+
+        assert_eq!(
+            headless.env.get("MIDTOWN_TASK_ID"),
+            Some(&"2113".to_string())
+        );
+    }
+
+    #[test]
+    fn test_task_id_env_var_absent_when_none() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+        let headless = config.to_headless_config(&test_paths());
+
+        assert!(
+            !headless.env.contains_key("MIDTOWN_TASK_ID"),
+            "MIDTOWN_TASK_ID should not be set when task_id is None"
         );
     }
 

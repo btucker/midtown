@@ -816,6 +816,7 @@ pub(crate) fn build_attach_shell_command(
         auth_profile_dir: Some(profile_dir.clone()),
         auth_provider: provider,
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 

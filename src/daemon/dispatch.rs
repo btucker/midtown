@@ -434,6 +434,7 @@ where
         );
         config.working_dir = Some(wt.path);
         config.channel = channel.clone();
+        config.task_id = Some(recovery.task_id.clone());
         config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
         let on_success = vec![
@@ -524,6 +525,7 @@ where
     );
     config.working_dir = Some(wt.path);
     config.channel = channel.clone();
+    config.task_id = Some(recovery.task_id.clone());
 
     // Apply task model if available (sets both provider and model)
     config.apply_task_model(&snap.task_model_map, &recovery.task_id);
@@ -823,6 +825,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
             .find(|t| t.id == *task_id)
             .and_then(|t| t.channel.clone());
         config.channel = channel.clone();
+        config.task_id = Some(task_id.clone());
 
         config.apply_task_model(&snap.task_model_map, task_id);
 
@@ -1025,6 +1028,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     );
     config.working_dir = Some(wt.path);
     config.channel = channel;
+    config.task_id = Some(recovery.task_id.clone());
 
     // Apply task model if available (sets both provider and model)
     config.apply_task_model(&snap.task_model_map, &recovery.task_id);
@@ -1615,6 +1619,7 @@ fn dispatch_owned_pending_tasks(
                     Some(prompt),
                 );
                 config.working_dir = Some(wt.path);
+                config.task_id = Some(tid.clone());
                 config.apply_task_model(&snap.task_model_map, tid);
 
                 effects.extend(wt.pre_spawn_effects);
@@ -1890,6 +1895,7 @@ fn dispatch_unowned_pending_tasks(
                 );
                 config.working_dir = Some(working_dir.clone());
                 config.channel = task.channel.clone();
+                config.task_id = Some(task.id.clone());
                 config.apply_task_model(&snap.task_model_map, &task.id);
 
                 effects.extend(wt.pre_spawn_effects);
@@ -2091,6 +2097,7 @@ fn dispatch_unowned_pending_tasks(
             );
             config.working_dir = Some(wt.path);
             config.channel = task.channel.clone();
+            config.task_id = Some(task.id.clone());
             config.apply_task_model(&snap.task_model_map, &task.id);
 
             let channel_msg = daemon_messages::called_in_assigned_task(

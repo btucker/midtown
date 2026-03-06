@@ -917,6 +917,22 @@ The lookup happens at five spawn/respawn sites:
 
 `WorldSnapshot::channel_for_pr()` and `PrContext::get_channel()` are parallel implementations of the same two-step lookup for the sync (snapshot) and async (persistent state) contexts respectively.
 
+## Task ID Injection (MIDTOWN_TASK_ID)
+
+Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task ID (e.g., `"2113"`). The data flow is: `LaunchConfig.task_id` → env var injection in `to_cli_args()`/`to_shell_command()` → `MIDTOWN_TASK_ID` in the spawned process.
+
+**Auto-threading**: When `MIDTOWN_TASK_ID` is set and the coworker runs `midtown channel post` without `--task` or `--thread`, the CLI automatically threads the message under the task's announcement. If the task no longer exists (stale ID), it gracefully falls back to a regular channel post.
+
+**Spawn sites that set `task_id`**:
+- **Coworker dispatch** (`dispatch.rs`): From the assigned task ID
+- **PR owner resume** (`pr.rs`, `pr_action_to_effects`): From `pr_task_associations`
+- **Reviewer spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): From `pr_task_associations`
+- **Review-complete nudge** (`pr.rs`, `review_complete_action_to_effects`): From `pr_task_associations`
+- **Comment activity** (`pr.rs`, `comment_action_to_effects`): From `pr_task_associations`
+- **Handoff to coworker** (`pr.rs`, `handoff_to_coworker_effects`): From `pr_task_associations`
+- **Reviewer follow-up resume** (`pr.rs`, `handle_pr_comment_activity`): From `pr_to_task_map()`
+- **Daemon recovery** (`dispatch.rs`): From the recovery task ID
+
 ## Reviewer Health and Stuck Detection
 
 Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).

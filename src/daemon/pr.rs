@@ -1519,12 +1519,13 @@ fn pr_action_to_effects(
                     }
                 }
             };
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.paths.dir_key().to_string(),
                 session_mode,
                 Some(message),
             );
+            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -2567,6 +2568,8 @@ fn comment_action_to_effects(
             );
             // Use Opus for review feedback responses (higher quality needed to understand feedback)
             config.model = "opus".to_string();
+            // Pass the PR's linked task ID so the coworker knows its task
+            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -2700,7 +2703,7 @@ fn handoff_to_coworker_effects(
     ctx: &PrContext,
 ) -> Vec<Effect> {
     // Look up topic channel for this PR's task (falls back to main if not found)
-    let config = crate::launch::LaunchConfig::pr_handoff(
+    let mut config = crate::launch::LaunchConfig::pr_handoff(
         assignee.to_string(),
         state.paths.dir_key().to_string(),
         session_id,
@@ -2708,6 +2711,8 @@ fn handoff_to_coworker_effects(
         branch,
         original_author,
     );
+    // Pass the PR's linked task ID so the handoff coworker knows its task
+    config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
     let mut on_success = vec![
         Effect::BroadcastCoworkerUpdate {
@@ -3025,6 +3030,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 // body. This survives daemon restarts and auth storms since the
                 // frontmatter lives on GitHub, not in daemon memory.
                 resolve_pr_owner_from_body(pf.body())
+            })
+            .or_else(|| {
+                // Last resort: use daemon's pr_task_associations mapping (survives
+                // cases where the task owner was unassigned but the task still exists).
+                pr_task_associations.get(&pr_number).and_then(|task_id| {
+                    all_tasks
+                        .iter()
+                        .find(|t| t.id == *task_id)
+                        .and_then(|t| t.owner.clone())
+                })
             });
 
             if let Some(owner) = owner {
@@ -3280,6 +3295,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // defaults to the right channel (via MIDTOWN_CHANNEL env var).
         config.channel = pr_ctx.get_channel(pr_number);
 
+        // Pass the PR's linked task ID so the reviewer knows its task
+        // without having to parse it from the PR title.
+        config.task_id = pr_ctx.pr_task_associations.get(&pr_number).cloned();
+
         // Route escalation mentions (@{escalation_target}) to the channel lead
         // for this task's channel, falling back to the project lead if no channel
         // or no channel lead exists.
@@ -3525,6 +3544,8 @@ fn review_complete_action_to_effects(
             );
             // Use Opus for review feedback responses (higher quality needed to understand feedback)
             config.model = "opus".to_string();
+            // Pass the PR's linked task ID so the coworker knows its task
+            config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
 
             let mut on_success = vec![
                 Effect::BroadcastCoworkerUpdate {
@@ -4086,10 +4107,12 @@ pub(super) async fn handle_pr_comment_nudge(
             pr_number, activity.actor
         );
 
-        // Look up the reviewer assignment from persistent state
-        let reviewer_info = {
+        // Look up the reviewer assignment and task association from persistent state
+        let (reviewer_info, task_id) = {
             let ps = state.persistent_state.lock().await;
-            ps.github.pr_reviewers.get(&pr_number).cloned()
+            let reviewer = ps.github.pr_reviewers.get(&pr_number).cloned();
+            let tid = ps.github.pr_to_task_map().get(&pr_number).cloned();
+            (reviewer, tid)
         };
 
         let Some(assignment) = reviewer_info else {
@@ -4118,12 +4141,13 @@ pub(super) async fn handle_pr_comment_nudge(
             )]
         } else if let Some(session_id) = reviewer_session_id {
             // Reviewer stopped — resume their session with the follow-up context
-            let config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::coworker(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::ResumeSession(session_id.clone()),
                 Some(nudge_msg),
             );
+            config.task_id = task_id;
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),
                 session_id,

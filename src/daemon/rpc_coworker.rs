@@ -89,6 +89,7 @@ pub(super) async fn handle_coworker_spawn(
         auth_profile_dir: None,
         auth_provider: provider, // Resolved by spawn_coworker()
         escalation_target: None,
+        task_id: None,
         persisted_initial_prompt: None,
     };
 
