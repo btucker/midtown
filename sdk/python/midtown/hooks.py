@@ -70,6 +70,11 @@ class HookContext:
     helper for constructing :class:`DaemonAction` return values.  Plugins
     should treat ``state`` as read-only; mutations are not persisted.
     Return :class:`DaemonAction` objects to effect changes.
+
+    Supports DOM-style default prevention: call :meth:`prevent_default` to
+    prevent the daemon from running its compiled-in behavior for this event.
+    All plugins still execute regardless — only the daemon's default actions
+    are suppressed.
     """
 
     # Event data
@@ -106,6 +111,25 @@ class HookContext:
     # Action builder
     actions: Any = None
     """An :class:`~midtown.actions.Actions` instance for building return values."""
+
+    # Default prevention (DOM-style)
+    _default_prevented: bool = field(default=False, repr=False)
+
+    def prevent_default(self) -> None:
+        """Prevent the daemon from running its compiled-in default behavior.
+
+        Similar to the DOM event model — calling this stops the daemon's
+        default actions for this event, but all registered plugins still
+        execute and can return their own actions.
+
+        Multiple plugins share the same ``HookContext``, so if any plugin
+        calls ``prevent_default()``, the daemon default is suppressed for all.
+        """
+        self._default_prevented = True
+
+    def is_default_prevented(self) -> bool:
+        """Return whether any plugin has called :meth:`prevent_default`."""
+        return self._default_prevented
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +232,14 @@ class TaskHooks:
     def on_pr_auto_merge(self, ctx: HookContext) -> list[DaemonAction]:
         """A PR is eligible for auto-merge (approved + CI green, no active reviewer)."""
 
+    @hookspec
+    def on_task_phase_complete(self, ctx: HookContext) -> list[DaemonAction]:
+        """A task phase completed (e.g. study -> do, observe -> hone).
+
+        Allows plugins to coordinate multi-step workflows without checking
+        task state directly.
+        """
+
     # -- Coworker lifecycle -------------------------------------------------
 
     @hookspec
@@ -219,12 +251,34 @@ class TaskHooks:
         """A coworker appears stuck and will be restarted."""
 
     @hookspec
+    def on_coworker_spawned(self, ctx: HookContext) -> list[DaemonAction]:
+        """A coworker was spawned for a task."""
+
+    @hookspec
     def on_coworker_message(self, ctx: HookContext) -> list[DaemonAction]:
         """A coworker posted a message to the channel."""
+
+    # -- Forked lead lifecycle ----------------------------------------------
+
+    @hookspec
+    def on_fork_lead_spawned(self, ctx: HookContext) -> list[DaemonAction]:
+        """A forked lead was spawned (for coordination)."""
+
+    @hookspec
+    def on_fork_lead_idle(self, ctx: HookContext) -> list[DaemonAction]:
+        """A forked lead went idle (completion signal)."""
+
+    # -- Channel ------------------------------------------------------------
 
     @hookspec
     def on_channel_message(self, ctx: HookContext) -> list[DaemonAction]:
         """A message was posted to the channel (from any source)."""
+
+    # -- Timer --------------------------------------------------------------
+
+    @hookspec
+    def on_timer_tick(self, ctx: HookContext) -> list[DaemonAction]:
+        """Periodic tick for reconciliation and bookkeeping."""
 
     # -- Catch-all ----------------------------------------------------------
 

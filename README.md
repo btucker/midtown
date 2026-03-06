@@ -579,20 +579,20 @@ The reference implementation (`sdk/python/midtown/default_workflow.py`) replicat
 
 #### Hook-Based Plugins
 
-The SDK includes a [pluggy](https://pluggy.readthedocs.io/)-based hook system for extending daemon behavior. Plugins implement hook specs (`WorkflowHooks`, `TaskHooks`) and return `Action` objects to request daemon actions:
+The SDK includes a [pluggy](https://pluggy.readthedocs.io/)-based hook system for extending daemon behavior. Plugins implement hook specs (`WorkflowHooks`, `TaskHooks`) and return `DaemonAction` objects to request daemon actions:
 
 ```python
-from midtown import hookimpl, Action, HookContext
+from midtown import hookimpl, HookContext, DaemonAction
 
 class NotifyPlugin:
     @hookimpl
-    def on_pr_opened(self, event: dict, context: HookContext):
-        return [Action.post_to_channel(f"New PR: #{event['pr_number']}")]
+    def on_pr_opened(self, ctx: HookContext) -> list[DaemonAction]:
+        return [ctx.actions.post_to_channel(f"New PR: #{ctx.pr_number}")]
 
     @hookimpl
-    def on_pr_auto_merge(self, event: dict, context: HookContext):
-        context.prevent_default()  # suppress daemon's default behavior
-        return [Action.enable_auto_merge(event["pr_number"])]
+    def on_pr_auto_merge(self, ctx: HookContext) -> list[DaemonAction]:
+        ctx.prevent_default()  # suppress daemon's default behavior
+        return [ctx.actions.enable_auto_merge(ctx.pr_number)]
 ```
 
 Available hook categories: task lifecycle, PR lifecycle, coworker events, fork leads, channel messages, and timer ticks. See [docs/architecture.md](docs/architecture.md) for the full hook spec reference.

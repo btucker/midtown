@@ -12,10 +12,27 @@ import types
 from pathlib import Path
 from typing import Any
 
+from dataclasses import dataclass, field
+
 from midtown.actions import Actions
 from midtown.hooks import DaemonAction, HookContext, get_plugin_manager
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DispatchResult:
+    """Result of dispatching an event through the plugin system.
+
+    Contains the collected actions from all plugins and whether any plugin
+    called ``ctx.prevent_default()`` to suppress daemon defaults.
+    """
+
+    actions: list[DaemonAction] = field(default_factory=list)
+    """All actions returned by plugins, concatenated."""
+
+    default_prevented: bool = False
+    """Whether any plugin called ``ctx.prevent_default()``."""
 
 
 class WorkflowDaemon:
@@ -127,13 +144,14 @@ class WorkflowDaemon:
         task_state: str | None = None,
         prev_task_state: str | None = None,
         state: dict[str, Any] | None = None,
-    ) -> list[DaemonAction]:
+    ) -> DispatchResult:
         """Dispatch an event to all registered hook implementations.
 
         Constructs a :class:`HookContext` and invokes both the global
         ``on_event`` hook and the event-specific hook (e.g. ``on_pr_opened``).
 
-        Returns a flat list of :class:`DaemonAction` objects from all plugins.
+        Returns a :class:`DispatchResult` containing the collected actions
+        and whether any plugin called ``ctx.prevent_default()``.
         """
         ctx = HookContext(
             event_type=event_type,
@@ -163,7 +181,10 @@ class WorkflowDaemon:
                 if result:
                     all_actions.extend(result)
 
-        return all_actions
+        return DispatchResult(
+            actions=all_actions,
+            default_prevented=ctx.is_default_prevented(),
+        )
 
     async def run(self) -> None:
         """Start the Unix socket server and process events.
@@ -257,7 +278,7 @@ class WorkflowDaemon:
         if not event_type:
             return {"ok": False, "error": "missing 'type' field"}
 
-        actions = self.dispatch_event(
+        result = self.dispatch_event(
             event_type,
             event,
             task_id=task_id,
@@ -268,8 +289,8 @@ class WorkflowDaemon:
 
         return {
             "ok": True,
-            "actions": [dataclasses.asdict(a) for a in actions],
-            "default_prevented": False,
+            "actions": [dataclasses.asdict(a) for a in result.actions],
+            "default_prevented": result.default_prevented,
         }
 
 
