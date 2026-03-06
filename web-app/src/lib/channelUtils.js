@@ -5,18 +5,18 @@
  * Used to look up a PR's channel via its associated task.
  */
 function buildTaskChannelMap(kanban) {
-	const map = new Map();
-	for (const task of kanban.inProgress) {
-		if (task.id != null && task.channel) {
-			map.set(String(task.id), task.channel);
-		}
-	}
-	for (const task of kanban.backlog) {
-		if (task.id != null && task.channel) {
-			map.set(String(task.id), task.channel);
-		}
-	}
-	return map;
+  const map = new Map()
+  for (const task of kanban.inProgress) {
+    if (task.id != null && task.channel) {
+      map.set(String(task.id), task.channel)
+    }
+  }
+  for (const task of kanban.backlog) {
+    if (task.id != null && task.channel) {
+      map.set(String(task.id), task.channel)
+    }
+  }
+  return map
 }
 
 /**
@@ -24,10 +24,10 @@ function buildTaskChannelMap(kanban) {
  * Returns the channel name or null if the PR has no associated task/channel.
  */
 function getPrChannel(pr, taskChannelMap) {
-	if (pr.task_id != null) {
-		return taskChannelMap.get(String(pr.task_id)) || null;
-	}
-	return null;
+  if (pr.task_id != null) {
+    return taskChannelMap.get(String(pr.task_id)) || null
+  }
+  return null
 }
 
 /**
@@ -35,7 +35,7 @@ function getPrChannel(pr, taskChannelMap) {
  * PRs without a task or without a channel assignment only appear in the main channel.
  */
 function filterPrsByChannel(prs, channelName, taskChannelMap) {
-	return prs.filter((pr) => getPrChannel(pr, taskChannelMap) === channelName);
+  return prs.filter((pr) => getPrChannel(pr, taskChannelMap) === channelName)
 }
 
 /**
@@ -45,32 +45,32 @@ function filterPrsByChannel(prs, channelName, taskChannelMap) {
  * This matches the TUI implementation which groups tasks by task.channel.
  */
 export function getChannelTaskCount(channelName, kanban) {
-	// Tasks with no channel field default to the main channel (matches TUI's unwrap_or(main_channel))
-	const filterTasks = (list) => {
-		if (channelName === "midtown") {
-			return list.filter((task) => !task.channel || task.channel === "midtown");
-		}
-		return list.filter((task) => task.channel === channelName);
-	};
+  // Tasks with no channel field default to the main channel (matches TUI's unwrap_or(main_channel))
+  const filterTasks = (list) => {
+    if (channelName === 'midtown') {
+      return list.filter((task) => !task.channel || task.channel === 'midtown')
+    }
+    return list.filter((task) => task.channel === channelName)
+  }
 
-	// For PRs, look up channel via task_id → channel map (consistent with task filtering).
-	// PRs with no task_id default to the main channel.
-	const taskChannelMap = buildTaskChannelMap(kanban);
-	const filterPrs = (prs) => {
-		if (channelName === "midtown") {
-			return prs.filter((pr) => {
-				const ch = getPrChannel(pr, taskChannelMap);
-				return ch === null || ch === "midtown";
-			});
-		}
-		return filterPrsByChannel(prs, channelName, taskChannelMap);
-	};
+  // For PRs, look up channel via task_id → channel map (consistent with task filtering).
+  // PRs with no task_id default to the main channel.
+  const taskChannelMap = buildTaskChannelMap(kanban)
+  const filterPrs = (prs) => {
+    if (channelName === 'midtown') {
+      return prs.filter((pr) => {
+        const ch = getPrChannel(pr, taskChannelMap)
+        return ch === null || ch === 'midtown'
+      })
+    }
+    return filterPrsByChannel(prs, channelName, taskChannelMap)
+  }
 
-	return {
-		inProgress: filterTasks(kanban.inProgress).length,
-		pending: filterTasks(kanban.backlog).length,
-		review: filterPrs(kanban.review).length,
-	};
+  return {
+    inProgress: filterTasks(kanban.inProgress).length,
+    pending: filterTasks(kanban.backlog).length,
+    review: filterPrs(kanban.review).length,
+  }
 }
 
 /**
@@ -78,24 +78,24 @@ export function getChannelTaskCount(channelName, kanban) {
  * Returns 'failed', 'pending', 'passed', or null.
  */
 export function getChannelCiStatus(channelName, kanban) {
-	if (channelName === "midtown") {
-		// Main channel considers all PRs
-		if (kanban.review.length === 0) return null;
-		if (kanban.review.some((pr) => pr.status === "ci_failed")) return "failed";
-		if (kanban.review.some((pr) => pr.status === "ci_pending")) return "pending";
-		if (kanban.review.every((pr) => pr.status === "ci_passed" || pr.status === "approved")) return "passed";
-		return null;
-	}
+  if (channelName === 'midtown') {
+    // Main channel considers all PRs
+    if (kanban.review.length === 0) return null
+    if (kanban.review.some((pr) => pr.status === 'ci_failed')) return 'failed'
+    if (kanban.review.some((pr) => pr.status === 'ci_pending')) return 'pending'
+    if (kanban.review.every((pr) => pr.status === 'ci_passed' || pr.status === 'approved')) return 'passed'
+    return null
+  }
 
-	const taskChannelMap = buildTaskChannelMap(kanban);
-	const channelPrs = filterPrsByChannel(kanban.review, channelName, taskChannelMap);
-	if (channelPrs.length === 0) return null;
+  const taskChannelMap = buildTaskChannelMap(kanban)
+  const channelPrs = filterPrsByChannel(kanban.review, channelName, taskChannelMap)
+  if (channelPrs.length === 0) return null
 
-	// Check if any PR has failing CI
-	if (channelPrs.some((pr) => pr.status === "ci_failed")) return "failed";
-	if (channelPrs.some((pr) => pr.status === "ci_pending")) return "pending";
-	if (channelPrs.every((pr) => pr.status === "ci_passed" || pr.status === "approved")) return "passed";
-	return null;
+  // Check if any PR has failing CI
+  if (channelPrs.some((pr) => pr.status === 'ci_failed')) return 'failed'
+  if (channelPrs.some((pr) => pr.status === 'ci_pending')) return 'pending'
+  if (channelPrs.every((pr) => pr.status === 'ci_passed' || pr.status === 'approved')) return 'passed'
+  return null
 }
 
 /**
@@ -103,16 +103,16 @@ export function getChannelCiStatus(channelName, kanban) {
  * Returns in-progress tasks first, then pending.
  */
 export function getChannelTasks(channelName, kanban) {
-	const filterTasks = (list) => {
-		if (channelName === "midtown") {
-			return list.filter((task) => !task.channel || task.channel === "midtown");
-		}
-		return list.filter((task) => task.channel === channelName);
-	};
-	return [
-		...filterTasks(kanban.inProgress).map((t) => ({ ...t, status: "in_progress" })),
-		...filterTasks(kanban.backlog).map((t) => ({ ...t, status: "pending" })),
-	];
+  const filterTasks = (list) => {
+    if (channelName === 'midtown') {
+      return list.filter((task) => !task.channel || task.channel === 'midtown')
+    }
+    return list.filter((task) => task.channel === channelName)
+  }
+  return [
+    ...filterTasks(kanban.inProgress).map(t => ({ ...t, status: 'in_progress' })),
+    ...filterTasks(kanban.backlog).map(t => ({ ...t, status: 'pending' })),
+  ]
 }
 
 /**
@@ -120,8 +120,8 @@ export function getChannelTasks(channelName, kanban) {
  * Used to determine whether to auto-expand the task list on channel select.
  */
 export function getChannelHasActiveTasks(channelName, kanban) {
-	const counts = getChannelTaskCount(channelName, kanban);
-	return counts.inProgress > 0 || counts.pending > 0;
+  const counts = getChannelTaskCount(channelName, kanban)
+  return counts.inProgress > 0 || counts.pending > 0
 }
 
 /**
@@ -130,13 +130,13 @@ export function getChannelHasActiveTasks(channelName, kanban) {
  * Returns a new Set; does not mutate the input.
  */
 export function computeExpandedAfterTriangleClick(channelName, expandedChannels) {
-	const next = new Set(expandedChannels);
-	if (next.has(channelName)) {
-		next.delete(channelName);
-	} else {
-		next.add(channelName);
-	}
-	return next;
+  const next = new Set(expandedChannels)
+  if (next.has(channelName)) {
+    next.delete(channelName)
+  } else {
+    next.add(channelName)
+  }
+  return next
 }
 
 /**
@@ -148,24 +148,23 @@ export function computeExpandedAfterTriangleClick(channelName, expandedChannels)
  * @param {object} opts - Optional { trackedThreads, taskThreadIds } for thread-aware expansion
  */
 export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban, opts = {}) {
-	const next = new Set(expandedChannels);
-	if (channelName === activeChannel) {
-		if (next.has(channelName)) {
-			next.delete(channelName);
-		} else {
-			next.add(channelName);
-		}
-	} else {
-		const hasTasks = getChannelHasActiveTasks(channelName, kanban);
-		const hasThreads =
-			opts.trackedThreads && opts.taskThreadIds
-				? getChannelHasTrackedThreads(channelName, opts.trackedThreads, opts.taskThreadIds)
-				: false;
-		if (hasTasks || hasThreads) {
-			next.add(channelName);
-		}
-	}
-	return next;
+  const next = new Set(expandedChannels)
+  if (channelName === activeChannel) {
+    if (next.has(channelName)) {
+      next.delete(channelName)
+    } else {
+      next.add(channelName)
+    }
+  } else {
+    const hasTasks = getChannelHasActiveTasks(channelName, kanban)
+    const hasThreads = opts.trackedThreads && opts.taskThreadIds
+      ? getChannelHasTrackedThreads(channelName, opts.trackedThreads, opts.taskThreadIds)
+      : false
+    if (hasTasks || hasThreads) {
+      next.add(channelName)
+    }
+  }
+  return next
 }
 
 /**
@@ -178,9 +177,11 @@ export function computeExpandedAfterChannelNameClick(channelName, expandedChanne
  * the user collapses/re-expands the section.
  */
 export function computeVisibleDmChannels(dmChannels, { expanded, showAll, activeChannel, visitedDms }) {
-	if (!expanded) return [];
-	if (showAll) return dmChannels;
-	return dmChannels.filter((ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name));
+  if (!expanded) return []
+  if (showAll) return dmChannels
+  return dmChannels.filter(
+    (ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name)
+  )
 }
 
 // ── Thread sidebar utilities ──────────────────────────────────────────────────
@@ -190,57 +191,73 @@ export function computeVisibleDmChannels(dmChannels, { expanded, showAll, active
  * A thread is "task-backed" when any task's thread_id or message_id matches it.
  */
 export function getTaskThreadIds(kanban) {
-	const ids = new Set();
-	for (const list of [kanban.inProgress, kanban.backlog]) {
-		for (const task of list) {
-			if (task.thread_id) ids.add(task.thread_id);
-			if (task.message_id) ids.add(task.message_id);
-		}
-	}
-	return ids;
+  const ids = new Set()
+  for (const list of [kanban.inProgress, kanban.backlog]) {
+    for (const task of list) {
+      if (task.thread_id) ids.add(task.thread_id)
+      if (task.message_id) ids.add(task.message_id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Build a Set of threadParentIds from completed tasks (done column).
+ */
+export function getCompletedTaskThreadIds(kanban) {
+  const ids = new Set()
+  const done = kanban.done || []
+  for (const task of done) {
+    if (task.thread_id) ids.add(task.thread_id)
+    if (task.message_id) ids.add(task.message_id)
+  }
+  return ids
 }
 
 /**
  * Get tracked threads for a channel, sorted by lastActivity (newest first).
- * Pure function — filters out task-backed threads and returns their IDs
+ * Pure function — filters out active task-backed threads and returns their IDs
  * in `toClean` for the caller to handle cleanup separately (e.g. in a $effect).
+ * Completed task threads are kept but marked with `completed: true`.
  *
  * @param {string} channelName
  * @param {object} tracked - $trackedThreads store value
  * @param {object} unreadCounts - $threadUnreadCounts store value
- * @param {Set} taskThreadIds - from getTaskThreadIds()
- * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread}>, toClean: string[] }}
+ * @param {Set} taskThreadIds - from getTaskThreadIds() (active tasks)
+ * @param {Set} completedTaskThreadIds - from getCompletedTaskThreadIds()
+ * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread, completed}>, toClean: string[] }}
  */
-export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds) {
-	const threads = [];
-	const toClean = [];
-	for (const [id, entry] of Object.entries(tracked)) {
-		if (entry.channelName !== channelName) continue;
-		if (taskThreadIds.has(id)) {
-			toClean.push(id);
-			continue;
-		}
-		threads.push({
-			id,
-			subject: entry.subject,
-			fullText: entry.fullText || entry.subject,
-			lastActivity: entry.lastActivity,
-			replyCount: entry.replyCount || 0,
-			unread: unreadCounts[id] || 0,
-		});
-	}
-	threads.sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""));
-	return { threads, toClean };
+export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds, completedTaskThreadIds = new Set()) {
+  const threads = []
+  const toClean = []
+  for (const [id, entry] of Object.entries(tracked)) {
+    if (entry.channelName !== channelName) continue
+    if (taskThreadIds.has(id)) {
+      toClean.push(id)
+      continue
+    }
+    threads.push({
+      id,
+      subject: entry.subject,
+      fullText: entry.fullText || entry.subject,
+      lastActivity: entry.lastActivity,
+      replyCount: entry.replyCount || 0,
+      unread: unreadCounts[id] || 0,
+      completed: completedTaskThreadIds.has(id),
+    })
+  }
+  threads.sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''))
+  return { threads, toClean }
 }
 
 /**
  * Returns true if a channel has any tracked threads that aren't task-backed.
  */
 export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds) {
-	for (const [id, entry] of Object.entries(tracked)) {
-		if (entry.channelName === channelName && !taskThreadIds.has(id)) return true;
-	}
-	return false;
+  for (const [id, entry] of Object.entries(tracked)) {
+    if (entry.channelName === channelName && !taskThreadIds.has(id)) return true
+  }
+  return false
 }
 
 /**
@@ -248,8 +265,10 @@ export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds)
  * PRs appear in 'review' (open) and 'done' (merged) columns.
  */
 export function findPr(prNum, kanbanData) {
-	const num = parseInt(prNum, 10);
-	return kanbanData.review.find((p) => p.number === num) || kanbanData.done?.find((p) => p.number === num) || null;
+  const num = parseInt(prNum)
+  return kanbanData.review.find((p) => p.number === num)
+    || kanbanData.done?.find((p) => p.number === num)
+    || null
 }
 
 /**
@@ -262,19 +281,19 @@ export function findPr(prNum, kanbanData) {
  * an associated task — PR links should always open GitHub.
  */
 export function getPrUrl(prNum, kanbanData, repoStatuses, primaryRepoFullName) {
-	const pr = findPr(prNum, kanbanData);
-	// If the PR has a repo label, resolve it via repoStatuses (multi-repo)
-	if (pr?.repo && repoStatuses.length > 0) {
-		const info = repoStatuses.find((r) => r.label === pr.repo);
-		if (info?.fullName) {
-			return `https://github.com/${info.fullName}/pull/${prNum}`;
-		}
-	}
-	// Fall back to the primary repo
-	if (primaryRepoFullName) {
-		return `https://github.com/${primaryRepoFullName}/pull/${prNum}`;
-	}
-	return null;
+  const pr = findPr(prNum, kanbanData)
+  // If the PR has a repo label, resolve it via repoStatuses (multi-repo)
+  if (pr?.repo && repoStatuses.length > 0) {
+    const info = repoStatuses.find((r) => r.label === pr.repo)
+    if (info?.fullName) {
+      return `https://github.com/${info.fullName}/pull/${prNum}`
+    }
+  }
+  // Fall back to the primary repo
+  if (primaryRepoFullName) {
+    return `https://github.com/${primaryRepoFullName}/pull/${prNum}`
+  }
+  return null
 }
 
 /**
@@ -282,15 +301,15 @@ export function getPrUrl(prNum, kanbanData, repoStatuses, primaryRepoFullName) {
  * Main channel shows all PRs, topic channels filter by task channel.
  */
 export function getChannelPrs(channelName, kanban) {
-	const taskChannelMap = buildTaskChannelMap(kanban);
-	if (channelName === "midtown") {
-		// Main channel shows PRs with no task, or whose task has no channel (or channel='midtown')
-		return kanban.review.filter((pr) => {
-			const ch = getPrChannel(pr, taskChannelMap);
-			return ch === null || ch === "midtown";
-		});
-	}
-	return filterPrsByChannel(kanban.review, channelName, taskChannelMap);
+  const taskChannelMap = buildTaskChannelMap(kanban)
+  if (channelName === 'midtown') {
+    // Main channel shows PRs with no task, or whose task has no channel (or channel='midtown')
+    return kanban.review.filter((pr) => {
+      const ch = getPrChannel(pr, taskChannelMap)
+      return ch === null || ch === 'midtown'
+    })
+  }
+  return filterPrsByChannel(kanban.review, channelName, taskChannelMap)
 }
 
 // ── Mobile message tap handling ───────────────────────────────────────────────
@@ -313,20 +332,20 @@ export function getChannelPrs(channelName, kanban) {
  * @param {object|null} opts.link - link info: { isExternal, dataset: { task, pr, channel, coworker } }
  */
 export function resolveMessageTapAction({ isWideScreen, msg, isInteractiveControl, link }) {
-	// Mobile-only affordance: skip on desktop or when tapping inside a thread
-	if (isWideScreen || msg.thread_parent_id) return null;
-	// Don't intercept taps on interactive controls
-	if (isInteractiveControl) return null;
-	// External links (no internal dataset) should follow their href normally
-	if (link?.isExternal) return null;
-	// PR links always open GitHub (checked before task — PR wins when both are present)
-	if (link?.dataset?.pr) {
-		return { type: "open_pr", prNum: link.dataset.pr };
-	}
-	// Task links open the task's thread (with task card)
-	if (link?.dataset?.task) {
-		return { type: "open_task", taskId: link.dataset.task };
-	}
-	// All other taps open the message's thread
-	return { type: "open_thread" };
+  // Mobile-only affordance: skip on desktop or when tapping inside a thread
+  if (isWideScreen || msg.thread_parent_id) return null
+  // Don't intercept taps on interactive controls
+  if (isInteractiveControl) return null
+  // External links (no internal dataset) should follow their href normally
+  if (link && link.isExternal) return null
+  // PR links always open GitHub (checked before task — PR wins when both are present)
+  if (link?.dataset?.pr) {
+    return { type: 'open_pr', prNum: link.dataset.pr }
+  }
+  // Task links open the task's thread (with task card)
+  if (link?.dataset?.task) {
+    return { type: 'open_task', taskId: link.dataset.task }
+  }
+  // All other taps open the message's thread
+  return { type: 'open_thread' }
 }

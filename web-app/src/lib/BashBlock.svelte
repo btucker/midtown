@@ -1,41 +1,62 @@
 <script>
-/**
- * BashBlock — renders a Bash tool call with command + collapsible output.
- *
- * Props:
- *   block — ToolBlock { tool_name, input, output, error }
- */
-let { block } = $props();
+  /**
+   * BashBlock — renders a Bash tool call with command + collapsible output.
+   *
+   * Props:
+   *   block — ToolBlock { tool_name, input, output, error }
+   */
+  import { highlightBlock } from './highlighting.js'
 
-let expanded = $state(false);
+  let { block } = $props()
 
-let command = $derived(block.input?.command || "");
-let outputText = $derived.by(() => {
-	if (!block.output) return "";
-	if (typeof block.output === "string") return block.output;
-	if (block.output.stdout) return block.output.stdout;
-	if (block.output.output) return block.output.output;
-	return JSON.stringify(block.output, null, 2);
-});
-let hasOutput = $derived(outputText !== "");
-let outputLines = $derived(outputText.split("\n"));
-let isLong = $derived(outputLines.length > 10);
+  let expanded = $state(false)
 
-function toggle() {
-	expanded = !expanded;
-}
+  let command = $derived(block.input?.command || '')
+  let outputText = $derived.by(() => {
+    if (!block.output) return ''
+    if (typeof block.output === 'string') return block.output
+    if (block.output.stdout) return block.output.stdout
+    if (block.output.output) return block.output.output
+    return JSON.stringify(block.output, null, 2)
+  })
+  let hasOutput = $derived(outputText !== '')
+  let outputLines = $derived(outputText.split('\n'))
+  let isLong = $derived(outputLines.length > 10)
+
+  // Detect output language based on content
+  function detectOutputLanguage(output) {
+    // Unified diff format
+    if (output.startsWith('diff ')) {
+      return 'diff'
+    }
+    // JSON output (e.g., from jq, npm, cargo metadata)
+    if (output.trim().startsWith('{') || output.trim().startsWith('[')) {
+      return 'json'
+    }
+    // Default to bash for shell output
+    return 'bash'
+  }
+
+  // Highlighted versions for display
+  let highlightedCommand = $derived(highlightBlock(command, 'bash'))
+  let outputLang = $derived(detectOutputLanguage(outputText))
+  let highlightedOutput = $derived(highlightBlock(outputText, outputLang))
+
+  function toggle() {
+    expanded = !expanded
+  }
 </script>
 
 <div class="bash-block" class:bash-error={block.error}>
   <button class="bash-header" onclick={toggle} aria-expanded={expanded}>
     <span class="bash-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
     <span class="bash-prompt">$</span>
-    <span class="bash-command">{command}</span>
+    <span class="bash-command">{@html highlightedCommand}</span>
   </button>
 
   {#if hasOutput}
     <div class="bash-output" class:bash-collapsed={isLong && !expanded}>
-      <pre>{outputText}</pre>
+      <pre>{@html highlightedOutput}</pre>
     </div>
   {/if}
 </div>

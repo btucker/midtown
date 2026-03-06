@@ -1,28 +1,38 @@
 <script>
-/**
- * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
- *
- * Shows the tool name as a header with a collapsible JSON view of input/output.
- *
- * Props:
- *   block — ToolBlock { tool_name, input, output, error }
- */
-let { block } = $props();
+  /**
+   * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
+   *
+   * Shows the tool name as a header with a collapsible JSON view of input/output.
+   *
+   * Props:
+   *   block — ToolBlock { tool_name, input, output, error }
+   */
+  import { highlightBlock } from './highlighting.js'
 
-let expanded = $state(false);
+  let { block } = $props()
 
-let summary = $derived.by(() => {
-	const inp = block.input;
-	if (!inp) return block.tool_name;
-	if (inp.file_path) return `${block.tool_name} ${inp.file_path}`;
-	if (inp.pattern) return `${block.tool_name} ${inp.pattern}`;
-	if (inp.query) return `${block.tool_name} "${inp.query}"`;
-	return block.tool_name;
-});
+  let expanded = $state(false)
 
-function toggle() {
-	expanded = !expanded;
-}
+  let summary = $derived.by(() => {
+    const inp = block.input
+    if (!inp) return block.tool_name
+    if (inp.file_path) return `${block.tool_name} ${inp.file_path}`
+    if (inp.pattern) return `${block.tool_name} ${inp.pattern}`
+    if (inp.query) return `${block.tool_name} "${inp.query}"`
+    return block.tool_name
+  })
+
+  // Highlighted JSON for display
+  let highlightedInput = $derived(highlightBlock(JSON.stringify(block.input, null, 2), 'json'))
+  let highlightedOutput = $derived.by(() => {
+    if (!block.output) return ''
+    const outputStr = typeof block.output === 'string' ? block.output : JSON.stringify(block.output, null, 2)
+    return highlightBlock(outputStr, 'json')
+  })
+
+  function toggle() {
+    expanded = !expanded
+  }
 </script>
 
 <div class="tool-generic" class:tool-error={block.error}>
@@ -36,10 +46,10 @@ function toggle() {
 
   {#if expanded}
     <div class="tool-body">
-      <pre>{JSON.stringify(block.input, null, 2)}</pre>
+      <pre>{@html highlightedInput}</pre>
       {#if block.output}
         <div class="tool-output-divider">output</div>
-        <pre>{typeof block.output === 'string' ? block.output : JSON.stringify(block.output, null, 2)}</pre>
+        <pre>{@html highlightedOutput}</pre>
       {/if}
     </div>
   {/if}

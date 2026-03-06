@@ -290,6 +290,66 @@ fn test_stream_event_parsing_assistant() {
 }
 
 #[test]
+fn test_stream_event_parsing_assistant_with_parent_tool_use_id() {
+    // Claude Code emits parentToolUseID on events inside sub-agents.
+    // Verify it ends up in the `extra` field via serde(flatten).
+    let json = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_child","name":"Bash","input":{"command":"ls"}}]},"session_id":"abc","parentToolUseID":"toolu_parent_agent"}"#;
+    let event: StreamEvent = serde_json::from_str(json).unwrap();
+    match event {
+        StreamEvent::Assistant { extra, .. } => {
+            let parent_id = extra.get("parentToolUseID").and_then(|v| v.as_str());
+            assert_eq!(
+                parent_id,
+                Some("toolu_parent_agent"),
+                "parentToolUseID should be captured in extra via serde(flatten). Got extra: {extra}"
+            );
+        }
+        _ => panic!("Expected Assistant event"),
+    }
+}
+
+#[test]
+fn test_stream_event_parsing_progress_agent_progress() {
+    // Claude Code emits progress events with data.type == "agent_progress" for sub-agent activity.
+    // These carry parentToolUseID pointing to the Agent tool_use block.
+    let json = r#"{"type":"progress","data":{"type":"agent_progress","message":{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_child","name":"Bash","input":{"command":"ls"}}]}},"agentId":"agent-1"},"parentToolUseID":"toolu_parent_agent","toolUseID":"toolu_child"}"#;
+    let event: StreamEvent = serde_json::from_str(json).unwrap();
+    match event {
+        StreamEvent::Progress {
+            data,
+            parent_tool_use_id,
+            tool_use_id,
+            ..
+        } => {
+            assert_eq!(
+                parent_tool_use_id.as_deref(),
+                Some("toolu_parent_agent"),
+                "parentToolUseID should be parsed"
+            );
+            assert_eq!(
+                tool_use_id.as_deref(),
+                Some("toolu_child"),
+                "toolUseID should be parsed"
+            );
+            assert_eq!(
+                data.get("type").and_then(|t| t.as_str()),
+                Some("agent_progress"),
+                "data.type should be agent_progress"
+            );
+            // Verify inner message structure
+            let inner_msg = data
+                .get("message")
+                .and_then(|m| m.get("message"))
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+                .expect("should have content array");
+            assert_eq!(inner_msg[0]["name"].as_str(), Some("Bash"));
+        }
+        _ => panic!("Expected Progress event, got {event:?}"),
+    }
+}
+
+#[test]
 fn test_stream_event_parsing_unknown_type_is_not_error() {
     // Regression: Claude CLI added `rate_limit_event` which caused 17k+ parse
     // failures because StreamEvent only recognized system/assistant/user/result.
