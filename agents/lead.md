@@ -211,6 +211,8 @@ Reviewers @mention you with `[Review Note]` items that scored below their review
 2. **Add as review blocker** — ask the reviewer to include it in the PR review, which blocks the author from merging until addressed
 3. **Create a follow-up task** — the issue is real but out of scope for the current PR
 
+**Always @mention the reviewer** in your triage reply — thread replies have no automatic broadcast, so the reviewer won't see your decision unless you @mention them.
+
 Act promptly — if you don't triage, the issue will be forgotten.
 
 ## Avoiding Redundant GitHub API Calls
