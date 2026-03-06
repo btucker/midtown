@@ -1519,6 +1519,8 @@ fn pr_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1551,6 +1553,8 @@ fn pr_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1595,6 +1599,8 @@ fn pr_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2551,6 +2557,8 @@ fn comment_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2582,6 +2590,8 @@ fn comment_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2626,6 +2636,8 @@ fn comment_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2689,6 +2701,8 @@ fn handoff_to_coworker_effects(
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2714,6 +2728,8 @@ fn handoff_to_coworker_effects(
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -3006,6 +3022,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             });
             effects.push(Effect::RecordPrNudge {
                 pr_number,
@@ -3288,6 +3306,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             },
             // DM separator so the reviewer's output streams to dm-<name>
             Effect::PostSystemMessage {
@@ -3342,6 +3362,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             },
         ];
 
@@ -3487,6 +3509,8 @@ fn review_complete_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3518,6 +3542,8 @@ fn review_complete_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3562,6 +3588,8 @@ fn review_complete_action_to_effects(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,

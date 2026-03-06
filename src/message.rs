@@ -21,6 +21,15 @@ pub struct ToolBlock {
     /// Whether the tool call resulted in an error
     #[serde(default)]
     pub error: bool,
+    /// Claude API call_id (the `id` from the tool_use block).
+    /// Used by the effect executor to map tool_use messages to thread parents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    /// When this tool block originates from inside a sub-agent, the `id` of the
+    /// parent tool_use that spawned the sub-agent. Used to thread sub-agent
+    /// activity under the parent tool call message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
 }
 
 /// Types of messages that can be sent through a channel.
@@ -158,6 +167,11 @@ pub struct Message {
     /// Used by the client to apply provider-specific rendering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// The tool_use `id` from the first tool block in this message.
+    /// Used by the effect executor to map this message as a thread parent
+    /// for sub-agent activity that references this tool_use_id via `parentToolUseID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -195,6 +209,7 @@ impl Message {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         }
     }
 
@@ -227,6 +242,7 @@ impl Message {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         }
     }
 
@@ -463,6 +479,7 @@ mod tests {
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }
@@ -572,6 +589,8 @@ mod tests {
             input: serde_json::json!({"command": "ls"}),
             output: Some(serde_json::json!("file1\nfile2")),
             error: false,
+            call_id: None,
+            parent_tool_use_id: None,
         }]);
         msg.provider = Some("claude".to_string());
         let json = serde_json::to_string(&msg).unwrap();

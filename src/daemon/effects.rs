@@ -160,6 +160,13 @@ pub enum Effect {
         tool_data: Option<Vec<crate::message::ToolBlock>>,
         /// AI provider that produced this message (e.g., "claude", "codex").
         provider: Option<String>,
+        /// The tool_use `id` from the first tool block. When set on a DM channel message,
+        /// the executor registers `tool_use_id → message.id` in `dm_tool_threads` so
+        /// sub-agent events referencing this ID can thread under it.
+        tool_use_id: Option<String>,
+        /// When set, the executor looks up `dm_tool_threads[parent_tool_use_id]` to
+        /// resolve the thread parent message ID, posting this as a thread reply.
+        parent_tool_use_id: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     ///
@@ -897,6 +904,8 @@ async fn send_session_nudge(
                     nudge_type: Some(reason.nudge_type().to_owned()),
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 });
             }
             Some(follow_up)
@@ -1104,6 +1113,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 nudge_type,
                 tool_data,
                 provider,
+                tool_use_id,
+                parent_tool_use_id,
             } => {
                 let has_explicit_channel = channel.is_some();
                 let msg_type = message_type.unwrap_or(crate::message::MessageType::Text);
@@ -1122,11 +1133,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // thread, auto-apply the thread_parent_id so auto-posted output appears
                 // in the correct thread. Mirrors the RPC path in rpc_channel.rs.
                 // Skip for DM channels — they don't have task announcement threads,
-                // so messages should always be top-level.
+                // so messages should always be top-level (unless threaded via parent_tool_use_id).
                 let is_dm_channel = channel_name
                     .as_ref()
                     .is_some_and(|ch| ch.starts_with("dm-"));
-                let bound_thread: Option<String> = if is_dm_channel {
+
+                // For DM channels: resolve parent_tool_use_id → thread_parent_id
+                // via the dm_tool_threads lookup.
+                let dm_thread_parent: Option<String> = if is_dm_channel {
+                    parent_tool_use_id
+                        .as_ref()
+                        .and_then(|ptuid| state.dm_tool_threads.lock().unwrap().get(ptuid).cloned())
+                } else {
+                    None
+                };
+
+                let bound_thread: Option<String> = if dm_thread_parent.is_some() {
+                    dm_thread_parent
+                } else if is_dm_channel {
                     None
                 } else {
                     state
@@ -1150,8 +1174,37 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 msg.nudge_type = nudge_type;
                 msg.tool_data = tool_data;
                 msg.provider = provider;
+                msg.tool_use_id = tool_use_id.clone();
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
+                }
+
+                // After posting: register tool_use_id → message.id for DM thread lookup.
+                // This allows sub-agent events in later drain cycles to find this message
+                // as their thread parent.
+                if is_dm_channel {
+                    if let Some(tuid) = tool_use_id {
+                        state
+                            .dm_tool_threads
+                            .lock()
+                            .unwrap()
+                            .insert(tuid, msg.id.clone());
+                    }
+                    // Also register call_ids from all top-level tool blocks so that
+                    // sub-agent events referencing any of them can thread correctly.
+                    if let Some(ref blocks) = msg.tool_data {
+                        for block in blocks {
+                            if block.parent_tool_use_id.is_none()
+                                && let Some(ref cid) = block.call_id
+                            {
+                                state
+                                    .dm_tool_threads
+                                    .lock()
+                                    .unwrap()
+                                    .insert(cid.clone(), msg.id.clone());
+                            }
+                        }
+                    }
                 }
 
                 // Clear tool activity for this agent when they post a channel message.

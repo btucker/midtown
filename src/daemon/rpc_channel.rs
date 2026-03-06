@@ -944,6 +944,9 @@ pub(super) async fn handle_channel_read(
             if let Some(ref provider) = m.provider {
                 obj["provider"] = serde_json::Value::String(provider.clone());
             }
+            if let Some(ref tool_use_id) = m.tool_use_id {
+                obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
+            }
             obj
         })
         .collect();

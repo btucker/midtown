@@ -165,6 +165,8 @@ fn task_completed_effects(
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
         },
         Effect::SendPushNotification {
             title: format!("Task !{} completed", task_id),
@@ -464,6 +466,8 @@ where
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             },
         ];
 
@@ -494,6 +498,8 @@ where
                 nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
             ],
         });
@@ -556,6 +562,8 @@ where
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
         },
     ];
 
@@ -586,6 +594,8 @@ where
             nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
             },
         ],
     });
@@ -853,6 +863,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             },
         ];
 
@@ -887,6 +899,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
             ],
         });
@@ -1049,6 +1063,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
             nudge_type: None,
             tool_data: None,
             provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
         },
     ];
 
@@ -1079,6 +1095,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             },
         ],
     });
@@ -1150,6 +1168,8 @@ fn decide_discovered_coworker_nudges(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             info!(
@@ -1179,6 +1199,8 @@ fn decide_discovered_coworker_nudges(
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             });
         } else {
             debug!(
@@ -1307,6 +1329,8 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
             });
         }
     }
@@ -1621,6 +1645,8 @@ fn dispatch_owned_pending_tasks(
                         nudge_type: None,
                         tool_data: None,
                         provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
                     },
                 ];
 
@@ -2018,6 +2044,8 @@ fn dispatch_unowned_pending_tasks(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
             ];
             if let Some(ch) = &task.channel {
@@ -2092,6 +2120,8 @@ fn dispatch_unowned_pending_tasks(
                     nudge_type: None,
                     tool_data: None,
                     provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
                 },
             ];
             if let Some(ch) = &task.channel {

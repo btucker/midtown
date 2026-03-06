@@ -4473,6 +4473,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 
@@ -4605,6 +4606,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 
@@ -4685,6 +4687,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 
@@ -4744,6 +4747,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 
@@ -5254,6 +5258,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 
@@ -5823,6 +5828,7 @@ pub(super) mod tests {
                 nudge_type: None,
                 tool_data: None,
                 provider: None,
+                tool_use_id: None,
             })
             .collect();
 

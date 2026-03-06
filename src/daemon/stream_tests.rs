@@ -1282,14 +1282,16 @@ fn test_process_coworker_output_empty_text_not_posted() {
     let coworker_names = HashSet::from(["park".to_string()]);
 
     let effects = process_coworker_output(&events, &coworker_names);
-    // Should have exactly 1 effect — the tool call rendering (no text effect).
+    // Should have exactly 1 effect — the tool_data message (no text effect).
     assert_eq!(effects.len(), 1);
     match &effects[0] {
-        Effect::PostToChannel { message, .. } => {
-            assert!(
-                message.contains("read src/main.rs"),
-                "tool call should be rendered: {message}"
-            );
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert!(message.is_empty(), "message content should be empty");
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Read");
         }
         _ => panic!("Expected PostToChannel effect"),
     }
@@ -1396,211 +1398,6 @@ fn test_process_coworker_output_trims_text() {
     }
 }
 
-// ── DM channel fully-rendered tool call tests ──────────────────────────
-
-#[test]
-fn test_dm_tool_bash_renders_command_and_output() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Bash",
-                    "input": {"command": "cargo test --lib"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "content": "running 42 tests\ntest result: ok"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`$ cargo test --lib`"),
-        "should show command: {md}"
-    );
-    assert!(md.contains("running 42 tests"), "should show output: {md}");
-    assert!(md.contains("```"), "output should be in a code block: {md}");
-}
-
-#[test]
-fn test_dm_tool_bash_error_shows_marker() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Bash",
-                    "input": {"command": "false"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "is_error": true,
-                    "content": "command failed"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(md.contains("**✗**"), "should show error marker: {md}");
-    assert!(
-        md.contains("command failed"),
-        "should show error output: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_edit_renders_diff() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "Edit",
-                "input": {
-                    "file_path": "src/main.rs",
-                    "old_string": "println!(\"hello\")",
-                    "new_string": "println!(\"world\")"
-                }
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("## src/main.rs"),
-        "should show file path as header: {md}"
-    );
-    assert!(md.contains("```diff"), "should have diff code block: {md}");
-    assert!(
-        md.contains("- println!(\"hello\")"),
-        "should show old line: {md}"
-    );
-    assert!(
-        md.contains("+ println!(\"world\")"),
-        "should show new line: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_todo_write_renders_checkboxes() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "TodoWrite",
-                "input": {
-                    "todos": [
-                        {"content": "Fix the login bug", "status": "completed"},
-                        {"content": "Add tests for auth", "status": "in_progress"},
-                        {"content": "Update docs", "status": "pending"}
-                    ]
-                }
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("- [x] Fix the login bug"),
-        "completed should be checked: {md}"
-    );
-    assert!(
-        md.contains("- [ ] Add tests for auth"),
-        "in_progress should be unchecked: {md}"
-    );
-    assert!(
-        md.contains("- [ ] Update docs"),
-        "pending should be unchecked: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_other_uses_semantic_header() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "Read",
-                "input": {"file_path": "src/lib.rs"}
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`read src/lib.rs`"),
-        "should use semantic header: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_multiple_calls_separated_by_blank_lines() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "src/a.rs"}
-                },
-                {
-                    "type": "tool_use",
-                    "id": "tc_2",
-                    "name": "Read",
-                    "input": {"file_path": "src/b.rs"}
-                }
-            ]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`read src/a.rs`"),
-        "should have first call: {md}"
-    );
-    assert!(
-        md.contains("`read src/b.rs`"),
-        "should have second call: {md}"
-    );
-    assert!(
-        md.contains("\n\n"),
-        "tool blocks should be separated by blank lines: {md}"
-    );
-}
-
 #[test]
 fn test_dm_tool_text_and_tools_produce_separate_effects() {
     let mut events = HashMap::new();
@@ -1620,7 +1417,7 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
     let coworker_names = HashSet::from(["park".to_string()]);
 
     let effects = process_coworker_output(&events, &coworker_names);
-    // Should produce 2 effects: text message + tool call rendering.
+    // Should produce 2 effects: text message + tool_data-only message.
     assert_eq!(
         effects.len(),
         2,
@@ -1640,85 +1437,18 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
     match &effects[1] {
         Effect::PostToChannel {
             message,
+            tool_data,
             auto_output,
             ..
         } => {
-            assert!(message.contains("cargo test"), "should contain tool call");
+            assert!(message.is_empty(), "tool message content should be empty");
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Bash");
             assert!(!auto_output, "DM messages should not be auto_output");
         }
         _ => panic!("Expected tool PostToChannel"),
     }
-}
-
-#[test]
-fn test_dm_tool_only_errors_shown_for_non_bash_results() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "src/main.rs"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "content": "file contents here..."
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    // Non-Bash successful results should NOT include output (too verbose).
-    assert!(
-        !md.contains("file contents here"),
-        "Read result output should not be included: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_error_shown_for_non_bash_tools() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "nonexistent.rs"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "is_error": true,
-                    "content": "file not found"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(md.contains("**✗**"), "should show error marker: {md}");
-    assert!(
-        md.contains("file not found"),
-        "error output should be shown: {md}"
-    );
 }
 
 // ── detect_provider tests ────────────────────────────────────────────
@@ -1975,6 +1705,8 @@ fn test_tool_block_serialization() {
         input: json!({"file_path": "src/main.rs", "old_string": "a", "new_string": "b"}),
         output: None,
         error: false,
+        call_id: None,
+        parent_tool_use_id: None,
     };
     let json = serde_json::to_string(&block).unwrap();
     assert!(json.contains("\"tool_name\":\"Edit\""));
@@ -1996,6 +1728,8 @@ fn test_tool_block_with_output_serialization() {
         input: json!({"command": "echo hi"}),
         output: Some(json!("hi\n")),
         error: false,
+        call_id: None,
+        parent_tool_use_id: None,
     };
     let json = serde_json::to_string(&block).unwrap();
     let parsed: crate::message::ToolBlock = serde_json::from_str(&json).unwrap();
@@ -2116,4 +1850,266 @@ fn test_process_coworker_output_no_insight_in_regular_text() {
         .filter(|e| matches!(e, Effect::PostInsight { .. }))
         .collect();
     assert!(insight_effects.is_empty());
+}
+
+// ── Sub-agent threading tests ───────────────────────────────────────
+
+#[test]
+fn test_extract_tool_blocks_includes_call_id() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_abc123",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::User {
+            message: json!({
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_abc123",
+                    "content": "file1\nfile2"
+                }]
+            }),
+            extra: json!(null),
+        },
+    ];
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].tool_name, "Bash");
+    assert_eq!(blocks[0].call_id, Some("toolu_abc123".to_string()));
+    assert!(blocks[0].parent_tool_use_id.is_none());
+}
+
+#[test]
+fn test_extract_tool_blocks_captures_parent_tool_use_id() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_child",
+                "name": "Read",
+                "input": {"file_path": "src/main.rs"}
+            }]
+        }),
+        session_id: None,
+        extra: json!({"parentToolUseID": "toolu_parent_agent"}),
+    }];
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].call_id, Some("toolu_child".to_string()));
+    assert_eq!(
+        blocks[0].parent_tool_use_id,
+        Some("toolu_parent_agent".to_string())
+    );
+}
+
+#[test]
+fn test_process_coworker_output_splits_subagent_tool_blocks() {
+    // Top-level tool_use + sub-agent tool_use (with parentToolUseID)
+    let events_vec = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_parent",
+                    "name": "Agent",
+                    "input": {"prompt": "investigate"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_child",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!({"parentToolUseID": "toolu_parent"}),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    // Should have separate effects: top-level tool block + sub-agent tool block
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    assert_eq!(channel_effects.len(), 2);
+
+    // First effect: top-level tool block with tool_use_id set
+    if let Effect::PostToChannel {
+        tool_data,
+        tool_use_id,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(*tool_use_id, Some("toolu_parent".to_string()));
+        assert!(parent_tool_use_id.is_none());
+        let blocks = tool_data.as_ref().unwrap();
+        assert_eq!(blocks[0].tool_name, "Agent");
+    } else {
+        panic!("Expected PostToChannel");
+    }
+
+    // Second effect: sub-agent tool block with parent_tool_use_id set
+    if let Effect::PostToChannel {
+        tool_data,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[1]
+    {
+        assert_eq!(*parent_tool_use_id, Some("toolu_parent".to_string()));
+        let blocks = tool_data.as_ref().unwrap();
+        assert_eq!(blocks[0].tool_name, "Bash");
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_process_coworker_output_splits_subagent_text() {
+    let events_vec = vec![
+        // Top-level text
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Starting agent..."}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        // Sub-agent text (with parentToolUseID)
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Reading files..."}]
+            }),
+            session_id: None,
+            extra: json!({"parentToolUseID": "toolu_parent"}),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    assert_eq!(channel_effects.len(), 2);
+
+    // Top-level text
+    if let Effect::PostToChannel {
+        message,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(message, "Starting agent...");
+        assert!(parent_tool_use_id.is_none());
+    } else {
+        panic!("Expected PostToChannel");
+    }
+
+    // Sub-agent text as thread reply
+    if let Effect::PostToChannel {
+        message,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[1]
+    {
+        assert_eq!(message, "Reading files...");
+        assert_eq!(*parent_tool_use_id, Some("toolu_parent".to_string()));
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_process_coworker_output_no_subagent_when_no_parent_id() {
+    // All events are top-level (no parentToolUseID)
+    let events_vec = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "Bash",
+                    "input": {"command": "ls"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "toolu_2",
+                    "name": "Read",
+                    "input": {"file_path": "foo.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+    ];
+    let mut events = HashMap::new();
+    events.insert("park".to_string(), events_vec);
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    // All blocks should be in a single top-level effect
+    assert_eq!(channel_effects.len(), 1);
+    if let Effect::PostToChannel {
+        tool_data,
+        tool_use_id,
+        parent_tool_use_id,
+        ..
+    } = &channel_effects[0]
+    {
+        assert_eq!(*tool_use_id, Some("toolu_1".to_string()));
+        assert!(parent_tool_use_id.is_none());
+        assert_eq!(tool_data.as_ref().unwrap().len(), 2);
+    } else {
+        panic!("Expected PostToChannel");
+    }
+}
+
+#[test]
+fn test_get_parent_tool_use_id_extracts_from_extra() {
+    let extra = json!({"parentToolUseID": "toolu_abc"});
+    assert_eq!(
+        get_parent_tool_use_id(&extra),
+        Some("toolu_abc".to_string())
+    );
+}
+
+#[test]
+fn test_get_parent_tool_use_id_returns_none_when_absent() {
+    assert!(get_parent_tool_use_id(&json!(null)).is_none());
+    assert!(get_parent_tool_use_id(&json!({})).is_none());
+    assert!(get_parent_tool_use_id(&json!({"provider": "claude"})).is_none());
 }
