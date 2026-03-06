@@ -3008,6 +3008,33 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 continue;
             }
 
+            // Bug !2124: For user-authored PRs (lead/* branches), skip coworker
+            // owner resolution entirely. The owner resolution chain can resolve
+            // to a coworker via task metadata, causing the daemon to spawn a
+            // coworker who sees a clean review, goes idle, and loops every
+            // cooldown period. Only the user can act on their own PRs.
+            if is_lead_branch(pf.head_ref) {
+                let channel = pr_ctx.get_channel(pr_number);
+                let user_msg = format!("@user {}", nudge_msg);
+                effects.push(Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: user_msg,
+                    channel,
+                    auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
+                    tool_data: None,
+                    provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
+                });
+                effects.push(Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type: PrIssueType::ReviewComplete,
+                });
+                continue;
+            }
+
             let owner = resolve_pr_owner_from_session(
                 pr_number,
                 &pr_task_associations,
