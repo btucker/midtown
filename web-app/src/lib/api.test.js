@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { get } from 'svelte/store'
-import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems, threadToolItems } from './store.js'
+import { messagesByChannel, threadData, channels, activeChannel, activeProject, agentToolItems, threadToolItems, trackedThreads, dismissedThreads, threadUnreadCounts, userSenderName } from './store.js'
 import { fetchHistory, handleUpdate, fetchChannels, selectDm, switchProject, pushNavState, closeThread } from './api.js'
 
 describe('fetchHistory', () => {
@@ -1069,5 +1069,139 @@ describe('closeThread — history push behavior', () => {
     closeThread({ pushState: false })
     expect(get(threadData)).toBeNull()
     expect(globalThis.history.pushState).not.toHaveBeenCalled()
+  })
+})
+
+describe('handleUpdate — auto-track threads when someone replies to user message', () => {
+  const parentId = 'user-msg-1'
+
+  beforeEach(() => {
+    trackedThreads.set({})
+    dismissedThreads.set(new Set())
+    threadUnreadCounts.set({})
+    threadData.set(null)
+    userSenderName.set('user')
+    messagesByChannel.set({
+      web: [
+        { id: parentId, from: 'user', content: 'my question about auth', channel: 'web' },
+        { id: 'other-msg', from: 'lead', content: 'some announcement', channel: 'web' },
+      ],
+    })
+  })
+
+  it('auto-tracks a thread when someone replies to a user message', () => {
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-1',
+        from: 'coworker',
+        content: 'here is the answer',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    expect(tracked[parentId]).toBeTruthy()
+    expect(tracked[parentId].channelName).toBe('web')
+    expect(tracked[parentId].subject).toContain('my question about auth')
+  })
+
+  it('increments unread count on the first auto-tracked reply', () => {
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-1',
+        from: 'coworker',
+        content: 'answer',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const unreads = get(threadUnreadCounts)
+    expect(unreads[parentId]).toBe(1)
+  })
+
+  it('does not auto-track when the parent message is not from the user', () => {
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-2',
+        from: 'coworker',
+        content: 'reply to lead',
+        channel: 'web',
+        thread_parent_id: 'other-msg',
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    expect(tracked['other-msg']).toBeUndefined()
+  })
+
+  it('does not auto-track when the user replies to their own message', () => {
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-3',
+        from: 'user',
+        content: 'my own follow up',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    // The user's own reply does not trigger auto-tracking (the outer guard
+    // requires msg.from !== 'user')
+    expect(tracked[parentId]).toBeUndefined()
+  })
+
+  it('respects dismissedThreads — does not re-track a dismissed thread', () => {
+    dismissedThreads.set(new Set([parentId]))
+
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-4',
+        from: 'coworker',
+        content: 'another reply',
+        channel: 'web',
+        thread_parent_id: parentId,
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    expect(tracked[parentId]).toBeUndefined()
+  })
+
+  it('auto-tracks when parent from matches userSenderName (custom display name)', () => {
+    userSenderName.set('ben')
+    messagesByChannel.set({
+      web: [
+        { id: 'ben-msg', from: 'ben', content: 'custom name question', channel: 'web' },
+      ],
+    })
+
+    handleUpdate({
+      type: 'channel_message',
+      data: {
+        id: 'reply-5',
+        from: 'coworker',
+        content: 'reply to ben',
+        channel: 'web',
+        thread_parent_id: 'ben-msg',
+        timestamp: '2026-01-01T00:00:00Z',
+      },
+    })
+
+    const tracked = get(trackedThreads)
+    expect(tracked['ben-msg']).toBeTruthy()
+    expect(tracked['ben-msg'].subject).toContain('custom name question')
   })
 })

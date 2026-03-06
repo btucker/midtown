@@ -655,11 +655,20 @@ export function handleUpdate(update) {
           }
         })
 
-        // Thread sidebar tracking: increment unread when a tracked thread gets a reply
-        // from someone other than the user, and the thread panel isn't currently showing it.
+        // Thread sidebar tracking: auto-track threads when someone replies to the
+        // user's own message, and increment unread for tracked threads.
         // Compare against both 'user' and the configured user_display_name to avoid
         // counting the user's own replies as unread.
         if (msg.from !== 'user' && msg.from !== get(userSenderName)) {
+          // Auto-track: if the parent message was sent by the user, track
+          // the thread in the sidebar so the user sees replies to their messages.
+          const channelMsgs = get(messagesByChannel)[channelName]
+          const parentMsg = channelMsgs?.find((m) => m.id === msg.thread_parent_id)
+          const uName = get(userSenderName)
+          if (parentMsg && (parentMsg.from === 'user' || parentMsg.from === uName)) {
+            trackThread(msg.thread_parent_id, channelName, parentMsg.content, parentMsg.reply_count)
+          }
+
           const tracked = get(trackedThreads)
           const td = get(threadData)
           const panelShowingThis = td && td.parentMessage?.id === msg.thread_parent_id
