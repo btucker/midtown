@@ -628,6 +628,35 @@ fn test_lead_relaunch_status_strings() {
 }
 
 #[test]
+fn test_build_fresh_coworker_relaunch_config_preserves_task_id() {
+    let coworker = crate::coworker::Coworker {
+        slot_id: "1".to_string(),
+        name: "park".to_string(),
+        status: crate::coworker::CoworkerStatus::Running,
+        working_dir: "/tmp/park".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: Some("Fix tests".to_string()),
+        session_id: None,
+        model: "opus".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: "default".to_string(),
+    };
+
+    let config_with = build_fresh_coworker_relaunch_config(&coworker, "midtown", Some("42"));
+    assert_eq!(
+        config_with.task_id,
+        Some("42".to_string()),
+        "task_id must be passed through to the config"
+    );
+
+    let config_without = build_fresh_coworker_relaunch_config(&coworker, "midtown", None);
+    assert_eq!(
+        config_without.task_id, None,
+        "task_id must be None when not provided"
+    );
+}
+
+#[test]
 fn test_build_coworker_relaunch_config_preserves_old_provider() {
     // This test documents that build_coworker_relaunch_config() copies
     // the provider from the coworker record. This is INTENTIONAL for

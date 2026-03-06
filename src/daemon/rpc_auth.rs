@@ -62,7 +62,7 @@ fn build_fresh_coworker_relaunch_config(
         repo_name.to_string(),
         crate::launch::SessionMode::Fresh,
         initial_prompt,
-        None,
+        task_id.map(|s| s.to_string()),
     );
     config.model = coworker.model.clone();
     config

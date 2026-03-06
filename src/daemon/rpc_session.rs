@@ -689,7 +689,7 @@ pub(super) async fn handle_session_detach(
             state.paths.dir_key(),
             session_mode,
             Some("You were previously running headless. The Lead attached to your session interactively and has now detached. Continue where you left off — read the channel for any updates.".to_string()),
-            None,
+            session_info.task_id.clone(),
         )
     };
     // For the lead, always use the canonical lead worktree path.
@@ -991,7 +991,7 @@ pub(super) async fn handle_session_clear(
             state.paths.dir_key(),
             crate::launch::SessionMode::Fresh,
             Some(fresh_prompt),
-            None,
+            session_info.task_id.clone(),
         );
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
