@@ -280,6 +280,50 @@ class TestAgentSkillsLoading:
 
             assert len(daemon._loaded_plugins) == 0
 
+    def test_multiple_agentskills_same_hooks_filename(self) -> None:
+        """Multiple AgentSkills using scripts/hooks.py should not conflict."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+
+            # First skill: tdw
+            skill1 = plugin_dir / "tdw" / "scripts"
+            skill1.mkdir(parents=True)
+            (plugin_dir / "tdw" / "SKILL.md").write_text(
+                "---\nname: tdw\n---\n# TDW\n"
+            )
+            (skill1 / "hooks.py").write_text(_plugin_source("from tdw"))
+
+            # Second skill: review (same hooks filename!)
+            skill2 = plugin_dir / "review" / "scripts"
+            skill2.mkdir(parents=True)
+            (plugin_dir / "review" / "SKILL.md").write_text(
+                "---\nname: review\n---\n# Review\n"
+            )
+            (skill2 / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_merged(ctx):\n"
+                '    return [ctx.actions.post_to_channel("review merged")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            # Both plugins should load without ValueError
+            assert len(daemon._loaded_plugins) == 2
+
+            # Both hooks should fire for their respective events
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "from tdw"
+
+            result = daemon.dispatch_event("pr.merged", {})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "review merged"
+
 
 class TestPluginUnloading:
     """Tests for plugin unloading."""

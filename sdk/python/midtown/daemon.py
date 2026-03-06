@@ -98,18 +98,24 @@ class WorkflowDaemon:
                 if skill_md.exists():
                     self._load_agentskills_plugin(entry, skill_md)
 
-    def load_plugin(self, path: Path) -> None:
-        """Load and register a single plugin file."""
+    def load_plugin(self, path: Path, *, plugin_name: str | None = None) -> None:
+        """Load and register a single plugin file.
+
+        *plugin_name* overrides the default module name (``path.stem``).
+        This is needed when multiple plugins share the same filename
+        (e.g. ``scripts/hooks.py``) to avoid pluggy duplicate name errors.
+        """
         try:
             # Read source directly and compile to bypass bytecode caching.
             # importlib.util.spec_from_file_location keys .pyc files by
             # source path, so unique module names don't help on hot-reload.
             source = path.read_text()
             code = compile(source, str(path), "exec")
-            module = types.ModuleType(path.stem)
+            name = plugin_name or path.stem
+            module = types.ModuleType(name)
             module.__file__ = str(path)
             exec(code, module.__dict__)  # noqa: S102
-            self.pm.register(module)
+            self.pm.register(module, name=name)
             self._loaded_plugins[path] = module
             self._mtimes[path] = path.stat().st_mtime
             logger.info("Loaded plugin: %s", path)
@@ -134,7 +140,10 @@ class WorkflowDaemon:
             return
 
         self._skill_metadata[plugin_dir] = metadata
-        self.load_plugin(hooks_path)
+        # Use a unique plugin name to avoid pluggy duplicate name errors
+        # when multiple AgentSkills share the same hooks filename.
+        unique_name = f"agentskills_{metadata.name or plugin_dir.name}"
+        self.load_plugin(hooks_path, plugin_name=unique_name)
         logger.info(
             "Loaded AgentSkills plugin: %s (order=%d, hooks=%s)",
             metadata.name or plugin_dir.name,
