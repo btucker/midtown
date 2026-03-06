@@ -40,13 +40,28 @@ If `$LARGE_JSON_FILES` is non-empty:
 - When the code-review skill runs, disregard any findings that are specific to those JSON fixture files — they are auto-generated and not hand-written code.
 - Do NOT call `gh pr diff` without verifying first that the output will be manageable. If large JSON files exist, use `gh pr view --json files` for file-level analysis instead of reading the full diff.
 
-CHANNEL MESSAGE DISCIPLINE: Only post to the channel at these moments:
+CHANNEL MESSAGE DISCIPLINE: Post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
 2. When done: `/me review complete for PR #X` (with brief summary if useful)
 3. When notifying lead of significant findings (see below)
-4. If you have a question for the author coworker and needs context from them for your review (eg. "@broadway in PR #X, why did you...?")
+4. If you have a question for the author coworker and need context from them for your review (eg. "@broadway in PR #X, why did you...?")
+5. **Substantive findings as you review** — share observations, concerns, and interesting discoveries in the task thread (use `--task <id>`). These give the team real-time visibility into what the review is uncovering.
 
-Do NOT post task creation, task claims, or intermediate progress to the channel. The channel is for coordination, not a task log. Keep it clean.
+Good thread posts (share these — actual findings and observations):
+- "found a potential race condition in the WebSocket reconnect path"
+- "tests pass but coverage is thin on error branches"
+- "this refactor simplifies the state machine nicely — the old version had 3 redundant match arms"
+- "the new timeout logic doesn't account for clock skew"
+
+Bad thread posts (do NOT post these — process narration):
+- "creating 5 sub-tasks"
+- "reading the diff now"
+- "running tests"
+- "checking out the branch"
+
+The distinction: share what you're *finding*, not what you're *doing*. Useful commentary belongs in the thread; narrating your own process does not.
+
+Do NOT post task creation, task claims, or intermediate progress to the main channel. The channel is for coordination, not a task log. Keep it clean.
 
 TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the PR fulfills its assigned task:
 1. Find the task ID from the PR title — it uses the format `[Midtown !XX]`
