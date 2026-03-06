@@ -3926,12 +3926,38 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 category: "process_respawn".to_string(),
                                 key: name.clone(),
                             });
-                            fork_respawn_effects.push(effects::Effect::PostToChannel {
-                                sender: "midtown".to_string(),
-                                message: format!(
+                            // Include stderr in the respawn message so crash
+                            // context is preserved even if respawn fails.
+                            let respawn_message = {
+                                let base = format!(
                                     "💀 Fork {} process died — respawning for thread {}",
                                     name, thread_parent_id
-                                ),
+                                );
+                                if let Some(stderr_lines) = stderr_by_name.get(&name) {
+                                    if !stderr_lines.is_empty() {
+                                        let last_n: Vec<&str> = stderr_lines
+                                            .iter()
+                                            .rev()
+                                            .take(10)
+                                            .rev()
+                                            .map(|s| s.as_str())
+                                            .collect();
+                                        format!(
+                                            "{}\n\nStderr ({} lines):\n{}",
+                                            base,
+                                            stderr_lines.len(),
+                                            last_n.join("\n")
+                                        )
+                                    } else {
+                                        base
+                                    }
+                                } else {
+                                    base
+                                }
+                            };
+                            fork_respawn_effects.push(effects::Effect::PostToChannel {
+                                sender: "midtown".to_string(),
+                                message: respawn_message,
                                 channel: Some(constants::OPS_CHANNEL.to_string()),
                                 auto_output: false,
                             message_type: None,
