@@ -713,6 +713,30 @@ Workflow scripts can also access state programmatically via two RPC methods hand
 - **`workflow.get_state`** — reads the state file for a channel, optionally scoped to a plugin key. Returns `null` when absent.
 - **`workflow.set_state`** — writes state atomically (temp file + rename). With a `plugin` key, merges at that key; without, replaces the entire file. Concurrent writes to the same channel are serialized by a per-channel `tokio::sync::Mutex` in `DaemonState.workflow_state_locks` to prevent TOCTOU races.
 
+### Plugin Daemon (Unix Socket IPC)
+
+`WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves plugin hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based plugins.
+
+**Protocol:** Newline-delimited JSON, one request per connection. Each connection sends one request and receives one response, then closes.
+
+Request format:
+```json
+{"type": "pr.opened", "event": {...}, "task_id": "7", "task_state": "in_review"}
+```
+
+Response format:
+```json
+{"ok": true, "actions": [...], "default_prevented": false}
+```
+
+**Startup handshake:** On startup, the daemon writes `{"ready":true}\n` to stdout so the Rust parent process knows the socket is accepting connections.
+
+**Hot-reload:** Before processing each request, `_process_request()` calls `reload_changed()` to detect plugin file mtime changes and re-register modified modules. This means plugin updates take effect without restarting the daemon.
+
+**Stale socket cleanup:** On startup, any existing socket file at the configured path is unlinked before binding, preventing "address already in use" errors from prior crashes.
+
+**CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--plugin-dirs` arguments.
+
 ### Python SDK
 
 The Midtown Python SDK (`sdk/python/midtown/`) provides `run()` (single-shot) and `run_loop()` (persistent sidecar) entry points, plus the `MidtownRPC` client. `run()` auto-detects `--sidecar` in `sys.argv` and delegates to `run_loop()`, so existing scripts gain sidecar support without code changes. A typical workflow script:
