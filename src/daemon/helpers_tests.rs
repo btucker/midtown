@@ -234,6 +234,47 @@ fn detect_issues_finds_ci_failure() {
 }
 
 #[test]
+fn detect_issues_finds_ci_failure_from_commit_status() {
+    // Commit statuses (e.g. Codecov) use `state` instead of `conclusion`
+    let pr = json!({
+        "number": 42,
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "failure"}
+        ],
+        "reviewDecision": ""
+    });
+
+    let issues = detect_pr_issues(&pr);
+
+    assert!(
+        issues.contains(&PrIssueType::CiFailed),
+        "should detect CI failure from commit status `state` field"
+    );
+}
+
+#[test]
+fn detect_issues_finds_ci_error_from_commit_status() {
+    // Commit statuses can also report `error`
+    let pr = json!({
+        "number": 42,
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [
+            {"state": "error"}
+        ],
+        "reviewDecision": ""
+    });
+
+    let issues = detect_pr_issues(&pr);
+
+    assert!(
+        issues.contains(&PrIssueType::CiFailed),
+        "should detect CI error from commit status `state` field"
+    );
+}
+
+#[test]
 fn detect_issues_finds_changes_requested() {
     // Polling discovers review state via `gh pr list --json reviewDecision`
     let pr = json!({

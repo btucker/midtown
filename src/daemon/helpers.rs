@@ -394,11 +394,8 @@ pub fn detect_pr_issues(pr: &serde_json::Value) -> Vec<PrIssueType> {
     // Check for CI failures
     if let Some(checks) = pr.get("statusCheckRollup").and_then(|c| c.as_array()) {
         let has_failure = checks.iter().any(|check| {
-            let conclusion = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
-            conclusion == "FAILURE"
+            let status = resolve_check_status(check);
+            status == "FAILURE" || status == "ERROR"
         });
         if has_failure {
             issues.push(PrIssueType::CiFailed);
