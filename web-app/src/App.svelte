@@ -1,177 +1,209 @@
 <script>
-  import { onMount } from 'svelte'
-  import { SidebarProvider, Sidebar, SidebarContent, SidebarHeader, SidebarFooter, SidebarTrigger } from '$lib/components/ui/sidebar'
-  import Channel from '$lib/Channel.svelte'
-  import ChannelPrList from '$lib/ChannelPrList.svelte'
-  import ChannelNotes from '$lib/ChannelNotes.svelte'
-  import ChannelWorkflow from '$lib/ChannelWorkflow.svelte'
-  import ChannelList from '$lib/ChannelList.svelte'
-  import ChannelHeader from '$lib/ChannelHeader.svelte'
-  import ThreadPanel from '$lib/ThreadPanel.svelte'
-  import PendingQuestions from '$lib/PendingQuestions.svelte'
-  import Status from '$lib/Status.svelte'
+import Bell from "@lucide/svelte/icons/bell";
+import BellOff from "@lucide/svelte/icons/bell-off";
+import SearchIcon from "@lucide/svelte/icons/search";
+import { Moon, Sun } from "lucide-svelte";
+import { onMount } from "svelte";
+import AccountPanel from "$lib/AccountPanel.svelte";
+import {
+	connectWebSocket,
+	fetchHistory,
+	fetchProjects,
+	fetchStatus,
+	openThread,
+	replaceNavState,
+	setupHistoryNavigation,
+	switchProject,
+} from "$lib/api.js";
+import CelebrationEffects from "$lib/CelebrationEffects.svelte";
+import Channel from "$lib/Channel.svelte";
+import ChannelHeader from "$lib/ChannelHeader.svelte";
+import ChannelList from "$lib/ChannelList.svelte";
+import ChannelNotes from "$lib/ChannelNotes.svelte";
+import ChannelPrList from "$lib/ChannelPrList.svelte";
+import ChannelWorkflow from "$lib/ChannelWorkflow.svelte";
+import {
+	Sidebar,
+	SidebarContent,
+	SidebarFooter,
+	SidebarHeader,
+	SidebarProvider,
+	SidebarTrigger,
+} from "$lib/components/ui/sidebar";
+import InstallBanner from "$lib/InstallBanner.svelte";
+import MiniRepoStatus from "$lib/MiniRepoStatus.svelte";
+import PendingQuestions from "$lib/PendingQuestions.svelte";
+import {
+	checkPushSubscription,
+	pushPermission,
+	pushSubscribed,
+	pushSupported,
+	subscribePush,
+	unsubscribePush,
+} from "$lib/push.js";
+import SearchPalette from "$lib/SearchPalette.svelte";
+import Status from "$lib/Status.svelte";
+import SwipeGestures from "$lib/SwipeGestures.svelte";
+import {
+	activeChannel,
+	activeChannelTab,
+	activeProject,
+	channels,
+	connected,
+	coworkers,
+	deepLinkMsgId,
+	isWideScreen,
+	messages,
+	projects,
+	threadData,
+} from "$lib/store.js";
+import ThreadPanel from "$lib/ThreadPanel.svelte";
+import { theme, toggleTheme } from "$lib/theme.js";
 
-  import AccountPanel from '$lib/AccountPanel.svelte'
-  import CelebrationEffects from '$lib/CelebrationEffects.svelte'
-  import SwipeGestures from '$lib/SwipeGestures.svelte'
-  import MiniRepoStatus from '$lib/MiniRepoStatus.svelte'
-  import SearchPalette from '$lib/SearchPalette.svelte'
-  import InstallBanner from '$lib/InstallBanner.svelte'
-  import { messages, connected, coworkers, projects, activeProject, activeChannel, channels, activeChannelTab, threadData, isWideScreen, deepLinkMsgId } from '$lib/store.js'
-  import { connectWebSocket, fetchHistory, fetchStatus, fetchProjects, switchProject, setupHistoryNavigation, replaceNavState, openThread } from '$lib/api.js'
-  import { theme, toggleTheme } from '$lib/theme.js'
-  import { Sun, Moon } from 'lucide-svelte'
-  import SearchIcon from '@lucide/svelte/icons/search'
-  import Bell from '@lucide/svelte/icons/bell'
-  import BellOff from '@lucide/svelte/icons/bell-off'
-  import { pushSupported, pushPermission, pushSubscribed, subscribePush, unsubscribePush, checkPushSubscription } from '$lib/push.js'
+$effect(() => {
+	if ($theme === "dark") {
+		document.documentElement.classList.add("dark");
+	} else {
+		document.documentElement.classList.remove("dark");
+	}
+	const favicon = document.getElementById("favicon");
+	if (favicon) favicon.href = $theme === "dark" ? "/favicon-dark.png" : "/favicon-light.png";
+});
 
-  $effect(() => {
-    if ($theme === 'dark') {
-      document.documentElement.classList.add('dark')
-    } else {
-      document.documentElement.classList.remove('dark')
-    }
-    const favicon = document.getElementById('favicon')
-    if (favicon) favicon.href = $theme === 'dark' ? '/favicon-dark.png' : '/favicon-light.png'
-  })
+let activeView = $state("board"); // 'board' (channel list + chat) or 'status'
+let projectDropdownOpen = $state(false);
+let searchOpen = $state(false);
 
-  let activeView = $state('board') // 'board' (channel list + chat) or 'status'
-  let projectDropdownOpen = $state(false)
-  let searchOpen = $state(false)
+function handleKeydown(e) {
+	if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+		e.preventDefault();
+		searchOpen = !searchOpen;
+	}
+}
 
-  function handleKeydown(e) {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-      e.preventDefault()
-      searchOpen = !searchOpen
-    }
-  }
+// DM channel detection for tab bar filtering
+let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null);
+let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 
-  // DM channel detection for tab bar filtering
-  let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
-  let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
+// Active project status for the status dot in the project selector
+let activeStatus = $derived($projects.find((p) => p.name === $activeProject)?.status);
 
-  // Active project status for the status dot in the project selector
-  let activeStatus = $derived($projects.find(p => p.name === $activeProject)?.status)
+function toggleProjectDropdown() {
+	projectDropdownOpen = !projectDropdownOpen;
+}
 
-  function toggleProjectDropdown() {
-    projectDropdownOpen = !projectDropdownOpen
-  }
+function handleProjectClickOutside(event) {
+	if (projectDropdownOpen && !event.target.closest(".project-selector")) {
+		projectDropdownOpen = false;
+	}
+}
 
-  function handleProjectClickOutside(event) {
-    if (projectDropdownOpen && !event.target.closest('.project-selector')) {
-      projectDropdownOpen = false
-    }
-  }
+$effect(() => {
+	if (projectDropdownOpen) {
+		document.addEventListener("click", handleProjectClickOutside, true);
+		return () => document.removeEventListener("click", handleProjectClickOutside, true);
+	}
+});
 
-  $effect(() => {
-    if (projectDropdownOpen) {
-      document.addEventListener('click', handleProjectClickOutside, true)
-      return () => document.removeEventListener('click', handleProjectClickOutside, true)
-    }
-  })
+async function togglePush() {
+	if ($pushSubscribed) {
+		await unsubscribePush();
+	} else {
+		await subscribePush();
+	}
+}
 
-  async function togglePush() {
-    if ($pushSubscribed) {
-      await unsubscribePush()
-    } else {
-      await subscribePush()
-    }
-  }
+onMount(async () => {
+	// Initialize push notification support check
+	checkPushSubscription();
 
-  onMount(async () => {
-    // Initialize push notification support check
-    checkPushSubscription()
+	// Always in multi-project mode — served from shared gateway on port 47022
+	const projectList = await fetchProjects();
 
-    // Always in multi-project mode — served from shared gateway on port 47022
-    const projectList = await fetchProjects()
+	// Prefer the project named in the URL path (e.g. /my-project → 'my-project')
+	const rawSegment = window.location.pathname.split("/").filter(Boolean)[0] ?? null;
+	const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null;
+	let targetProject = null;
+	if (urlProjectName) {
+		targetProject = projectList.find((p) => p.name === urlProjectName && p.status === "running" && p.webhook_port);
+	}
+	if (!targetProject) {
+		targetProject = projectList.find((p) => p.status === "running" && p.webhook_port);
+	}
+	if (targetProject) {
+		switchProject(targetProject.name, targetProject.webhook_port);
 
-    // Prefer the project named in the URL path (e.g. /my-project → 'my-project')
-    const rawSegment = window.location.pathname.split('/').filter(Boolean)[0] ?? null
-    const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null
-    let targetProject = null
-    if (urlProjectName) {
-      targetProject = projectList.find(p => p.name === urlProjectName && p.status === 'running' && p.webhook_port)
-    }
-    if (!targetProject) {
-      targetProject = projectList.find(p => p.status === 'running' && p.webhook_port)
-    }
-    if (targetProject) {
-      switchProject(targetProject.name, targetProject.webhook_port)
+		// Deep-link: read channel/thread/msg from URL query params
+		const params = new URLSearchParams(window.location.search);
+		const urlChannel = params.get("channel");
+		const urlThread = params.get("thread");
+		const urlMsg = params.get("msg");
 
-      // Deep-link: read channel/thread/msg from URL query params
-      const params = new URLSearchParams(window.location.search)
-      const urlChannel = params.get('channel')
-      const urlThread = params.get('thread')
-      const urlMsg = params.get('msg')
+		// Deep-link: restore channel and/or thread from URL.
+		// Use the URL channel if present, else default to the project's main channel.
+		const deepLinkChannel = urlChannel || targetProject.name;
+		if (urlChannel) {
+			activeChannel.set(urlChannel);
+			// Deep-linked channel may not be the main channel (e.g. DM channels,
+			// topic channels). switchProject's fetchHistory() only loads the main
+			// channel, so we must explicitly fetch the deep-linked channel's messages.
+			fetchHistory(urlChannel);
+		}
+		if (urlThread) {
+			// If a specific message is targeted, store it so ThreadPanel can scroll to it
+			if (urlMsg) {
+				deepLinkMsgId.set(urlMsg);
+			}
+			openThread({ id: urlThread, from: "", content: "" }, deepLinkChannel, { pushState: false });
+		}
+		replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined, msg: urlMsg || undefined });
+	}
+	// Set up browser back/forward navigation
+	const cleanupHistory = setupHistoryNavigation();
 
-      // Deep-link: restore channel and/or thread from URL.
-      // Use the URL channel if present, else default to the project's main channel.
-      const deepLinkChannel = urlChannel || targetProject.name
-      if (urlChannel) {
-        activeChannel.set(urlChannel)
-        // Deep-linked channel may not be the main channel (e.g. DM channels,
-        // topic channels). switchProject's fetchHistory() only loads the main
-        // channel, so we must explicitly fetch the deep-linked channel's messages.
-        fetchHistory(urlChannel)
-      }
-      if (urlThread) {
-        // If a specific message is targeted, store it so ThreadPanel can scroll to it
-        if (urlMsg) {
-          deepLinkMsgId.set(urlMsg)
-        }
-        openThread({ id: urlThread, from: '', content: '' }, deepLinkChannel, { pushState: false })
-      }
-      replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined, msg: urlMsg || undefined })
-    }
-    // Set up browser back/forward navigation
-    const cleanupHistory = setupHistoryNavigation()
+	// Refresh project list every 30s
+	const projectInterval = setInterval(fetchProjects, 30000);
+	// Initialize and listen for viewport width changes
+	function updateViewportWidth() {
+		isWideScreen.set(window.innerWidth > 1024);
+	}
 
-    // Refresh project list every 30s
-    const projectInterval = setInterval(fetchProjects, 30000)
-    // Initialize and listen for viewport width changes
-    function updateViewportWidth() {
-      isWideScreen.set(window.innerWidth > 1024)
-    }
+	// Set initial value
+	updateViewportWidth();
 
-    // Set initial value
-    updateViewportWidth()
+	// Add resize listener
+	window.addEventListener("resize", updateViewportWidth);
 
-    // Add resize listener
-    window.addEventListener('resize', updateViewportWidth)
+	// Reload history when page becomes visible again (handles PWA resume from background)
+	function handleVisibilityChange() {
+		if (!document.hidden && $activeProject) {
+			// Page became visible and we have an active project - refresh history
+			fetchHistory();
+			// Also refresh the active channel if it's not the main one (e.g. DM or topic channel)
+			const currentChannel = $activeChannel;
+			if (currentChannel && currentChannel !== $activeProject) {
+				fetchHistory(currentChannel);
+			}
+		}
+	}
 
-    // Reload history when page becomes visible again (handles PWA resume from background)
-    function handleVisibilityChange() {
-      if (!document.hidden && $activeProject) {
-        // Page became visible and we have an active project - refresh history
-        fetchHistory()
-        // Also refresh the active channel if it's not the main one (e.g. DM or topic channel)
-        const currentChannel = $activeChannel
-        if (currentChannel && currentChannel !== $activeProject) {
-          fetchHistory(currentChannel)
-        }
-      }
-    }
+	document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    document.addEventListener('visibilitychange', handleVisibilityChange)
+	return () => {
+		cleanupHistory();
+		clearInterval(projectInterval);
+		window.removeEventListener("resize", updateViewportWidth);
+		document.removeEventListener("visibilitychange", handleVisibilityChange);
+	};
+});
 
-    return () => {
-      cleanupHistory()
-      clearInterval(projectInterval)
-      window.removeEventListener('resize', updateViewportWidth)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  })
-
-  function selectProject(project) {
-    if (project.status === 'running' && project.webhook_port) {
-      switchProject(project.name, project.webhook_port)
-      replaceNavState({ channel: project.name })
-      projectDropdownOpen = false
-    }
-  }
-
-
+function selectProject(project) {
+	if (project.status === "running" && project.webhook_port) {
+		switchProject(project.name, project.webhook_port);
+		replaceNavState({ channel: project.name });
+		projectDropdownOpen = false;
+	}
+}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

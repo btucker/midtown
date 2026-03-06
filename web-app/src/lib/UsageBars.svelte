@@ -1,12 +1,12 @@
 <script>
-  import { usageData } from './store.js'
-  import { estimateTimeToFull, formatResetTime, usageColor } from './usage-utils.js'
+import { usageData } from "./store.js";
+import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.js";
 
-  let expandedAccount = $state(null)
+let expandedAccount = $state(null);
 
-  function toggleAccount(label) {
-    expandedAccount = expandedAccount === label ? null : label
-  }
+function toggleAccount(label) {
+	expandedAccount = expandedAccount === label ? null : label;
+}
 </script>
 
 {#if $usageData && $usageData.length > 0}

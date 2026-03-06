@@ -1,54 +1,54 @@
 <script>
-  import { activeChannel, activeProject } from './store.js'
-  import MermaidDiagram from './MermaidDiagram.svelte'
+import MermaidDiagram from "./MermaidDiagram.svelte";
+import { activeChannel, activeProject } from "./store.js";
 
-  /** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
-  let data = $state(null)
-  let loading = $state(false)
-  let error = $state('')
+/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
+let data = $state(null);
+let loading = $state(false);
+let error = $state("");
 
-  $effect(() => {
-    const project = $activeProject
-    const channel = $activeChannel
-    if (!project || !channel) return
+$effect(() => {
+	const project = $activeProject;
+	const channel = $activeChannel;
+	if (!project || !channel) return;
 
-    const controller = new AbortController()
+	const controller = new AbortController();
 
-    loading = true
-    data = null
-    error = ''
+	loading = true;
+	data = null;
+	error = "";
 
-    fetch(
-      `/api/projects/${encodeURIComponent(project)}/proxy/api/channels/workflow?channel=${encodeURIComponent(channel)}`,
-      { signal: controller.signal },
-    )
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        return res.json()
-      })
-      .then((d) => {
-        data = d
-      })
-      .catch((e) => {
-        if (e.name !== 'AbortError') {
-          console.error('Failed to fetch workflow:', e)
-          error = e.message
-        }
-      })
-      .finally(() => {
-        loading = false
-      })
+	fetch(
+		`/api/projects/${encodeURIComponent(project)}/proxy/api/channels/workflow?channel=${encodeURIComponent(channel)}`,
+		{ signal: controller.signal },
+	)
+		.then((res) => {
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			return res.json();
+		})
+		.then((d) => {
+			data = d;
+		})
+		.catch((e) => {
+			if (e.name !== "AbortError") {
+				console.error("Failed to fetch workflow:", e);
+				error = e.message;
+			}
+		})
+		.finally(() => {
+			loading = false;
+		});
 
-    return () => controller.abort()
-  })
+	return () => controller.abort();
+});
 
-  const SOURCE_LABELS = {
-    'default': 'Default (built-in)',
-    'channel-local': 'Channel-specific (local)',
-    'channel-repo': 'Channel-specific (repo)',
-    'project-local': 'Project default (local)',
-    'project-repo': 'Project default (repo)',
-  }
+const SOURCE_LABELS = {
+	default: "Default (built-in)",
+	"channel-local": "Channel-specific (local)",
+	"channel-repo": "Channel-specific (repo)",
+	"project-local": "Project default (local)",
+	"project-repo": "Project default (repo)",
+};
 </script>
 
 <div class="workflow-layout">

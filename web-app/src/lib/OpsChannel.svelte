@@ -1,51 +1,49 @@
 <script>
-  import { messagesByChannel, activeProject } from './store.js'
-  import { tick } from 'svelte'
-  import { fetchHistory, openThread } from './api.js'
-  import { getSenderColor, formatTime, getPermalinkUrl } from './messageUtils.js'
+import { tick } from "svelte";
+import { fetchHistory, openThread } from "./api.js";
+import { formatTime, getPermalinkUrl, getSenderColor } from "./messageUtils.js";
+import { activeProject, messagesByChannel } from "./store.js";
 
-  const OPS_SENDER_OVERRIDES = {
-    midtown: '#585858',
-  }
+const OPS_SENDER_OVERRIDES = {
+	midtown: "#585858",
+};
 
-  // Read directly from the ops channel (daemon system messages are routed there)
-  let opsMessages = $derived(
-    ($messagesByChannel['ops'] || []).slice(-100)
-  )
+// Read directly from the ops channel (daemon system messages are routed there)
+let opsMessages = $derived(($messagesByChannel.ops || []).slice(-100));
 
-  let scrollEl = $state(null)
-  let autoScroll = $state(true)
-  let collapsed = $state(false)
+let scrollEl = $state(null);
+let autoScroll = $state(true);
+let collapsed = $state(false);
 
-  function getSenderLabel(msg) {
-    return msg.from || '?'
-  }
+function getSenderLabel(msg) {
+	return msg.from || "?";
+}
 
-  function getContent(msg) {
-    if (msg.msg_type === 'action' || msg.content?.startsWith('/me ')) {
-      return msg.content.replace(/^\/me\s*/, '')
-    }
-    return msg.content
-  }
+function getContent(msg) {
+	if (msg.msg_type === "action" || msg.content?.startsWith("/me ")) {
+		return msg.content.replace(/^\/me\s*/, "");
+	}
+	return msg.content;
+}
 
-  // Pre-populate ops history on mount so the sidebar shows existing messages
-  $effect(() => {
-    fetchHistory('ops')
-  })
+// Pre-populate ops history on mount so the sidebar shows existing messages
+$effect(() => {
+	fetchHistory("ops");
+});
 
-  $effect(() => {
-    if (opsMessages.length > 0 && autoScroll && scrollEl) {
-      tick().then(() => {
-        scrollEl.scrollTop = scrollEl.scrollHeight
-      })
-    }
-  })
+$effect(() => {
+	if (opsMessages.length > 0 && autoScroll && scrollEl) {
+		tick().then(() => {
+			scrollEl.scrollTop = scrollEl.scrollHeight;
+		});
+	}
+});
 
-  function handleScroll() {
-    if (!scrollEl) return
-    const { scrollTop, scrollHeight, clientHeight } = scrollEl
-    autoScroll = scrollHeight - scrollTop - clientHeight < 30
-  }
+function handleScroll() {
+	if (!scrollEl) return;
+	const { scrollTop, scrollHeight, clientHeight } = scrollEl;
+	autoScroll = scrollHeight - scrollTop - clientHeight < 30;
+}
 </script>
 
 <div class="overflow-hidden rounded-md border-2 border-sidebar-border bg-sidebar">

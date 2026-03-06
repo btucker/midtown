@@ -1,33 +1,29 @@
 <script>
-	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-	import { cn } from "$lib/utils.js";
-	import {
-		SIDEBAR_COOKIE_MAX_AGE,
-		SIDEBAR_COOKIE_NAME,
-		SIDEBAR_WIDTH_ICON,
-	} from "./constants.js";
-	import { setSidebar } from "./context.svelte.js";
+import * as Tooltip from "$lib/components/ui/tooltip/index.js";
+import { cn } from "$lib/utils.js";
+import { SIDEBAR_COOKIE_MAX_AGE, SIDEBAR_COOKIE_NAME, SIDEBAR_WIDTH_ICON } from "./constants.js";
+import { setSidebar } from "./context.svelte.js";
 
-	let {
-		ref = $bindable(null),
-		open = $bindable(true),
-		onOpenChange = () => {},
-		class: className,
-		style,
-		children,
-		...restProps
-	} = $props();
+let {
+	ref = $bindable(null),
+	open = $bindable(true),
+	onOpenChange = () => {},
+	class: className,
+	style,
+	children,
+	...restProps
+} = $props();
 
-	const sidebar = setSidebar({
-		open: () => open,
-		setOpen: (value) => {
-			open = value;
-			onOpenChange(value);
+const sidebar = setSidebar({
+	open: () => open,
+	setOpen: (value) => {
+		open = value;
+		onOpenChange(value);
 
-			// This sets the cookie to keep the sidebar state.
-			document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
-		},
-	});
+		// This sets the cookie to keep the sidebar state.
+		document.cookie = `${SIDEBAR_COOKIE_NAME}=${open}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+	},
+});
 </script>
 
 <svelte:window onkeydown={sidebar.handleShortcutKeydown} />

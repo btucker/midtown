@@ -1,9 +1,14 @@
-import { IsMobile } from "$lib/hooks/is-mobile.svelte.js";
 import { getContext, setContext } from "svelte";
-import { SIDEBAR_KEYBOARD_SHORTCUT, SIDEBAR_WIDTH_STORAGE_KEY, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from "./constants.js";
+import { IsMobile } from "$lib/hooks/is-mobile.svelte.js";
+import {
+	SIDEBAR_KEYBOARD_SHORTCUT,
+	SIDEBAR_MAX_WIDTH,
+	SIDEBAR_MIN_WIDTH,
+	SIDEBAR_WIDTH_STORAGE_KEY,
+} from "./constants.js";
 
 class SidebarState {
-	 props;
+	props;
 	open = $derived.by(() => this.props.open());
 	openMobile = $state(false);
 	setOpen;
@@ -18,11 +23,11 @@ class SidebarState {
 		this.props = props;
 
 		// Load saved width from localStorage
-		if (typeof window !== 'undefined') {
+		if (typeof window !== "undefined") {
 			const saved = localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
 			if (saved) {
 				const parsed = parseInt(saved, 10);
-				if (!isNaN(parsed) && parsed >= SIDEBAR_MIN_WIDTH && parsed <= SIDEBAR_MAX_WIDTH) {
+				if (!Number.isNaN(parsed) && parsed >= SIDEBAR_MIN_WIDTH && parsed <= SIDEBAR_MAX_WIDTH) {
 					this.width = parsed;
 				}
 			}
@@ -48,15 +53,13 @@ class SidebarState {
 	};
 
 	toggle = () => {
-		return this.#isMobile.current
-			? (this.openMobile = !this.openMobile)
-			: this.setOpen(!this.open);
+		return this.#isMobile.current ? (this.openMobile = !this.openMobile) : this.setOpen(!this.open);
 	};
 
 	setWidth = (newWidth) => {
 		const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, newWidth));
 		this.width = clamped;
-		if (typeof window !== 'undefined') {
+		if (typeof window !== "undefined") {
 			localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clamped));
 		}
 	};

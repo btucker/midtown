@@ -1,77 +1,76 @@
 <script>
-  import { onMount } from 'svelte'
-  import Download from '@lucide/svelte/icons/download'
-  import Share from '@lucide/svelte/icons/share'
-  import X from '@lucide/svelte/icons/x'
+import Download from "@lucide/svelte/icons/download";
+import Share from "@lucide/svelte/icons/share";
+import X from "@lucide/svelte/icons/x";
+import { onMount } from "svelte";
 
-  const STORAGE_KEY = 'midtown-pwa-install-dismissed'
+const STORAGE_KEY = "midtown-pwa-install-dismissed";
 
-  let showBanner = $state(false)
-  let deferredPrompt = $state(null)
-  let isIos = $state(false)
+let showBanner = $state(false);
+let deferredPrompt = $state(null);
+let isIos = $state(false);
 
-  function isStandalone() {
-    return window.matchMedia('(display-mode: standalone)').matches ||
-      navigator.standalone === true
-  }
+function isStandalone() {
+	return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+}
 
-  function isDismissed() {
-    try {
-      return localStorage.getItem(STORAGE_KEY) === '1'
-    } catch {
-      return false
-    }
-  }
+function isDismissed() {
+	try {
+		return localStorage.getItem(STORAGE_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
 
-  function dismiss() {
-    showBanner = false
-    try {
-      localStorage.setItem(STORAGE_KEY, '1')
-    } catch {
-      // localStorage unavailable — banner just hides for this session
-    }
-  }
+function dismiss() {
+	showBanner = false;
+	try {
+		localStorage.setItem(STORAGE_KEY, "1");
+	} catch {
+		// localStorage unavailable — banner just hides for this session
+	}
+}
 
-  async function handleInstall() {
-    if (!deferredPrompt) return
-    deferredPrompt.prompt()
-    const { outcome } = await deferredPrompt.userChoice
-    deferredPrompt = null
-    // Hide banner regardless — the prompt can only fire once per page load,
-    // so the button would be a no-op if the user dismissed
-    dismiss()
-  }
+async function handleInstall() {
+	if (!deferredPrompt) return;
+	deferredPrompt.prompt();
+	const { outcome } = await deferredPrompt.userChoice;
+	deferredPrompt = null;
+	// Hide banner regardless — the prompt can only fire once per page load,
+	// so the button would be a no-op if the user dismissed
+	dismiss();
+}
 
-  onMount(() => {
-    if (isStandalone() || isDismissed()) return
+onMount(() => {
+	if (isStandalone() || isDismissed()) return;
 
-    // Detect iOS/iPadOS Safari (not standalone, not Chrome/Firefox on iOS)
-    const ua = navigator.userAgent
-    const isiOS = /iPhone|iPad|iPod/.test(ua) && !navigator.standalone
-    // iPadOS 13+ reports as Macintosh — detect via touch support
-    const isIPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1 && navigator.standalone !== true
-    // Exclude non-Safari browsers on iOS (they show as CriOS, FxiOS, etc.)
-    const isSafari = (isiOS || isIPadOS) && /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua)
+	// Detect iOS/iPadOS Safari (not standalone, not Chrome/Firefox on iOS)
+	const ua = navigator.userAgent;
+	const isiOS = /iPhone|iPad|iPod/.test(ua) && !navigator.standalone;
+	// iPadOS 13+ reports as Macintosh — detect via touch support
+	const isIPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1 && navigator.standalone !== true;
+	// Exclude non-Safari browsers on iOS (they show as CriOS, FxiOS, etc.)
+	const isSafari = (isiOS || isIPadOS) && /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
 
-    if (isSafari) {
-      isIos = true
-      showBanner = true
-      return
-    }
+	if (isSafari) {
+		isIos = true;
+		showBanner = true;
+		return;
+	}
 
-    // Chromium-based browsers: listen for beforeinstallprompt
-    function handleBeforeInstall(e) {
-      e.preventDefault()
-      deferredPrompt = e
-      showBanner = true
-    }
+	// Chromium-based browsers: listen for beforeinstallprompt
+	function handleBeforeInstall(e) {
+		e.preventDefault();
+		deferredPrompt = e;
+		showBanner = true;
+	}
 
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall)
+	window.addEventListener("beforeinstallprompt", handleBeforeInstall);
 
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall)
-    }
-  })
+	return () => {
+		window.removeEventListener("beforeinstallprompt", handleBeforeInstall);
+	};
+});
 </script>
 
 {#if showBanner}

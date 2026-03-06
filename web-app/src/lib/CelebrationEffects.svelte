@@ -1,255 +1,255 @@
 <script>
-  import { onDestroy } from 'svelte'
-  import { kanbanData, daemonStatus } from './store.js'
-  import { AVENUE_COLORS } from './avenue-colors.js'
+import { onDestroy } from "svelte";
+import { AVENUE_COLORS } from "./avenue-colors.js";
+import { daemonStatus, kanbanData } from "./store.js";
 
-  const COLOR_PALETTE = [
-    'var(--color-primary)',
-    'var(--color-accent)',
-    'var(--color-foreground)',
-    'var(--color-link-default)',
-    'var(--color-link-task)',
-    'var(--color-link-pr)',
-    'var(--color-link-coworker)',
-    'var(--color-insight)',
-    ...Object.values(AVENUE_COLORS),
-  ]
+const COLOR_PALETTE = [
+	"var(--color-primary)",
+	"var(--color-accent)",
+	"var(--color-foreground)",
+	"var(--color-link-default)",
+	"var(--color-link-task)",
+	"var(--color-link-pr)",
+	"var(--color-link-coworker)",
+	"var(--color-insight)",
+	...Object.values(AVENUE_COLORS),
+];
 
-  const EMOJIS = ['🎉', '✨', '🥳', '🚀', '🌈', '💫', '⭐', '🎊']
+const EMOJIS = ["🎉", "✨", "🥳", "🚀", "🌈", "💫", "⭐", "🎊"];
 
-  const celebratedPrs = new Set()
-  const timers = new Map()
-  let destroyed = false
-  let hydrated = $state(false)
-  let activeEffects = $state([])
+const celebratedPrs = new Set();
+const timers = new Map();
+let destroyed = false;
+let hydrated = $state(false);
+let activeEffects = $state([]);
 
-  const EFFECT_DEFS = [
-    { type: 'confetti', duration: 4200, generator: generateConfetti },
-    { type: 'emoji', duration: 3800, generator: generateEmojiRain },
-    { type: 'fireworks', duration: 3400, generator: generateFireworks },
-    { type: 'matrix', duration: 3600, generator: generateMatrixCascade },
-    { type: 'stars', duration: 3200, generator: generateStarScatter },
-    { type: 'bubbles', duration: 3600, generator: generateBubbles },
-    { type: 'ticker', duration: 3600, generator: generateTickerTape },
-    { type: 'comets', duration: 3400, generator: generateComets },
-    { type: 'pixels', duration: 3200, generator: generatePixelBurst },
-    { type: 'ripples', duration: 3000, generator: generateRipples },
-  ]
+const EFFECT_DEFS = [
+	{ type: "confetti", duration: 4200, generator: generateConfetti },
+	{ type: "emoji", duration: 3800, generator: generateEmojiRain },
+	{ type: "fireworks", duration: 3400, generator: generateFireworks },
+	{ type: "matrix", duration: 3600, generator: generateMatrixCascade },
+	{ type: "stars", duration: 3200, generator: generateStarScatter },
+	{ type: "bubbles", duration: 3600, generator: generateBubbles },
+	{ type: "ticker", duration: 3600, generator: generateTickerTape },
+	{ type: "comets", duration: 3400, generator: generateComets },
+	{ type: "pixels", duration: 3200, generator: generatePixelBurst },
+	{ type: "ripples", duration: 3000, generator: generateRipples },
+];
 
-  function prKey(pr) {
-    const repo = pr?.repo || 'default'
-    return `${repo}#${pr?.number ?? 'unknown'}`
-  }
+function prKey(pr) {
+	const repo = pr?.repo || "default";
+	return `${repo}#${pr?.number ?? "unknown"}`;
+}
 
-  function randomFraction() {
-    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-      const arr = new Uint32Array(1)
-      crypto.getRandomValues(arr)
-      return arr[0] / 4294967296 // 2^32 to keep result in [0,1)
-    }
-    return Math.random()
-  }
+function randomFraction() {
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		const arr = new Uint32Array(1);
+		crypto.getRandomValues(arr);
+		return arr[0] / 4294967296; // 2^32 to keep result in [0,1)
+	}
+	return Math.random();
+}
 
-  function randomInRange(min, max) {
-    return min + (max - min) * randomFraction()
-  }
+function randomInRange(min, max) {
+	return min + (max - min) * randomFraction();
+}
 
-  function pickColor() {
-    const index = Math.floor(randomFraction() * COLOR_PALETTE.length)
-    return COLOR_PALETTE[index]
-  }
+function pickColor() {
+	const index = Math.floor(randomFraction() * COLOR_PALETTE.length);
+	return COLOR_PALETTE[index];
+}
 
-  function pickEmoji() {
-    const index = Math.floor(randomFraction() * EMOJIS.length)
-    return EMOJIS[index]
-  }
+function pickEmoji() {
+	const index = Math.floor(randomFraction() * EMOJIS.length);
+	return EMOJIS[index];
+}
 
-  function triggerCelebration(pr) {
-    if (EFFECT_DEFS.length === 0) return
-    const index = Math.floor(randomFraction() * EFFECT_DEFS.length)
-    const def = EFFECT_DEFS[index]
-    const payload = def.generator()
-    const idBase = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
-    const id = `${def.type}-${idBase}-${Math.round(randomFraction() * 1e6)}`
-    const entry = { id, type: def.type, payload }
-    activeEffects = [...activeEffects, entry]
-    const timer = setTimeout(() => removeEffect(entry.id), def.duration)
-    timers.set(entry.id, timer)
-  }
+function triggerCelebration(_pr) {
+	if (EFFECT_DEFS.length === 0) return;
+	const index = Math.floor(randomFraction() * EFFECT_DEFS.length);
+	const def = EFFECT_DEFS[index];
+	const payload = def.generator();
+	const idBase = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+	const id = `${def.type}-${idBase}-${Math.round(randomFraction() * 1e6)}`;
+	const entry = { id, type: def.type, payload };
+	activeEffects = [...activeEffects, entry];
+	const timer = setTimeout(() => removeEffect(entry.id), def.duration);
+	timers.set(entry.id, timer);
+}
 
-  function removeEffect(id) {
-    if (destroyed) return
-    activeEffects = activeEffects.filter((effect) => effect.id !== id)
-    const timer = timers.get(id)
-    if (timer) {
-      clearTimeout(timer)
-      timers.delete(id)
-    }
-  }
+function removeEffect(id) {
+	if (destroyed) return;
+	activeEffects = activeEffects.filter((effect) => effect.id !== id);
+	const timer = timers.get(id);
+	if (timer) {
+		clearTimeout(timer);
+		timers.delete(id);
+	}
+}
 
-  onDestroy(() => {
-    destroyed = true
-    timers.forEach((timer) => clearTimeout(timer))
-    timers.clear()
-  })
+onDestroy(() => {
+	destroyed = true;
+	timers.forEach((timer) => clearTimeout(timer));
+	timers.clear();
+});
 
-  function remember(pr) {
-    celebratedPrs.add(prKey(pr))
-  }
+function remember(pr) {
+	celebratedPrs.add(prKey(pr));
+}
 
-  $effect(() => {
-    const ready = Boolean($daemonStatus)
-    if (!ready) return
-    const done = $kanbanData.done || []
-    if (!hydrated) {
-      done.forEach((pr) => remember(pr))
-      hydrated = true
-      return
-    }
-    for (const pr of done) {
-      const key = prKey(pr)
-      if (!celebratedPrs.has(key)) {
-        remember(pr)
-        triggerCelebration(pr)
-      }
-    }
-  })
+$effect(() => {
+	const ready = Boolean($daemonStatus);
+	if (!ready) return;
+	const done = $kanbanData.done || [];
+	if (!hydrated) {
+		done.forEach((pr) => remember(pr));
+		hydrated = true;
+		return;
+	}
+	for (const pr of done) {
+		const key = prKey(pr);
+		if (!celebratedPrs.has(key)) {
+			remember(pr);
+			triggerCelebration(pr);
+		}
+	}
+});
 
-  $effect(() => {
-    if (!$daemonStatus) {
-      celebratedPrs.clear()
-      hydrated = false
-      activeEffects = []
-      timers.forEach((timer) => clearTimeout(timer))
-      timers.clear()
-    }
-  })
+$effect(() => {
+	if (!$daemonStatus) {
+		celebratedPrs.clear();
+		hydrated = false;
+		activeEffects = [];
+		timers.forEach((timer) => clearTimeout(timer));
+		timers.clear();
+	}
+});
 
-  function generateConfetti() {
-    return {
-      particles: Array.from({ length: 36 }, () => ({
-        left: randomInRange(0, 100),
-        delay: randomInRange(0, 0.6),
-        size: randomInRange(8, 14),
-        rotation: randomInRange(-80, 80),
-        color: pickColor(),
-      })),
-    }
-  }
+function generateConfetti() {
+	return {
+		particles: Array.from({ length: 36 }, () => ({
+			left: randomInRange(0, 100),
+			delay: randomInRange(0, 0.6),
+			size: randomInRange(8, 14),
+			rotation: randomInRange(-80, 80),
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generateEmojiRain() {
-    return {
-      drops: Array.from({ length: 22 }, () => ({
-        emoji: pickEmoji(),
-        left: randomInRange(5, 95),
-        delay: randomInRange(0, 0.7),
-        duration: randomInRange(2.4, 3.4),
-      })),
-    }
-  }
+function generateEmojiRain() {
+	return {
+		drops: Array.from({ length: 22 }, () => ({
+			emoji: pickEmoji(),
+			left: randomInRange(5, 95),
+			delay: randomInRange(0, 0.7),
+			duration: randomInRange(2.4, 3.4),
+		})),
+	};
+}
 
-  function generateFireworks() {
-    return {
-      bursts: Array.from({ length: 3 }, (_, idx) => ({
-        x: randomInRange(20, 80),
-        y: randomInRange(25, 60),
-        color: pickColor(),
-        delay: idx * 0.2,
-        scale: randomInRange(0.8, 1.2),
-      })),
-    }
-  }
+function generateFireworks() {
+	return {
+		bursts: Array.from({ length: 3 }, (_, idx) => ({
+			x: randomInRange(20, 80),
+			y: randomInRange(25, 60),
+			color: pickColor(),
+			delay: idx * 0.2,
+			scale: randomInRange(0.8, 1.2),
+		})),
+	};
+}
 
-  function randomMatrixString() {
-    const glyphs = '01MIDTOWN'
-    const length = 12 + Math.floor(randomFraction() * 6)
-    let result = ''
-    for (let i = 0; i < length; i += 1) {
-      const idx = Math.floor(randomFraction() * glyphs.length)
-      result += glyphs[idx]
-    }
-    return result
-  }
+function randomMatrixString() {
+	const glyphs = "01MIDTOWN";
+	const length = 12 + Math.floor(randomFraction() * 6);
+	let result = "";
+	for (let i = 0; i < length; i += 1) {
+		const idx = Math.floor(randomFraction() * glyphs.length);
+		result += glyphs[idx];
+	}
+	return result;
+}
 
-  function generateMatrixCascade() {
-    return {
-      columns: Array.from({ length: 14 }, () => ({
-        left: randomInRange(0, 100),
-        delay: randomInRange(0, 0.5),
-        duration: randomInRange(2.6, 3.4),
-        content: randomMatrixString(),
-      })),
-    }
-  }
+function generateMatrixCascade() {
+	return {
+		columns: Array.from({ length: 14 }, () => ({
+			left: randomInRange(0, 100),
+			delay: randomInRange(0, 0.5),
+			duration: randomInRange(2.6, 3.4),
+			content: randomMatrixString(),
+		})),
+	};
+}
 
-  function generateStarScatter() {
-    return {
-      stars: Array.from({ length: 24 }, () => ({
-        x: randomInRange(10, 90),
-        y: randomInRange(10, 70),
-        delay: randomInRange(0, 0.4),
-        scale: randomInRange(0.6, 1.4),
-        color: pickColor(),
-      })),
-    }
-  }
+function generateStarScatter() {
+	return {
+		stars: Array.from({ length: 24 }, () => ({
+			x: randomInRange(10, 90),
+			y: randomInRange(10, 70),
+			delay: randomInRange(0, 0.4),
+			scale: randomInRange(0.6, 1.4),
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generateBubbles() {
-    return {
-      bubbles: Array.from({ length: 18 }, () => ({
-        left: randomInRange(5, 95),
-        size: randomInRange(18, 36),
-        delay: randomInRange(0, 0.6),
-        duration: randomInRange(2.6, 3.2),
-        color: pickColor(),
-      })),
-    }
-  }
+function generateBubbles() {
+	return {
+		bubbles: Array.from({ length: 18 }, () => ({
+			left: randomInRange(5, 95),
+			size: randomInRange(18, 36),
+			delay: randomInRange(0, 0.6),
+			duration: randomInRange(2.6, 3.2),
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generateTickerTape() {
-    return {
-      ribbons: Array.from({ length: 8 }, (_, idx) => ({
-        top: randomInRange(10, 80),
-        delay: idx * 0.2,
-        direction: idx % 2 === 0 ? 'left' : 'right',
-        color: pickColor(),
-      })),
-    }
-  }
+function generateTickerTape() {
+	return {
+		ribbons: Array.from({ length: 8 }, (_, idx) => ({
+			top: randomInRange(10, 80),
+			delay: idx * 0.2,
+			direction: idx % 2 === 0 ? "left" : "right",
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generateComets() {
-    return {
-      comets: Array.from({ length: 6 }, () => ({
-        startX: randomInRange(0, 100),
-        startY: randomInRange(0, 40),
-        delay: randomInRange(0, 0.6),
-        angle: randomInRange(20, 70),
-        color: pickColor(),
-      })),
-    }
-  }
+function generateComets() {
+	return {
+		comets: Array.from({ length: 6 }, () => ({
+			startX: randomInRange(0, 100),
+			startY: randomInRange(0, 40),
+			delay: randomInRange(0, 0.6),
+			angle: randomInRange(20, 70),
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generatePixelBurst() {
-    return {
-      pixels: Array.from({ length: 28 }, () => ({
-        angle: randomInRange(0, 360),
-        distance: randomInRange(60, 140),
-        delay: randomInRange(0, 0.4),
-        color: pickColor(),
-      })),
-    }
-  }
+function generatePixelBurst() {
+	return {
+		pixels: Array.from({ length: 28 }, () => ({
+			angle: randomInRange(0, 360),
+			distance: randomInRange(60, 140),
+			delay: randomInRange(0, 0.4),
+			color: pickColor(),
+		})),
+	};
+}
 
-  function generateRipples() {
-    return {
-      ripples: Array.from({ length: 4 }, () => ({
-        x: randomInRange(30, 70),
-        y: randomInRange(30, 70),
-        delay: randomInRange(0, 0.3),
-        color: pickColor(),
-      })),
-    }
-  }
+function generateRipples() {
+	return {
+		ripples: Array.from({ length: 4 }, () => ({
+			x: randomInRange(30, 70),
+			y: randomInRange(30, 70),
+			delay: randomInRange(0, 0.3),
+			color: pickColor(),
+		})),
+	};
+}
 </script>
 
 <div class="celebration-layer" aria-hidden="true">

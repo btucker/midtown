@@ -1,30 +1,35 @@
 <script>
-  import { activeChannel, kanbanData, repoStatus, repoStatuses } from './store.js'
-  import { getChannelPrs } from './channelUtils.js'
-  import { formatRelativeTime } from './utils.js'
+import { getChannelPrs } from "./channelUtils.js";
+import { activeChannel, kanbanData, repoStatus, repoStatuses } from "./store.js";
+import { formatRelativeTime } from "./utils.js";
 
-  let openPrs = $derived(getChannelPrs($activeChannel, $kanbanData))
-  // done PRs don't include task_id so they can't be channel-filtered; show all
-  let mergedPrs = $derived($kanbanData.done || [])
+let openPrs = $derived(getChannelPrs($activeChannel, $kanbanData));
+// done PRs don't include task_id so they can't be channel-filtered; show all
+let mergedPrs = $derived($kanbanData.done || []);
 
-  function getPrUrl(pr) {
-    if (pr.repo && $repoStatuses.length > 0) {
-      const info = $repoStatuses.find((s) => s.label === pr.repo)
-      if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`
-    }
-    if ($repoStatus.fullName) return `https://github.com/${$repoStatus.fullName}/pull/${pr.number}`
-    return null
-  }
+function getPrUrl(pr) {
+	if (pr.repo && $repoStatuses.length > 0) {
+		const info = $repoStatuses.find((s) => s.label === pr.repo);
+		if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`;
+	}
+	if ($repoStatus.fullName) return `https://github.com/${$repoStatus.fullName}/pull/${pr.number}`;
+	return null;
+}
 
-  function statusInfo(status) {
-    switch (status) {
-      case 'ci_passed': return { label: 'CI passed', color: 'hsl(var(--status-green))', char: '●' }
-      case 'ci_failed': return { label: 'CI failed', color: 'hsl(var(--status-red))', char: '●' }
-      case 'ci_pending': return { label: 'CI running', color: 'hsl(var(--status-amber))', char: '●' }
-      case 'approved': return { label: 'Approved', color: 'hsl(var(--status-green))', char: '✓' }
-      default: return { label: status || 'Unknown', color: 'hsl(var(--muted-foreground))', char: '○' }
-    }
-  }
+function statusInfo(status) {
+	switch (status) {
+		case "ci_passed":
+			return { label: "CI passed", color: "hsl(var(--status-green))", char: "●" };
+		case "ci_failed":
+			return { label: "CI failed", color: "hsl(var(--status-red))", char: "●" };
+		case "ci_pending":
+			return { label: "CI running", color: "hsl(var(--status-amber))", char: "●" };
+		case "approved":
+			return { label: "Approved", color: "hsl(var(--status-green))", char: "✓" };
+		default:
+			return { label: status || "Unknown", color: "hsl(var(--muted-foreground))", char: "○" };
+	}
+}
 </script>
 
 <div class="pr-list">

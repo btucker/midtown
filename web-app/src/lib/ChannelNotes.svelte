@@ -1,57 +1,56 @@
 <script>
-  import { activeChannel, activeProject } from './store.js'
-  import { renderContent } from './markdown.js'
+import { renderContent } from "./markdown.js";
+import { activeChannel, activeProject } from "./store.js";
 
-  /** @type {Array<{filename: string, title: string, content: string}>} */
-  let notes = $state([])
-  let loading = $state(false)
-  let selectedIndex = $state(0)
-  /** On mobile, whether we're showing the content pane (true) or the list (false). */
-  let mobileShowContent = $state(false)
+/** @type {Array<{filename: string, title: string, content: string}>} */
+let notes = $state([]);
+let loading = $state(false);
+let selectedIndex = $state(0);
+/** On mobile, whether we're showing the content pane (true) or the list (false). */
+let mobileShowContent = $state(false);
 
-  // Reload whenever the active project or channel changes.
-  // AbortController cancels in-flight requests so a slow earlier response
-  // never overwrites state that was already updated by a faster later one.
-  $effect(() => {
-    const project = $activeProject
-    const channel = $activeChannel
-    if (!project || !channel) return
+// Reload whenever the active project or channel changes.
+// AbortController cancels in-flight requests so a slow earlier response
+// never overwrites state that was already updated by a faster later one.
+$effect(() => {
+	const project = $activeProject;
+	const channel = $activeChannel;
+	if (!project || !channel) return;
 
-    const controller = new AbortController()
+	const controller = new AbortController();
 
-    loading = true
-    notes = []
-    selectedIndex = 0
-    mobileShowContent = false
+	loading = true;
+	notes = [];
+	selectedIndex = 0;
+	mobileShowContent = false;
 
-    fetch(
-      `/api/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/notes`,
-      { signal: controller.signal },
-    )
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data) => {
-        notes = data
-      })
-      .catch((e) => {
-        if (e.name !== 'AbortError') console.error('Failed to fetch channel notes:', e)
-      })
-      .finally(() => {
-        loading = false
-      })
+	fetch(`/api/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/notes`, {
+		signal: controller.signal,
+	})
+		.then((res) => (res.ok ? res.json() : []))
+		.then((data) => {
+			notes = data;
+		})
+		.catch((e) => {
+			if (e.name !== "AbortError") console.error("Failed to fetch channel notes:", e);
+		})
+		.finally(() => {
+			loading = false;
+		});
 
-    return () => controller.abort()
-  })
+	return () => controller.abort();
+});
 
-  function selectNote(index) {
-    selectedIndex = index
-    mobileShowContent = true
-  }
+function selectNote(index) {
+	selectedIndex = index;
+	mobileShowContent = true;
+}
 
-  function backToList() {
-    mobileShowContent = false
-  }
+function backToList() {
+	mobileShowContent = false;
+}
 
-  let selectedNote = $derived(notes[selectedIndex] ?? null)
+let selectedNote = $derived(notes[selectedIndex] ?? null);
 </script>
 
 <div class="notes-layout">

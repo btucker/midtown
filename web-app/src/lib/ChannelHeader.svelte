@@ -1,90 +1,94 @@
 <script>
-  import { onDestroy } from 'svelte'
-  import { fade } from 'svelte/transition'
-  import { activeChannel, channels, kanbanData, daemonStatus, repoStatus, repoStatuses } from './store.js'
-  import { formatRelativeTime } from './utils.js'
+import { onDestroy } from "svelte";
+import { fade } from "svelte/transition";
+import { activeChannel, channels, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.js";
+import { formatRelativeTime } from "./utils.js";
 
-  let isMultiRepo = $derived($repoStatuses.length > 1)
+let isMultiRepo = $derived($repoStatuses.length > 1);
 
-  // DM channel detection: use is_dm field from store, or dm- name prefix as fallback
-  let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null)
-  let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
-  let dmPeerName = $derived($activeChannel.startsWith('dm-') ? $activeChannel.slice(3) : $activeChannel)
+// DM channel detection: use is_dm field from store, or dm- name prefix as fallback
+let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null);
+let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
+let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
 
-  function ciInfo(status) {
-    switch (status) {
-      case 'passed': return { char: '●', color: 'hsl(var(--status-green))' }
-      case 'failed': return { char: '●', color: 'hsl(var(--status-red))' }
-      case 'running':
-      case 'pending': return { char: '●', color: 'hsl(var(--status-amber))' }
-      default: return { char: '○', color: 'hsl(var(--muted-foreground))' }
-    }
-  }
+function ciInfo(status) {
+	switch (status) {
+		case "passed":
+			return { char: "●", color: "hsl(var(--status-green))" };
+		case "failed":
+			return { char: "●", color: "hsl(var(--status-red))" };
+		case "running":
+		case "pending":
+			return { char: "●", color: "hsl(var(--status-amber))" };
+		default:
+			return { char: "○", color: "hsl(var(--muted-foreground))" };
+	}
+}
 
-  // "Just merged" banner — mirrors CelebrationEffects hydration-guard pattern
-  const BANNER_DURATION_MS = 5 * 60 * 1000 // 5 minutes
-  const seenPrs = new Set()
-  const bannerTimers = new Map()
-  let hydrated = false
-  let recentMerges = $state([])
+// "Just merged" banner — mirrors CelebrationEffects hydration-guard pattern
+const BANNER_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const seenPrs = new Set();
+const bannerTimers = new Map();
+let hydrated = false;
+let recentMerges = $state([]);
 
-  function prKey(pr) {
-    return `${pr?.repo || 'default'}#${pr?.number ?? 'unknown'}`
-  }
+function prKey(pr) {
+	return `${pr?.repo || "default"}#${pr?.number ?? "unknown"}`;
+}
 
-  function getPrUrl(pr) {
-    if (pr.repo && $repoStatuses.length > 0) {
-      const info = $repoStatuses.find((s) => s.label === pr.repo)
-      if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`
-    }
-    if ($repoStatus.fullName) return `https://github.com/${$repoStatus.fullName}/pull/${pr.number}`
-    return null
-  }
+function getPrUrl(pr) {
+	if (pr.repo && $repoStatuses.length > 0) {
+		const info = $repoStatuses.find((s) => s.label === pr.repo);
+		if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`;
+	}
+	if ($repoStatus.fullName) return `https://github.com/${$repoStatus.fullName}/pull/${pr.number}`;
+	return null;
+}
 
-  function addMergeBanner(pr) {
-    const key = prKey(pr)
-    if (bannerTimers.has(key)) return
-    const url = getPrUrl(pr)
-    recentMerges = [...recentMerges, { key, pr, url }]
-    const timer = setTimeout(() => {
-      recentMerges = recentMerges.filter((m) => m.key !== key)
-      bannerTimers.delete(key)
-    }, BANNER_DURATION_MS)
-    bannerTimers.set(key, timer)
-  }
+function addMergeBanner(pr) {
+	const key = prKey(pr);
+	if (bannerTimers.has(key)) return;
+	const url = getPrUrl(pr);
+	recentMerges = [...recentMerges, { key, pr, url }];
+	const timer = setTimeout(() => {
+		recentMerges = recentMerges.filter((m) => m.key !== key);
+		bannerTimers.delete(key);
+	}, BANNER_DURATION_MS);
+	bannerTimers.set(key, timer);
+}
 
-  $effect(() => {
-    const ready = Boolean($daemonStatus)
-    if (!ready) return
-    const done = $kanbanData.done || []
-    if (!hydrated) {
-      done.forEach((pr) => seenPrs.add(prKey(pr)))
-      hydrated = true
-      return
-    }
-    for (const pr of done) {
-      const key = prKey(pr)
-      if (!seenPrs.has(key)) {
-        seenPrs.add(key)
-        addMergeBanner(pr)
-      }
-    }
-  })
+$effect(() => {
+	const ready = Boolean($daemonStatus);
+	if (!ready) return;
+	const done = $kanbanData.done || [];
+	if (!hydrated) {
+		done.forEach((pr) => seenPrs.add(prKey(pr)));
+		hydrated = true;
+		return;
+	}
+	for (const pr of done) {
+		const key = prKey(pr);
+		if (!seenPrs.has(key)) {
+			seenPrs.add(key);
+			addMergeBanner(pr);
+		}
+	}
+});
 
-  $effect(() => {
-    if (!$daemonStatus) {
-      recentMerges = []
-      bannerTimers.forEach((t) => clearTimeout(t))
-      bannerTimers.clear()
-      seenPrs.clear()
-      hydrated = false
-    }
-  })
+$effect(() => {
+	if (!$daemonStatus) {
+		recentMerges = [];
+		bannerTimers.forEach((t) => clearTimeout(t));
+		bannerTimers.clear();
+		seenPrs.clear();
+		hydrated = false;
+	}
+});
 
-  onDestroy(() => {
-    bannerTimers.forEach((t) => clearTimeout(t))
-    bannerTimers.clear()
-  })
+onDestroy(() => {
+	bannerTimers.forEach((t) => clearTimeout(t));
+	bannerTimers.clear();
+});
 </script>
 
 <div class="hidden md:block bg-card shrink-0">

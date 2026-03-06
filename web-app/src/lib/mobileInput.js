@@ -12,10 +12,14 @@
  * @param {() => void} syncBinding - re-sets the Svelte state binding to ''
  */
 export function clearMobileTextarea(element, syncBinding) {
-  if (!element) return
-  element.value = ''
-  element.addEventListener('compositionend', () => {
-    element.value = ''
-    syncBinding()
-  }, { once: true })
+	if (!element) return;
+	element.value = "";
+	element.addEventListener(
+		"compositionend",
+		() => {
+			element.value = "";
+			syncBinding();
+		},
+		{ once: true },
+	);
 }

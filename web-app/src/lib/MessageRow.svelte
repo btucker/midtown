@@ -1,85 +1,95 @@
 <script>
-  import { getSenderColor, isDimSender, formatTime, formatTimeCompact, senderChanged, timeChanged, getPermalinkUrl } from './messageUtils.js'
-  import { renderContent } from './markdown.js'
-  import { getApiBase, selectDm } from './api.js'
-  import { activeProject, coworkers } from './store.js'
-  import GitFork from '@lucide/svelte/icons/git-fork'
+import GitFork from "@lucide/svelte/icons/git-fork";
+import { getApiBase, selectDm } from "./api.js";
+import { renderContent } from "./markdown.js";
+import {
+	formatTime,
+	formatTimeCompact,
+	getPermalinkUrl,
+	getSenderColor,
+	isDimSender,
+	senderChanged,
+	timeChanged,
+} from "./messageUtils.js";
+import { activeProject, coworkers } from "./store.js";
 
-  const AVATAR_SIZE = '2.4rem'
-  const AVATAR_GAP = '0.5rem'
+const AVATAR_SIZE = "2.4rem";
+const AVATAR_GAP = "0.5rem";
 
-  let {
-    msg,
-    msgs,
-    index,
-    senderOverrides = undefined,
-    dimSenders = undefined,
-    senderSpacing = '1.5em',
-    senderClass = '',
-    currentTask = undefined,
-    channelName = undefined,
-    threadParentId = undefined,
-    isDedicatedSession = false,
-    forkParentLead = undefined,
-    class: extraClass = '',
-    children = undefined,
-  } = $props()
+let {
+	msg,
+	msgs,
+	index,
+	senderOverrides = undefined,
+	dimSenders = undefined,
+	senderSpacing = "1.5em",
+	senderClass = "",
+	currentTask = undefined,
+	channelName = undefined,
+	threadParentId = undefined,
+	isDedicatedSession = false,
+	forkParentLead = undefined,
+	class: extraClass = "",
+	children = undefined,
+} = $props();
 
-  const TASK_DIVIDER_RE = /^─── Task !.+───$/
+const TASK_DIVIDER_RE = /^─── Task !.+───$/;
 
-  function isTaskDivider(msg) {
-    return msg.from === 'midtown' && TASK_DIVIDER_RE.test((msg.content || '').trim())
-  }
+function isTaskDivider(msg) {
+	return msg.from === "midtown" && TASK_DIVIDER_RE.test((msg.content || "").trim());
+}
 
-  // renderContent() wraps output in block-level <p> tags via marked.parse().
-  // Strip the outer <p>...</p> so the label can sit inline within the divider flex row.
-  function renderInline(text) {
-    return renderContent(text, getApiBase()).replace(/^<p>/, '').replace(/<\/p>\s*$/, '')
-  }
+// renderContent() wraps output in block-level <p> tags via marked.parse().
+// Strip the outer <p>...</p> so the label can sit inline within the divider flex row.
+function renderInline(text) {
+	return renderContent(text, getApiBase())
+		.replace(/^<p>/, "")
+		.replace(/<\/p>\s*$/, "");
+}
 
-  function avatarLetter(name) {
-    return (name || '?')[0].toUpperCase()
-  }
+function avatarLetter(name) {
+	return (name || "?")[0].toUpperCase();
+}
 
-  // When in a dedicated fork session with a known parent lead, display the
-  // parent lead's name/color instead of the fork session's "fork-XXXX" name.
-  let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead)
-  let displayName = $derived(isForkWithParent ? forkParentLead : msg.from)
-  let displayColor = $derived(getSenderColor(displayName, senderOverrides, channelName))
+// When in a dedicated fork session with a known parent lead, display the
+// parent lead's name/color instead of the fork session's "fork-XXXX" name.
+let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead);
+let displayName = $derived(isForkWithParent ? forkParentLead : msg.from);
+let displayColor = $derived(getSenderColor(displayName, senderOverrides, channelName));
 
-  const coworkerNames = $derived(new Set($coworkers.map(cw => cw.name)))
+const coworkerNames = $derived(new Set($coworkers.map((cw) => cw.name)));
 
-  function handleSenderClick(name) {
-    if (coworkerNames.has(name)) selectDm(name)
-  }
+function handleSenderClick(name) {
+	if (coworkerNames.has(name)) selectDm(name);
+}
 
-  let permalinkUrl = $derived(
-    channelName && msg?.id
-      ? getPermalinkUrl($activeProject, channelName, msg.id, threadParentId)
-      : ''
-  )
+let permalinkUrl = $derived(
+	channelName && msg?.id ? getPermalinkUrl($activeProject, channelName, msg.id, threadParentId) : "",
+);
 
-  let copiedTooltip = $state(false)
-  let tooltipTimeout = null
+let copiedTooltip = $state(false);
+let tooltipTimeout = null;
 
-  // Clean up tooltip timeout when component is destroyed
-  $effect(() => {
-    return () => {
-      if (tooltipTimeout) clearTimeout(tooltipTimeout)
-    }
-  })
+// Clean up tooltip timeout when component is destroyed
+$effect(() => {
+	return () => {
+		if (tooltipTimeout) clearTimeout(tooltipTimeout);
+	};
+});
 
-  function handleTimestampClick(e) {
-    if (!permalinkUrl) return
-    e.preventDefault()
-    e.stopPropagation()
-    const fullUrl = window.location.origin + permalinkUrl
-    navigator.clipboard.writeText(fullUrl).then(() => {
-      copiedTooltip = true
-      if (tooltipTimeout) clearTimeout(tooltipTimeout)
-      tooltipTimeout = setTimeout(() => { copiedTooltip = false }, 1500)
-    })
-  }
+function handleTimestampClick(e) {
+	if (!permalinkUrl) return;
+	e.preventDefault();
+	e.stopPropagation();
+	const fullUrl = window.location.origin + permalinkUrl;
+	navigator.clipboard.writeText(fullUrl).then(() => {
+		copiedTooltip = true;
+		if (tooltipTimeout) clearTimeout(tooltipTimeout);
+		tooltipTimeout = setTimeout(() => {
+			copiedTooltip = false;
+		}, 1500);
+	});
+}
 </script>
 
 {#if isTaskDivider(msg)}

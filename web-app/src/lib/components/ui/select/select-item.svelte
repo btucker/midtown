@@ -1,16 +1,9 @@
 <script>
-	import CheckIcon from "@lucide/svelte/icons/check";
-	import { Select as SelectPrimitive } from "bits-ui";
-	import { cn } from "$lib/utils.js";
+import CheckIcon from "@lucide/svelte/icons/check";
+import { Select as SelectPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		value,
-		label,
-		children: childrenProp,
-		...restProps
-	} = $props();
+let { ref = $bindable(null), class: className, value, label, children: childrenProp, ...restProps } = $props();
 </script>
 
 <SelectPrimitive.Item

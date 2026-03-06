@@ -1,109 +1,115 @@
 <script>
-  import { authProfilesByProvider, usageData, authSwitching } from './store.js'
-  import { fetchAllAuthProfiles, switchAuthProfile, startAuthLogin } from './api.js'
-  import { estimateTimeToFull, formatResetTime, usageColor } from './usage-utils.js'
-  import { onMount } from 'svelte'
+import { onMount } from "svelte";
+import { fetchAllAuthProfiles, startAuthLogin, switchAuthProfile } from "./api.js";
+import { authProfilesByProvider, authSwitching, usageData } from "./store.js";
+import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.js";
 
-  let { footerLeft } = $props()
-  let listExpanded = $state(false)
-  let expandedKey = $state(null)
-  let switchingKey = $state(null)
-  let error = $state(null)
-  let showAddHint = $state(false)
-  let loginKey = $state(null)
+let { footerLeft } = $props();
+let listExpanded = $state(false);
+let expandedKey = $state(null);
+let switchingKey = $state(null);
+let error = $state(null);
+let showAddHint = $state(false);
+let loginKey = $state(null);
 
-  async function handleLogin(profileName, provider, event) {
-    event.stopPropagation()
-    loginKey = profileName
-    error = null
-    const result = await startAuthLogin(profileName, provider)
-    loginKey = null
-    if (result.ok) {
-      // CLI opens the browser automatically — poll for credentials
-      setTimeout(() => fetchAllAuthProfiles(), 5000)
-    } else {
-      error = result.error
-      setTimeout(() => { error = null }, 5000)
-    }
-  }
+async function handleLogin(profileName, provider, event) {
+	event.stopPropagation();
+	loginKey = profileName;
+	error = null;
+	const result = await startAuthLogin(profileName, provider);
+	loginKey = null;
+	if (result.ok) {
+		// CLI opens the browser automatically — poll for credentials
+		setTimeout(() => fetchAllAuthProfiles(), 5000);
+	} else {
+		error = result.error;
+		setTimeout(() => {
+			error = null;
+		}, 5000);
+	}
+}
 
-  onMount(() => {
-    fetchAllAuthProfiles()
-  })
+onMount(() => {
+	fetchAllAuthProfiles();
+});
 
-  // Flatten all profiles across providers, augmented with usage data
-  const allProfiles = $derived((() => {
-    const providers = Object.keys($authProfilesByProvider)
+// Flatten all profiles across providers, augmented with usage data
+const allProfiles = $derived(
+	(() => {
+		const providers = Object.keys($authProfilesByProvider);
 
-    if (providers.length === 0) {
-      // No auth profiles yet — show usage-only entries as a fallback
-      return $usageData.map(u => ({
-        key: `${u.provider}/${u.profile}`,
-        name: u.profile,
-        displayName: u.account_email || u.profile,
-        provider: u.provider,
-        is_current: false,
-        has_credentials: true,
-        usage: u,
-      }))
-    }
+		if (providers.length === 0) {
+			// No auth profiles yet — show usage-only entries as a fallback
+			return $usageData.map((u) => ({
+				key: `${u.provider}/${u.profile}`,
+				name: u.profile,
+				displayName: u.account_email || u.profile,
+				provider: u.provider,
+				is_current: false,
+				has_credentials: true,
+				usage: u,
+			}));
+		}
 
-    const profiles = []
-    for (const [provider, providerProfiles] of Object.entries($authProfilesByProvider)) {
-      for (const profile of providerProfiles) {
-        const usage = $usageData.find(u => u.provider === provider && u.profile === profile.name)
-        profiles.push({
-          key: `${provider}/${profile.name}`,
-          name: profile.name,
-          displayName: usage?.account_email || profile.name,
-          provider,
-          is_current: profile.is_current,
-          has_credentials: profile.has_credentials,
-          usage,
-        })
-      }
-    }
+		const profiles = [];
+		for (const [provider, providerProfiles] of Object.entries($authProfilesByProvider)) {
+			for (const profile of providerProfiles) {
+				const usage = $usageData.find((u) => u.provider === provider && u.profile === profile.name);
+				profiles.push({
+					key: `${provider}/${profile.name}`,
+					name: profile.name,
+					displayName: usage?.account_email || profile.name,
+					provider,
+					is_current: profile.is_current,
+					has_credentials: profile.has_credentials,
+					usage,
+				});
+			}
+		}
 
-    // Sort: current first, then by name
-    return profiles.sort((a, b) => {
-      if (a.is_current && !b.is_current) return -1
-      if (!a.is_current && b.is_current) return 1
-      return a.name.localeCompare(b.name)
-    })
-  })())
+		// Sort: current first, then by name
+		return profiles.sort((a, b) => {
+			if (a.is_current && !b.is_current) return -1;
+			if (!a.is_current && b.is_current) return 1;
+			return a.name.localeCompare(b.name);
+		});
+	})(),
+);
 
-  const activeProfiles = $derived(allProfiles.filter(p => p.is_current))
-  const inactiveProfiles = $derived(allProfiles.filter(p => !p.is_current))
-  const hasMultipleProviders = $derived(Object.keys($authProfilesByProvider).length > 1)
+const activeProfiles = $derived(allProfiles.filter((p) => p.is_current));
+const inactiveProfiles = $derived(allProfiles.filter((p) => !p.is_current));
+const hasMultipleProviders = $derived(Object.keys($authProfilesByProvider).length > 1);
 
-  function toggleList() {
-    listExpanded = !listExpanded
-    if (!listExpanded) {
-      showAddHint = false
-      expandedKey = null
-    }
-  }
+function toggleList() {
+	listExpanded = !listExpanded;
+	if (!listExpanded) {
+		showAddHint = false;
+		expandedKey = null;
+	}
+}
 
-  function toggleDetail(key) {
-    expandedKey = expandedKey === key ? null : key
-  }
+function toggleDetail(key) {
+	expandedKey = expandedKey === key ? null : key;
+}
 
-  async function handleRowClick(profile) {
-    if (profile.is_current) {
-      toggleDetail(profile.key)
-    } else if (!profile.has_credentials) {
-      toggleDetail(profile.key)
-    } else if (!$authSwitching) {
-      error = null
-      switchingKey = profile.key
-      const result = await switchAuthProfile(profile.name, profile.provider)
-      switchingKey = null
-      if (!result.ok) {
-        error = result.error
-        setTimeout(() => { error = null }, 5000)
-      }
-    }
-  }
+async function handleRowClick(profile) {
+	if (profile.is_current) {
+		toggleDetail(profile.key);
+	} else if (!profile.has_credentials) {
+		toggleDetail(profile.key);
+	} else if (!$authSwitching) {
+		error = null;
+		switchingKey = profile.key;
+		const result = await switchAuthProfile(profile.name, profile.provider);
+		switchingKey = null;
+		if (!result.ok) {
+			error = result.error;
+			setTimeout(() => {
+				error = null;
+			}, 5000);
+		}
+	}
+}
 </script>
 
 {#snippet profileRow(profile)}

@@ -1,83 +1,77 @@
 <script>
-  import { kanbanData, coworkers, repoStatus, repoStatuses, channels, activeChannel, daemonStatus } from './store.js'
-  import { selectDm, openTaskThread } from './api.js'
-  import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
-  import { renderContent } from './markdown.js'
-  import { getSenderColor } from './messageUtils.js'
-  import Feather from '@lucide/svelte/icons/feather'
-  import Search from '@lucide/svelte/icons/search'
-  import Github from '@lucide/svelte/icons/github'
-  import CircleCheck from '@lucide/svelte/icons/circle-check'
-  import CircleX from '@lucide/svelte/icons/circle-x'
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle'
+import CircleCheck from "@lucide/svelte/icons/circle-check";
+import CircleX from "@lucide/svelte/icons/circle-x";
+import Feather from "@lucide/svelte/icons/feather";
+import Github from "@lucide/svelte/icons/github";
+import LoaderCircle from "@lucide/svelte/icons/loader-circle";
+import Search from "@lucide/svelte/icons/search";
+import { openTaskThread, selectDm } from "./api.js";
+import { getPrUrl as getPrUrlUtil } from "./channelUtils.js";
+import { renderContent } from "./markdown.js";
+import { getSenderColor } from "./messageUtils.js";
+import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.js";
 
-  let { task, cw = null, reviewer = null, reviewPosted = false, onclick = null, variant = 'row' } = $props()
+let { task, cw = null, reviewer = null, reviewPosted = false, onclick = null, variant = "row" } = $props();
 
-  const isCard = $derived(variant === 'card')
-  const isActive = $derived(task.status === 'in_progress')
-  const isBlocked = $derived(task.blocked_by?.length > 0)
+const isCard = $derived(variant === "card");
+const isActive = $derived(task.status === "in_progress");
+const isBlocked = $derived(task.blocked_by?.length > 0);
 
-  // Card-only: auto-derive coworker/reviewer from stores
-  const cwMap = $derived(isCard ? new Map($coworkers.map(c => [c.name, c])) : null)
-  const relatedPr = $derived(
-    isCard ? $kanbanData.review.find((pr) => String(pr.task_id) === String(task.id)) : null
-  )
-  const effectiveCw = $derived(isCard ? (task.owner ? cwMap?.get(task.owner) ?? null : null) : cw)
-  const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer)
-  const effectiveReviewPosted = $derived(isCard ? (relatedPr?.review_posted || false) : reviewPosted)
-  const hasProgress = $derived(effectiveCw?.progress != null)
+// Card-only: auto-derive coworker/reviewer from stores
+const cwMap = $derived(isCard ? new Map($coworkers.map((c) => [c.name, c])) : null);
+const relatedPr = $derived(isCard ? $kanbanData.review.find((pr) => String(pr.task_id) === String(task.id)) : null);
+const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? null) : null) : cw);
+const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
+const effectiveReviewPosted = $derived(isCard ? relatedPr?.review_posted || false : reviewPosted);
+const hasProgress = $derived(effectiveCw?.progress != null);
 
-  const prUrl = $derived(
-    relatedPr && $repoStatus.fullName
-      ? `https://github.com/${$repoStatus.fullName}/pull/${relatedPr.number}`
-      : null
-  )
-  const descriptionHtml = $derived(
-    isCard && task.description ? renderContent(task.description) : ''
-  )
+const prUrl = $derived(
+	relatedPr && $repoStatus.fullName ? `https://github.com/${$repoStatus.fullName}/pull/${relatedPr.number}` : null,
+);
+const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
-  function statusBarColor(task) {
-    if (task.status === 'done') return 'hsl(var(--accent-green, 142 71% 45%))'
-    if (task.status !== 'in_progress') return 'hsl(var(--muted-foreground) / 0.3)'
-    if (task.owner) return getSenderColor(task.owner)
-    return 'hsl(var(--accent-teal))'
-  }
+function statusBarColor(task) {
+	if (task.status === "done") return "hsl(var(--accent-green, 142 71% 45%))";
+	if (task.status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
+	if (task.owner) return getSenderColor(task.owner);
+	return "hsl(var(--accent-teal))";
+}
 
-  function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
-    const segments = []
-    if (!reviewer) {
-      segments.push({ width: (cwProgress / 100) * 70, color: ownerColor })
-    } else if (!reviewPosted) {
-      segments.push({ width: 70, color: ownerColor })
-      segments.push({ width: 20, color: reviewerColor })
-    } else {
-      segments.push({ width: 70, color: ownerColor })
-      segments.push({ width: 20, color: reviewerColor })
-    }
-    return segments
-  }
+function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
+	const segments = [];
+	if (!reviewer) {
+		segments.push({ width: (cwProgress / 100) * 70, color: ownerColor });
+	} else if (!reviewPosted) {
+		segments.push({ width: 70, color: ownerColor });
+		segments.push({ width: 20, color: reviewerColor });
+	} else {
+		segments.push({ width: 70, color: ownerColor });
+		segments.push({ width: 20, color: reviewerColor });
+	}
+	return segments;
+}
 
-  function handleDescriptionClick(e) {
-    const target = e.target
-    if (target.classList.contains('channel-link')) {
-      e.preventDefault()
-      const name = target.dataset.channel
-      if ($channels.some((ch) => ch.name === name)) $activeChannel = name
-    } else if (target.classList.contains('task-link')) {
-      e.preventDefault()
-      const taskId = target.dataset.task
-      const tasks = $daemonStatus?.tasks || []
-      const found = tasks.find((t) => String(t.id) === String(taskId))
-      if (found) openTaskThread(found, found.channel || $activeChannel)
-    } else if (target.classList.contains('pr-link')) {
-      e.preventDefault()
-      const prNum = target.dataset.pr
-      const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
-      if (url) window.open(url, '_blank', 'noopener')
-    } else if (target.classList.contains('coworker-link')) {
-      e.preventDefault()
-    }
-  }
+function handleDescriptionClick(e) {
+	const target = e.target;
+	if (target.classList.contains("channel-link")) {
+		e.preventDefault();
+		const name = target.dataset.channel;
+		if ($channels.some((ch) => ch.name === name)) $activeChannel = name;
+	} else if (target.classList.contains("task-link")) {
+		e.preventDefault();
+		const taskId = target.dataset.task;
+		const tasks = $daemonStatus?.tasks || [];
+		const found = tasks.find((t) => String(t.id) === String(taskId));
+		if (found) openTaskThread(found, found.channel || $activeChannel);
+	} else if (target.classList.contains("pr-link")) {
+		e.preventDefault();
+		const prNum = target.dataset.pr;
+		const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName);
+		if (url) window.open(url, "_blank", "noopener");
+	} else if (target.classList.contains("coworker-link")) {
+		e.preventDefault();
+	}
+}
 </script>
 
 <button

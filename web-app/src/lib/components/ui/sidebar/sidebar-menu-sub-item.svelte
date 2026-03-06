@@ -1,11 +1,7 @@
 <script>
-	import { cn } from "$lib/utils.js";
-	let {
-		ref = $bindable(null),
-		children,
-		class: className,
-		...restProps
-	} = $props();
+import { cn } from "$lib/utils.js";
+
+let { ref = $bindable(null), children, class: className, ...restProps } = $props();
 </script>
 
 <li

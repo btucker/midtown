@@ -1,14 +1,8 @@
 <script>
-	import { cn } from "$lib/utils.js";
-	import { Command as CommandPrimitive } from "bits-ui";
+import { Command as CommandPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
 
-	let {
-		api = $bindable(null),
-		ref = $bindable(null),
-		value = $bindable(""),
-		class: className,
-		...restProps
-	} = $props();
+let { api = $bindable(null), ref = $bindable(null), value = $bindable(""), class: className, ...restProps } = $props();
 </script>
 
 <CommandPrimitive.Root

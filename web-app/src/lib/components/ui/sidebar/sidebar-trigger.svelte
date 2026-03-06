@@ -1,17 +1,12 @@
 <script>
-	import { Button } from "$lib/components/ui/button/index.js";
-	import { cn } from "$lib/utils.js";
-	import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
-	import { useSidebar } from "./context.svelte.js";
+import PanelLeftIcon from "@lucide/svelte/icons/panel-left";
+import { Button } from "$lib/components/ui/button/index.js";
+import { cn } from "$lib/utils.js";
+import { useSidebar } from "./context.svelte.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		onclick,
-		...restProps
-	} = $props();
+let { ref = $bindable(null), class: className, onclick, ...restProps } = $props();
 
-	const sidebar = useSidebar();
+const sidebar = useSidebar();
 </script>
 
 <Button

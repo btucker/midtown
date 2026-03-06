@@ -11,9 +11,12 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:sw": "npm run build && TEST_SW=1 playwright test sw-update",
-    "generate-pwa-assets": "pwa-assets-generator"
+    "generate-pwa-assets": "pwa-assets-generator",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write ."
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.6",
     "@internationalized/date": "^3.11.0",
     "@lucide/svelte": "^0.561.0",
     "@playwright/test": "^1.58.0",
