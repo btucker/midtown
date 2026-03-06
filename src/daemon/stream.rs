@@ -6,6 +6,7 @@
 
 use super::effects::Effect;
 use crate::headless::StreamEvent;
+use crate::message::ToolBlock;
 use std::collections::{HashMap, HashSet};
 
 fn extract_text_blocks(message: &serde_json::Value) -> String {
@@ -122,6 +123,8 @@ pub fn process_lead_output(
                 auto_output: true,
                 message_type: None,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             });
         }
     }
@@ -138,6 +141,8 @@ pub fn process_lead_output(
                     auto_output: true,
                     message_type: None,
                     nudge_type: None,
+                    tool_data: None,
+                    provider: None,
                 });
             }
         }
@@ -155,12 +160,135 @@ pub fn process_lead_output(
                     auto_output: true,
                     message_type: None,
                     nudge_type: None,
+                    tool_data: None,
+                    provider: None,
                 });
             }
         }
     }
 
     effects
+}
+
+/// Detect the AI provider from stream events.
+///
+/// Returns `Some("codex")` if any event carries `extra.provider == "codex"`,
+/// otherwise `Some("claude")` if any Assistant events are present, or `None`.
+fn detect_provider(events: &[StreamEvent]) -> Option<String> {
+    let mut has_assistant = false;
+    for event in events {
+        if let StreamEvent::Assistant { extra, .. } = event {
+            has_assistant = true;
+            if extra.get("provider").and_then(|v| v.as_str()) == Some("codex") {
+                return Some("codex".to_string());
+            }
+        }
+    }
+    if has_assistant {
+        Some("claude".to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract structured ToolBlock data from stream events.
+///
+/// Pairs `tool_use` blocks from Assistant events with `tool_result` blocks
+/// from User events by `call_id`. The raw input/output JSON is preserved
+/// so the client can render tool-specific UI.
+fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
+    // Collect tool results keyed by call_id.
+    let mut results: HashMap<String, (serde_json::Value, bool)> = HashMap::new();
+    for event in events {
+        if let StreamEvent::User { message, .. } = event
+            && let Some(content) = message.get("content")
+            && let Some(arr) = content.as_array()
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    let call_id = block
+                        .get("tool_use_id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let output = extract_tool_result_json(block);
+                    results.insert(call_id, (output, is_error));
+                }
+            }
+        }
+    }
+
+    // Extract tool calls with their results.
+    let mut blocks = Vec::new();
+    for event in events {
+        if let StreamEvent::Assistant { message, .. } = event
+            && let Some(content) = message.get("content")
+            && let Some(arr) = content.as_array()
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let name = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let call_id = block
+                        .get("id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let (output, error) = match results.get(&call_id) {
+                        Some((out, is_err)) => (Some(out.clone()), *is_err),
+                        None => (None, false),
+                    };
+                    blocks.push(ToolBlock {
+                        tool_name: name,
+                        input,
+                        output,
+                        error,
+                    });
+                }
+            }
+        }
+    }
+
+    blocks
+}
+
+/// Extract tool result content as a JSON value for structured storage.
+///
+/// Returns the content as-is (string or array of text blocks), truncated
+/// to the DM channel size limit.
+fn extract_tool_result_json(block: &serde_json::Value) -> serde_json::Value {
+    match block.get("content") {
+        Some(serde_json::Value::String(s)) => {
+            let truncated = truncate_str(s, MAX_DM_TOOL_OUTPUT_BYTES);
+            serde_json::Value::String(truncated.to_string())
+        }
+        Some(serde_json::Value::Array(arr)) => {
+            // Extract text from text blocks and concatenate
+            let text: String = arr
+                .iter()
+                .filter_map(|item| {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                        item.get("text").and_then(|t| t.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            let truncated = truncate_str(&text, MAX_DM_TOOL_OUTPUT_BYTES);
+            serde_json::Value::String(truncated.to_string())
+        }
+        _ => serde_json::Value::Null,
+    }
 }
 
 /// Process coworker output and generate DM channel posting effects.
@@ -170,8 +298,9 @@ pub fn process_lead_output(
 /// (there's no distinction between "auto" and "explicit" output).
 ///
 /// For each coworker session, posts:
-/// - Text output (assistant prose)
-/// - Fully rendered tool calls with details (diffs, command output, etc.)
+/// - Text output (assistant prose) with provider metadata
+/// - Structured tool calls as `tool_data` on the message (raw JSON for client rendering)
+///   plus a markdown fallback in `content` for backward compatibility
 ///
 /// `coworker_names` is the set of active coworker session names (excluding the
 /// main lead, channel leads, and fork-bound sessions).
@@ -184,6 +313,7 @@ pub fn process_coworker_output(
     for name in coworker_names {
         if let Some(coworker_events) = events.get(name.as_str()) {
             let dm_channel = format!("dm-{}", name);
+            let provider = detect_provider(coworker_events);
 
             // Post text output (assistant prose).
             let trimmed = extract_assistant_text(coworker_events).trim().to_string();
@@ -195,12 +325,16 @@ pub fn process_coworker_output(
                     auto_output: false,
                     message_type: None,
                     nudge_type: None,
+                    tool_data: None,
+                    provider: provider.clone(),
                 });
             }
 
-            // Post fully rendered tool calls so DM channels show the complete agent stream.
-            let tool_md = render_dm_tool_blocks(coworker_events);
-            if !tool_md.is_empty() {
+            // Post structured tool calls with markdown fallback.
+            let tool_blocks = extract_tool_blocks(coworker_events);
+            if !tool_blocks.is_empty() {
+                // Keep markdown rendering as the `content` field for backward compat
+                let tool_md = render_dm_tool_blocks(coworker_events);
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
                     message: tool_md,
@@ -208,6 +342,8 @@ pub fn process_coworker_output(
                     auto_output: false,
                     message_type: None,
                     nudge_type: None,
+                    tool_data: Some(tool_blocks),
+                    provider: provider.clone(),
                 });
             }
         }

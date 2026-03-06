@@ -4,6 +4,25 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// A structured tool call block from a coworker's stream.
+///
+/// Preserves the raw tool call data so the client can render tool-specific UI
+/// (syntax-highlighted diffs, collapsible bash output, todo checklists, etc.)
+/// instead of receiving pre-formatted markdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolBlock {
+    /// Tool name (e.g., "Edit", "Bash", "TodoWrite", "Read")
+    pub tool_name: String,
+    /// Raw tool input (file_path, command, todos, etc.)
+    pub input: serde_json::Value,
+    /// Raw tool result output (if captured)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    /// Whether the tool call resulted in an error
+    #[serde(default)]
+    pub error: bool,
+}
+
 /// Types of messages that can be sent through a channel.
 ///
 /// # Examples
@@ -130,6 +149,15 @@ pub struct Message {
     /// "mention", "review_assigned", etc. map to `WakeReason` variants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nudge_type: Option<String>,
+    /// Structured tool call data from a coworker's stream. When present, the
+    /// client can render tool-specific UI instead of plain markdown.
+    /// `None` for text-only messages and legacy messages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_data: Option<Vec<ToolBlock>>,
+    /// AI provider that produced this message (e.g., "claude", "codex").
+    /// Used by the client to apply provider-specific rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -165,6 +193,8 @@ impl Message {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         }
     }
 
@@ -195,6 +225,8 @@ impl Message {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         }
     }
 
@@ -429,6 +461,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }
@@ -493,5 +527,60 @@ mod tests {
         }"#;
         let msg: Message = serde_json::from_str(old_json).unwrap();
         assert_eq!(msg.thread_parent_id, None);
+    }
+
+    #[test]
+    fn test_tool_data_defaults_to_none() {
+        let msg = Message::text("agent1", "Hello");
+        assert!(msg.tool_data.is_none());
+        assert!(msg.provider.is_none());
+    }
+
+    #[test]
+    fn test_tool_data_not_serialized_when_none() {
+        let msg = Message::text("agent1", "Hello");
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("tool_data"),
+            "None tool_data should be omitted"
+        );
+        assert!(
+            !json.contains("provider"),
+            "None provider should be omitted"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_no_tool_data() {
+        let old_json = r#"{
+            "id": "test-id",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "from": "agent1",
+            "content": "Hello",
+            "type": "text"
+        }"#;
+        let msg: Message = serde_json::from_str(old_json).unwrap();
+        assert!(msg.tool_data.is_none());
+        assert!(msg.provider.is_none());
+    }
+
+    #[test]
+    fn test_tool_data_serialization_roundtrip() {
+        let mut msg = Message::text("agent1", "");
+        msg.tool_data = Some(vec![ToolBlock {
+            tool_name: "Bash".to_string(),
+            input: serde_json::json!({"command": "ls"}),
+            output: Some(serde_json::json!("file1\nfile2")),
+            error: false,
+        }]);
+        msg.provider = Some("claude".to_string());
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("tool_data"));
+        assert!(json.contains("provider"));
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        let blocks = parsed.tool_data.unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].tool_name, "Bash");
+        assert_eq!(parsed.provider, Some("claude".to_string()));
     }
 }

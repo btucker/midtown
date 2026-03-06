@@ -129,6 +129,13 @@ pub enum Effect {
         /// Specific nudge variant for client-side rendering (e.g. "task_assigned").
         /// Only meaningful when `message_type` is `Nudge`.
         nudge_type: Option<String>,
+        /// Structured tool call data for DM channel messages.
+        /// When present, the Message will carry raw tool blocks for client-side rendering.
+        #[allow(dead_code)]
+        tool_data: Option<Vec<crate::message::ToolBlock>>,
+        /// AI provider that produced this message (e.g., "claude", "codex").
+        #[allow(dead_code)]
+        provider: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     ///
@@ -857,6 +864,8 @@ async fn send_session_nudge(
                     auto_output: false,
                     message_type: Some(crate::message::MessageType::Nudge),
                     nudge_type: Some(reason.nudge_type().to_owned()),
+                    tool_data: None,
+                    provider: None,
                 });
             }
             Some(follow_up)
@@ -1062,6 +1071,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 auto_output,
                 message_type,
                 nudge_type,
+                tool_data,
+                provider,
             } => {
                 let has_explicit_channel = channel.is_some();
                 let msg_type = message_type.unwrap_or(crate::message::MessageType::Text);
@@ -1106,6 +1117,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 };
                 msg.auto_output = auto_output;
                 msg.nudge_type = nudge_type;
+                msg.tool_data = tool_data;
+                msg.provider = provider;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }

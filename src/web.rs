@@ -288,6 +288,12 @@ pub struct ChannelMessageData {
     /// Only set when `msg_type` is `"nudge"`. Maps to `WakeReason` variants.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nudge_type: Option<String>,
+    /// Structured tool call data from a coworker's stream.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_data: Option<Vec<crate::message::ToolBlock>>,
+    /// AI provider that produced this message (e.g., "claude", "codex").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -654,6 +660,8 @@ async fn api_channel_history(
                         reply_participants: None,
                         auto_output: m.auto_output,
                         nudge_type: m.nudge_type.clone(),
+                        tool_data: m.tool_data.clone(),
+                        provider: m.provider.clone(),
                     }
                 })
                 .collect()
@@ -721,6 +729,8 @@ async fn api_channel_history(
                         reply_participants,
                         auto_output: m.auto_output,
                         nudge_type: m.nudge_type,
+                        tool_data: m.tool_data.clone(),
+                        provider: m.provider.clone(),
                     }
                 })
                 .collect()
@@ -2481,6 +2491,8 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         reply_participants: None,
         auto_output: message.auto_output,
         nudge_type: message.nudge_type.clone(),
+        tool_data: message.tool_data.clone(),
+        provider: message.provider.clone(),
     })
 }
 

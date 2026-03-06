@@ -1720,3 +1720,285 @@ fn test_dm_tool_error_shown_for_non_bash_tools() {
         "error output should be shown: {md}"
     );
 }
+
+// ── detect_provider tests ────────────────────────────────────────────
+
+#[test]
+fn test_detect_provider_claude() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({"content": [{"type": "text", "text": "hello"}]}),
+        session_id: None,
+        extra: json!(null),
+    }];
+    assert_eq!(detect_provider(&events), Some("claude".to_string()));
+}
+
+#[test]
+fn test_detect_provider_codex() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({"content": [{"type": "text", "text": "hello"}]}),
+        session_id: None,
+        extra: json!({"provider": "codex"}),
+    }];
+    assert_eq!(detect_provider(&events), Some("codex".to_string()));
+}
+
+#[test]
+fn test_detect_provider_no_assistant_events() {
+    let events = vec![StreamEvent::User {
+        message: json!({"content": "user input"}),
+        extra: json!({}),
+    }];
+    assert_eq!(detect_provider(&events), None);
+}
+
+// ── extract_tool_blocks tests ────────────────────────────────────────
+
+#[test]
+fn test_extract_tool_blocks_bash_with_result() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Bash",
+                    "input": {"command": "cargo test"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::User {
+            message: json!({
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tc_1",
+                    "content": "test result: ok"
+                }]
+            }),
+            extra: json!(null),
+        },
+    ];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].tool_name, "Bash");
+    assert_eq!(
+        blocks[0].input.get("command").and_then(|v| v.as_str()),
+        Some("cargo test")
+    );
+    assert!(blocks[0].output.is_some());
+    assert!(!blocks[0].error);
+}
+
+#[test]
+fn test_extract_tool_blocks_error_result() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Read",
+                    "input": {"file_path": "missing.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        },
+        StreamEvent::User {
+            message: json!({
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "tc_1",
+                    "is_error": true,
+                    "content": "file not found"
+                }]
+            }),
+            extra: json!(null),
+        },
+    ];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].tool_name, "Read");
+    assert!(blocks[0].error);
+    assert_eq!(
+        blocks[0].output.as_ref().and_then(|v| v.as_str()),
+        Some("file not found")
+    );
+}
+
+#[test]
+fn test_extract_tool_blocks_no_result() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [{
+                "type": "tool_use",
+                "id": "tc_1",
+                "name": "Edit",
+                "input": {"file_path": "src/main.rs", "old_string": "a", "new_string": "b"}
+            }]
+        }),
+        session_id: None,
+        extra: json!(null),
+    }];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].tool_name, "Edit");
+    assert!(blocks[0].output.is_none());
+    assert!(!blocks[0].error);
+}
+
+#[test]
+fn test_extract_tool_blocks_multiple_calls() {
+    let events = vec![StreamEvent::Assistant {
+        message: json!({
+            "content": [
+                {"type": "tool_use", "id": "tc_1", "name": "Read", "input": {"file_path": "a.rs"}},
+                {"type": "tool_use", "id": "tc_2", "name": "Bash", "input": {"command": "ls"}}
+            ]
+        }),
+        session_id: None,
+        extra: json!(null),
+    }];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].tool_name, "Read");
+    assert_eq!(blocks[1].tool_name, "Bash");
+}
+
+// ── process_coworker_output tool_data tests ──────────────────────────
+
+#[test]
+fn test_process_coworker_output_tool_data_populated() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [
+                    {"type": "tool_use", "id": "tc_1", "name": "Bash", "input": {"command": "cargo test"}}
+                ]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            tool_data,
+            provider,
+            ..
+        } => {
+            assert!(tool_data.is_some(), "tool_data should be populated");
+            let blocks = tool_data.as_ref().unwrap();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Bash");
+            assert_eq!(provider.as_deref(), Some("claude"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_coworker_output_text_has_no_tool_data() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            tool_data,
+            provider,
+            ..
+        } => {
+            assert!(
+                tool_data.is_none(),
+                "text messages should not have tool_data"
+            );
+            assert_eq!(provider.as_deref(), Some("claude"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_coworker_output_codex_provider() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello"}]
+            }),
+            session_id: None,
+            extra: json!({"provider": "codex", "event": "item/completed"}),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { provider, .. } => {
+            assert_eq!(provider.as_deref(), Some("codex"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+// ── ToolBlock serialization tests ─────────────────────────────────────
+
+#[test]
+fn test_tool_block_serialization() {
+    let block = crate::message::ToolBlock {
+        tool_name: "Edit".to_string(),
+        input: json!({"file_path": "src/main.rs", "old_string": "a", "new_string": "b"}),
+        output: None,
+        error: false,
+    };
+    let json = serde_json::to_string(&block).unwrap();
+    assert!(json.contains("\"tool_name\":\"Edit\""));
+    assert!(
+        !json.contains("\"output\""),
+        "None output should be skipped"
+    );
+    assert!(json.contains("\"error\":false"));
+
+    let parsed: crate::message::ToolBlock = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.tool_name, "Edit");
+    assert!(parsed.output.is_none());
+}
+
+#[test]
+fn test_tool_block_with_output_serialization() {
+    let block = crate::message::ToolBlock {
+        tool_name: "Bash".to_string(),
+        input: json!({"command": "echo hi"}),
+        output: Some(json!("hi\n")),
+        error: false,
+    };
+    let json = serde_json::to_string(&block).unwrap();
+    let parsed: crate::message::ToolBlock = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.tool_name, "Bash");
+    assert_eq!(parsed.output, Some(json!("hi\n")));
+}

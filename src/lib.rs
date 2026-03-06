@@ -165,7 +165,7 @@ mod lib_tests;
 pub use channel::{Channel, ChannelInfo, ChannelRouter, SendResult, load_channel_notes};
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
 pub use cursor::Cursor;
-pub use message::{Message, MessageType};
+pub use message::{Message, MessageType, ToolBlock};
 pub use session_key::SessionKey;
 pub use usage::{UsageData, fetch_usage_for_profile};
 pub use worktree::{WorktreeError, WorktreeManager};

@@ -524,6 +524,8 @@ pub(super) async fn handle_coworker_report_state(
                             auto_output: false,
                             message_type: None,
                             nudge_type: None,
+                            tool_data: None,
+                            provider: None,
                         }];
                         effects::execute_effects(completion_effects, state).await;
                     }

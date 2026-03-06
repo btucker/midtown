@@ -186,6 +186,8 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     auto_output: false,
                     message_type: None,
                     nudge_type: None,
+                    tool_data: None,
+                    provider: None,
                 });
                 false
             }
@@ -323,6 +325,8 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                     auto_output: false,
                 message_type: None,
                 nudge_type: None,
+                    tool_data: None,
+                    provider: None,
                 });
                 effects.push(Effect::nudge_channel_lead(
                     &snap.project_name,
@@ -577,6 +581,8 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
@@ -672,6 +678,8 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             auto_output: false,
         message_type: None,
         nudge_type: None,
+                    tool_data: None,
+                    provider: None,
         });
     }
 
@@ -692,6 +700,8 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
@@ -790,6 +800,8 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         },
     ];
 
@@ -855,6 +867,8 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         });
 
         for session_id in eligible_session_ids {
@@ -952,6 +966,8 @@ pub(super) fn check_and_handle_auth_errors(
                 auto_output: false,
                 message_type: None,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             },
         );
 
@@ -1053,6 +1069,8 @@ pub(super) fn check_and_nudge_api_errors(
                 auto_output: false,
             message_type: None,
             nudge_type: None,
+                    tool_data: None,
+                    provider: None,
             },
         );
     }
@@ -1117,6 +1135,8 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             auto_output: false,
         message_type: None,
         nudge_type: None,
+                    tool_data: None,
+                    provider: None,
         });
     }
 
@@ -1210,6 +1230,8 @@ pub(super) async fn check_and_respawn_dead_processes(
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         });
     }
 
@@ -1351,6 +1373,8 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         },
         Effect::ShutdownCoworker {
             name: lead.name.clone(),
@@ -1447,6 +1471,8 @@ fn effects_for_fired_reminders(
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         });
         effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
@@ -1728,6 +1754,8 @@ fn build_reviewer_respawn_effects(
         auto_output: false,
         message_type: None,
         nudge_type: None,
+        tool_data: None,
+        provider: None,
     }];
 
     effects.push(Effect::SpawnCoworkerWithCallbacks {

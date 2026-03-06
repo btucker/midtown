@@ -29,6 +29,8 @@ fn test_message(content: &str) -> Message {
         thread_parent_id: None,
         auto_output: false,
         nudge_type: None,
+        tool_data: None,
+        provider: None,
     }
 }
 
@@ -408,6 +410,8 @@ fn test_action_message_mermaid_placeholder_extra_indent() {
         thread_parent_id: None,
         auto_output: false,
         nudge_type: None,
+        tool_data: None,
+        provider: None,
     };
     let segments = vec![ContentSegment::Mermaid(source.to_string())];
     let current_tasks = HashMap::new();

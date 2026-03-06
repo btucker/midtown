@@ -448,6 +448,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let long_name_msg = Message {
             id: "2".to_string(),
@@ -461,6 +463,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let current_tasks = HashMap::new();
@@ -508,6 +512,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let msg2 = Message {
             id: "2".to_string(),
@@ -521,6 +527,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let current_tasks = HashMap::new();
@@ -565,6 +573,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let current_tasks = HashMap::new();
@@ -634,6 +644,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let current_tasks = HashMap::new();
@@ -669,6 +681,8 @@ mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -750,6 +764,8 @@ mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -876,6 +892,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let daemon_lines =
@@ -898,6 +916,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let daemon_lines2 =
             render_message(&daemon_msg2, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -920,6 +940,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -942,6 +964,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("daemon"), &current_tasks, None, &[]);
         assert_eq!(
@@ -985,6 +1009,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let github_lines =
             render_message(&github_msg, 80, Some("daemon"), &current_tasks, None, &[]);
@@ -1006,6 +1032,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let daemon_lines =
             render_message(&daemon_msg, 80, Some("github"), &current_tasks, None, &[]);
@@ -1035,6 +1063,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
         let park_lines = render_message(&park_msg, 80, Some("github"), &current_tasks, None, &[]);
         assert_eq!(
@@ -1076,6 +1106,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1134,6 +1166,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1168,6 +1202,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         };
 
         let mut current_tasks = HashMap::new();
@@ -1275,6 +1311,8 @@ mod tests {
             thread_parent_id: None,
             auto_output: false,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         }
     }
 
