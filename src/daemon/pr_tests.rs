@@ -2415,6 +2415,34 @@ fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
     );
 }
 
+/// !2109: Unit tests for resolve_pr_owner_from_body
+#[test]
+fn test_resolve_pr_owner_from_body_extracts_name() {
+    assert_eq!(
+        resolve_pr_owner_from_body("<!-- midtown: park -->\n## Summary"),
+        Some("park".to_string())
+    );
+}
+
+#[test]
+fn test_resolve_pr_owner_from_body_ignores_midtown_lead() {
+    assert_eq!(
+        resolve_pr_owner_from_body("<!-- midtown: midtown -->\n## Summary"),
+        None,
+        "Should not return 'midtown' as PR owner — that's the lead"
+    );
+}
+
+#[test]
+fn test_resolve_pr_owner_from_body_returns_none_without_frontmatter() {
+    assert_eq!(resolve_pr_owner_from_body("No frontmatter here"), None);
+}
+
+#[test]
+fn test_resolve_pr_owner_from_body_handles_empty_body() {
+    assert_eq!(resolve_pr_owner_from_body(""), None);
+}
+
 /// Bug: Reviewer spawning selects the PR author's name as the reviewer, causing a coworker
 /// to review its own PR.
 ///
@@ -3664,6 +3692,61 @@ async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unk
             Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
         )),
         "Expected coworker-directed nudge via author session for PR #2043, got: {:#?}",
+        effects
+    );
+}
+
+/// !2109: When all in-memory owner resolution strategies fail but the PR body
+/// contains `<!-- midtown: name -->` frontmatter, the review-complete notification
+/// should route to the coworker, not fall back to @user.
+#[tokio::test]
+async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fail() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 2109u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "reviewer/task-2109-svelte-fix",
+        "title": "feat: Some PR without Midtown task pattern".to_string(),
+        "body": "<!-- midtown: park -->\n\n## Summary\n- Fixed the thing",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    {
+        let mut ps = state.persistent_state.lock().await;
+        // No pr_author_sessions, no session records, no task associations
+        // Only the PR body frontmatter identifies the owner
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Should NOT fall back to @user — the PR body frontmatter identifies the owner as "park"
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel {
+                message,
+                ..
+            } if message.contains("@user")
+        )),
+        "Should not fall back to @user when PR body has frontmatter, got: {:#?}",
         effects
     );
 }

@@ -479,9 +479,9 @@ PR-to-coworker resolution uses two paths depending on context:
 
 - **Webhooks** (real-time): Frontmatter-only (`<!-- midtown: name -->` in the PR body). Webhooks do not attempt branch-based resolution — if frontmatter is missing, the PR's `owner_coworker` is `None` and the daemon falls back to session-based resolution. CI events (`status`, `check_run`) never carry a PR body, so they always resolve to `None` at webhook time; the daemon handles attribution via session-based resolution on the next tick.
 
-- **Polling** (backstop): Session-based resolution first (PR# → task → session → current_name), then branch-based lookup via the `worktree_branch_owners` map from the worktree registry. The map resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names. Legacy coworker-prefixed branches (e.g., `lexington/fix-auth`) are no longer supported.
+- **Polling** (backstop): Session-based resolution first (PR# → task → session → current_name), then task metadata lookup, then branch-based lookup via the `worktree_branch_owners` map from the worktree registry, and finally PR body frontmatter (`<!-- midtown: name -->`) as a crash-resilient fallback that survives daemon restarts and session record loss. The branch map resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names. Legacy coworker-prefixed branches (e.g., `lexington/fix-auth`) are no longer supported.
 
-Key functions: `determine_pr_coworker()` (webhook.rs, frontmatter-only), `resolve_pr_owner()` (pr.rs, session + branch map), `coworker_from_branch()` (helpers.rs, pure map lookup).
+Key functions: `determine_pr_coworker()` (webhook.rs, frontmatter-only), `resolve_pr_owner()` (pr.rs, session + task metadata + branch map + body frontmatter), `resolve_pr_owner_from_body()` (pr.rs, frontmatter extraction), `coworker_from_branch()` (helpers.rs, pure map lookup).
 
 ### PR Decision Logging
 
