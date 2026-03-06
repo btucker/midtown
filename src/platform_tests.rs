@@ -363,7 +363,7 @@ fn test_claude_headless_args_no_duplicate_flags() {
 
 #[test]
 fn test_claude_headed_args_fresh_has_session_id() {
-    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
@@ -378,7 +378,7 @@ fn test_claude_headed_args_fresh_has_session_id() {
 fn test_claude_headed_args_resume_has_continue() {
     let config = LaunchConfig {
         session_mode: SessionMode::Resume,
-        ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
+        ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
     };
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
@@ -393,7 +393,7 @@ fn test_claude_headed_args_resume_has_continue() {
 fn test_claude_headed_args_resume_session_has_resume() {
     let config = LaunchConfig {
         session_mode: SessionMode::ResumeSession("abc-123".to_string()),
-        ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None)
+        ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
     };
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
@@ -406,7 +406,7 @@ fn test_claude_headed_args_resume_session_has_resume() {
 
 #[test]
 fn test_claude_headed_args_always_has_settings() {
-    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
@@ -420,7 +420,7 @@ fn test_claude_headed_args_always_has_settings() {
 
 #[test]
 fn test_claude_headed_args_always_has_system_prompt() {
-    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
@@ -436,6 +436,7 @@ fn test_claude_headed_args_initial_prompt_is_last() {
         "myrepo",
         SessionMode::Fresh,
         Some("Do the thing".to_string()),
+        None,
     );
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
@@ -453,7 +454,7 @@ fn test_claude_headed_args_initial_prompt_is_last() {
 
 #[test]
 fn test_claude_headed_args_has_common_flags() {
-    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
@@ -467,7 +468,7 @@ fn test_claude_headed_args_has_common_flags() {
 
 #[test]
 fn test_claude_headed_args_with_agent_teams() {
-    let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 

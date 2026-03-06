@@ -1320,6 +1320,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Fresh,
                 None,
+                Some("874".to_string()),
             ),
             on_success: vec![],
             on_failure: vec![],
@@ -1330,6 +1331,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Resume,
                 None,
+                Some("875".to_string()),
             ),
             on_success: vec![effects::Effect::RecordTaskAssignment {
                 coworker: "broadway".to_string(),
@@ -1350,6 +1352,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Resume,
                 Some("resume task".to_string()),
+                Some("876".to_string()),
             )),
         },
     ];

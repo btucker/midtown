@@ -168,7 +168,7 @@ fn test_channel_lead_headless_config_has_disallowed_tools() {
 
 #[test]
 fn test_coworker_headless_config_has_no_disallowed_tools() {
-    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None);
+    let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         headless.disallowed_tools.is_empty(),

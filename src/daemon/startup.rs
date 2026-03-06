@@ -638,9 +638,16 @@ pub async fn recover_from_session_records(
                 repo_name,
                 crate::launch::SessionMode::Fresh, // Will be overridden by ResumeCoworker effect
                 Some(initial_prompt),
+                Some(task_id.clone()),
             )
         } else {
-            LaunchConfig::coworker(name, repo_name, crate::launch::SessionMode::Fresh, None)
+            LaunchConfig::coworker(
+                name,
+                repo_name,
+                crate::launch::SessionMode::Fresh,
+                None,
+                None,
+            )
         };
 
         // Restore working directory from session record

@@ -39,6 +39,7 @@ fn build_coworker_relaunch_config(
         repo_name.to_string(),
         crate::launch::SessionMode::Resume,
         None,
+        None,
     );
     config.model = coworker.model.clone();
     config.auth_provider = coworker.provider;
@@ -61,6 +62,7 @@ fn build_fresh_coworker_relaunch_config(
         repo_name.to_string(),
         crate::launch::SessionMode::Fresh,
         initial_prompt,
+        task_id.map(|s| s.to_string()),
     );
     config.model = coworker.model.clone();
     config

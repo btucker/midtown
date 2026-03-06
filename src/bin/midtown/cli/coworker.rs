@@ -337,6 +337,7 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
         &repo_name,
         midtown::launch::SessionMode::Resume,
         None,
+        Some(task.id.clone()),
     );
     config.working_dir = Some(worktree_path.clone());
 
