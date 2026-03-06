@@ -1,18 +1,18 @@
 <script>
-	import { ScrollArea as ScrollAreaPrimitive } from "bits-ui";
-	import { Scrollbar } from "./index.js";
-	import { cn } from "$lib/utils.js";
+import { ScrollArea as ScrollAreaPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
+import { Scrollbar } from "./index.js";
 
-	let {
-		ref = $bindable(null),
-		viewportRef = $bindable(null),
-		class: className,
-		orientation = "vertical",
-		scrollbarXClasses = "",
-		scrollbarYClasses = "",
-		children,
-		...restProps
-	} = $props();
+let {
+	ref = $bindable(null),
+	viewportRef = $bindable(null),
+	class: className,
+	orientation = "vertical",
+	scrollbarXClasses = "",
+	scrollbarYClasses = "",
+	children,
+	...restProps
+} = $props();
 </script>
 
 <ScrollAreaPrimitive.Root

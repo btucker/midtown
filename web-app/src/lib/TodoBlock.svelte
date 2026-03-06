@@ -1,14 +1,14 @@
 <script>
-  /**
-   * TodoBlock — renders a TodoWrite tool call as a checkbox list.
-   *
-   * Props:
-   *   block — ToolBlock { tool_name, input, output, error }
-   *           input.todos — array of { content, status }
-   */
-  let { block } = $props()
+/**
+ * TodoBlock — renders a TodoWrite tool call as a checkbox list.
+ *
+ * Props:
+ *   block — ToolBlock { tool_name, input, output, error }
+ *           input.todos — array of { content, status }
+ */
+let { block } = $props();
 
-  let todos = $derived(block.input?.todos || [])
+let todos = $derived(block.input?.todos || []);
 </script>
 
 {#if todos.length > 0}

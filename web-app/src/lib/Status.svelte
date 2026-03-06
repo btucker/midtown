@@ -1,72 +1,72 @@
 <script>
-  import { coworkers, daemonStatus } from './store.js'
-  import { fetchStatus, selectDm } from './api.js'
-  import { onMount, onDestroy } from 'svelte'
+import { onDestroy, onMount } from "svelte";
+import { fetchStatus, selectDm } from "./api.js";
+import { coworkers, daemonStatus } from "./store.js";
 
-  // Braille spinner animation
-  const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-  let spinnerFrame = $state(0)
-  let spinnerInterval
+// Braille spinner animation
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinnerFrame = $state(0);
+let spinnerInterval;
 
-  onMount(() => {
-    spinnerInterval = setInterval(() => {
-      spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length
-    }, 100)
-  })
+onMount(() => {
+	spinnerInterval = setInterval(() => {
+		spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+	}, 100);
+});
 
-  onDestroy(() => {
-    if (spinnerInterval) clearInterval(spinnerInterval)
-  })
+onDestroy(() => {
+	if (spinnerInterval) clearInterval(spinnerInterval);
+});
 
-  function getSpinner() {
-    return SPINNER_FRAMES[spinnerFrame]
-  }
+function getSpinner() {
+	return SPINNER_FRAMES[spinnerFrame];
+}
 
-  function getStatusColor(status) {
-    switch (status?.toLowerCase()) {
-      case 'running':
-      case 'active':
-        return 'hsl(var(--status-green))'
-      case 'idle':
-        return 'hsl(var(--status-amber))'
-      case 'stopped':
-      case 'failed':
-        return 'hsl(var(--status-red))'
-      default:
-        return 'hsl(var(--muted-foreground))'
-    }
-  }
+function getStatusColor(status) {
+	switch (status?.toLowerCase()) {
+		case "running":
+		case "active":
+			return "hsl(var(--status-green))";
+		case "idle":
+			return "hsl(var(--status-amber))";
+		case "stopped":
+		case "failed":
+			return "hsl(var(--status-red))";
+		default:
+			return "hsl(var(--muted-foreground))";
+	}
+}
 
-  function formatDate(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      return date.toLocaleString([], {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
-    } catch {
-      return 'Unknown'
-    }
-  }
+function formatDate(timestamp) {
+	try {
+		const date = new Date(timestamp);
+		return date.toLocaleString([], {
+			month: "short",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+		});
+	} catch {
+		return "Unknown";
+	}
+}
 
-  function getHealthColor(health) {
-    switch (health?.toLowerCase()) {
-      case 'green':
-        return 'hsl(var(--status-green))'
-      case 'yellow':
-        return 'hsl(var(--status-amber))'
-      case 'red':
-        return 'hsl(var(--status-red))'
-      default:
-        return 'hsl(var(--status-green))'
-    }
-  }
+function getHealthColor(health) {
+	switch (health?.toLowerCase()) {
+		case "green":
+			return "hsl(var(--status-green))";
+		case "yellow":
+			return "hsl(var(--status-amber))";
+		case "red":
+			return "hsl(var(--status-red))";
+		default:
+			return "hsl(var(--status-green))";
+	}
+}
 
-  async function refresh() {
-    await fetchStatus()
-  }
+async function refresh() {
+	await fetchStatus();
+}
 </script>
 
 <div class="p-4 overflow-y-auto h-full">

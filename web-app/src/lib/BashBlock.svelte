@@ -1,29 +1,29 @@
 <script>
-  /**
-   * BashBlock — renders a Bash tool call with command + collapsible output.
-   *
-   * Props:
-   *   block — ToolBlock { tool_name, input, output, error }
-   */
-  let { block } = $props()
+/**
+ * BashBlock — renders a Bash tool call with command + collapsible output.
+ *
+ * Props:
+ *   block — ToolBlock { tool_name, input, output, error }
+ */
+let { block } = $props();
 
-  let expanded = $state(false)
+let expanded = $state(false);
 
-  let command = $derived(block.input?.command || '')
-  let outputText = $derived.by(() => {
-    if (!block.output) return ''
-    if (typeof block.output === 'string') return block.output
-    if (block.output.stdout) return block.output.stdout
-    if (block.output.output) return block.output.output
-    return JSON.stringify(block.output, null, 2)
-  })
-  let hasOutput = $derived(outputText !== '')
-  let outputLines = $derived(outputText.split('\n'))
-  let isLong = $derived(outputLines.length > 10)
+let command = $derived(block.input?.command || "");
+let outputText = $derived.by(() => {
+	if (!block.output) return "";
+	if (typeof block.output === "string") return block.output;
+	if (block.output.stdout) return block.output.stdout;
+	if (block.output.output) return block.output.output;
+	return JSON.stringify(block.output, null, 2);
+});
+let hasOutput = $derived(outputText !== "");
+let outputLines = $derived(outputText.split("\n"));
+let isLong = $derived(outputLines.length > 10);
 
-  function toggle() {
-    expanded = !expanded
-  }
+function toggle() {
+	expanded = !expanded;
+}
 </script>
 
 <div class="bash-block" class:bash-error={block.error}>

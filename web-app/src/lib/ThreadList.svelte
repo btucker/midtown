@@ -1,45 +1,43 @@
 <script>
-  import { kanbanData, messagesByChannel, trackedThreads, threadUnreadCounts, dismissedThreads } from './store.js'
-  import { openThread, dismissThread } from './api.js'
-  import { getTaskThreadIds, getChannelThreads } from './channelUtils.js'
-  import X from '@lucide/svelte/icons/x'
+import X from "@lucide/svelte/icons/x";
+import { dismissThread, openThread } from "./api.js";
+import { getChannelThreads, getTaskThreadIds } from "./channelUtils.js";
+import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.js";
 
-  let { channelName = '' } = $props()
+let { channelName = "" } = $props();
 
-  // Build the set of thread IDs already represented by tasks
-  const taskThreadIds = $derived(getTaskThreadIds($kanbanData))
+// Build the set of thread IDs already represented by tasks
+const taskThreadIds = $derived(getTaskThreadIds($kanbanData));
 
-  // Threads for this channel, filtered and sorted (pure derivation — no side effects)
-  const threadData = $derived(
-    getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds)
-  )
-  const channelThreads = $derived(threadData.threads)
+// Threads for this channel, filtered and sorted (pure derivation — no side effects)
+const threadData = $derived(getChannelThreads(channelName, $trackedThreads, $threadUnreadCounts, taskThreadIds));
+const channelThreads = $derived(threadData.threads);
 
-  // Side effect: permanently remove task-backed threads from stores
-  $effect(() => {
-    const ids = threadData.toClean
-    if (ids.length === 0) return
-    trackedThreads.update((t) => {
-      const next = { ...t }
-      for (const id of ids) delete next[id]
-      return next
-    })
-    dismissedThreads.update((s) => new Set([...s, ...ids]))
-  })
+// Side effect: permanently remove task-backed threads from stores
+$effect(() => {
+	const ids = threadData.toClean;
+	if (ids.length === 0) return;
+	trackedThreads.update((t) => {
+		const next = { ...t };
+		for (const id of ids) delete next[id];
+		return next;
+	});
+	dismissedThreads.update((s) => new Set([...s, ...ids]));
+});
 
-  function handleClick(thread) {
-    // Try to find the parent message in the channel's message store
-    const channelMsgs = $messagesByChannel[channelName] || []
-    const parentMsg = channelMsgs.find((m) => m.id === thread.id)
-    // Use the real message if available, otherwise a stub
-    const msg = parentMsg || { id: thread.id, from: '', content: thread.subject || '' }
-    openThread(msg, channelName)
-  }
+function handleClick(thread) {
+	// Try to find the parent message in the channel's message store
+	const channelMsgs = $messagesByChannel[channelName] || [];
+	const parentMsg = channelMsgs.find((m) => m.id === thread.id);
+	// Use the real message if available, otherwise a stub
+	const msg = parentMsg || { id: thread.id, from: "", content: thread.subject || "" };
+	openThread(msg, channelName);
+}
 
-  function handleDismiss(e, threadId) {
-    e.stopPropagation()
-    dismissThread(threadId)
-  }
+function handleDismiss(e, threadId) {
+	e.stopPropagation();
+	dismissThread(threadId);
+}
 </script>
 
 <div class="thread-list" data-testid="thread-list">

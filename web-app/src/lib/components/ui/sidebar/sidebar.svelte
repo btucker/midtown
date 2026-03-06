@@ -1,21 +1,21 @@
 <script>
-	import * as Sheet from "$lib/components/ui/sheet/index.js";
-	import { cn } from "$lib/utils.js";
-	import { SIDEBAR_WIDTH_MOBILE } from "./constants.js";
-	import { useSidebar } from "./context.svelte.js";
-	import ResizeHandle from "./sidebar-resize-handle.svelte";
+import * as Sheet from "$lib/components/ui/sheet/index.js";
+import { cn } from "$lib/utils.js";
+import { SIDEBAR_WIDTH_MOBILE } from "./constants.js";
+import { useSidebar } from "./context.svelte.js";
+import ResizeHandle from "./sidebar-resize-handle.svelte";
 
-	let {
-		ref = $bindable(null),
-		side = "left",
-		variant = "sidebar",
-		collapsible = "offcanvas",
-		class: className,
-		children,
-		...restProps
-	} = $props();
+let {
+	ref = $bindable(null),
+	side = "left",
+	variant = "sidebar",
+	collapsible = "offcanvas",
+	class: className,
+	children,
+	...restProps
+} = $props();
 
-	const sidebar = useSidebar();
+const sidebar = useSidebar();
 </script>
 
 {#if collapsible === "none"}

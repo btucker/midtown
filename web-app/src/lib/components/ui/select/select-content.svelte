@@ -1,18 +1,19 @@
 <script>
-	import { Select as SelectPrimitive } from "bits-ui";
-	import SelectPortal from "./select-portal.svelte";
-	import SelectScrollUpButton from "./select-scroll-up-button.svelte";
-	import SelectScrollDownButton from "./select-scroll-down-button.svelte";
-	import { cn } from "$lib/utils.js";
-	let {
-		ref = $bindable(null),
-		class: className,
-		sideOffset = 4,
-		portalProps,
-		children,
-		preventScroll = true,
-		...restProps
-	} = $props();
+import { Select as SelectPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
+import SelectPortal from "./select-portal.svelte";
+import SelectScrollDownButton from "./select-scroll-down-button.svelte";
+import SelectScrollUpButton from "./select-scroll-up-button.svelte";
+
+let {
+	ref = $bindable(null),
+	class: className,
+	sideOffset = 4,
+	portalProps,
+	children,
+	preventScroll = true,
+	...restProps
+} = $props();
 </script>
 
 <SelectPortal {...portalProps}>

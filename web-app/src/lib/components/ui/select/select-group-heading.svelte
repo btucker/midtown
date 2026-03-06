@@ -1,12 +1,8 @@
 <script>
-	import { Select as SelectPrimitive } from "bits-ui";
-	import { cn } from "$lib/utils.js";
-	let {
-		ref = $bindable(null),
-		class: className,
-		children,
-		...restProps
-	} = $props();
+import { Select as SelectPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
+
+let { ref = $bindable(null), class: className, children, ...restProps } = $props();
 </script>
 
 <SelectPrimitive.GroupHeading

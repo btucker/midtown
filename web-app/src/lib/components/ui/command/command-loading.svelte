@@ -1,7 +1,7 @@
 <script>
-	import { Command as CommandPrimitive } from "bits-ui";
+import { Command as CommandPrimitive } from "bits-ui";
 
-	let { ref = $bindable(null), ...restProps } = $props();
+let { ref = $bindable(null), ...restProps } = $props();
 </script>
 
 <CommandPrimitive.Loading bind:ref {...restProps} />

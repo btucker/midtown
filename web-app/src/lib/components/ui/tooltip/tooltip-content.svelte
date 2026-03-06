@@ -1,17 +1,18 @@
 <script>
-	import { Tooltip as TooltipPrimitive } from "bits-ui";
-	import { cn } from "$lib/utils.js";
-	import TooltipPortal from "./tooltip-portal.svelte";
-	let {
-		ref = $bindable(null),
-		class: className,
-		sideOffset = 0,
-		side = "top",
-		children,
-		arrowClasses,
-		portalProps,
-		...restProps
-	} = $props();
+import { Tooltip as TooltipPrimitive } from "bits-ui";
+import { cn } from "$lib/utils.js";
+import TooltipPortal from "./tooltip-portal.svelte";
+
+let {
+	ref = $bindable(null),
+	class: className,
+	sideOffset = 0,
+	side = "top",
+	children,
+	arrowClasses,
+	portalProps,
+	...restProps
+} = $props();
 </script>
 
 <TooltipPortal {...portalProps}>

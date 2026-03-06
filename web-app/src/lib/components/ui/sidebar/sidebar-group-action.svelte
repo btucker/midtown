@@ -1,25 +1,20 @@
 <script>
-	import { cn } from "$lib/utils.js";
-	let {
-		ref = $bindable(null),
-		class: className,
-		children,
-		child,
-		...restProps
-	} = $props();
+import { cn } from "$lib/utils.js";
 
-	const mergedProps = $derived({
-		class: cn(
-			"text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground absolute end-3 top-3.5 flex aspect-square w-5 items-center justify-center rounded-md p-0 outline-hidden transition-transform focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
-			// Increases the hit area of the button on mobile.
-			"after:absolute after:-inset-2 md:after:hidden",
-			"group-data-[collapsible=icon]:hidden",
-			className
-		),
-		"data-slot": "sidebar-group-action",
-		"data-sidebar": "group-action",
-		...restProps,
-	});
+let { ref = $bindable(null), class: className, children, child, ...restProps } = $props();
+
+const mergedProps = $derived({
+	class: cn(
+		"text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground absolute end-3 top-3.5 flex aspect-square w-5 items-center justify-center rounded-md p-0 outline-hidden transition-transform focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+		// Increases the hit area of the button on mobile.
+		"after:absolute after:-inset-2 md:after:hidden",
+		"group-data-[collapsible=icon]:hidden",
+		className,
+	),
+	"data-slot": "sidebar-group-action",
+	"data-sidebar": "group-action",
+	...restProps,
+});
 </script>
 
 {#if child}

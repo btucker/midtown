@@ -1,23 +1,23 @@
 <script>
-  import { pendingQuestions } from './store.js'
-  import { sendAnswer, selectDm } from './api.js'
+import { selectDm, sendAnswer } from "./api.js";
+import { pendingQuestions } from "./store.js";
 
-  let answers = {}
+let answers = {};
 
-  function handleAnswer(coworkerName) {
-    const answer = answers[coworkerName]?.trim()
-    if (!answer) return
-    sendAnswer(coworkerName, answer)
-    delete answers[coworkerName]
-    answers = { ...answers }
-  }
+function handleAnswer(coworkerName) {
+	const answer = answers[coworkerName]?.trim();
+	if (!answer) return;
+	sendAnswer(coworkerName, answer);
+	delete answers[coworkerName];
+	answers = { ...answers };
+}
 
-  function handleKeydown(event, coworkerName) {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      handleAnswer(coworkerName)
-    }
-  }
+function handleKeydown(event, coworkerName) {
+	if (event.key === "Enter" && !event.shiftKey) {
+		event.preventDefault();
+		handleAnswer(coworkerName);
+	}
+}
 </script>
 
 {#if $pendingQuestions.length > 0}

@@ -1,22 +1,26 @@
 <script>
-  import { repoStatus, repoStatuses } from './store.js'
+import { repoStatus, repoStatuses } from "./store.js";
 
-  let isMultiRepo = $derived($repoStatuses.length > 1)
+let isMultiRepo = $derived($repoStatuses.length > 1);
 
-  function ciInfo(status) {
-    switch (status) {
-      case 'passed': return { color: 'hsl(var(--status-green))' }
-      case 'failed': return { color: 'hsl(var(--status-red))' }
-      case 'running':
-      case 'pending': return { color: 'hsl(var(--status-amber))' }
-      default: return { color: 'hsl(var(--muted-foreground))' }
-    }
-  }
+function ciInfo(status) {
+	switch (status) {
+		case "passed":
+			return { color: "hsl(var(--status-green))" };
+		case "failed":
+			return { color: "hsl(var(--status-red))" };
+		case "running":
+		case "pending":
+			return { color: "hsl(var(--status-amber))" };
+		default:
+			return { color: "hsl(var(--muted-foreground))" };
+	}
+}
 
-  function commitUrl(fullName, hash) {
-    if (fullName && hash) return `https://github.com/${fullName}/commit/${hash}`
-    return null
-  }
+function commitUrl(fullName, hash) {
+	if (fullName && hash) return `https://github.com/${fullName}/commit/${hash}`;
+	return null;
+}
 </script>
 
 {#if isMultiRepo && $repoStatuses.some(r => r.ciStatus)}

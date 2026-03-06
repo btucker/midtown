@@ -1,15 +1,15 @@
 <script>
-	import { cn } from "$lib/utils.js";
+import { cn } from "$lib/utils.js";
 
-	let {
-		ref = $bindable(null),
-		value = $bindable(),
-		type,
-		files = $bindable(),
-		class: className,
-		"data-slot": dataSlot = "input",
-		...restProps
-	} = $props();
+let {
+	ref = $bindable(null),
+	value = $bindable(),
+	type,
+	files = $bindable(),
+	class: className,
+	"data-slot": dataSlot = "input",
+	...restProps
+} = $props();
 </script>
 
 {#if type === "file"}

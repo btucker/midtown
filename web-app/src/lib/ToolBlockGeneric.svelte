@@ -1,28 +1,28 @@
 <script>
-  /**
-   * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
-   *
-   * Shows the tool name as a header with a collapsible JSON view of input/output.
-   *
-   * Props:
-   *   block — ToolBlock { tool_name, input, output, error }
-   */
-  let { block } = $props()
+/**
+ * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
+ *
+ * Shows the tool name as a header with a collapsible JSON view of input/output.
+ *
+ * Props:
+ *   block — ToolBlock { tool_name, input, output, error }
+ */
+let { block } = $props();
 
-  let expanded = $state(false)
+let expanded = $state(false);
 
-  let summary = $derived.by(() => {
-    const inp = block.input
-    if (!inp) return block.tool_name
-    if (inp.file_path) return `${block.tool_name} ${inp.file_path}`
-    if (inp.pattern) return `${block.tool_name} ${inp.pattern}`
-    if (inp.query) return `${block.tool_name} "${inp.query}"`
-    return block.tool_name
-  })
+let summary = $derived.by(() => {
+	const inp = block.input;
+	if (!inp) return block.tool_name;
+	if (inp.file_path) return `${block.tool_name} ${inp.file_path}`;
+	if (inp.pattern) return `${block.tool_name} ${inp.pattern}`;
+	if (inp.query) return `${block.tool_name} "${inp.query}"`;
+	return block.tool_name;
+});
 
-  function toggle() {
-    expanded = !expanded
-  }
+function toggle() {
+	expanded = !expanded;
+}
 </script>
 
 <div class="tool-generic" class:tool-error={block.error}>

@@ -1,15 +1,10 @@
 <script>
-	import { cn } from "$lib/utils.js";
-	import { useSidebar } from "./context.svelte.js";
+import { cn } from "$lib/utils.js";
+import { useSidebar } from "./context.svelte.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		children,
-		...restProps
-	} = $props();
+let { ref = $bindable(null), class: className, children, ...restProps } = $props();
 
-	const sidebar = useSidebar();
+const sidebar = useSidebar();
 </script>
 
 <button

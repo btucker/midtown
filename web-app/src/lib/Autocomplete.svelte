@@ -1,36 +1,36 @@
 <script>
-  import { tick } from 'svelte'
+import { tick } from "svelte";
 
-  // Props
-  let {
-    items = [],          // Array of items to filter and display
-    show = $bindable(false),     // Whether dropdown is visible
-    selectedIndex = $bindable(0), // Currently highlighted item index
-    position = {},       // { top, left } positioning for dropdown
-    getLabel = (item) => String(item),      // Function to get display label
-    getValue = (item) => String(item),      // Function to get inserted value
-    getDescription = (item) => null,        // Function to get optional description
-    onSelect = () => {},                    // Callback when item is selected
-  } = $props()
+// Props
+let {
+	items = [], // Array of items to filter and display
+	show = $bindable(false), // Whether dropdown is visible
+	selectedIndex = $bindable(0), // Currently highlighted item index
+	position = {}, // { top, left } positioning for dropdown
+	getLabel = (item) => String(item), // Function to get display label
+	getValue = (item) => String(item), // Function to get inserted value
+	getDescription = (_item) => null, // Function to get optional description
+	onSelect = () => {}, // Callback when item is selected
+} = $props();
 
-  let dropdownElement = $state(null)
+let dropdownElement = $state(null);
 
-  // Auto-scroll the highlighted item into view when selection changes
-  $effect(() => {
-    if (show && dropdownElement && selectedIndex >= 0) {
-      tick().then(() => {
-        const highlighted = dropdownElement?.querySelector('.highlighted')
-        if (highlighted) {
-          highlighted.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-        }
-      })
-    }
-  })
+// Auto-scroll the highlighted item into view when selection changes
+$effect(() => {
+	if (show && dropdownElement && selectedIndex >= 0) {
+		tick().then(() => {
+			const highlighted = dropdownElement?.querySelector(".highlighted");
+			if (highlighted) {
+				highlighted.scrollIntoView({ block: "nearest", behavior: "smooth" });
+			}
+		});
+	}
+});
 
-  function handleItemClick(item) {
-    onSelect(item)
-    show = false
-  }
+function handleItemClick(item) {
+	onSelect(item);
+	show = false;
+}
 </script>
 
 {#if show && items.length > 0}

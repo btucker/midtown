@@ -1,15 +1,8 @@
 <script>
-	import { Command as CommandPrimitive, useId } from "bits-ui";
-	import { cn } from "$lib/utils.js";
+import { Command as CommandPrimitive, useId } from "bits-ui";
+import { cn } from "$lib/utils.js";
 
-	let {
-		ref = $bindable(null),
-		class: className,
-		children,
-		heading,
-		value,
-		...restProps
-	} = $props();
+let { ref = $bindable(null), class: className, children, heading, value, ...restProps } = $props();
 </script>
 
 <CommandPrimitive.Group

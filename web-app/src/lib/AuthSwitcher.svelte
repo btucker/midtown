@@ -1,76 +1,80 @@
 <script>
-  import { authProfilesByProvider, selectedAuthProvider, authSwitching } from './store.js'
-  import { fetchAllAuthProfiles, switchAuthProfile } from './api.js'
-  import { onMount } from 'svelte'
+import { onMount } from "svelte";
+import { fetchAllAuthProfiles, switchAuthProfile } from "./api.js";
+import { authProfilesByProvider, authSwitching, selectedAuthProvider } from "./store.js";
 
-  let open = $state(false)
-  let error = $state(null)
+let open = $state(false);
+let error = $state(null);
 
-  onMount(() => {
-    fetchAllAuthProfiles()
-  })
+onMount(() => {
+	fetchAllAuthProfiles();
+});
 
-  function toggle() {
-    if (!$authSwitching) {
-      open = !open
-      error = null
-    }
-  }
+function toggle() {
+	if (!$authSwitching) {
+		open = !open;
+		error = null;
+	}
+}
 
-  async function selectProfile(profile, provider) {
-    if (profile.is_current || $authSwitching) return
-    open = false
-    error = null
-    const result = await switchAuthProfile(profile.name, provider)
-    if (!result.ok) {
-      error = result.error
-      setTimeout(() => { error = null }, 5000)
-    } else {
-      // Refresh all profiles after switching
-      await fetchAllAuthProfiles()
-    }
-  }
+async function selectProfile(profile, provider) {
+	if (profile.is_current || $authSwitching) return;
+	open = false;
+	error = null;
+	const result = await switchAuthProfile(profile.name, provider);
+	if (!result.ok) {
+		error = result.error;
+		setTimeout(() => {
+			error = null;
+		}, 5000);
+	} else {
+		// Refresh all profiles after switching
+		await fetchAllAuthProfiles();
+	}
+}
 
-  function selectProvider(provider) {
-    $selectedAuthProvider = provider
-  }
+function selectProvider(provider) {
+	$selectedAuthProvider = provider;
+}
 
-  function handleClickOutside(event) {
-    if (open && !event.target.closest('.auth-switcher')) {
-      open = false
-    }
-  }
+function handleClickOutside(event) {
+	if (open && !event.target.closest(".auth-switcher")) {
+		open = false;
+	}
+}
 
-  $effect(() => {
-    if (open) {
-      document.addEventListener('click', handleClickOutside, true)
-      return () => document.removeEventListener('click', handleClickOutside, true)
-    }
-  })
+$effect(() => {
+	if (open) {
+		document.addEventListener("click", handleClickOutside, true);
+		return () => document.removeEventListener("click", handleClickOutside, true);
+	}
+});
 
-  // Get profiles for the currently selected provider
-  const currentProviderProfiles = $derived($authProfilesByProvider[$selectedAuthProvider] || [])
+// Get profiles for the currently selected provider
+const currentProviderProfiles = $derived($authProfilesByProvider[$selectedAuthProvider] || []);
 
-  // Find the current profile across all providers
-  const currentProfile = $derived((() => {
-    for (const [provider, profiles] of Object.entries($authProfilesByProvider)) {
-      const current = profiles.find((p) => p.is_current)
-      if (current) {
-        return { ...current, provider }
-      }
-    }
-    return null
-  })())
+// Find the current profile across all providers
+const currentProfile = $derived(
+	(() => {
+		for (const [provider, profiles] of Object.entries($authProfilesByProvider)) {
+			const current = profiles.find((p) => p.is_current);
+			if (current) {
+				return { ...current, provider };
+			}
+		}
+		return null;
+	})(),
+);
 
-  // Get list of available providers (only those with profiles)
-  const availableProviders = $derived(Object.keys($authProfilesByProvider))
+// Get list of available providers (only those with profiles)
+const availableProviders = $derived(Object.keys($authProfilesByProvider));
 
-  // Provider display names
-  const providerNames = {
-    'claude': 'Claude',
-    'codex': 'Codex',
-    'zai': 'z.ai'
-  }
+// Provider display names
+const providerNames = {
+	claude: "Claude",
+	codex: "Codex",
+	zai: "z.ai",
+};
 </script>
 
 {#if availableProviders.length > 0}

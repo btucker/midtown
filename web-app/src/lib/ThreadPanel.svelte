@@ -1,9 +1,9 @@
 <script module>
-  // Module-level draft storage persists across mount/unmount cycles.
-  // ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
-  // state would be lost when the thread panel closes and reopens.
-  const threadDrafts = new Map()
-  let prevThreadId = null
+// Module-level draft storage persists across mount/unmount cycles.
+// ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
+// state would be lost when the thread panel closes and reopens.
+const threadDrafts = new Map();
+let prevThreadId = null;
 </script>
 
 <script>

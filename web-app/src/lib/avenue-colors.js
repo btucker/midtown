@@ -5,31 +5,31 @@
 // daemon fell back to the #d0d0d0 getAvenueColor fallback, but muted is correct
 // since daemon output is infrastructure noise, not a human voice.
 export const AVENUE_COLORS = {
-  lexington: '#5fafaf',
-  park: '#5faf5f',
-  madison: '#ff5f5f',
-  broadway: '#af5faf',
-  amsterdam: '#5f87af',
-  columbus: '#af5f5f',
-  riverside: '#87d7d7',
-  york: '#87d787',
-  pleasant: '#d7afd7',
-  vernon: '#87afd7',
-  bleecker: '#d7875f',
-  houston: '#ff87d7',
-  canal: '#87d7ff',
-  spring: '#afff87',
-  prince: '#d7afff',
-  mercer: '#ffaf87',
-  lead: '#E3BD3F',
-  github: '#585858',
-  system: '#585858',
-  daemon: '#585858',
-  midtown: '#E3BD3F',
-}
+	lexington: "#5fafaf",
+	park: "#5faf5f",
+	madison: "#ff5f5f",
+	broadway: "#af5faf",
+	amsterdam: "#5f87af",
+	columbus: "#af5f5f",
+	riverside: "#87d7d7",
+	york: "#87d787",
+	pleasant: "#d7afd7",
+	vernon: "#87afd7",
+	bleecker: "#d7875f",
+	houston: "#ff87d7",
+	canal: "#87d7ff",
+	spring: "#afff87",
+	prince: "#d7afff",
+	mercer: "#ffaf87",
+	lead: "#E3BD3F",
+	github: "#585858",
+	system: "#585858",
+	daemon: "#585858",
+	midtown: "#E3BD3F",
+};
 
-export function getAvenueColor(name, fallback = '#d0d0d0') {
-  return AVENUE_COLORS[name?.toLowerCase()] || fallback
+export function getAvenueColor(name, fallback = "#d0d0d0") {
+	return AVENUE_COLORS[name?.toLowerCase()] || fallback;
 }
 
 // Extract the avenue color for a fork session owner.
@@ -37,7 +37,7 @@ export function getAvenueColor(name, fallback = '#d0d0d0') {
 // or "fork-{tid}" for anonymous forks. Extract the first segment and look it up.
 // Falls back to lead gold for non-avenue prefixes (channel leads, anonymous forks).
 export function getForkOwnerColor(forkName) {
-  if (!forkName) return AVENUE_COLORS.lead
-  const prefix = forkName.split('-')[0].toLowerCase()
-  return AVENUE_COLORS[prefix] || AVENUE_COLORS.lead
+	if (!forkName) return AVENUE_COLORS.lead;
+	const prefix = forkName.split("-")[0].toLowerCase();
+	return AVENUE_COLORS[prefix] || AVENUE_COLORS.lead;
 }

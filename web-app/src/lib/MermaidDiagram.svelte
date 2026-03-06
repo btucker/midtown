@@ -1,87 +1,89 @@
 <script>
-  import { getSelkie } from './selkie.js'
-  import { getBiggerPicture, calculateFitToWidthScale } from './biggerPicture.js'
-  import { theme } from './theme.js'
+import { calculateFitToWidthScale, getBiggerPicture } from "./biggerPicture.js";
+import { getSelkie } from "./selkie.js";
+import { theme } from "./theme.js";
 
-  let { code } = $props()
-  let svgHtml = $state('')
-  let error = $state('')
-  let loading = $state(true)
+let { code } = $props();
+let svgHtml = $state("");
+let error = $state("");
+let loading = $state(true);
 
-  let counter = 0
+let counter = 0;
 
-  // Strip dangerous elements and attributes from SVG output
-  function sanitizeSvg(svg) {
-    const parser = new DOMParser()
-    const doc = parser.parseFromString(svg, 'image/svg+xml')
-    // Remove script tags and foreignObject
-    for (const tag of ['script', 'foreignObject']) {
-      for (const el of doc.querySelectorAll(tag)) {
-        el.remove()
-      }
-    }
-    // Remove event handler attributes from all elements
-    for (const el of doc.querySelectorAll('*')) {
-      for (const attr of [...el.attributes]) {
-        if (attr.name.startsWith('on')) {
-          el.removeAttribute(attr.name)
-        }
-      }
-    }
-    return new XMLSerializer().serializeToString(doc.documentElement)
-  }
+// Strip dangerous elements and attributes from SVG output
+function sanitizeSvg(svg) {
+	const parser = new DOMParser();
+	const doc = parser.parseFromString(svg, "image/svg+xml");
+	// Remove script tags and foreignObject
+	for (const tag of ["script", "foreignObject"]) {
+		for (const el of doc.querySelectorAll(tag)) {
+			el.remove();
+		}
+	}
+	// Remove event handler attributes from all elements
+	for (const el of doc.querySelectorAll("*")) {
+		for (const attr of [...el.attributes]) {
+			if (attr.name.startsWith("on")) {
+				el.removeAttribute(attr.name);
+			}
+		}
+	}
+	return new XMLSerializer().serializeToString(doc.documentElement);
+}
 
-  // Convert SVG string to data URL for Bigger Picture
-  function svgToDataUrl(svgString) {
-    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`
-  }
+// Convert SVG string to data URL for Bigger Picture
+function svgToDataUrl(svgString) {
+	return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`;
+}
 
-  $effect(() => {
-    const currentCode = code
-    // Read theme synchronously so $effect tracks it as a dependency
-    const mermaidTheme = $theme === 'dark' ? 'dark' : 'default'
-    loading = true
-    error = ''
-    svgHtml = ''
+$effect(() => {
+	const currentCode = code;
+	// Read theme synchronously so $effect tracks it as a dependency
+	const mermaidTheme = $theme === "dark" ? "dark" : "default";
+	loading = true;
+	error = "";
+	svgHtml = "";
 
-    getSelkie().then((selkie) => {
-      try {
-        const id = `mermaid-${counter++}`
-        const themedCode = `%%{init: {"theme": "${mermaidTheme}"}}%%\n${currentCode}`
-        const result = selkie.render(id, themedCode)
-        svgHtml = sanitizeSvg(result.svg)
-        error = ''
-      } catch (e) {
-        error = e.message || String(e)
-        svgHtml = ''
-      }
-      loading = false
-    }).catch((e) => {
-      error = `Failed to load renderer: ${e.message || e}`
-      loading = false
-    })
-  })
+	getSelkie()
+		.then((selkie) => {
+			try {
+				const id = `mermaid-${counter++}`;
+				const themedCode = `%%{init: {"theme": "${mermaidTheme}"}}%%\n${currentCode}`;
+				const result = selkie.render(id, themedCode);
+				svgHtml = sanitizeSvg(result.svg);
+				error = "";
+			} catch (e) {
+				error = e.message || String(e);
+				svgHtml = "";
+			}
+			loading = false;
+		})
+		.catch((e) => {
+			error = `Failed to load renderer: ${e.message || e}`;
+			loading = false;
+		});
+});
 
-  function handleExpand() {
-    if (!svgHtml) return
+function handleExpand() {
+	if (!svgHtml) return;
 
-    const bp = getBiggerPicture()
-    if (!bp) return
+	const bp = getBiggerPicture();
+	if (!bp) return;
 
-    // Calculate initial scale to fit SVG to 95% of viewport width
-    // This matches the fit-to-width behavior from the old MermaidModal
-    const scale = calculateFitToWidthScale(svgHtml)
+	// Calculate initial scale to fit SVG to 95% of viewport width
+	// This matches the fit-to-width behavior from the old MermaidModal
+	const scale = calculateFitToWidthScale(svgHtml);
 
-    // Convert SVG to data URL and open in lightbox
-    const dataUrl = svgToDataUrl(svgHtml)
-    bp.open({
-      items: [{ img: dataUrl }],
-      // Start at first (and only) item
-      position: 0,
-      // Apply fit-to-width scale
-      scale: scale,
-    })
-  }
+	// Convert SVG to data URL and open in lightbox
+	const dataUrl = svgToDataUrl(svgHtml);
+	bp.open({
+		items: [{ img: dataUrl }],
+		// Start at first (and only) item
+		position: 0,
+		// Apply fit-to-width scale
+		scale: scale,
+	});
+}
 </script>
 
 {#if loading}

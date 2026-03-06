@@ -1,733 +1,758 @@
 <script>
-  import { messages, messagesByChannel, activeChannel, activeProject, channels as channelsStore, coworkers, kanbanData, repoStatus, repoStatuses, daemonStatus, isWideScreen, agentToolItems, threadData, threadUnreadCounts } from './store.js'
-  import { sendMessage, uploadFile, closeThread, openThread, openTaskThread, getApiBase } from './api.js'
-  import { AVENUE_COLORS, getSenderColor, isDimSender, formatTime, timeChanged, parseInsightSegments, dateChanged } from './messageUtils.js'
-  import { tick, onMount, untrack } from 'svelte'
-  import { fly } from 'svelte/transition'
-  import ReplyIcon from '@lucide/svelte/icons/reply'
-  import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
-  import MermaidDiagram from './MermaidDiagram.svelte'
-  import { parseSegments, hasMermaid, renderContent } from './markdown.js'
-  import Autocomplete from './Autocomplete.svelte'
-  import MessageRow from './MessageRow.svelte'
-  import ToolDataBlocks from './ToolDataBlocks.svelte'
-  import DayDivider from './DayDivider.svelte'
-  import { clearMobileTextarea } from './mobileInput.js'
-  import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from './channelUtils.js'
-
-  // Windowed rendering: only render a slice of messages near the viewport.
-  // Messages outside this window are not mounted in the DOM.
-  const INITIAL_WINDOW_SIZE = 100  // messages to render on first load
-  const LOAD_MORE_COUNT = 50       // messages to add when scrolling up
-
-  let inputText = $state('')
-  let scrollAreaViewport = $state(null)
-  let autoScroll = $state(true)
-  let pendingFile = $state(null)
-  let uploading = $state(false)
-  let textareaElement = $state(null)
-  let formWrapperElement = $state(null)
-  let channelItemsActive = $state(false)
-  let channelItemsActiveTimeout = null
-  let channelItemsActiveVersion = 0  // version counter to discard stale microtasks
-  let topSentinel = $state(null)
-  let topObserver = null
-
-  // The index into channelMessages where rendering begins.
-  // Messages before this index are not in the DOM.
-  let renderStartIndex = $state(0)
-
-  // Per-channel draft storage: saves inputText and pendingFile when switching channels
-  let channelDrafts = new Map()
-  let prevChannel = null
-
-  // Autocomplete state
-  let showAutocomplete = $state(false)
-  let autocompleteType = $state(null) // '@' | '!' | '#'
-  let autocompleteQuery = $state('')
-  let autocompleteItems = $state([])
-  let autocompletePosition = $state({ top: 0, left: 0 })
-  let autocompleteSelectedIndex = $state(0)
-  let autocompleteStartPos = $state(0)
-
-  // DM channel detection: use is_dm field or dm- prefix fallback
-  let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null)
-  let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith('dm-'))
-  let dmPeerName = $derived($activeChannel.startsWith('dm-') ? $activeChannel.slice(3) : $activeChannel)
-
-  // Filter messages by active channel
-  let channelMessages = $derived($messagesByChannel[$activeChannel] || [])
-
-  // Visible slice of messages for the DOM. Only these get rendered.
-  let visibleMessages = $derived(channelMessages.slice(renderStartIndex))
-  let hasMoreAbove = $derived(renderStartIndex > 0)
-
-  // Track how many messages were present when each channel was first viewed.
-  // Messages at or above this index are "new" and get the slide-up animation.
-  // We use $state.raw so mutations don't trigger full reactive updates.
-  let initialMessageCounts = $state.raw({})
-
-  $effect(() => {
-    // Reactive on both $activeChannel and channelMessages.length.
-    // On first visit to a channel, channelMessages is empty (history not yet
-    // loaded from WebSocket). We wait until messages actually arrive before
-    // snapshotting the count. This prevents the race where we snapshot 0,
-    // then history loads and every message animates as "new".
-    const ch = $activeChannel
-    const len = channelMessages.length
-    if (!(ch in initialMessageCounts) && len > 0) {
-      // Defer state write to avoid state_unsafe_mutation during derived evaluation
-      queueMicrotask(() => {
-        initialMessageCounts = { ...initialMessageCounts, [ch]: len }
-      })
-    }
-  })
-
-  // Position the render window at the tail on channel switch or first history load.
-  // Tracks $activeChannel and channelMessages.length, but uses prevRenderChannel
-  // to distinguish channel switches from new-message arrivals. This avoids both:
-  //  - stale counts (issue: window grows unbounded on revisit)
-  //  - DOM flash (issue: renderStartIndex starts at 0 then jumps)
-  let prevRenderChannel = null
-  let renderVersion = 0  // version counter to discard stale microtasks
-  // Shadow of renderStartIndex set synchronously so the "only fires once"
-  // guard works even before the deferred write executes.
-  let pendingRenderStartIndex = 0
-  $effect(() => {
-    const ch = $activeChannel
-    const len = channelMessages.length
-    if (ch !== prevRenderChannel) {
-      // Channel switch — position at tail using current message count.
-      prevRenderChannel = ch
-      const version = ++renderVersion
-      const newIndex = Math.max(0, len - INITIAL_WINDOW_SIZE)
-      pendingRenderStartIndex = newIndex
-      queueMicrotask(() => {
-        if (version !== renderVersion) return
-        renderStartIndex = newIndex
-      })
-    } else if (len > 0 && pendingRenderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
-      // Same channel, history just loaded (was empty, now has messages).
-      // Only fires once: after this, pendingRenderStartIndex > 0 so guard fails.
-      const version = ++renderVersion
-      const newIndex = len - INITIAL_WINDOW_SIZE
-      pendingRenderStartIndex = newIndex
-      queueMicrotask(() => {
-        if (version !== renderVersion) return
-        renderStartIndex = newIndex
-      })
-    }
-    // New messages on current channel: no-op. visibleMessages is an
-    // open-ended slice so new messages at the end render automatically.
-  })
-
-  // Save/restore drafts when switching channels
-  $effect(() => {
-    const ch = $activeChannel
-    if (prevChannel !== null && prevChannel !== ch) {
-      const currentText = untrack(() => inputText)
-      const currentFile = untrack(() => pendingFile)
-      if (currentText.trim() || currentFile) {
-        channelDrafts.set(prevChannel, { text: currentText, file: currentFile })
-      } else {
-        channelDrafts.delete(prevChannel)
-      }
-    }
-    if (prevChannel !== ch) {
-      const draft = channelDrafts.get(ch)
-      // Defer state writes to avoid state_unsafe_mutation during derived evaluation.
-      // resizeTextarea must run after the state writes so the textarea height reflects
-      // the restored draft content, not the stale empty value.
-      queueMicrotask(() => {
-        inputText = draft?.text ?? ''
-        pendingFile = draft?.file ?? null
-        tick().then(() => resizeTextarea())
-      })
-    }
-    prevChannel = ch
-  })
-
-  function isNewMessage(channelName, index) {
-    // If we haven't recorded the initial count yet (effect hasn't fired),
-    // treat all messages as old so they don't animate on first render.
-    const threshold = initialMessageCounts[channelName] ?? Infinity
-    return index >= threshold
-  }
-
-  // Tool call items for the active channel.
-  // Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
-  let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || [])
-
-  // Activity strip computed values (always-rendered single line above input)
-  // Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
-  let isLeadWorking = $derived(
-    $activeChannel === 'midtown' || $activeChannel === $activeProject
-      ? !!$daemonStatus?.lead_working
-      : !!$daemonStatus?.channel_leads_working?.[$activeChannel]
-  )
-  // Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
-  // InProgress in the store even after its ToolResult arrives in a later batch (items
-  // are appended, not updated). Only count a call as truly in-progress if no matching
-  // ToolResult exists in the store.
-  let hasInProgressItems = $derived.by(() => {
-    const completedCallIds = new Set()
-    for (const item of activeChannelToolItems) {
-      for (const part of item.content) {
-        if (part.ToolResult) completedCallIds.add(part.ToolResult.call_id)
-      }
-    }
-    return activeChannelToolItems.some((item) => {
-      if (item.status !== 'InProgress') return false
-      return item.content.some(
-        (part) => part.ToolCall && !completedCallIds.has(part.ToolCall.call_id)
-      )
-    })
-  })
-  let showActivity = $derived(activeChannelToolItems.length > 0 || isLeadWorking)
-  let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive))
-
-  // Most recent tool call entry for inline display in the activity strip.
-  // Replicates ToolActivity's merge logic but returns only the last call.
-  let mostRecentToolCallEntry = $derived.by(() => {
-    if (activeChannelToolItems.length === 0) return null
-    const resultStatus = {}
-    for (const item of activeChannelToolItems) {
-      for (const part of item.content) {
-        if (part.ToolResult) {
-          resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? 'error' : 'ok'
-        }
-      }
-    }
-    for (let i = activeChannelToolItems.length - 1; i >= 0; i--) {
-      const item = activeChannelToolItems[i]
-      if (item.content.some((p) => p.ToolCall)) {
-        const callId = item.content.find((p) => p.ToolCall)?.ToolCall?.call_id
-        const status = callId ? (resultStatus[callId] ?? null) : null
-        return { item, status }
-      }
-    }
-    return null
-  })
-
-  // Autocomplete filtering and data preparation
-  function getAutocompleteItems(type, query) {
-    const lowerQuery = query.toLowerCase()
-
-    if (type === '@') {
-      // Coworkers + lead
-      const people = [
-        { name: 'lead', type: 'lead' },
-        ...$coworkers.map(cw => ({ name: cw.name, type: 'coworker', task: cw.current_task }))
-      ]
-      return people.filter(p => p.name.toLowerCase().startsWith(lowerQuery))
-    }
-
-    if (type === '!') {
-      // Tasks from daemon status
-      const tasks = $daemonStatus?.tasks || []
-      return tasks
-        .filter(t => {
-          const idMatch = String(t.id).startsWith(query)
-          const subjectMatch = t.subject?.toLowerCase().startsWith(lowerQuery)
-          return idMatch || subjectMatch
-        })
-        .slice(0, 10) // Limit to 10 results
-    }
-
-    if (type === '#') {
-      // PRs from kanban data + channels
-      const prs = $kanbanData.review.map(pr => ({
-        type: 'pr',
-        number: pr.number,
-        title: pr.title,
-        status: pr.status
-      }))
-      const channelList = $channelsStore.map(ch => ({
-        type: 'channel',
-        name: ch.name
-      }))
-      const combined = [...prs, ...channelList]
-      return combined.filter(item => {
-        if (item.type === 'pr') {
-          return String(item.number).startsWith(query) || item.title?.toLowerCase().startsWith(lowerQuery)
-        }
-        return item.name.toLowerCase().startsWith(lowerQuery)
-      }).slice(0, 10)
-    }
-
-    return []
-  }
-
-  function getAutocompleteLabel(item) {
-    if (typeof item === 'object' && item !== null) {
-      if (item.type === 'coworker' || item.type === 'lead') return `@${item.name}`
-      if (item.type === 'pr') return `#${item.number}`
-      if (item.type === 'channel') return `#${item.name}`
-      if (item.id !== undefined) return `!${item.id}` // task
-    }
-    return String(item)
-  }
-
-  function getAutocompleteValue(item) {
-    if (typeof item === 'object' && item !== null) {
-      if (item.type === 'coworker' || item.type === 'lead') return `@${item.name}`
-      if (item.type === 'pr') return `#${item.number}`
-      if (item.type === 'channel') return `#${item.name}`
-      if (item.id !== undefined) return `!${item.id}` // task
-    }
-    return String(item)
-  }
-
-  function getAutocompleteDescription(item) {
-    if (typeof item === 'object' && item !== null) {
-      if ((item.type === 'coworker' || item.type === 'lead') && item.task) return item.task
-      if (item.type === 'pr') return item.title
-      if (item.subject) return item.subject // task
-    }
-    return null
-  }
-
-  function calculateAutocompletePosition() {
-    if (!textareaElement || !formWrapperElement) return { top: 0, left: 0 }
-
-    const textareaRect = textareaElement.getBoundingClientRect()
-    const wrapperRect = formWrapperElement.getBoundingClientRect()
-
-    // Position relative to the form wrapper (which has position: relative and
-    // no overflow: hidden). Using position: absolute on the dropdown instead of
-    // position: fixed avoids iOS visual/layout viewport split issues when the
-    // virtual keyboard is open.
-    //
-    // top = textarea's top edge relative to the wrapper.
-    // The dropdown uses translateY(-100% - 8px) to shift above the textarea.
-    return {
-      top: textareaRect.top - wrapperRect.top,
-      left: textareaRect.left - wrapperRect.left,
-      width: textareaRect.width
-    }
-  }
-
-  function detectAutocompleteTrigger() {
-    const cursorPos = textareaElement?.selectionStart || 0
-    // Use textarea.value directly instead of inputText binding
-    // because oninput fires before the binding updates
-    const text = textareaElement?.value || inputText
-
-    // Look backward from cursor to find trigger character
-    let triggerPos = -1
-    let triggerChar = null
-
-    for (let i = cursorPos - 1; i >= 0; i--) {
-      const char = text[i]
-      const prevChar = i > 0 ? text[i - 1] : ' '
-
-      // Check if this is a trigger character preceded by whitespace or start of line
-      if (('@!#'.includes(char)) && (prevChar === ' ' || prevChar === '\n' || i === 0)) {
-        triggerPos = i
-        triggerChar = char
-        break
-      }
-
-      // Stop if we hit whitespace (no trigger found in current word)
-      if (char === ' ' || char === '\n') {
-        break
-      }
-    }
-
-    if (triggerPos >= 0 && triggerChar) {
-      const query = text.slice(triggerPos + 1, cursorPos)
-      autocompleteStartPos = triggerPos
-      autocompleteType = triggerChar
-      autocompleteQuery = query
-      autocompleteItems = getAutocompleteItems(triggerChar, query)
-      autocompletePosition = calculateAutocompletePosition()
-      autocompleteSelectedIndex = 0
-      showAutocomplete = autocompleteItems.length > 0
-    } else {
-      showAutocomplete = false
-    }
-  }
-
-  function insertAutocompleteItem(item) {
-    const value = getAutocompleteValue(item)
-    const beforeTrigger = inputText.slice(0, autocompleteStartPos)
-    const afterCursor = inputText.slice(textareaElement?.selectionStart || 0)
-
-    inputText = beforeTrigger + value + ' ' + afterCursor
-    showAutocomplete = false
-
-    // Set cursor position after inserted text
-    tick().then(() => {
-      if (textareaElement) {
-        const newPos = beforeTrigger.length + value.length + 1
-        textareaElement.focus()
-        textareaElement.setSelectionRange(newPos, newPos)
-      }
-    })
-  }
-
-  // Cache current tasks to avoid recalculating on every render
-  let currentTasks = $derived(getCurrentTasks($coworkers))
-
-  // Get PR status from kanban data
-  function getPrStatus(prNum) {
-    const pr = $kanbanData.review.find((p) => p.number === parseInt(prNum))
-    return pr ? pr.status : null
-  }
-
-  function findPr(prNum) {
-    return findPrUtil(prNum, $kanbanData)
-  }
-
-  function getPrUrl(prNum) {
-    return getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
-  }
-
-  // Find a task by ID from the daemon status task list
-  function findTask(taskId) {
-    const tasks = $daemonStatus?.tasks || []
-    return tasks.find((t) => String(t.id) === String(taskId)) || null
-  }
-
-  // Set up IntersectionObserver for the top sentinel (lazy load older messages)
-  $effect(() => {
-    const sentinel = topSentinel
-    const viewport = scrollAreaViewport
-    if (!sentinel || !viewport) return
-
-    topObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            loadMoreMessages()
-          }
-        }
-      },
-      { root: viewport, rootMargin: '200px 0px 0px 0px' }
-    )
-    topObserver.observe(sentinel)
-
-    return () => {
-      topObserver?.disconnect()
-      topObserver = null
-    }
-  })
-
-  // Handle clicks on channel links, task links, PR links, and coworker links
-  onMount(() => {
-    function handleLinkClick(e) {
-      const target = e.target
-      if (target.classList.contains('channel-link')) {
-        e.preventDefault()
-        const channelName = target.dataset.channel
-        if ($channelsStore.some((ch) => ch.name === channelName)) {
-          activeChannel.set(channelName)
-        }
-      } else if (target.classList.contains('task-link')) {
-        e.preventDefault()
-        const taskId = target.dataset.task
-        const task = findTask(taskId)
-        if (task) {
-          openTaskThread(task, task.channel || $activeChannel)
-        }
-      } else if (target.classList.contains('pr-link')) {
-        e.preventDefault()
-        const prNum = target.dataset.pr
-        const url = getPrUrl(prNum)
-        if (url) window.open(url, '_blank', 'noopener')
-      } else if (target.classList.contains('coworker-link')) {
-        // Prevent the browser from following the '#' href; no detail panel action.
-        e.preventDefault()
-      }
-    }
-
-    if (scrollAreaViewport) {
-      scrollAreaViewport.addEventListener('click', handleLinkClick)
-      return () => scrollAreaViewport.removeEventListener('click', handleLinkClick)
-    }
-  })
-
-  function isAction(msg) {
-    return msg.msg_type === 'action' || msg.content?.startsWith('/me ')
-  }
-
-  function getActionContent(msg) {
-    return msg.content.replace(/^\/me\s*/, '')
-  }
-
-  // NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
-  // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND
-  // resolveMessageTapAction (mobile decision logic in channelUtils.js). handleMessageTap
-  // calls stopPropagation(), so handleLinkClick never runs on mobile. They are NOT
-  // redundant; they are two separate entry points for the same click on different platforms.
-  function handleMessageTap(event, msg) {
-    const target = event.target instanceof Element ? event.target : null
-    const isInteractiveControl = !!target?.closest('button, input, textarea, select, label')
-    const anchor = target?.closest('a')
-    const link = anchor ? {
-      isExternal: !anchor.dataset.channel && !anchor.dataset.task && !anchor.dataset.pr && !anchor.dataset.coworker,
-      dataset: anchor.dataset,
-    } : null
-
-    const action = resolveMessageTapAction({ isWideScreen: $isWideScreen, msg, isInteractiveControl, link })
-    if (!action) return
-
-    if (action.type === 'open_task') {
-      const task = findTask(action.taskId)
-      if (task) openTaskThread(task, task.channel || $activeChannel)
-    } else if (action.type === 'open_pr') {
-      const url = getPrUrl(action.prNum)
-      if (url) window.open(url, '_blank', 'noopener')
-    } else if (action.type === 'open_thread') {
-      openThread(msg, $activeChannel)
-    }
-    // Prevent the click from also triggering the internal link handler (handleLinkClick),
-    // and prevent the browser from following href="#" which would scroll to page top.
-    event.stopPropagation()
-    event.preventDefault()
-  }
-
-  // Build a map of coworker name -> current task
-  function getCurrentTasks(coworkerList) {
-    const map = {}
-    for (const cw of coworkerList) {
-      if (cw.current_task) {
-        map[cw.name.toLowerCase()] = cw.current_task
-      }
-    }
-    return map
-  }
-
-  // Auto-scroll to bottom when new messages arrive
-  $effect(() => {
-    if (channelMessages.length > 0 && autoScroll && scrollAreaViewport) {
-      tick().then(() => {
-        scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight
-      })
-    }
-  })
-
-  // Reset textarea height when input is cleared (after send)
-  $effect(() => {
-    inputText;
-    tick().then(() => resizeTextarea())
-  })
-
-  // Track tool item activity freshness: mark active when new items arrive,
-  // mark stale after 8s of silence. This catches channel leads that stop
-  // mid-tool (no ToolResult or final message to clear InProgress items).
-  $effect(() => {
-    const items = activeChannelToolItems
-    if (channelItemsActiveTimeout) {
-      clearTimeout(channelItemsActiveTimeout)
-      channelItemsActiveTimeout = null
-    }
-    // Version counter prevents stale microtasks from overwriting newer state.
-    // Each effect run increments the version; the microtask only writes if its
-    // captured version still matches, discarding writes from superseded runs.
-    const version = ++channelItemsActiveVersion
-    if (items.length > 0) {
-      // Defer state write to avoid state_unsafe_mutation — channelItemsActive
-      // feeds $derived showDots which is read during the same flush cycle
-      queueMicrotask(() => {
-        if (version !== channelItemsActiveVersion) return
-        channelItemsActive = true
-      })
-      channelItemsActiveTimeout = setTimeout(() => {
-        channelItemsActive = false
-        channelItemsActiveTimeout = null
-      }, 8000)
-    } else {
-      queueMicrotask(() => {
-        if (version !== channelItemsActiveVersion) return
-        channelItemsActive = false
-      })
-    }
-  })
-
-  // Ensure the timeouts are cleared when the component is destroyed
-  $effect(() => {
-    return () => {
-      if (channelItemsActiveTimeout) {
-        clearTimeout(channelItemsActiveTimeout)
-        channelItemsActiveTimeout = null
-      }
-    }
-  })
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-
-    // If there's a pending file, upload it first
-    if (pendingFile && !uploading) {
-      uploading = true
-      const result = await uploadFile(pendingFile)
-      uploading = false
-
-      if (result.ok) {
-        // Send message to lead with file path
-        const message = inputText.trim()
-          ? `${inputText.trim()}\n\n[Attached: ${result.path}]`
-          : `[Attached file: ${result.filename}]\nPlease read: ${result.path}`
-
-        sendMessage(message, $activeChannel)
-        inputText = ''
-        if (textareaElement) textareaElement.value = ''
-        pendingFile = null
-        channelDrafts.delete($activeChannel)
-      } else {
-        alert(`Upload failed: ${result.error}`)
-        return
-      }
-    } else if (inputText.trim()) {
-      sendMessage(inputText.trim(), $activeChannel)
-      inputText = ''
-      channelDrafts.delete($activeChannel)
-      clearMobileTextarea(textareaElement, () => { inputText = '' })
-    }
-  }
-
-  function handlePaste(e) {
-    const items = e.clipboardData?.items
-    if (!items) return
-
-    for (const item of items) {
-      // Check for image types
-      if (item.type.startsWith('image/')) {
-        e.preventDefault()
-        const file = item.getAsFile()
-        if (file) {
-          pendingFile = file
-        }
-        return
-      }
-      // Check for files (PDFs, etc.)
-      if (item.kind === 'file') {
-        e.preventDefault()
-        const file = item.getAsFile()
-        if (file) {
-          pendingFile = file
-        }
-        return
-      }
-    }
-  }
-
-  function clearPendingFile() {
-    pendingFile = null
-  }
-
-  function handleKeyDown(e) {
-    // Handle autocomplete navigation
-    if (showAutocomplete) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        autocompleteSelectedIndex = (autocompleteSelectedIndex + 1) % autocompleteItems.length
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        autocompleteSelectedIndex = autocompleteSelectedIndex === 0
-          ? autocompleteItems.length - 1
-          : autocompleteSelectedIndex - 1
-        return
-      }
-      if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        if (autocompleteItems[autocompleteSelectedIndex]) {
-          insertAutocompleteItem(autocompleteItems[autocompleteSelectedIndex])
-        }
-        return
-      }
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        showAutocomplete = false
-        return
-      }
-    }
-
-    // Submit on Enter, allow Shift+Enter for new lines
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSubmit(e)
-    }
-  }
-
-  // Load more messages when scrolling to the top of the visible window.
-  // Preserves scroll position so the user doesn't jump.
-  function loadMoreMessages() {
-    if (renderStartIndex <= 0 || !scrollAreaViewport) return
-    const prevScrollHeight = scrollAreaViewport.scrollHeight
-    const prevScrollTop = scrollAreaViewport.scrollTop
-    renderStartIndex = Math.max(0, renderStartIndex - LOAD_MORE_COUNT)
-    // After Svelte renders the new messages, restore scroll position
-    tick().then(() => {
-      if (scrollAreaViewport) {
-        const newScrollHeight = scrollAreaViewport.scrollHeight
-        scrollAreaViewport.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight)
-      }
-    })
-  }
-
-  function handleScroll() {
-    if (!scrollAreaViewport) return
-    const { scrollTop, scrollHeight, clientHeight } = scrollAreaViewport
-    autoScroll = scrollHeight - scrollTop - clientHeight < 50
-  }
-
-  function scrollToBottom() {
-    if (scrollAreaViewport) {
-      scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight
-    }
-  }
-
-  function resizeTextarea() {
-    if (!textareaElement) return
-    textareaElement.style.overflowY = 'hidden'
-    textareaElement.style.height = 'auto'
-    textareaElement.style.height = textareaElement.scrollHeight + 'px'
-    textareaElement.style.overflowY =
-      textareaElement.scrollHeight > textareaElement.clientHeight ? 'auto' : 'hidden'
-  }
-
-  // Re-measure textarea height when its width changes (e.g., thread panel opens/closes,
-  // window resize, sidebar toggle). Track previous width to avoid infinite loops —
-  // without this guard, height changes from resizeTextarea() would re-trigger the observer.
-  $effect(() => {
-    if (!textareaElement) return
-    let prevWidth = textareaElement.getBoundingClientRect().width
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      if (!entry) return
-      const newWidth = entry.contentRect.width
-      if (newWidth !== prevWidth) {
-        prevWidth = newWidth
-        resizeTextarea()
-      }
-    })
-    ro.observe(textareaElement)
-    return () => ro.disconnect()
-  })
-
-  function handleInput() {
-    resizeTextarea()
-    detectAutocompleteTrigger()
-  }
-
-  function describeToolCall(entry) {
-    for (const part of entry.item.content) {
-      if (part.ToolCall) {
-        return part.ToolCall.semantic_header || part.ToolCall.name?.toLowerCase() || '?'
-      }
-    }
-    return '?'
-  }
-
-  function getToolCallStatusIcon(entry) {
-    if (entry.status === 'error') return '✗'
-    if (entry.status === 'ok') return '✓'
-    return '›'
-  }
+import ReplyIcon from "@lucide/svelte/icons/reply";
+import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
+import { onMount, tick, untrack } from "svelte";
+import { fly } from "svelte/transition";
+import Autocomplete from "./Autocomplete.svelte";
+import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
+import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from "./channelUtils.js";
+import DayDivider from "./DayDivider.svelte";
+import MermaidDiagram from "./MermaidDiagram.svelte";
+import MessageRow from "./MessageRow.svelte";
+import { hasMermaid, parseSegments, renderContent } from "./markdown.js";
+import {
+	AVENUE_COLORS,
+	dateChanged,
+	formatTime,
+	getSenderColor,
+	isDimSender,
+	parseInsightSegments,
+	timeChanged,
+} from "./messageUtils.js";
+import { clearMobileTextarea } from "./mobileInput.js";
+import {
+	activeChannel,
+	activeProject,
+	agentToolItems,
+	channels as channelsStore,
+	coworkers,
+	daemonStatus,
+	isWideScreen,
+	kanbanData,
+	messages,
+	messagesByChannel,
+	repoStatus,
+	repoStatuses,
+	threadData,
+	threadUnreadCounts,
+} from "./store.js";
+import ToolDataBlocks from "./ToolDataBlocks.svelte";
+
+// Windowed rendering: only render a slice of messages near the viewport.
+// Messages outside this window are not mounted in the DOM.
+const INITIAL_WINDOW_SIZE = 100; // messages to render on first load
+const LOAD_MORE_COUNT = 50; // messages to add when scrolling up
+
+let inputText = $state("");
+let scrollAreaViewport = $state(null);
+let autoScroll = $state(true);
+let pendingFile = $state(null);
+let uploading = $state(false);
+let textareaElement = $state(null);
+let formWrapperElement = $state(null);
+let channelItemsActive = $state(false);
+let channelItemsActiveTimeout = null;
+let channelItemsActiveVersion = 0; // version counter to discard stale microtasks
+let topSentinel = $state(null);
+let topObserver = null;
+
+// The index into channelMessages where rendering begins.
+// Messages before this index are not in the DOM.
+let renderStartIndex = $state(0);
+
+// Per-channel draft storage: saves inputText and pendingFile when switching channels
+let channelDrafts = new Map();
+let prevChannel = null;
+
+// Autocomplete state
+let showAutocomplete = $state(false);
+let autocompleteType = $state(null); // '@' | '!' | '#'
+let autocompleteQuery = $state("");
+let autocompleteItems = $state([]);
+let autocompletePosition = $state({ top: 0, left: 0 });
+let autocompleteSelectedIndex = $state(0);
+let autocompleteStartPos = $state(0);
+
+// DM channel detection: use is_dm field or dm- prefix fallback
+let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
+let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
+let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
+
+// Filter messages by active channel
+let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
+
+// Visible slice of messages for the DOM. Only these get rendered.
+let visibleMessages = $derived(channelMessages.slice(renderStartIndex));
+let hasMoreAbove = $derived(renderStartIndex > 0);
+
+// Track how many messages were present when each channel was first viewed.
+// Messages at or above this index are "new" and get the slide-up animation.
+// We use $state.raw so mutations don't trigger full reactive updates.
+let initialMessageCounts = $state.raw({});
+
+$effect(() => {
+	// Reactive on both $activeChannel and channelMessages.length.
+	// On first visit to a channel, channelMessages is empty (history not yet
+	// loaded from WebSocket). We wait until messages actually arrive before
+	// snapshotting the count. This prevents the race where we snapshot 0,
+	// then history loads and every message animates as "new".
+	const ch = $activeChannel;
+	const len = channelMessages.length;
+	if (!(ch in initialMessageCounts) && len > 0) {
+		// Defer state write to avoid state_unsafe_mutation during derived evaluation
+		queueMicrotask(() => {
+			initialMessageCounts = { ...initialMessageCounts, [ch]: len };
+		});
+	}
+});
+
+// Position the render window at the tail on channel switch or first history load.
+// Tracks $activeChannel and channelMessages.length, but uses prevRenderChannel
+// to distinguish channel switches from new-message arrivals. This avoids both:
+//  - stale counts (issue: window grows unbounded on revisit)
+//  - DOM flash (issue: renderStartIndex starts at 0 then jumps)
+let prevRenderChannel = null;
+let renderVersion = 0; // version counter to discard stale microtasks
+// Shadow of renderStartIndex set synchronously so the "only fires once"
+// guard works even before the deferred write executes.
+let pendingRenderStartIndex = 0;
+$effect(() => {
+	const ch = $activeChannel;
+	const len = channelMessages.length;
+	if (ch !== prevRenderChannel) {
+		// Channel switch — position at tail using current message count.
+		prevRenderChannel = ch;
+		const version = ++renderVersion;
+		const newIndex = Math.max(0, len - INITIAL_WINDOW_SIZE);
+		pendingRenderStartIndex = newIndex;
+		queueMicrotask(() => {
+			if (version !== renderVersion) return;
+			renderStartIndex = newIndex;
+		});
+	} else if (len > 0 && pendingRenderStartIndex === 0 && len > INITIAL_WINDOW_SIZE) {
+		// Same channel, history just loaded (was empty, now has messages).
+		// Only fires once: after this, pendingRenderStartIndex > 0 so guard fails.
+		const version = ++renderVersion;
+		const newIndex = len - INITIAL_WINDOW_SIZE;
+		pendingRenderStartIndex = newIndex;
+		queueMicrotask(() => {
+			if (version !== renderVersion) return;
+			renderStartIndex = newIndex;
+		});
+	}
+	// New messages on current channel: no-op. visibleMessages is an
+	// open-ended slice so new messages at the end render automatically.
+});
+
+// Save/restore drafts when switching channels
+$effect(() => {
+	const ch = $activeChannel;
+	if (prevChannel !== null && prevChannel !== ch) {
+		const currentText = untrack(() => inputText);
+		const currentFile = untrack(() => pendingFile);
+		if (currentText.trim() || currentFile) {
+			channelDrafts.set(prevChannel, { text: currentText, file: currentFile });
+		} else {
+			channelDrafts.delete(prevChannel);
+		}
+	}
+	if (prevChannel !== ch) {
+		const draft = channelDrafts.get(ch);
+		// Defer state writes to avoid state_unsafe_mutation during derived evaluation.
+		// resizeTextarea must run after the state writes so the textarea height reflects
+		// the restored draft content, not the stale empty value.
+		queueMicrotask(() => {
+			inputText = draft?.text ?? "";
+			pendingFile = draft?.file ?? null;
+			tick().then(() => resizeTextarea());
+		});
+	}
+	prevChannel = ch;
+});
+
+function isNewMessage(channelName, index) {
+	// If we haven't recorded the initial count yet (effect hasn't fired),
+	// treat all messages as old so they don't animate on first render.
+	const threshold = initialMessageCounts[channelName] ?? Infinity;
+	return index >= threshold;
+}
+
+// Tool call items for the active channel.
+// Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
+let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || []);
+
+// Activity strip computed values (always-rendered single line above input)
+// Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
+let isLeadWorking = $derived(
+	$activeChannel === "midtown" || $activeChannel === $activeProject
+		? !!$daemonStatus?.lead_working
+		: !!$daemonStatus?.channel_leads_working?.[$activeChannel],
+);
+// Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
+// InProgress in the store even after its ToolResult arrives in a later batch (items
+// are appended, not updated). Only count a call as truly in-progress if no matching
+// ToolResult exists in the store.
+let hasInProgressItems = $derived.by(() => {
+	const completedCallIds = new Set();
+	for (const item of activeChannelToolItems) {
+		for (const part of item.content) {
+			if (part.ToolResult) completedCallIds.add(part.ToolResult.call_id);
+		}
+	}
+	return activeChannelToolItems.some((item) => {
+		if (item.status !== "InProgress") return false;
+		return item.content.some((part) => part.ToolCall && !completedCallIds.has(part.ToolCall.call_id));
+	});
+});
+let showActivity = $derived(activeChannelToolItems.length > 0 || isLeadWorking);
+let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive));
+
+// Most recent tool call entry for inline display in the activity strip.
+// Replicates ToolActivity's merge logic but returns only the last call.
+let mostRecentToolCallEntry = $derived.by(() => {
+	if (activeChannelToolItems.length === 0) return null;
+	const resultStatus = {};
+	for (const item of activeChannelToolItems) {
+		for (const part of item.content) {
+			if (part.ToolResult) {
+				resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? "error" : "ok";
+			}
+		}
+	}
+	for (let i = activeChannelToolItems.length - 1; i >= 0; i--) {
+		const item = activeChannelToolItems[i];
+		if (item.content.some((p) => p.ToolCall)) {
+			const callId = item.content.find((p) => p.ToolCall)?.ToolCall?.call_id;
+			const status = callId ? (resultStatus[callId] ?? null) : null;
+			return { item, status };
+		}
+	}
+	return null;
+});
+
+// Autocomplete filtering and data preparation
+function getAutocompleteItems(type, query) {
+	const lowerQuery = query.toLowerCase();
+
+	if (type === "@") {
+		// Coworkers + lead
+		const people = [
+			{ name: "lead", type: "lead" },
+			...$coworkers.map((cw) => ({ name: cw.name, type: "coworker", task: cw.current_task })),
+		];
+		return people.filter((p) => p.name.toLowerCase().startsWith(lowerQuery));
+	}
+
+	if (type === "!") {
+		// Tasks from daemon status
+		const tasks = $daemonStatus?.tasks || [];
+		return tasks
+			.filter((t) => {
+				const idMatch = String(t.id).startsWith(query);
+				const subjectMatch = t.subject?.toLowerCase().startsWith(lowerQuery);
+				return idMatch || subjectMatch;
+			})
+			.slice(0, 10); // Limit to 10 results
+	}
+
+	if (type === "#") {
+		// PRs from kanban data + channels
+		const prs = $kanbanData.review.map((pr) => ({
+			type: "pr",
+			number: pr.number,
+			title: pr.title,
+			status: pr.status,
+		}));
+		const channelList = $channelsStore.map((ch) => ({
+			type: "channel",
+			name: ch.name,
+		}));
+		const combined = [...prs, ...channelList];
+		return combined
+			.filter((item) => {
+				if (item.type === "pr") {
+					return String(item.number).startsWith(query) || item.title?.toLowerCase().startsWith(lowerQuery);
+				}
+				return item.name.toLowerCase().startsWith(lowerQuery);
+			})
+			.slice(0, 10);
+	}
+
+	return [];
+}
+
+function getAutocompleteLabel(item) {
+	if (typeof item === "object" && item !== null) {
+		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
+		if (item.type === "pr") return `#${item.number}`;
+		if (item.type === "channel") return `#${item.name}`;
+		if (item.id !== undefined) return `!${item.id}`; // task
+	}
+	return String(item);
+}
+
+function getAutocompleteValue(item) {
+	if (typeof item === "object" && item !== null) {
+		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
+		if (item.type === "pr") return `#${item.number}`;
+		if (item.type === "channel") return `#${item.name}`;
+		if (item.id !== undefined) return `!${item.id}`; // task
+	}
+	return String(item);
+}
+
+function getAutocompleteDescription(item) {
+	if (typeof item === "object" && item !== null) {
+		if ((item.type === "coworker" || item.type === "lead") && item.task) return item.task;
+		if (item.type === "pr") return item.title;
+		if (item.subject) return item.subject; // task
+	}
+	return null;
+}
+
+function calculateAutocompletePosition() {
+	if (!textareaElement || !formWrapperElement) return { top: 0, left: 0 };
+
+	const textareaRect = textareaElement.getBoundingClientRect();
+	const wrapperRect = formWrapperElement.getBoundingClientRect();
+
+	// Position relative to the form wrapper (which has position: relative and
+	// no overflow: hidden). Using position: absolute on the dropdown instead of
+	// position: fixed avoids iOS visual/layout viewport split issues when the
+	// virtual keyboard is open.
+	//
+	// top = textarea's top edge relative to the wrapper.
+	// The dropdown uses translateY(-100% - 8px) to shift above the textarea.
+	return {
+		top: textareaRect.top - wrapperRect.top,
+		left: textareaRect.left - wrapperRect.left,
+		width: textareaRect.width,
+	};
+}
+
+function detectAutocompleteTrigger() {
+	const cursorPos = textareaElement?.selectionStart || 0;
+	// Use textarea.value directly instead of inputText binding
+	// because oninput fires before the binding updates
+	const text = textareaElement?.value || inputText;
+
+	// Look backward from cursor to find trigger character
+	let triggerPos = -1;
+	let triggerChar = null;
+
+	for (let i = cursorPos - 1; i >= 0; i--) {
+		const char = text[i];
+		const prevChar = i > 0 ? text[i - 1] : " ";
+
+		// Check if this is a trigger character preceded by whitespace or start of line
+		if ("@!#".includes(char) && (prevChar === " " || prevChar === "\n" || i === 0)) {
+			triggerPos = i;
+			triggerChar = char;
+			break;
+		}
+
+		// Stop if we hit whitespace (no trigger found in current word)
+		if (char === " " || char === "\n") {
+			break;
+		}
+	}
+
+	if (triggerPos >= 0 && triggerChar) {
+		const query = text.slice(triggerPos + 1, cursorPos);
+		autocompleteStartPos = triggerPos;
+		autocompleteType = triggerChar;
+		autocompleteQuery = query;
+		autocompleteItems = getAutocompleteItems(triggerChar, query);
+		autocompletePosition = calculateAutocompletePosition();
+		autocompleteSelectedIndex = 0;
+		showAutocomplete = autocompleteItems.length > 0;
+	} else {
+		showAutocomplete = false;
+	}
+}
+
+function insertAutocompleteItem(item) {
+	const value = getAutocompleteValue(item);
+	const beforeTrigger = inputText.slice(0, autocompleteStartPos);
+	const afterCursor = inputText.slice(textareaElement?.selectionStart || 0);
+
+	inputText = `${beforeTrigger + value} ${afterCursor}`;
+	showAutocomplete = false;
+
+	// Set cursor position after inserted text
+	tick().then(() => {
+		if (textareaElement) {
+			const newPos = beforeTrigger.length + value.length + 1;
+			textareaElement.focus();
+			textareaElement.setSelectionRange(newPos, newPos);
+		}
+	});
+}
+
+// Cache current tasks to avoid recalculating on every render
+let currentTasks = $derived(getCurrentTasks($coworkers));
+
+// Get PR status from kanban data
+function getPrStatus(prNum) {
+	const pr = $kanbanData.review.find((p) => p.number === parseInt(prNum, 10));
+	return pr ? pr.status : null;
+}
+
+function findPr(prNum) {
+	return findPrUtil(prNum, $kanbanData);
+}
+
+function getPrUrl(prNum) {
+	return getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName);
+}
+
+// Find a task by ID from the daemon status task list
+function findTask(taskId) {
+	const tasks = $daemonStatus?.tasks || [];
+	return tasks.find((t) => String(t.id) === String(taskId)) || null;
+}
+
+// Set up IntersectionObserver for the top sentinel (lazy load older messages)
+$effect(() => {
+	const sentinel = topSentinel;
+	const viewport = scrollAreaViewport;
+	if (!sentinel || !viewport) return;
+
+	topObserver = new IntersectionObserver(
+		(entries) => {
+			for (const entry of entries) {
+				if (entry.isIntersecting) {
+					loadMoreMessages();
+				}
+			}
+		},
+		{ root: viewport, rootMargin: "200px 0px 0px 0px" },
+	);
+	topObserver.observe(sentinel);
+
+	return () => {
+		topObserver?.disconnect();
+		topObserver = null;
+	};
+});
+
+// Handle clicks on channel links, task links, PR links, and coworker links
+onMount(() => {
+	function handleLinkClick(e) {
+		const target = e.target;
+		if (target.classList.contains("channel-link")) {
+			e.preventDefault();
+			const channelName = target.dataset.channel;
+			if ($channelsStore.some((ch) => ch.name === channelName)) {
+				activeChannel.set(channelName);
+			}
+		} else if (target.classList.contains("task-link")) {
+			e.preventDefault();
+			const taskId = target.dataset.task;
+			const task = findTask(taskId);
+			if (task) {
+				openTaskThread(task, task.channel || $activeChannel);
+			}
+		} else if (target.classList.contains("pr-link")) {
+			e.preventDefault();
+			const prNum = target.dataset.pr;
+			const url = getPrUrl(prNum);
+			if (url) window.open(url, "_blank", "noopener");
+		} else if (target.classList.contains("coworker-link")) {
+			// Prevent the browser from following the '#' href; no detail panel action.
+			e.preventDefault();
+		}
+	}
+
+	if (scrollAreaViewport) {
+		scrollAreaViewport.addEventListener("click", handleLinkClick);
+		return () => scrollAreaViewport.removeEventListener("click", handleLinkClick);
+	}
+});
+
+function isAction(msg) {
+	return msg.msg_type === "action" || msg.content?.startsWith("/me ");
+}
+
+function getActionContent(msg) {
+	return msg.content.replace(/^\/me\s*/, "");
+}
+
+// NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
+// handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND
+// resolveMessageTapAction (mobile decision logic in channelUtils.js). handleMessageTap
+// calls stopPropagation(), so handleLinkClick never runs on mobile. They are NOT
+// redundant; they are two separate entry points for the same click on different platforms.
+function handleMessageTap(event, msg) {
+	const target = event.target instanceof Element ? event.target : null;
+	const isInteractiveControl = !!target?.closest("button, input, textarea, select, label");
+	const anchor = target?.closest("a");
+	const link = anchor
+		? {
+				isExternal: !anchor.dataset.channel && !anchor.dataset.task && !anchor.dataset.pr && !anchor.dataset.coworker,
+				dataset: anchor.dataset,
+			}
+		: null;
+
+	const action = resolveMessageTapAction({ isWideScreen: $isWideScreen, msg, isInteractiveControl, link });
+	if (!action) return;
+
+	if (action.type === "open_task") {
+		const task = findTask(action.taskId);
+		if (task) openTaskThread(task, task.channel || $activeChannel);
+	} else if (action.type === "open_pr") {
+		const url = getPrUrl(action.prNum);
+		if (url) window.open(url, "_blank", "noopener");
+	} else if (action.type === "open_thread") {
+		openThread(msg, $activeChannel);
+	}
+	// Prevent the click from also triggering the internal link handler (handleLinkClick),
+	// and prevent the browser from following href="#" which would scroll to page top.
+	event.stopPropagation();
+	event.preventDefault();
+}
+
+// Build a map of coworker name -> current task
+function getCurrentTasks(coworkerList) {
+	const map = {};
+	for (const cw of coworkerList) {
+		if (cw.current_task) {
+			map[cw.name.toLowerCase()] = cw.current_task;
+		}
+	}
+	return map;
+}
+
+// Auto-scroll to bottom when new messages arrive
+$effect(() => {
+	if (channelMessages.length > 0 && autoScroll && scrollAreaViewport) {
+		tick().then(() => {
+			scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight;
+		});
+	}
+});
+
+// Reset textarea height when input is cleared (after send)
+$effect(() => {
+	inputText;
+	tick().then(() => resizeTextarea());
+});
+
+// Track tool item activity freshness: mark active when new items arrive,
+// mark stale after 8s of silence. This catches channel leads that stop
+// mid-tool (no ToolResult or final message to clear InProgress items).
+$effect(() => {
+	const items = activeChannelToolItems;
+	if (channelItemsActiveTimeout) {
+		clearTimeout(channelItemsActiveTimeout);
+		channelItemsActiveTimeout = null;
+	}
+	// Version counter prevents stale microtasks from overwriting newer state.
+	// Each effect run increments the version; the microtask only writes if its
+	// captured version still matches, discarding writes from superseded runs.
+	const version = ++channelItemsActiveVersion;
+	if (items.length > 0) {
+		// Defer state write to avoid state_unsafe_mutation — channelItemsActive
+		// feeds $derived showDots which is read during the same flush cycle
+		queueMicrotask(() => {
+			if (version !== channelItemsActiveVersion) return;
+			channelItemsActive = true;
+		});
+		channelItemsActiveTimeout = setTimeout(() => {
+			channelItemsActive = false;
+			channelItemsActiveTimeout = null;
+		}, 8000);
+	} else {
+		queueMicrotask(() => {
+			if (version !== channelItemsActiveVersion) return;
+			channelItemsActive = false;
+		});
+	}
+});
+
+// Ensure the timeouts are cleared when the component is destroyed
+$effect(() => {
+	return () => {
+		if (channelItemsActiveTimeout) {
+			clearTimeout(channelItemsActiveTimeout);
+			channelItemsActiveTimeout = null;
+		}
+	};
+});
+
+async function handleSubmit(e) {
+	e.preventDefault();
+
+	// If there's a pending file, upload it first
+	if (pendingFile && !uploading) {
+		uploading = true;
+		const result = await uploadFile(pendingFile);
+		uploading = false;
+
+		if (result.ok) {
+			// Send message to lead with file path
+			const message = inputText.trim()
+				? `${inputText.trim()}\n\n[Attached: ${result.path}]`
+				: `[Attached file: ${result.filename}]\nPlease read: ${result.path}`;
+
+			sendMessage(message, $activeChannel);
+			inputText = "";
+			if (textareaElement) textareaElement.value = "";
+			pendingFile = null;
+			channelDrafts.delete($activeChannel);
+		} else {
+			alert(`Upload failed: ${result.error}`);
+			return;
+		}
+	} else if (inputText.trim()) {
+		sendMessage(inputText.trim(), $activeChannel);
+		inputText = "";
+		channelDrafts.delete($activeChannel);
+		clearMobileTextarea(textareaElement, () => {
+			inputText = "";
+		});
+	}
+}
+
+function handlePaste(e) {
+	const items = e.clipboardData?.items;
+	if (!items) return;
+
+	for (const item of items) {
+		// Check for image types
+		if (item.type.startsWith("image/")) {
+			e.preventDefault();
+			const file = item.getAsFile();
+			if (file) {
+				pendingFile = file;
+			}
+			return;
+		}
+		// Check for files (PDFs, etc.)
+		if (item.kind === "file") {
+			e.preventDefault();
+			const file = item.getAsFile();
+			if (file) {
+				pendingFile = file;
+			}
+			return;
+		}
+	}
+}
+
+function clearPendingFile() {
+	pendingFile = null;
+}
+
+function handleKeyDown(e) {
+	// Handle autocomplete navigation
+	if (showAutocomplete) {
+		if (e.key === "ArrowDown") {
+			e.preventDefault();
+			autocompleteSelectedIndex = (autocompleteSelectedIndex + 1) % autocompleteItems.length;
+			return;
+		}
+		if (e.key === "ArrowUp") {
+			e.preventDefault();
+			autocompleteSelectedIndex =
+				autocompleteSelectedIndex === 0 ? autocompleteItems.length - 1 : autocompleteSelectedIndex - 1;
+			return;
+		}
+		if (e.key === "Enter" || e.key === "Tab") {
+			e.preventDefault();
+			if (autocompleteItems[autocompleteSelectedIndex]) {
+				insertAutocompleteItem(autocompleteItems[autocompleteSelectedIndex]);
+			}
+			return;
+		}
+		if (e.key === "Escape") {
+			e.preventDefault();
+			showAutocomplete = false;
+			return;
+		}
+	}
+
+	// Submit on Enter, allow Shift+Enter for new lines
+	if (e.key === "Enter" && !e.shiftKey) {
+		e.preventDefault();
+		handleSubmit(e);
+	}
+}
+
+// Load more messages when scrolling to the top of the visible window.
+// Preserves scroll position so the user doesn't jump.
+function loadMoreMessages() {
+	if (renderStartIndex <= 0 || !scrollAreaViewport) return;
+	const prevScrollHeight = scrollAreaViewport.scrollHeight;
+	const prevScrollTop = scrollAreaViewport.scrollTop;
+	renderStartIndex = Math.max(0, renderStartIndex - LOAD_MORE_COUNT);
+	// After Svelte renders the new messages, restore scroll position
+	tick().then(() => {
+		if (scrollAreaViewport) {
+			const newScrollHeight = scrollAreaViewport.scrollHeight;
+			scrollAreaViewport.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+		}
+	});
+}
+
+function handleScroll() {
+	if (!scrollAreaViewport) return;
+	const { scrollTop, scrollHeight, clientHeight } = scrollAreaViewport;
+	autoScroll = scrollHeight - scrollTop - clientHeight < 50;
+}
+
+function scrollToBottom() {
+	if (scrollAreaViewport) {
+		scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight;
+	}
+}
+
+function resizeTextarea() {
+	if (!textareaElement) return;
+	textareaElement.style.overflowY = "hidden";
+	textareaElement.style.height = "auto";
+	textareaElement.style.height = `${textareaElement.scrollHeight}px`;
+	textareaElement.style.overflowY = textareaElement.scrollHeight > textareaElement.clientHeight ? "auto" : "hidden";
+}
+
+// Re-measure textarea height when its width changes (e.g., thread panel opens/closes,
+// window resize, sidebar toggle). Track previous width to avoid infinite loops —
+// without this guard, height changes from resizeTextarea() would re-trigger the observer.
+$effect(() => {
+	if (!textareaElement) return;
+	let prevWidth = textareaElement.getBoundingClientRect().width;
+	const ro = new ResizeObserver((entries) => {
+		const entry = entries[0];
+		if (!entry) return;
+		const newWidth = entry.contentRect.width;
+		if (newWidth !== prevWidth) {
+			prevWidth = newWidth;
+			resizeTextarea();
+		}
+	});
+	ro.observe(textareaElement);
+	return () => ro.disconnect();
+});
+
+function handleInput() {
+	resizeTextarea();
+	detectAutocompleteTrigger();
+}
+
+function describeToolCall(entry) {
+	for (const part of entry.item.content) {
+		if (part.ToolCall) {
+			return part.ToolCall.semantic_header || part.ToolCall.name?.toLowerCase() || "?";
+		}
+	}
+	return "?";
+}
+
+function getToolCallStatusIcon(entry) {
+	if (entry.status === "error") return "✗";
+	if (entry.status === "ok") return "✓";
+	return "›";
+}
 </script>
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">

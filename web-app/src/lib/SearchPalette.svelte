@@ -1,100 +1,105 @@
 <script>
-  import { CommandDialog, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from '$lib/components/ui/command'
-  import HashIcon from '@lucide/svelte/icons/hash'
-  import AtSignIcon from '@lucide/svelte/icons/at-sign'
-  import { searchMessages, fetchHistory, selectDm } from './api.js'
-  import { activeChannel, channels, messagesByChannel } from './store.js'
-  import { getSenderColor } from './messageUtils.js'
+import AtSignIcon from "@lucide/svelte/icons/at-sign";
+import HashIcon from "@lucide/svelte/icons/hash";
+import {
+	CommandDialog,
+	CommandEmpty,
+	CommandGroup,
+	CommandInput,
+	CommandItem,
+	CommandList,
+} from "$lib/components/ui/command";
+import { fetchHistory, searchMessages, selectDm } from "./api.js";
+import { getSenderColor } from "./messageUtils.js";
+import { activeChannel, channels, messagesByChannel } from "./store.js";
 
-  let { open = $bindable(false) } = $props()
+let { open = $bindable(false) } = $props();
 
-  let query = $state('')
-  let results = $state([])
-  let loading = $state(false)
-  let error = $state(false)
-  // Plain `let` — timer IDs have no UI relevance and must not be reactive
-  // (writing $state inside $effect re-triggers the effect infinitely).
-  let debounceTimer = null
+let query = $state("");
+let results = $state([]);
+let loading = $state(false);
+let error = $state(false);
+// Plain `let` — timer IDs have no UI relevance and must not be reactive
+// (writing $state inside $effect re-triggers the effect infinitely).
+let debounceTimer = null;
 
-  // Debounced search: fire API call 300ms after the user stops typing.
-  // Guards against stale responses: only apply results if the query hasn't
-  // changed and the dialog is still open when the response arrives.
-  $effect(() => {
-    const q = query.trim()
-    if (!q) {
-      results = []
-      loading = false
-      error = false
-      return
-    }
-    loading = true
-    error = false
-    debounceTimer = setTimeout(async () => {
-      try {
-        const response = await searchMessages(q)
-        if (query.trim() === q && open) {
-          results = response.results || []
-          loading = false
-          error = !!response.error
-        }
-      } catch {
-        if (query.trim() === q && open) {
-          results = []
-          loading = false
-          error = true
-        }
-      }
-    }, 300)
-    return () => clearTimeout(debounceTimer)
-  })
+// Debounced search: fire API call 300ms after the user stops typing.
+// Guards against stale responses: only apply results if the query hasn't
+// changed and the dialog is still open when the response arrives.
+$effect(() => {
+	const q = query.trim();
+	if (!q) {
+		results = [];
+		loading = false;
+		error = false;
+		return;
+	}
+	loading = true;
+	error = false;
+	debounceTimer = setTimeout(async () => {
+		try {
+			const response = await searchMessages(q);
+			if (query.trim() === q && open) {
+				results = response.results || [];
+				loading = false;
+				error = !!response.error;
+			}
+		} catch {
+			if (query.trim() === q && open) {
+				results = [];
+				loading = false;
+				error = true;
+			}
+		}
+	}, 300);
+	return () => clearTimeout(debounceTimer);
+});
 
-  // Reset state when dialog closes
-  $effect(() => {
-    if (!open) {
-      query = ''
-      results = []
-      loading = false
-      error = false
-    }
-  })
+// Reset state when dialog closes
+$effect(() => {
+	if (!open) {
+		query = "";
+		results = [];
+		loading = false;
+		error = false;
+	}
+});
 
-  function selectResult(result) {
-    if (result.channel.startsWith('dm-')) {
-      // DM channels need selectDm() to ensure the channel appears in the sidebar
-      const coworkerName = result.channel.replace(/^dm-/, '')
-      selectDm(coworkerName)
-    } else {
-      activeChannel.set(result.channel)
-      // Clear unread count for the navigated channel
-      channels.update((list) =>
-        list.map((ch) => (ch.name === result.channel ? { ...ch, unread: 0 } : ch))
-      )
-      // Ensure channel messages are loaded
-      const existing = $messagesByChannel[result.channel]
-      if (!existing || existing.length === 0) {
-        fetchHistory(result.channel)
-      }
-    }
-    open = false
-  }
+function selectResult(result) {
+	if (result.channel.startsWith("dm-")) {
+		// DM channels need selectDm() to ensure the channel appears in the sidebar
+		const coworkerName = result.channel.replace(/^dm-/, "");
+		selectDm(coworkerName);
+	} else {
+		activeChannel.set(result.channel);
+		// Clear unread count for the navigated channel
+		channels.update((list) => list.map((ch) => (ch.name === result.channel ? { ...ch, unread: 0 } : ch)));
+		// Ensure channel messages are loaded
+		const existing = $messagesByChannel[result.channel];
+		if (!existing || existing.length === 0) {
+			fetchHistory(result.channel);
+		}
+	}
+	open = false;
+}
 
-  function formatRelativeTime(timestamp) {
-    try {
-      const date = new Date(timestamp)
-      const now = new Date()
-      const diffMs = now - date
-      const diffMins = Math.floor(diffMs / 60000)
-      if (diffMins < 1) return 'now'
-      if (diffMins < 60) return `${diffMins}m`
-      const diffHours = Math.floor(diffMins / 60)
-      if (diffHours < 24) return `${diffHours}h`
-      const diffDays = Math.floor(diffHours / 24)
-      if (diffDays < 7) return `${diffDays}d`
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-    } catch {
-      return ''
-    }
-  }
+function formatRelativeTime(timestamp) {
+	try {
+		const date = new Date(timestamp);
+		const now = new Date();
+		const diffMs = now - date;
+		const diffMins = Math.floor(diffMs / 60000);
+		if (diffMins < 1) return "now";
+		if (diffMins < 60) return `${diffMins}m`;
+		const diffHours = Math.floor(diffMins / 60);
+		if (diffHours < 24) return `${diffHours}h`;
+		const diffDays = Math.floor(diffHours / 24);
+		if (diffDays < 7) return `${diffDays}d`;
+		return date.toLocaleDateString([], { month: "short", day: "numeric" });
+	} catch {
+		return "";
+	}
+}
 </script>
 
 <CommandDialog bind:open shouldFilter={false} title="Search messages" description="Search across all channel messages">

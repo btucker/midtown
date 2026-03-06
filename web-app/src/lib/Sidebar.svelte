@@ -1,32 +1,26 @@
 <script>
-  import ChannelList from './ChannelList.svelte'
-  import CoworkerStatus from './CoworkerStatus.svelte'
-  import OpsChannel from './OpsChannel.svelte'
-  import UsageBars from './UsageBars.svelte'
-  import AuthSwitcher from './AuthSwitcher.svelte'
-  import { connected } from './store.js'
-  import {
-    pushSupported,
-    pushPermission,
-    pushSubscribed,
-    subscribePush,
-    unsubscribePush,
-  } from './push.js'
-  import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '$lib/components/ui/collapsible'
-  import ChevronDown from '@lucide/svelte/icons/chevron-down'
-  import ChevronRight from '@lucide/svelte/icons/chevron-right'
-  import Bell from '@lucide/svelte/icons/bell'
-  import BellOff from '@lucide/svelte/icons/bell-off'
+import Bell from "@lucide/svelte/icons/bell";
+import BellOff from "@lucide/svelte/icons/bell-off";
+import ChevronDown from "@lucide/svelte/icons/chevron-down";
+import ChevronRight from "@lucide/svelte/icons/chevron-right";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "$lib/components/ui/collapsible";
+import AuthSwitcher from "./AuthSwitcher.svelte";
+import ChannelList from "./ChannelList.svelte";
+import CoworkerStatus from "./CoworkerStatus.svelte";
+import OpsChannel from "./OpsChannel.svelte";
+import { pushPermission, pushSubscribed, pushSupported, subscribePush, unsubscribePush } from "./push.js";
+import { connected } from "./store.js";
+import UsageBars from "./UsageBars.svelte";
 
-  let channelsExpanded = $state(true)
+let channelsExpanded = $state(true);
 
-  async function togglePush() {
-    if ($pushSubscribed) {
-      await unsubscribePush()
-    } else {
-      await subscribePush()
-    }
-  }
+async function togglePush() {
+	if ($pushSubscribed) {
+		await unsubscribePush();
+	} else {
+		await subscribePush();
+	}
+}
 </script>
 
 <div class="flex h-full flex-col border-r-2 border-sidebar-border bg-sidebar">
