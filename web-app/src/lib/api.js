@@ -117,6 +117,15 @@ let reconnectTimeout = null
 let statusPollInterval = null
 let usagePollInterval = null
 
+// Unique key for the bulk (all-channels) fetchHistory request. Using a Symbol
+// avoids collisions with real channel names in the AbortController map.
+const BULK_FETCH_KEY = Symbol('bulk-fetch')
+
+// AbortController for in-flight fetchHistory requests, keyed by channel name.
+// When a new fetch starts for a channel, any previous in-flight fetch for that
+// channel is aborted to prevent out-of-order responses from stale requests.
+const fetchHistoryControllers = new Map()
+
 // ── Browser history navigation ──────────────────────────────────────────────
 // Tracks whether we're currently handling a popstate event to prevent
 // circular history pushes (popstate → store change → pushState).
@@ -314,11 +323,19 @@ function annotateThreadReplyCounts(msgs) {
 // If channelName is provided, fetches only that channel's messages.
 // Otherwise, fetches all messages from the main channel.
 export async function fetchHistory(channelName = null) {
+  // Abort any in-flight fetch for the same channel to prevent out-of-order
+  // responses when the user rapidly switches channels.
+  const cacheKey = channelName || BULK_FETCH_KEY
+  const prev = fetchHistoryControllers.get(cacheKey)
+  if (prev) prev.abort()
+  const controller = new AbortController()
+  fetchHistoryControllers.set(cacheKey, controller)
+
   try {
     const url = channelName
       ? `${getApiBase()}/channels/history?channel=${encodeURIComponent(channelName)}`
       : `${getApiBase()}/channels/history`
-    const res = await fetch(url)
+    const res = await fetch(url, { signal: controller.signal })
     if (res.ok) {
       const data = await res.json()
 
@@ -401,10 +418,20 @@ export async function fetchHistory(channelName = null) {
       }
     }
   } catch (err) {
+    if (err.name === 'AbortError') {
+      // Request was cancelled by a newer fetchHistory call — expected during
+      // rapid channel switching. No action needed.
+      return
+    }
     // Retain last-known-good data on transient network errors so the
     // channel view doesn't flash empty. Messages will refresh on the
     // next successful WebSocket reconnect or manual channel switch.
     console.warn('Failed to fetch history (retaining cached data):', err)
+  } finally {
+    // Clean up controller if it's still the active one for this key
+    if (fetchHistoryControllers.get(cacheKey) === controller) {
+      fetchHistoryControllers.delete(cacheKey)
+    }
   }
 }
 
@@ -534,8 +561,16 @@ export function connectWebSocket() {
       reconnectTimeout = null
     }
 
-    // Fetch history for all active channels to catch up on any missed messages
+    // Fetch history for all channels (main bulk load) to catch up on missed messages.
     fetchHistory()
+    // Also fetch the currently active channel specifically, so it refreshes
+    // even if it's a topic channel. The bulk fetchHistory() only returns the
+    // main channel; topic channels need a targeted fetch.
+    const currentChannel = get(activeChannel)
+    const projectName = get(activeProject)
+    if (currentChannel && currentChannel !== projectName) {
+      fetchHistory(currentChannel)
+    }
     console.log(wasReconnect ? 'Reconnected - fetching message history' : 'Connected - loading initial history')
   }
 
@@ -1308,10 +1343,8 @@ export function setupHistoryNavigation() {
         channels.update((list) =>
           list.map((ch) => (ch.name === state.channel ? { ...ch, unread: 0 } : ch))
         )
-        const currentMessages = get(messagesByChannel)[state.channel]
-        if (!currentMessages || currentMessages.length === 0) {
-          fetchHistory(state.channel)
-        }
+        // Always fetch history on navigation (same rationale as selectChannel).
+        fetchHistory(state.channel)
       }
 
       // Thread navigation
@@ -1410,8 +1443,6 @@ export async function selectDm(coworkerName) {
     channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
   )
 
-  const currentMessages = get(messagesByChannel)[channelName]
-  if (!currentMessages || currentMessages.length === 0) {
-    fetchHistory(channelName)
-  }
+  // Always fetch full history on DM switch (same rationale as selectChannel).
+  fetchHistory(channelName)
 }

@@ -254,6 +254,57 @@ describe('fetchHistory', () => {
   })
 })
 
+describe('fetchHistory — AbortController cancellation', () => {
+  let originalFetch
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+    messagesByChannel.set({
+      midtown: [],
+      'channel-a': [{ id: 1, content: 'existing', channel: 'channel-a' }],
+    })
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('aborts a previous in-flight request when a new one starts for the same channel', async () => {
+    let abortSignals = []
+    globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
+      abortSignals.push(opts?.signal)
+      return new Promise((resolve) =>
+        setTimeout(() => resolve({ ok: true, json: async () => [] }), 100)
+      )
+    })
+
+    // Start two concurrent fetches for the same channel
+    const first = fetchHistory('channel-a')
+    const second = fetchHistory('channel-a')
+
+    await Promise.allSettled([first, second])
+
+    // The first request's signal should have been aborted
+    expect(abortSignals).toHaveLength(2)
+    expect(abortSignals[0].aborted).toBe(true)
+    expect(abortSignals[1].aborted).toBe(false)
+  })
+
+  it('does not abort requests for different channels', async () => {
+    let abortSignals = {}
+    globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+      const ch = url.includes('channel=') ? new URL(url, 'http://localhost').searchParams.get('channel') : '__all__'
+      abortSignals[ch] = opts?.signal
+      return Promise.resolve({ ok: true, json: async () => [] })
+    })
+
+    await Promise.all([fetchHistory('channel-a'), fetchHistory('channel-b')])
+
+    expect(abortSignals['channel-a'].aborted).toBe(false)
+    expect(abortSignals['channel-b'].aborted).toBe(false)
+  })
+})
+
 describe('handleUpdate — optimistic message deduplication', () => {
   beforeEach(() => {
     messagesByChannel.set({ midtown: [] })
@@ -498,13 +549,17 @@ describe('selectDm', () => {
   })
 
   it('switches to existing DM channel without creating it', async () => {
-    const fetchMock = vi.fn()
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ id: 1, content: 'hey', channel: 'dm-alice' }],
+    })
     globalThis.fetch = fetchMock
 
     await selectDm('alice')
 
-    // No create call should have been made
-    expect(fetchMock).not.toHaveBeenCalled()
+    // No create call should have been made — only a fetchHistory call
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toContain('/channels/history')
     expect(get(activeChannel)).toBe('dm-alice')
   })
 
