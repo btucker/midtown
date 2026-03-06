@@ -60,16 +60,16 @@ let displayColor = $derived(getSenderColor(displayName, senderOverrides, channel
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
 let clickName = $derived(msg.from);
 
-const agentNames = $derived(new Set([
-	// Agents with existing DM channels (covers forks, historical agents)
-	...$channels
-		.filter((ch) => ch.name.startsWith("dm-"))
-		.map((ch) => ch.name.slice(3)),
-	// Active coworkers (selectDm creates channel on demand)
-	...$coworkers.map((cw) => cw.name),
-	// Channel leads
-	...($daemonStatus?.channel_leads || []),
-]));
+const agentNames = $derived(
+	new Set([
+		// Agents with existing DM channels (covers forks, historical agents)
+		...$channels.filter((ch) => ch.name.startsWith("dm-")).map((ch) => ch.name.slice(3)),
+		// Active coworkers (selectDm creates channel on demand)
+		...$coworkers.map((cw) => cw.name),
+		// Channel leads
+		...($daemonStatus?.channel_leads || []),
+	]),
+);
 
 function handleSenderClick() {
 	if (agentNames.has(clickName)) selectDm(clickName);

@@ -1,207 +1,215 @@
 <script>
-  import { SvelteSet } from 'svelte/reactivity'
-  import { channels, activeChannel, kanbanData, coworkers, activeProject, messagesByChannel, showArchivedChannels, trackedThreads, threadUnreadCounts, dismissedThreads, threadData } from './store.js'
-  import { fetchHistory, fetchChannels, getApiBase, closeThread, pushNavState } from './api.js'
-  import {
-    getChannelTaskCount,
-    getChannelTasks,
-    getChannelCiStatus,
-    getChannelHasActiveTasks,
-    getChannelHasTrackedThreads,
-    getTaskThreadIds,
-    getCompletedTaskThreadIds,
-    getChannelThreads,
-    computeExpandedAfterChannelNameClick,
-    computeVisibleDmChannels,
-  } from './channelUtils.js'
-  import { getSenderColor } from './messageUtils.js'
-  import TaskList from './TaskList.svelte'
-  import ThreadList from './ThreadList.svelte'
-  import ArchiveIcon from '@lucide/svelte/icons/archive'
+import ArchiveIcon from "@lucide/svelte/icons/archive";
+import { SvelteSet } from "svelte/reactivity";
+import { closeThread, fetchChannels, fetchHistory, getApiBase, pushNavState } from "./api.js";
+import {
+	computeExpandedAfterChannelNameClick,
+	computeVisibleDmChannels,
+	getChannelCiStatus,
+	getChannelHasActiveTasks,
+	getChannelHasTrackedThreads,
+	getChannelTaskCount,
+	getChannelTasks,
+	getChannelThreads,
+	getCompletedTaskThreadIds,
+	getTaskThreadIds,
+} from "./channelUtils.js";
+import { getSenderColor } from "./messageUtils.js";
+import {
+	activeChannel,
+	activeProject,
+	channels,
+	coworkers,
+	dismissedThreads,
+	kanbanData,
+	messagesByChannel,
+	showArchivedChannels,
+	threadData,
+	threadUnreadCounts,
+	trackedThreads,
+} from "./store.js";
+import TaskList from "./TaskList.svelte";
+import ThreadList from "./ThreadList.svelte";
 
-  // Build a map of coworker name → coworker object for quick lookup
-  $: coworkerMap = new Map($coworkers.map(cw => [cw.name, cw]))
+// Build a map of coworker name → coworker object for quick lookup
+$: coworkerMap = new Map($coworkers.map((cw) => [cw.name, cw]));
 
-  // Thread IDs that are already represented by active tasks (for dedup)
-  $: taskThreadIds = getTaskThreadIds($kanbanData)
-  // Thread IDs from completed tasks (for visual indicator)
-  $: completedTaskThreadIds = getCompletedTaskThreadIds($kanbanData)
+// Thread IDs that are already represented by active tasks (for dedup)
+$: taskThreadIds = getTaskThreadIds($kanbanData);
+// Thread IDs from completed tasks (for visual indicator)
+$: completedTaskThreadIds = getCompletedTaskThreadIds($kanbanData);
 
-  let showCreateInput = false
-  let newChannelName = ''
-  let createError = ''
-  let isCreating = false
+let showCreateInput = false;
+let newChannelName = "";
+let createError = "";
+let isCreating = false;
 
-  // React to changes in showArchivedChannels toggle
-  $: {
-    fetchChannels($showArchivedChannels)
-  }
+// React to changes in showArchivedChannels toggle
+$: {
+	fetchChannels($showArchivedChannels);
+}
 
-  $: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith('dm-'))
-  $: dmChannels = $channels.filter((ch) => ch.is_dm || ch.name.startsWith('dm-'))
+$: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith("dm-"));
+$: dmChannels = $channels.filter((ch) => ch.is_dm || ch.name.startsWith("dm-"));
 
-  // Track which channels have their task lists expanded (default: collapsed)
-  // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
-  let expandedChannels = new SvelteSet()
+// Track which channels have their task lists expanded (default: collapsed)
+// Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
+let expandedChannels = new SvelteSet();
 
-  // Auto-expand the active channel when it gains tasks or tracked threads
-  $: if ($activeChannel && !expandedChannels.has($activeChannel) && (
-    getChannelHasActiveTasks($activeChannel, $kanbanData) ||
-    getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds)
-  )) {
-    expandedChannels.add($activeChannel)
-  }
+// Auto-expand the active channel when it gains tasks or tracked threads
+$: if (
+	$activeChannel &&
+	!expandedChannels.has($activeChannel) &&
+	(getChannelHasActiveTasks($activeChannel, $kanbanData) ||
+		getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds))
+) {
+	expandedChannels.add($activeChannel);
+}
 
-  // Auto-expand the channel when a thread is opened (e.g. from the message area)
-  $: if ($threadData?.channelName && !expandedChannels.has($threadData.channelName)) {
-    expandedChannels.add($threadData.channelName)
-  }
+// Auto-expand the channel when a thread is opened (e.g. from the message area)
+$: if ($threadData?.channelName && !expandedChannels.has($threadData.channelName)) {
+	expandedChannels.add($threadData.channelName);
+}
 
-  // DM section: collapsed by default, shows unread + active + visited DMs when expanded
-  let dmSectionExpanded = false
-  let showAllDms = false
-  let visitedDms = new SvelteSet()
+// DM section: collapsed by default, shows unread + active + visited DMs when expanded
+let dmSectionExpanded = false;
+let showAllDms = false;
+let visitedDms = new SvelteSet();
 
-  // Auto-expand DM section when navigating to a DM (e.g., via CoworkerStatus click)
-  // and track the DM as visited so it remains visible after collapse/re-expand
-  $: if ($activeChannel && dmChannels.some((ch) => ch.name === $activeChannel)) {
-    dmSectionExpanded = true
-    visitedDms.add($activeChannel)
-  }
+// Auto-expand DM section when navigating to a DM (e.g., via CoworkerStatus click)
+// and track the DM as visited so it remains visible after collapse/re-expand
+$: if ($activeChannel && dmChannels.some((ch) => ch.name === $activeChannel)) {
+	dmSectionExpanded = true;
+	visitedDms.add($activeChannel);
+}
 
-  $: unreadDmCount = dmChannels.filter((ch) => ch.unread > 0).length
-  $: visibleDmChannels = computeVisibleDmChannels(dmChannels, {
-    expanded: dmSectionExpanded,
-    showAll: showAllDms,
-    activeChannel: $activeChannel,
-    visitedDms,
-  })
-  // Base visible count: what visibleDmChannels.length would be with showAll=false.
-  // Used for the "show less" guard — only show the button when collapsing would
-  // actually hide channels (i.e., total DMs > filtered DMs).
-  $: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
-    expanded: true,
-    showAll: false,
-    activeChannel: $activeChannel,
-    visitedDms,
-  }).length
+$: unreadDmCount = dmChannels.filter((ch) => ch.unread > 0).length;
+$: visibleDmChannels = computeVisibleDmChannels(dmChannels, {
+	expanded: dmSectionExpanded,
+	showAll: showAllDms,
+	activeChannel: $activeChannel,
+	visitedDms,
+});
+// Base visible count: what visibleDmChannels.length would be with showAll=false.
+// Used for the "show less" guard — only show the button when collapsing would
+// actually hide channels (i.e., total DMs > filtered DMs).
+$: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
+	expanded: true,
+	showAll: false,
+	activeChannel: $activeChannel,
+	visitedDms,
+}).length;
 
-  function selectChannel(channelName) {
-    // Switch channel immediately for instant UI response (non-blocking).
-    // Previously this was async and awaited fetchHistory, which blocked the UI
-    // until the network request completed (~100-500ms), making channel switching
-    // feel sluggish on desktop. Now the channel switches instantly and messages
-    // appear when the fetch completes.
+function selectChannel(channelName) {
+	// Switch channel immediately for instant UI response (non-blocking).
+	// Previously this was async and awaited fetchHistory, which blocked the UI
+	// until the network request completed (~100-500ms), making channel switching
+	// feel sluggish on desktop. Now the channel switches instantly and messages
+	// appear when the fetch completes.
 
-    // Close thread panel when switching channels — thread context is
-    // channel-scoped and should not carry over to a different channel.
-    // pushState: false because we push our own entry below with the new channel.
-    closeThread({ pushState: false })
+	// Close thread panel when switching channels — thread context is
+	// channel-scoped and should not carry over to a different channel.
+	// pushState: false because we push our own entry below with the new channel.
+	closeThread({ pushState: false });
 
-    // Compute and apply the new expanded state for this channel.
-    // computeExpandedAfterChannelNameClick handles two cases:
-    //   - Switching to a new channel: auto-expand if it has active tasks
-    //   - Re-clicking the already-active channel: toggle expand/collapse
-    const next = computeExpandedAfterChannelNameClick(
-      channelName,
-      expandedChannels,
-      $activeChannel,
-      $kanbanData,
-      { trackedThreads: $trackedThreads, taskThreadIds }
-    )
-    if (next.has(channelName)) {
-      expandedChannels.add(channelName)
-    } else {
-      expandedChannels.delete(channelName)
-    }
+	// Compute and apply the new expanded state for this channel.
+	// computeExpandedAfterChannelNameClick handles two cases:
+	//   - Switching to a new channel: auto-expand if it has active tasks
+	//   - Re-clicking the already-active channel: toggle expand/collapse
+	const next = computeExpandedAfterChannelNameClick(channelName, expandedChannels, $activeChannel, $kanbanData, {
+		trackedThreads: $trackedThreads,
+		taskThreadIds,
+	});
+	if (next.has(channelName)) {
+		expandedChannels.add(channelName);
+	} else {
+		expandedChannels.delete(channelName);
+	}
 
-    activeChannel.set(channelName)
-    pushNavState({ channel: channelName })
+	activeChannel.set(channelName);
+	pushNavState({ channel: channelName });
 
-    // Clear unread count for this channel
-    channels.update((channelList) =>
-      channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
-    )
+	// Clear unread count for this channel
+	channels.update((channelList) => channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch)));
 
-    // Always fetch full history on channel switch. Previously this only fetched
-    // when the store was empty, but that caused stale/incomplete data when a few
-    // WS messages had arrived but the full history was never loaded.
-    fetchHistory(channelName)
-  }
+	// Always fetch full history on channel switch. Previously this only fetched
+	// when the store was empty, but that caused stale/incomplete data when a few
+	// WS messages had arrived but the full history was never loaded.
+	fetchHistory(channelName);
+}
 
-  function formatChannelName(name) {
-    return `#${name}`
-  }
+function formatChannelName(name) {
+	return `#${name}`;
+}
 
-  function formatDmName(name) {
-    return `@${name.replace(/^dm-/, '')}`
-  }
+function formatDmName(name) {
+	return `@${name.replace(/^dm-/, "")}`;
+}
 
-  function toggleCreateInput() {
-    showCreateInput = !showCreateInput
-    if (showCreateInput) {
-      newChannelName = ''
-      createError = ''
-    }
-  }
+function toggleCreateInput() {
+	showCreateInput = !showCreateInput;
+	if (showCreateInput) {
+		newChannelName = "";
+		createError = "";
+	}
+}
 
-  async function createChannel() {
-    createError = ''
-    const name = newChannelName.trim()
+async function createChannel() {
+	createError = "";
+	const name = newChannelName.trim();
 
-    if (!name) {
-      createError = 'Channel name cannot be empty'
-      return
-    }
+	if (!name) {
+		createError = "Channel name cannot be empty";
+		return;
+	}
 
-    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
-      createError = 'Only alphanumeric characters, hyphens, and underscores allowed'
-      return
-    }
+	if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+		createError = "Only alphanumeric characters, hyphens, and underscores allowed";
+		return;
+	}
 
-    if (name.toLowerCase() === 'midtown') {
-      createError = 'Channel name "midtown" is reserved'
-      return
-    }
+	if (name.toLowerCase() === "midtown") {
+		createError = 'Channel name "midtown" is reserved';
+		return;
+	}
 
-    isCreating = true
-    try {
-      const response = await fetch(`${getApiBase()}/channels/create`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
+	isCreating = true;
+	try {
+		const response = await fetch(`${getApiBase()}/channels/create`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name }),
+		});
 
-      if (!response.ok) {
-        const errorData = await response.json()
-        createError = errorData.error || 'Failed to create channel'
-        return
-      }
+		if (!response.ok) {
+			const errorData = await response.json();
+			createError = errorData.error || "Failed to create channel";
+			return;
+		}
 
-      // Success - refresh channel list
-      await fetchChannels()
+		// Success - refresh channel list
+		await fetchChannels();
 
-      // Switch to the new channel and close the input
-      activeChannel.set(name)
-      showCreateInput = false
-      newChannelName = ''
-    } catch (error) {
-      createError = 'Network error: ' + error.message
-    } finally {
-      isCreating = false
-    }
-  }
+		// Switch to the new channel and close the input
+		activeChannel.set(name);
+		showCreateInput = false;
+		newChannelName = "";
+	} catch (error) {
+		createError = `Network error: ${error.message}`;
+	} finally {
+		isCreating = false;
+	}
+}
 
-  function handleKeyDown(event) {
-    if (event.key === 'Enter') {
-      createChannel()
-    } else if (event.key === 'Escape') {
-      showCreateInput = false
-      newChannelName = ''
-      createError = ''
-    }
-  }
-
+function handleKeyDown(event) {
+	if (event.key === "Enter") {
+		createChannel();
+	} else if (event.key === "Escape") {
+		showCreateInput = false;
+		newChannelName = "";
+		createError = "";
+	}
+}
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">

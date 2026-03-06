@@ -1,60 +1,60 @@
 <script>
-  /**
-   * DiffView — renders an edit_file diff with syntax highlighting.
-   *
-   * Props:
-   *   filePath  — the file being edited (e.g. "src/main.rs")
-   *   oldString — the text that was replaced
-   *   newString — the replacement text
-   */
-  import { highlightLine } from './highlighting.js'
+/**
+ * DiffView — renders an edit_file diff with syntax highlighting.
+ *
+ * Props:
+ *   filePath  — the file being edited (e.g. "src/main.rs")
+ *   oldString — the text that was replaced
+ *   newString — the replacement text
+ */
+import { highlightLine } from "./highlighting.js";
 
-  let { filePath, oldString, newString } = $props()
-  let expanded = $state(false)
+let { filePath, oldString, newString } = $props();
+let expanded = $state(false);
 
-  const EXT_TO_LANG = {
-    rs: 'rust',
-    js: 'javascript',
-    jsx: 'javascript',
-    ts: 'typescript',
-    tsx: 'typescript',
-    py: 'python',
-    sh: 'bash',
-    bash: 'bash',
-    zsh: 'bash',
-    json: 'json',
-    toml: 'toml',
-    yaml: 'yaml',
-    yml: 'yaml',
-    css: 'css',
-    svelte: 'xml',
-    html: 'xml',
-    xml: 'xml',
-    md: 'xml',
-  }
+const EXT_TO_LANG = {
+	rs: "rust",
+	js: "javascript",
+	jsx: "javascript",
+	ts: "typescript",
+	tsx: "typescript",
+	py: "python",
+	sh: "bash",
+	bash: "bash",
+	zsh: "bash",
+	json: "json",
+	toml: "toml",
+	yaml: "yaml",
+	yml: "yaml",
+	css: "css",
+	svelte: "xml",
+	html: "xml",
+	xml: "xml",
+	md: "xml",
+};
 
-  function getLanguage(path) {
-    if (!path) return null
-    const ext = path.split('.').pop()?.toLowerCase()
-    return ext ? (EXT_TO_LANG[ext] || null) : null
-  }
+function getLanguage(path) {
+	if (!path) return null;
+	const ext = path.split(".").pop()?.toLowerCase();
+	return ext ? EXT_TO_LANG[ext] || null : null;
+}
 
-  let lang = $derived(getLanguage(filePath))
-  let oldLines = $derived((oldString || '').split('\n'))
-  let newLines = $derived((newString || '').split('\n'))
+let lang = $derived(getLanguage(filePath));
+let oldLines = $derived((oldString || "").split("\n"));
+let newLines = $derived((newString || "").split("\n"));
 
-  // Filter out empty single-line arrays for display
-  let hasOldContent = $derived(oldLines.length > 0 && !(oldLines.length === 1 && oldLines[0] === ''))
-  let hasNewContent = $derived(newLines.length > 0 && !(newLines.length === 1 && newLines[0] === ''))
-  let totalLines = $derived((hasOldContent ? oldLines.length : 0) + (hasNewContent ? newLines.length : 0))
-  let isLong = $derived(totalLines > 8)
+// Filter out empty single-line arrays for display
+let hasOldContent = $derived(oldLines.length > 0 && !(oldLines.length === 1 && oldLines[0] === ""));
+let hasNewContent = $derived(newLines.length > 0 && !(newLines.length === 1 && newLines[0] === ""));
+let totalLines = $derived((hasOldContent ? oldLines.length : 0) + (hasNewContent ? newLines.length : 0));
+let isLong = $derived(totalLines > 8);
 
-  // Short filename for display
-  let shortPath = $derived(filePath || 'unknown')
+// Short filename for display
+let shortPath = $derived(filePath || "unknown");
 
-  function toggle() {
-    expanded = !expanded
-  }
+function toggle() {
+	expanded = !expanded;
+}
 </script>
 
 <div class="diff-view">
