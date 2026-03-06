@@ -11,7 +11,7 @@
 
   let expanded = $state(false)
 
-  let summary = $derived(() => {
+  let summary = $derived.by(() => {
     const inp = block.input
     if (!inp) return block.tool_name
     if (inp.file_path) return `${block.tool_name} ${inp.file_path}`
@@ -28,7 +28,7 @@
 <div class="tool-generic" class:tool-error={block.error}>
   <button class="tool-header" onclick={toggle} aria-expanded={expanded}>
     <span class="tool-chevron">{expanded ? '▾' : '▸'}</span>
-    <span class="tool-name">{summary()}</span>
+    <span class="tool-name">{summary}</span>
     {#if block.error}
       <span class="tool-error-badge">error</span>
     {/if}

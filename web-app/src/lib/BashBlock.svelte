@@ -10,15 +10,15 @@
   let expanded = $state(false)
 
   let command = $derived(block.input?.command || '')
-  let outputText = $derived(() => {
+  let outputText = $derived.by(() => {
     if (!block.output) return ''
     if (typeof block.output === 'string') return block.output
     if (block.output.stdout) return block.output.stdout
     if (block.output.output) return block.output.output
     return JSON.stringify(block.output, null, 2)
   })
-  let hasOutput = $derived(outputText() !== '')
-  let outputLines = $derived(outputText().split('\n'))
+  let hasOutput = $derived(outputText !== '')
+  let outputLines = $derived(outputText.split('\n'))
   let isLong = $derived(outputLines.length > 10)
 
   function toggle() {
@@ -35,7 +35,7 @@
 
   {#if hasOutput}
     <div class="bash-output" class:bash-collapsed={isLong && !expanded}>
-      <pre>{outputText()}</pre>
+      <pre>{outputText}</pre>
     </div>
   {/if}
 </div>
