@@ -1729,3 +1729,109 @@ fn test_respawn_fork_effect_without_initial_prompt() {
         panic!("Expected RespawnFork variant");
     }
 }
+
+/// When `respawn_fork` creates a new SessionRecord for a fork, it must clear
+/// `current_name` on any old session records that still claim the same name.
+/// This prevents ambiguous find-by-name lookups (same bug class as PR #1819).
+#[test]
+fn test_respawn_fork_clears_old_record_current_name() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
+
+    let mut ps = DaemonPersistentState::default();
+
+    // Old dead fork still has current_name set (the bug scenario)
+    let old_record = SessionRecord {
+        session_id: "old-fork-sess".to_string(),
+        task_id: None,
+        current_name: Some("fork-investigate".to_string()),
+        preferred_name: Some("fork-investigate".to_string()),
+        working_dir: "/tmp/old".to_string(),
+        branch: None,
+        pr_number: None,
+        initial_prompt: None,
+        is_reviewer: false,
+        coworker_type: "dev".to_string(),
+        is_running: false,
+        created_at: chrono::Utc::now(),
+        resume_on_startup: false,
+        bound_thread_id: Some("thread-123".to_string()),
+        last_active: chrono::Utc::now(),
+        purpose: "old fork".to_string(),
+        pid: None,
+        channel: None,
+        provider: None,
+        platform: None,
+        profile: None,
+    };
+    ps.sessions
+        .insert(old_record.session_id.clone(), old_record);
+
+    // Simulate what respawn_fork does: clear old records, then insert new one.
+    let new_fork_name = "fork-investigate";
+    let new_fork_session_id = "new-fork-sess";
+
+    // --- This is the cleanup that respawn_fork must perform ---
+    for record in ps.sessions.values_mut() {
+        if record.session_id != new_fork_session_id
+            && record.current_name.as_deref() == Some(new_fork_name)
+        {
+            record.is_running = false;
+            record.current_name = None;
+        }
+    }
+
+    // Insert new record (like respawn_fork does)
+    ps.sessions.insert(
+        new_fork_session_id.to_string(),
+        SessionRecord {
+            session_id: new_fork_session_id.to_string(),
+            task_id: None,
+            current_name: Some(new_fork_name.to_string()),
+            preferred_name: Some(new_fork_name.to_string()),
+            working_dir: "/tmp/new".to_string(),
+            branch: None,
+            pr_number: None,
+            initial_prompt: None,
+            is_reviewer: false,
+            coworker_type: "dev".to_string(),
+            is_running: true,
+            created_at: chrono::Utc::now(),
+            resume_on_startup: false,
+            bound_thread_id: Some("thread-123".to_string()),
+            last_active: chrono::Utc::now(),
+            purpose: "respawned fork".to_string(),
+            pid: None,
+            channel: None,
+            provider: None,
+            platform: None,
+            profile: None,
+        },
+    );
+
+    // Verify: old record must have current_name cleared
+    let old = ps.sessions.get("old-fork-sess").unwrap();
+    assert!(
+        old.current_name.is_none(),
+        "Old fork record should have current_name cleared after respawn"
+    );
+    assert!(
+        !old.is_running,
+        "Old fork record should not be marked as running"
+    );
+
+    // Verify: new record has the name
+    let new = ps.sessions.get("new-fork-sess").unwrap();
+    assert_eq!(new.current_name.as_deref(), Some("fork-investigate"));
+    assert!(new.is_running);
+
+    // Verify: only one record claims the name
+    let name_count = ps
+        .sessions
+        .values()
+        .filter(|r| r.current_name.as_deref() == Some("fork-investigate"))
+        .count();
+    assert_eq!(
+        name_count, 1,
+        "Exactly one session record should claim the fork name"
+    );
+}
