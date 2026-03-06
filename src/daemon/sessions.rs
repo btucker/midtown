@@ -258,6 +258,11 @@ impl CoworkerSession {
     ) -> Self {
         let output_log_path = crate::paths::headless_output_file(repo, &name);
 
+        // Ensure the sessions/ directory exists before opening the log file
+        if let Some(parent) = output_log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         // Open the log file in append mode, creating it if needed
         let output_log = match std::fs::OpenOptions::new()
             .create(true)

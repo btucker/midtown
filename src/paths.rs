@@ -29,6 +29,7 @@
 //!         │       ├── cursors/               # Per-agent read cursors
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
+//!         ├── sessions/              # Headless session transcripts (headless-<name>.jsonl)
 //!         ├── logs/                  # Daemon logs
 //!         ├── daemon.pid             # Daemon PID file
 //!         ├── screenshots/           # Screenshots for PR embedding (UUID-named)
@@ -321,9 +322,11 @@ impl ProjectPaths {
         self.base.join("daemon.pid")
     }
 
-    /// Headless output log: `~/.midtown/projects/<dir_key>/headless-<name>.jsonl`.
+    /// Headless output log: `~/.midtown/projects/<dir_key>/sessions/headless-<name>.jsonl`.
     pub fn headless_output(&self, coworker_name: &str) -> PathBuf {
-        self.base.join(format!("headless-{}.jsonl", coworker_name))
+        self.base
+            .join("sessions")
+            .join(format!("headless-{}.jsonl", coworker_name))
     }
 
     /// Lead session file: `~/.midtown/projects/<dir_key>/lead-session-id`.
@@ -510,7 +513,7 @@ pub(crate) fn legacy_coworkers_dir_for_repo(repo: &str) -> PathBuf {
 
 /// Get the headless session output log file for a coworker.
 ///
-/// Returns `~/.midtown/projects/<repo>/headless-<name>.jsonl`.
+/// Returns `~/.midtown/projects/<repo>/sessions/headless-<name>.jsonl`.
 ///
 /// This file stores all StreamEvents from a headless coworker session,
 /// enabling `midtown coworker view` to read recent output and providing
@@ -520,6 +523,7 @@ pub fn headless_output_file(repo: &str, coworker_name: &str) -> PathBuf {
     midtown_base_dir()
         .join("projects")
         .join(repo)
+        .join("sessions")
         .join(format!("headless-{}.jsonl", coworker_name))
 }
 

@@ -1121,6 +1121,33 @@ fn test_collect_skill_md_bodies_multiple_plugins() {
 }
 
 #[test]
+fn test_headless_output_file_in_sessions_dir() {
+    let path = headless_output_file("myproject", "york");
+    let s = path.to_string_lossy();
+    assert!(
+        s.contains("projects/myproject/sessions/"),
+        "should be under projects/<repo>/sessions/: {s}"
+    );
+    assert!(
+        s.ends_with("headless-york.jsonl"),
+        "should end with headless-<name>.jsonl: {s}"
+    );
+}
+
+#[test]
+fn test_headless_output_method_in_sessions_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+    let paths = ProjectPaths::with_project_name("myproject", "myproject");
+    let path = paths.headless_output("york");
+    let s = path.to_string_lossy();
+    assert!(
+        s.contains("sessions/headless-york.jsonl"),
+        "should be under sessions/: {s}"
+    );
+}
+
+#[test]
 fn test_collect_skill_md_bodies_skips_bare_py_files() {
     let tmp = tempfile::tempdir().unwrap();
     let plugin_dir = tmp.path().join("plugins");
