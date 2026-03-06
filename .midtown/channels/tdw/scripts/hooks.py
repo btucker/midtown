@@ -62,6 +62,7 @@ DEFAULT_PATTERNS = [
 ]
 
 STAGES = ["research", "outline", "draft", "critique", "revise", "final"]
+ACTIVE_STAGES = ("draft", "critique", "revise")
 
 
 # ---------------------------------------------------------------------------
@@ -95,19 +96,68 @@ def _build_critique_prompt(criteria: list[str], patterns: list[str]) -> str:
 
 
 def _find_active_task_id(ctx: HookContext) -> str | None:
-    """Find the first active TDW task (in a writable stage).
+    """Find the sole active TDW task (in a writable stage).
 
-    Returns the task_id or None.
+    Returns the task_id when exactly one task is active, or ``None`` when
+    there are zero or multiple active tasks.  Callers that need to resolve
+    ambiguity should use ``ctx.task_id`` from the event context instead.
     """
     tasks = ctx.state.get("tasks", {})
-    for task_id, task_data in tasks.items():
-        if isinstance(task_data, dict) and task_data.get("stage") in (
-            "draft",
-            "critique",
-            "revise",
-        ):
-            return task_id
+    active: list[str] = [
+        tid
+        for tid, td in tasks.items()
+        if isinstance(td, dict) and td.get("stage") in ACTIVE_STAGES
+    ]
+    if len(active) == 1:
+        return active[0]
     return None
+
+
+def _resolve_target_task(
+    ctx: HookContext,
+) -> tuple[str | None, dict]:
+    """Resolve the target task for a channel command.
+
+    When ``ctx.task_id`` is provided (e.g. the message was posted with
+    ``--task``), return that task directly — but only if it's in an active
+    stage.  Otherwise fall back to ``_find_active_task_id`` which requires
+    exactly one active task to avoid ambiguity.
+    """
+    tasks = ctx.state.get("tasks", {})
+    if ctx.task_id:
+        task_data = tasks.get(ctx.task_id, {})
+        if isinstance(task_data, dict) and task_data.get("stage") in ACTIVE_STAGES:
+            return ctx.task_id, task_data
+        return None, {}
+    tid = _find_active_task_id(ctx)
+    if tid:
+        return tid, tasks.get(tid, {})
+    return None, {}
+
+
+def _warn_no_target(ctx: HookContext) -> list[DaemonAction]:
+    """Return a user-facing warning when no target task could be resolved."""
+    tasks = ctx.state.get("tasks", {})
+    active = [
+        tid
+        for tid, td in tasks.items()
+        if isinstance(td, dict) and td.get("stage") in ACTIVE_STAGES
+    ]
+    if ctx.task_id:
+        return [
+            Actions.post_to_channel(
+                f"Task {ctx.task_id} is not in an active stage "
+                "(draft/critique/revise). Criterion or pattern not added."
+            )
+        ]
+    elif len(active) > 1:
+        return [
+            Actions.post_to_channel(
+                f"Multiple active tasks ({', '.join(active)}). "
+                "Use --task <id> to specify which task to update."
+            )
+        ]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +197,9 @@ def on_coworker_message(ctx: HookContext) -> Sequence[DaemonAction] | None:
     if not task_id:
         return None
 
-    stage = ctx.state.get(f"tasks.{task_id}.stage")
+    tasks = ctx.state.get("tasks", {})
+    task_data = tasks.get(task_id, {})
+    stage = task_data.get("stage") if isinstance(task_data, dict) else None
     if not stage:
         return None
 
@@ -177,8 +229,8 @@ def on_coworker_message(ctx: HookContext) -> Sequence[DaemonAction] | None:
 
     # Do -> Observe: draft -> critique
     if stage == "draft" and "draft complete" in msg_lower:
-        criteria = ctx.state.get(f"tasks.{task_id}.criteria") or DEFAULT_CRITERIA
-        patterns = ctx.state.get(f"tasks.{task_id}.patterns") or DEFAULT_PATTERNS
+        criteria = task_data.get("criteria") or DEFAULT_CRITERIA
+        patterns = task_data.get("patterns") or DEFAULT_PATTERNS
 
         criteria_display = "\n".join(f"- [ ] {c}" for c in criteria)
         patterns_display = "\n".join(f"- {p}" for p in patterns)
@@ -234,9 +286,9 @@ def on_coworker_message(ctx: HookContext) -> Sequence[DaemonAction] | None:
 
     # Do -> Observe loop: revise -> re-critique
     if stage == "revise" and "revision complete" in msg_lower:
-        count = ctx.state.get(f"tasks.{task_id}.revision_count") or 0
+        count = task_data.get("revision_count") or 0
 
-        criteria = ctx.state.get(f"tasks.{task_id}.criteria") or DEFAULT_CRITERIA
+        criteria = task_data.get("criteria") or DEFAULT_CRITERIA
         return [
             Actions.set_state(f"tasks.{task_id}.revision_count", count + 1),
             Actions.set_state(f"tasks.{task_id}.stage", "critique"),
@@ -246,7 +298,7 @@ def on_coworker_message(ctx: HookContext) -> Sequence[DaemonAction] | None:
             ),
             Actions.spawn_coworker(prompt=_build_critique_prompt(
                 criteria,
-                ctx.state.get(f"tasks.{task_id}.patterns") or DEFAULT_PATTERNS,
+                task_data.get("patterns") or DEFAULT_PATTERNS,
             )),
         ]
 
@@ -266,35 +318,39 @@ def on_channel_message(ctx: HookContext) -> Sequence[DaemonAction] | None:
         )
         if match:
             new_criterion = match.group(1).strip()
-            task_id = _find_active_task_id(ctx)
-            if task_id:
-                criteria = list(ctx.state.get(f"tasks.{task_id}.criteria") or [])
+            tid, task_data = _resolve_target_task(ctx)
+            if tid:
+                criteria = list(task_data.get("criteria") or [])
                 criteria.append(new_criterion)
                 return [
-                    Actions.set_state(f"tasks.{task_id}.criteria", criteria),
+                    Actions.set_state(f"tasks.{tid}.criteria", criteria),
                     Actions.post_to_channel(
                         f'Added criterion: "{new_criterion}"\n'
                         "Every human edit teaches the system. "
                         "This will be checked in future critiques."
                     ),
                 ]
+            else:
+                return _warn_no_target(ctx) or None
 
     # Detect "add pattern:" for guidance (not blocking)
     elif "add pattern:" in msg_lower:
         match = re.search(r"add pattern:\s*(.+)", message, re.IGNORECASE)
         if match:
             new_pattern = match.group(1).strip()
-            task_id = _find_active_task_id(ctx)
-            if task_id:
-                patterns = list(ctx.state.get(f"tasks.{task_id}.patterns") or [])
+            tid, task_data = _resolve_target_task(ctx)
+            if tid:
+                patterns = list(task_data.get("patterns") or [])
                 patterns.append(new_pattern)
                 return [
-                    Actions.set_state(f"tasks.{task_id}.patterns", patterns),
+                    Actions.set_state(f"tasks.{tid}.patterns", patterns),
                     Actions.post_to_channel(
                         f'Added pattern: "{new_pattern}"\n'
                         "This is guidance, not a requirement. "
                         "It helps without blocking."
                     ),
                 ]
+            else:
+                return _warn_no_target(ctx) or None
 
     return None
