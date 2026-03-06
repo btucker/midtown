@@ -661,15 +661,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             }
         }
 
-        // ---- Insight ----
-        "insight.report" => {
-            let agent = require_str!(params, "agent", request.id);
-            let insight = require_str!(params, "insight", request.id);
-            let channel = params.str_param("channel");
-            super::rpc_insight::handle_insight_report(request.id, agent, insight, channel, state)
-                .await
-        }
-
         // ---- Sessions ----
         "session.resolve" => {
             let target = require_str!(params, "target", request.id);

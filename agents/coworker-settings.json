@@ -19,11 +19,6 @@
         "type": "command",
         "command": "{bin} hook ask"
       }]
-    }, {
-      "hooks": [{
-        "type": "command",
-        "command": "{bin} hook insight"
-      }]
     }],
     "Notification": [{
       "matcher": "idle_prompt",

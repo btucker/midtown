@@ -594,6 +594,13 @@ pub enum Effect {
     /// plugins are configured, this effect is a no-op.
     EmitWorkflowEvent(crate::workflow::WorkflowEvent),
 
+    /// Post an insight extracted from a coworker's DM stream to the task's channel.
+    ///
+    /// The executor handles deduplication (via `insight_hashes`), resolves the
+    /// coworker's task → channel + thread ID, posts the insight message, and
+    /// nudges the channel lead.
+    PostInsight { agent: String, insight: String },
+
     /// Respawn a dead fork session bound to a thread.
     ///
     /// Spawns a fresh fork session (no parent resume) with the same thread binding,
@@ -3098,6 +3105,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 auto_merge_pr(state, pr_number, &title).await;
             }
 
+            Effect::PostInsight { agent, insight } => {
+                post_insight(state, &agent, &insight).await;
+            }
+
             Effect::EmitWorkflowEvent(event) => {
                 let _default_prevented = dispatch_workflow_event(state, event).await;
                 // When default_prevented is true, the plugin has taken full ownership
@@ -3859,6 +3870,125 @@ async fn respawn_fork(
             },
         ));
     }
+}
+
+/// Hash insight content for deduplication.
+///
+/// Normalizes whitespace and lowercases before hashing to catch near-duplicates.
+fn hash_insight(insight: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let normalized: String = insight
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+
+    let mut hasher = DefaultHasher::new();
+    normalized.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Post an insight from a coworker's DM stream to the task's channel.
+///
+/// Handles deduplication (via `insight_hashes`), resolves the coworker's
+/// task → channel + thread ID, posts the insight as a 💡 message, and
+/// nudges the channel lead.
+async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
+    // Deduplicate via in-memory hash set.
+    let hash = hash_insight(insight);
+    {
+        let mut hashes = state.insight_hashes.lock().unwrap();
+        if !hashes.insert(hash) {
+            debug!("post_insight: duplicate insight from {}, skipping", agent);
+            return;
+        }
+    }
+
+    // Suppress insights from channel leads (they auto-post all output).
+    {
+        let ps = state.persistent_state.lock().await;
+        let is_channel_lead = ps.sessions.values().any(|s| {
+            s.is_running
+                && s.current_name.as_deref() == Some(agent)
+                && s.coworker_type == "channel-lead"
+        });
+        if is_channel_lead {
+            debug!(
+                "post_insight: suppressing insight from channel lead {}, already auto-posted",
+                agent
+            );
+            return;
+        }
+    }
+
+    // Resolve channel and thread from the coworker's task binding.
+    let (task_channel, task_thread_id): (Option<String>, Option<String>) = {
+        let ps = state.persistent_state.lock().await;
+        let task_id = ps
+            .sessions
+            .values()
+            .find(|r| r.is_running && r.current_name.as_deref() == Some(agent))
+            .or_else(|| {
+                ps.sessions
+                    .values()
+                    .find(|r| r.current_name.as_deref() == Some(agent))
+            })
+            .and_then(|r| r.task_id.as_deref());
+        let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
+        let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
+        (ch, thread)
+    };
+
+    let channel_name: &str = task_channel
+        .as_deref()
+        .unwrap_or_else(|| state.channel_router.default_channel_name());
+
+    // Only use the task thread if the final channel matches the task's channel.
+    let resolved_thread_id =
+        task_thread_id.filter(|_| task_channel.as_deref() == Some(channel_name));
+
+    let insight_content = format!("💡 {}", insight);
+    let msg = if let Some(ref thread_id) = resolved_thread_id {
+        Message::thread_reply(
+            channel_name,
+            agent,
+            insight_content,
+            thread_id,
+            crate::message::MessageType::Text,
+        )
+    } else {
+        Message::for_channel(
+            channel_name,
+            agent,
+            insight_content,
+            crate::message::MessageType::Text,
+        )
+    };
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("post_insight: failed to post to channel: {}", e);
+        return;
+    }
+
+    info!(
+        "post_insight: posted insight from {} to channel '{}'",
+        agent, channel_name
+    );
+
+    // Nudge channel lead about the insight.
+    let task_id = state.get_task_id_for_coworker(agent);
+    let nudge_effect = Effect::NudgeChannelLead {
+        channel_name: channel_name.to_string(),
+        reason: super::wake_reason::WakeReason::InsightPosted {
+            insight: insight.to_string(),
+            agent: agent.to_string(),
+            msg_id: msg.id.clone(),
+            task_id,
+            channel_name: channel_name.to_string(),
+        },
+    };
+    Box::pin(execute_effects(vec![nudge_effect], state)).await;
 }
 
 #[path = "effects_tests.rs"]

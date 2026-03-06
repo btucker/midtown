@@ -21,7 +21,6 @@ mod rpc_channel;
 mod rpc_coworker;
 mod rpc_headed;
 mod rpc_headless;
-mod rpc_insight;
 mod rpc_prs;
 mod rpc_reminder;
 mod rpc_session;

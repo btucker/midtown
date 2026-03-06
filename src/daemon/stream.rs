@@ -301,6 +301,7 @@ fn extract_tool_result_json(block: &serde_json::Value) -> serde_json::Value {
 /// - Text output (assistant prose) with provider metadata
 /// - Structured tool calls as `tool_data` on the message (raw JSON for client rendering)
 ///   plus a markdown fallback in `content` for backward compatibility
+/// - Extracted `★ Insight` blocks as `PostInsight` effects (routed to the task's channel)
 ///
 /// `coworker_names` is the set of active coworker session names (excluding the
 /// main lead, channel leads, and fork-bound sessions).
@@ -318,6 +319,14 @@ pub fn process_coworker_output(
             // Post text output (assistant prose).
             let trimmed = extract_assistant_text(coworker_events).trim().to_string();
             if !trimmed.is_empty() {
+                // Extract insights from the text before posting to DM.
+                for insight in extract_insights(&trimmed) {
+                    effects.push(Effect::PostInsight {
+                        agent: name.clone(),
+                        insight,
+                    });
+                }
+
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
                     message: trimmed,
@@ -659,6 +668,46 @@ pub fn process_universal_events(
     }
 
     effects
+}
+
+/// Extract insight blocks from text.
+///
+/// Looks for `★ Insight` blocks delimited by lines of dashes (with optional
+/// backtick wrappers). Returns the trimmed content of each insight block.
+pub(crate) fn extract_insights(text: &str) -> Vec<String> {
+    let mut insights = Vec::new();
+
+    let start_marker = "★ Insight";
+    let end_markers = [
+        "`─────────────────────────────────────────────────`",
+        "─────────────────────────────────────────────────",
+    ];
+
+    let mut pos = 0;
+    while let Some(start) = text[pos..].find(start_marker) {
+        let start_abs = pos + start;
+        if let Some(header_end) = text[start_abs..].find('\n') {
+            let content_start = start_abs + header_end + 1;
+            let end_pos = end_markers
+                .iter()
+                .filter_map(|marker| text[content_start..].find(marker))
+                .min();
+
+            if let Some(end) = end_pos {
+                let insight = text[content_start..content_start + end].trim().to_string();
+                if !insight.is_empty() {
+                    insights.push(insight);
+                }
+                pos = content_start + end;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    insights
 }
 
 #[path = "stream_tests.rs"]
