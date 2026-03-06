@@ -120,11 +120,10 @@
       channelList.map((ch) => (ch.name === channelName ? { ...ch, unread: 0 } : ch))
     )
 
-    // Load messages for this channel if we haven't fetched them yet (non-blocking)
-    const currentMessages = $messagesByChannel[channelName]
-    if (!currentMessages || currentMessages.length === 0) {
-      fetchHistory(channelName) // Fire-and-forget - Channel.svelte will show empty state briefly
-    }
+    // Always fetch full history on channel switch. Previously this only fetched
+    // when the store was empty, but that caused stale/incomplete data when a few
+    // WS messages had arrived but the full history was never loaded.
+    fetchHistory(channelName)
   }
 
   function formatChannelName(name) {
