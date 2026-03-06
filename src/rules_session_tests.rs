@@ -173,6 +173,7 @@ fn stuck_reviewer_restart_includes_session_id_from_map() {
     let restarts = decide_stuck_reviewer_restarts(
         &health_map,
         &assignments,
+        &HashSet::new(),
         &HashMap::new(),
         &exemptions,
         now,
@@ -209,6 +210,7 @@ fn stuck_reviewer_restart_session_id_none_when_no_mapping() {
     let restarts = decide_stuck_reviewer_restarts(
         &health_map,
         &assignments,
+        &HashSet::new(),
         &HashMap::new(),
         &exemptions,
         now,
@@ -256,6 +258,7 @@ fn stuck_reviewer_with_placeholder_uses_shorter_threshold() {
     let restarts = decide_stuck_reviewer_restarts(
         &map,
         &assignments,
+        &HashSet::new(),
         &HashMap::new(),
         &exemptions,
         now,
@@ -304,6 +307,7 @@ fn stuck_reviewer_without_placeholder_uses_standard_threshold() {
     let restarts = decide_stuck_reviewer_restarts(
         &map,
         &assignments,
+        &HashSet::new(),
         &HashMap::new(),
         &exemptions,
         now,

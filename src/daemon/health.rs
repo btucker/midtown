@@ -426,6 +426,7 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.health.headless_process_health,
         &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewed_prs,
         &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
@@ -507,6 +508,10 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             Some(pr) => *pr,
             None => continue,
         };
+        // Review already posted — no escalation needed.
+        if snap.reviewer.reviewed_prs.contains(&pr_number) {
+            continue;
+        }
         // Use the shorter threshold for PRs with a placeholder comment (matches detection logic).
         let effective_duration = if prs_with_in_progress_comment.contains(&pr_number) {
             REVIEWER_PLACEHOLDER_STUCK_DURATION

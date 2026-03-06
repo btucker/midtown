@@ -925,6 +925,7 @@ pub(crate) struct StuckReviewerRestart {
 pub(crate) fn decide_stuck_reviewer_restarts(
     process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
     reviewer_pr_assignments: &HashMap<String, u64>,
+    reviewed_prs: &std::collections::HashSet<u64>,
     reviewer_restart_counts: &HashMap<u64, u32>,
     exemptions: &StuckExemptions<'_>,
     now_utc: DateTime<Utc>,
@@ -945,6 +946,11 @@ pub(crate) fn decide_stuck_reviewer_restarts(
             Some(pr) => *pr,
             None => continue,
         };
+
+        // Review was already posted — no need to restart.
+        if reviewed_prs.contains(&pr_number) {
+            continue;
+        }
 
         // Use shorter threshold if reviewer posted a placeholder (they started but may have frozen)
         let effective_threshold = if prs_with_in_progress_comment.contains(&pr_number) {
@@ -4127,6 +4133,7 @@ mod tests {
         decide_stuck_reviewer_restarts(
             &map,
             &assignments,
+            &HashSet::new(), // no reviewed PRs
             restart_counts,
             &exemptions,
             now,
@@ -4219,6 +4226,7 @@ mod tests {
         let restarts = decide_stuck_reviewer_restarts(
             &map,
             &HashMap::new(), // no reviewer assignment
+            &HashSet::new(),
             &HashMap::new(),
             &exemptions,
             now,
@@ -4262,6 +4270,7 @@ mod tests {
         let restarts = decide_stuck_reviewer_restarts(
             &map,
             &assignments,
+            &HashSet::new(),
             &HashMap::new(),
             &exemptions,
             now,
@@ -4307,6 +4316,7 @@ mod tests {
         let restarts = decide_stuck_reviewer_restarts(
             &map,
             &assignments,
+            &HashSet::new(),
             &HashMap::new(),
             &exemptions,
             now,
@@ -4320,6 +4330,47 @@ mod tests {
         assert!(
             restarts.is_empty(),
             "reviewer with no events but recently started should NOT be stuck yet"
+        );
+    }
+
+    /// Bug !2104: A reviewer whose review has already been posted (PR is in
+    /// `reviewed_prs`) should NOT be flagged for restart. Previously,
+    /// `decide_stuck_reviewer_restarts` didn't check `reviewed_prs`, causing
+    /// reviewers to be restarted and re-nudged even after posting their review.
+    #[test]
+    fn stuck_reviewer_skipped_when_review_already_posted() {
+        let now = Utc::now();
+        let mut process_health = HashMap::new();
+        process_health.insert("columbus".to_string(), stuck_health(now));
+        let mut assignments = HashMap::new();
+        assignments.insert("columbus".to_string(), 1823u64);
+        let mut reviewed_prs: HashSet<u64> = HashSet::new();
+        reviewed_prs.insert(1823); // review WAS posted
+        let exemptions = StuckExemptions {
+            usage_limited: &HashSet::new(),
+            api_error: &HashSet::new(),
+            auth_error: &HashSet::new(),
+            attached: &HashMap::new(),
+        };
+
+        let restarts = decide_stuck_reviewer_restarts(
+            &process_health,
+            &assignments,
+            &reviewed_prs,
+            &HashMap::new(),
+            &exemptions,
+            now,
+            Duration::from_secs(300),
+            Duration::from_secs(120),
+            2,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
+
+        assert!(
+            restarts.is_empty(),
+            "reviewer whose review was already posted should NOT be restarted"
         );
     }
 
