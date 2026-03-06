@@ -117,6 +117,10 @@ let reconnectTimeout = null
 let statusPollInterval = null
 let usagePollInterval = null
 
+// Unique key for the bulk (all-channels) fetchHistory request. Using a Symbol
+// avoids collisions with real channel names in the AbortController map.
+const BULK_FETCH_KEY = Symbol('bulk-fetch')
+
 // AbortController for in-flight fetchHistory requests, keyed by channel name.
 // When a new fetch starts for a channel, any previous in-flight fetch for that
 // channel is aborted to prevent out-of-order responses from stale requests.
@@ -321,7 +325,7 @@ function annotateThreadReplyCounts(msgs) {
 export async function fetchHistory(channelName = null) {
   // Abort any in-flight fetch for the same channel to prevent out-of-order
   // responses when the user rapidly switches channels.
-  const cacheKey = channelName || '__all__'
+  const cacheKey = channelName || BULK_FETCH_KEY
   const prev = fetchHistoryControllers.get(cacheKey)
   if (prev) prev.abort()
   const controller = new AbortController()
