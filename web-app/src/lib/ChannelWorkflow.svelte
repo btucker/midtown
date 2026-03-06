@@ -19,7 +19,7 @@
     error = ''
 
     fetch(
-      `/api/projects/${encodeURIComponent(project)}/channels/${encodeURIComponent(channel)}/workflow`,
+      `/api/projects/${encodeURIComponent(project)}/proxy/api/channels/workflow?channel=${encodeURIComponent(channel)}`,
       { signal: controller.signal },
     )
       .then((res) => {

@@ -1183,3 +1183,238 @@ async fn test_api_get_screenshot_rejects_non_image() {
     let result = api_get_screenshot(State(state), Path("script.js".to_string())).await;
     assert_eq!(result.err(), Some(StatusCode::UNSUPPORTED_MEDIA_TYPE));
 }
+
+// --- api_channel_workflow tests ---
+
+fn make_workflow_state(repo_paths: Vec<std::path::PathBuf>) -> Arc<WebState> {
+    let (updates_tx, _) = broadcast::channel(10);
+    let (channel_post_tx, _) = mpsc::channel(10);
+    Arc::new(WebState {
+        config: WebConfig {
+            dir_key: "test-proj".to_string(),
+            project_name: "test-proj".to_string(),
+        },
+        updates_tx,
+        coworkers: None,
+        channel_post_tx,
+        push_manager: None,
+        all_repo_paths: repo_paths,
+        default_branch: "main".to_string(),
+        max_coworkers: 8,
+        repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+    })
+}
+
+#[tokio::test]
+async fn test_channel_workflow_returns_default_when_no_custom() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    std::fs::create_dir_all(&project_root).unwrap();
+    // Create the projects dir so local paths resolve
+    let project_dir = tmp.path().join("projects").join("test-proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let data = &result.0;
+    assert_eq!(data["script_source"], "default");
+    assert!(data["script_path"].is_null());
+    assert!(
+        data["script_content"]
+            .as_str()
+            .unwrap()
+            .contains("TRANSITIONS")
+    );
+    assert!(
+        data["mermaid"]
+            .as_str()
+            .unwrap()
+            .contains("stateDiagram-v2")
+    );
+    assert!(data["plugins"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_channel_workflow_returns_channel_repo_script() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    let workflow_dir = project_root.join(".midtown").join("channels").join("web");
+    std::fs::create_dir_all(&workflow_dir).unwrap();
+    std::fs::write(workflow_dir.join("workflow.py"), "# channel repo workflow").unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let data = &result.0;
+    assert_eq!(data["script_source"], "channel-repo");
+    assert_eq!(data["script_content"], "# channel repo workflow");
+}
+
+#[tokio::test]
+async fn test_channel_workflow_returns_channel_local_script() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    std::fs::create_dir_all(&project_root).unwrap();
+    let workflow_dir = tmp
+        .path()
+        .join("projects")
+        .join("test-proj")
+        .join("channels")
+        .join("web");
+    std::fs::create_dir_all(&workflow_dir).unwrap();
+    std::fs::write(workflow_dir.join("workflow.py"), "# channel local workflow").unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let data = &result.0;
+    assert_eq!(data["script_source"], "channel-local");
+    assert_eq!(data["script_content"], "# channel local workflow");
+}
+
+#[tokio::test]
+async fn test_channel_workflow_returns_project_repo_script() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    let midtown_dir = project_root.join(".midtown");
+    std::fs::create_dir_all(&midtown_dir).unwrap();
+    std::fs::write(midtown_dir.join("workflow.py"), "# project repo workflow").unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let data = &result.0;
+    assert_eq!(data["script_source"], "project-repo");
+    assert_eq!(data["script_content"], "# project repo workflow");
+}
+
+#[tokio::test]
+async fn test_channel_workflow_discovers_plugins() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    std::fs::create_dir_all(&project_root).unwrap();
+    // Create a project-local plugin
+    let plugin_dir = tmp
+        .path()
+        .join("projects")
+        .join("test-proj")
+        .join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("my_plugin.py"), "# plugin").unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let plugins = result.0["plugins"].as_array().unwrap();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["source"], "project-local");
+    assert!(
+        plugins[0]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "my_plugin.py")
+    );
+}
+
+#[tokio::test]
+async fn test_channel_workflow_custom_script_with_diagram() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_root = tmp.path().join("repo");
+    let midtown_dir = project_root.join(".midtown").join("channels").join("web");
+    std::fs::create_dir_all(&midtown_dir).unwrap();
+
+    // Write a minimal workflow script that supports --diagram
+    let script = r#"#!/usr/bin/env python3
+import sys
+if len(sys.argv) > 1 and sys.argv[1] == "--diagram":
+    print("stateDiagram-v2")
+    print("    [*] --> custom_state")
+    print("    custom_state --> [*]")
+else:
+    pass
+"#;
+    let script_path = midtown_dir.join("workflow.py");
+    std::fs::write(&script_path, script).unwrap();
+
+    let state = make_workflow_state(vec![project_root]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params))
+        .await
+        .unwrap();
+
+    let data = &result.0;
+    assert_eq!(data["script_source"], "channel-repo");
+    // The mermaid diagram should come from the custom script, not the default
+    let mermaid = data["mermaid"].as_str().unwrap();
+    assert!(
+        mermaid.contains("custom_state"),
+        "Expected custom diagram, got default: {mermaid}"
+    );
+    assert!(
+        !mermaid.contains("in_review"),
+        "Should not contain default states"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_workflow_fails_without_repo_paths() {
+    let state = make_workflow_state(vec![]);
+    let params = ChannelWorkflowParams {
+        channel: Some("web".to_string()),
+    };
+    let result = api_channel_workflow(State(state), Query(params)).await;
+    assert_eq!(result.unwrap_err(), StatusCode::INTERNAL_SERVER_ERROR);
+}

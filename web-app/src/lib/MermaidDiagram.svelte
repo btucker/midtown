@@ -1,6 +1,7 @@
 <script>
   import { getSelkie } from './selkie.js'
   import { getBiggerPicture, calculateFitToWidthScale } from './biggerPicture.js'
+  import { theme } from './theme.js'
 
   let { code } = $props()
   let svgHtml = $state('')
@@ -37,6 +38,8 @@
 
   $effect(() => {
     const currentCode = code
+    // Read theme synchronously so $effect tracks it as a dependency
+    const mermaidTheme = $theme === 'dark' ? 'dark' : 'default'
     loading = true
     error = ''
     svgHtml = ''
@@ -44,8 +47,7 @@
     getSelkie().then((selkie) => {
       try {
         const id = `mermaid-${counter++}`
-        // Apply dark theme directive to match TUI rendering
-        const themedCode = `%%{init: {"theme": "dark"}}%%\n${currentCode}`
+        const themedCode = `%%{init: {"theme": "${mermaidTheme}"}}%%\n${currentCode}`
         const result = selkie.render(id, themedCode)
         svgHtml = sanitizeSvg(result.svg)
         error = ''
