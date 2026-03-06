@@ -3,7 +3,7 @@ import { getApiBase } from "./api.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import { activeChannel, activeProject } from "./store.js";
 
-/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
+/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
 let data = $state(null);
 let loading = $state(false);
 let error = $state("");
@@ -27,16 +27,16 @@ $effect(() => {
 			return res.json();
 		})
 		.then((d) => {
-			data = d;
+			if (!controller.signal.aborted) data = d;
 		})
 		.catch((e) => {
-			if (e.name !== "AbortError") {
+			if (!controller.signal.aborted && e.name !== "AbortError") {
 				console.error("Failed to fetch workflow:", e);
 				error = e.message;
 			}
 		})
 		.finally(() => {
-			loading = false;
+			if (!controller.signal.aborted) loading = false;
 		});
 
 	return () => controller.abort();
@@ -61,13 +61,15 @@ const SOURCE_LABELS = {
     </div>
   {:else if data}
     <div class="workflow-content">
-      <!-- Workflow diagram -->
-      <section class="workflow-section">
-        <h2 class="section-title">State Machine</h2>
-        <div class="diagram-container">
-          <MermaidDiagram code={data.mermaid} />
-        </div>
-      </section>
+      <!-- Workflow diagram (hidden when custom script doesn't support --diagram) -->
+      {#if data.mermaid}
+        <section class="workflow-section">
+          <h2 class="section-title">State Machine</h2>
+          <div class="diagram-container">
+            <MermaidDiagram code={data.mermaid} />
+          </div>
+        </section>
+      {/if}
 
       <!-- Workflow source info -->
       <section class="workflow-section">

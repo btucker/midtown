@@ -2152,13 +2152,15 @@ async fn api_channel_workflow(
     let (script_source, script_path, script_content) =
         resolve_workflow_script(channel, project_root, dir_key);
 
-    // Generate mermaid diagram — use Python for custom scripts, default for built-in
-    let mermaid = if script_source == "default" {
-        DEFAULT_WORKFLOW_MERMAID.to_string()
+    // Generate mermaid diagram — use Python for custom scripts, default for built-in.
+    // For custom scripts that don't support --diagram, mermaid is null so the UI
+    // can hide the diagram rather than showing a misleading default.
+    let mermaid: Option<String> = if script_source == "default" {
+        Some(DEFAULT_WORKFLOW_MERMAID.to_string())
     } else if let Some(ref path) = script_path {
         generate_workflow_diagram(path).await
     } else {
-        DEFAULT_WORKFLOW_MERMAID.to_string()
+        None
     };
 
     // Discover plugins at all 4 levels
@@ -2227,9 +2229,11 @@ fn resolve_workflow_script(
 
 /// Generate a mermaid diagram from a custom workflow script.
 ///
-/// Runs `python <path> --diagram` and captures stdout. Falls back to the
-/// default diagram if the command fails or returns empty output.
-async fn generate_workflow_diagram(script_path: &str) -> String {
+/// Runs `python <path> --diagram` and captures stdout. Returns `None` if the
+/// command fails or returns empty output — callers should handle the absence
+/// gracefully (e.g., hide the diagram section) rather than showing the default
+/// state machine, which would be misleading for custom workflows.
+async fn generate_workflow_diagram(script_path: &str) -> Option<String> {
     let path = script_path.to_string();
     let result = tokio::task::spawn_blocking(move || {
         std::process::Command::new("python3")
@@ -2243,12 +2247,12 @@ async fn generate_workflow_diagram(script_path: &str) -> String {
         Ok(Ok(output)) if output.status.success() => {
             let diagram = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if diagram.is_empty() {
-                DEFAULT_WORKFLOW_MERMAID.to_string()
+                None
             } else {
-                diagram
+                Some(diagram)
             }
         }
-        _ => DEFAULT_WORKFLOW_MERMAID.to_string(),
+        _ => None,
     }
 }
 

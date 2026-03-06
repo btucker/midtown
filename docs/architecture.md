@@ -687,6 +687,16 @@ Each channel can have a `workflow.py` script that controls how the daemon respon
 
 If no script is found, or if a PR has no channel/task association, the daemon falls back to its compiled-in inline effects. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
 
+### Web API Endpoint
+
+`GET /api/workflow?channel=<name>` (in `web.rs`) exposes the resolved workflow for a channel to the web UI. It uses `resolve_workflow_script()` — a local function that reimplements the same 4-level resolution as `workflow_script_for_channel()` in `paths.rs`, but lives in `web.rs` because it needs `project_root` from `WebState` (which the standalone webserver lacked). The response includes:
+
+- `script_source` — which level matched (`default`, `channel-repo`, `channel-local`, `project-repo`, `project-local`)
+- `script_path` — filesystem path (null for default)
+- `script_content` — the script source code
+- `mermaid` — state machine diagram from `python3 <script> --diagram`, or `null` if the custom script doesn't support it (the UI hides the diagram section rather than showing a misleading default)
+- `plugins` — discovered plugins across all 4 resolution levels via `discover_workflow_plugins()`
+
 ### Invocation
 
 The daemon emits `Effect::EmitWorkflowEvent` at detection points in `pr.rs`, `health.rs`, `dispatch.rs`, `rpc_task.rs` (task creation → `TaskCreated`), and `rpc_channel.rs` (channel posts → `CoworkerMessage` / `ChannelMessage`). `invoke_workflow_script()` in `effects.rs` tries the sidecar fast path first (see below), falling back to subprocess invocation:
