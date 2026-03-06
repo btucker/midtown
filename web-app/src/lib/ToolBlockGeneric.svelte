@@ -7,6 +7,8 @@
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  */
+import { highlightBlock } from "./highlighting.js";
+
 let { block } = $props();
 
 let expanded = $state(false);
@@ -18,6 +20,14 @@ let summary = $derived.by(() => {
 	if (inp.pattern) return `${block.tool_name} ${inp.pattern}`;
 	if (inp.query) return `${block.tool_name} "${inp.query}"`;
 	return block.tool_name;
+});
+
+// Highlighted JSON for display
+let highlightedInput = $derived(highlightBlock(JSON.stringify(block.input, null, 2), "json"));
+let highlightedOutput = $derived.by(() => {
+	if (!block.output) return "";
+	const outputStr = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
+	return highlightBlock(outputStr, "json");
 });
 
 function toggle() {
@@ -36,10 +46,10 @@ function toggle() {
 
   {#if expanded}
     <div class="tool-body">
-      <pre>{JSON.stringify(block.input, null, 2)}</pre>
+      <pre>{@html highlightedInput}</pre>
       {#if block.output}
         <div class="tool-output-divider">output</div>
-        <pre>{typeof block.output === 'string' ? block.output : JSON.stringify(block.output, null, 2)}</pre>
+        <pre>{@html highlightedOutput}</pre>
       {/if}
     </div>
   {/if}

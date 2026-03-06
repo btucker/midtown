@@ -85,7 +85,11 @@ export function formatTime(timestamp) {
 export function formatTimeCompact(timestamp) {
 	try {
 		const date = new Date(timestamp);
-		return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
+		let hours = date.getHours();
+		const minutes = date.getMinutes().toString().padStart(2, "0");
+		// Convert to 12-hour format without AM/PM
+		hours = hours % 12 || 12;
+		return `${hours}:${minutes}`;
 	} catch {
 		return "";
 	}

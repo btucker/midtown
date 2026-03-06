@@ -201,17 +201,38 @@ export function getTaskThreadIds(kanban) {
 }
 
 /**
+ * Build a Set of threadParentIds from completed tasks.
+ */
+export function getCompletedTaskThreadIds(kanban) {
+	const ids = new Set();
+	const completed = kanban.completedTasks || [];
+	for (const task of completed) {
+		if (task.thread_id) ids.add(task.thread_id);
+		if (task.message_id) ids.add(task.message_id);
+	}
+	return ids;
+}
+
+/**
  * Get tracked threads for a channel, sorted by lastActivity (newest first).
- * Pure function — filters out task-backed threads and returns their IDs
+ * Pure function — filters out active task-backed threads and returns their IDs
  * in `toClean` for the caller to handle cleanup separately (e.g. in a $effect).
+ * Completed task threads are kept but marked with `completed: true`.
  *
  * @param {string} channelName
  * @param {object} tracked - $trackedThreads store value
  * @param {object} unreadCounts - $threadUnreadCounts store value
- * @param {Set} taskThreadIds - from getTaskThreadIds()
- * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread}>, toClean: string[] }}
+ * @param {Set} taskThreadIds - from getTaskThreadIds() (active tasks)
+ * @param {Set} completedTaskThreadIds - from getCompletedTaskThreadIds()
+ * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread, completed}>, toClean: string[] }}
  */
-export function getChannelThreads(channelName, tracked, unreadCounts, taskThreadIds) {
+export function getChannelThreads(
+	channelName,
+	tracked,
+	unreadCounts,
+	taskThreadIds,
+	completedTaskThreadIds = new Set(),
+) {
 	const threads = [];
 	const toClean = [];
 	for (const [id, entry] of Object.entries(tracked)) {
@@ -227,6 +248,7 @@ export function getChannelThreads(channelName, tracked, unreadCounts, taskThread
 			lastActivity: entry.lastActivity,
 			replyCount: entry.replyCount || 0,
 			unread: unreadCounts[id] || 0,
+			completed: completedTaskThreadIds.has(id),
 		});
 	}
 	threads.sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""));

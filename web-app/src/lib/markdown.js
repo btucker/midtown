@@ -1,40 +1,9 @@
 // Pure utility functions for markdown rendering and mermaid detection.
 // Extracted from Channel.svelte for testability.
 
-import hljs from "highlight.js/lib/core";
-import bash from "highlight.js/lib/languages/bash";
-import css from "highlight.js/lib/languages/css";
-import diff from "highlight.js/lib/languages/diff";
-import toml from "highlight.js/lib/languages/ini"; // hljs uses 'ini' for TOML
-import javascript from "highlight.js/lib/languages/javascript";
-import json from "highlight.js/lib/languages/json";
-import python from "highlight.js/lib/languages/python";
-// Register only languages relevant to this project (tree-shakeable imports)
-import rust from "highlight.js/lib/languages/rust";
-import typescript from "highlight.js/lib/languages/typescript";
-import xml from "highlight.js/lib/languages/xml";
-import yaml from "highlight.js/lib/languages/yaml";
 import { marked, Renderer } from "marked";
 import { markedHighlight } from "marked-highlight";
-
-hljs.registerLanguage("rust", rust);
-hljs.registerLanguage("javascript", javascript);
-hljs.registerLanguage("js", javascript);
-hljs.registerLanguage("typescript", typescript);
-hljs.registerLanguage("ts", typescript);
-hljs.registerLanguage("python", python);
-hljs.registerLanguage("py", python);
-hljs.registerLanguage("bash", bash);
-hljs.registerLanguage("sh", bash);
-hljs.registerLanguage("shell", bash);
-hljs.registerLanguage("json", json);
-hljs.registerLanguage("toml", toml);
-hljs.registerLanguage("yaml", yaml);
-hljs.registerLanguage("yml", yaml);
-hljs.registerLanguage("css", css);
-hljs.registerLanguage("xml", xml);
-hljs.registerLanguage("html", xml);
-hljs.registerLanguage("diff", diff);
+import { hljs } from "./highlighting.js";
 
 // Configure marked with syntax highlighting via marked-highlight
 marked.use(

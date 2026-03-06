@@ -2237,6 +2237,43 @@ impl DaemonState {
             .unwrap_or_default()
     }
 
+    /// Check if a name corresponds to any known agent session.
+    /// Used for DM channel validation — allows posting to dm-<name>
+    /// for any recognized agent type.
+    pub(crate) async fn is_known_agent_name(&self, name: &str) -> bool {
+        // Active session (any type)
+        if self.name_to_session.lock().unwrap().contains_key(name) {
+            return true;
+        }
+        // Project lead
+        if name == self.project_name {
+            return true;
+        }
+        // Previously active coworker
+        if self.coworker_records.read().await.contains_key(name) {
+            return true;
+        }
+        // Channel lead
+        {
+            let ps = self.persistent_state.lock().await;
+            if ps.channel_lead_sessions.contains_key(name) {
+                return true;
+            }
+            // Persisted session record (covers stopped coworkers whose
+            // coworker_records entry was cleaned up but SessionRecord remains).
+            if ps.sessions.values().any(|r| {
+                r.current_name.as_deref() == Some(name) || r.preferred_name.as_deref() == Some(name)
+            }) {
+                return true;
+            }
+        }
+        // Active fork
+        if self.fork_bound_threads.lock().unwrap().contains_key(name) {
+            return true;
+        }
+        false
+    }
+
     /// Look up the name currently assigned to a given session ID.
     ///
     /// Infrastructure for the session-centric model — used by effect handlers
@@ -3729,15 +3766,29 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         &fork_bound_channels,
                     );
 
-                    // Build coworker name set: all active session names minus lead,
-                    // channel leads, and fork-bound sessions. Reviewers are included
-                    // so their output streams to dm-<name> channels — users expect to
-                    // see reviewer activity in DM channels alongside regular coworkers.
-                    let coworker_names: std::collections::HashSet<String> = state
+                    // All active sessions get DM output (dm-<name>). Channel leads
+                    // and forks retain their topic channel output via process_lead_output
+                    // in addition to this new DM output. Always include project_name so the
+                    // lead's DM channel is populated even if it runs headless without a
+                    // SessionRecord yet (headed sessions produce no events here, but when the
+                    // lead runs headless its events are keyed by project_name in drain_events).
+                    let mut dm_agent_names: std::collections::HashSet<String> = state
                         .name_to_session
                         .lock()
                         .unwrap()
                         .keys()
+                        .cloned()
+                        .collect();
+                    dm_agent_names.insert(state.project_name.clone());
+                    let coworker_effects =
+                        stream::process_agent_output(&events, &dm_agent_names);
+
+                    // Universal events still use the filtered coworker set because
+                    // leads, channel leads, and forks are handled by dedicated loops
+                    // inside process_universal_events — including them here would
+                    // create duplicate BroadcastUniversalItems effects.
+                    let coworker_names: std::collections::HashSet<String> = dm_agent_names
+                        .iter()
                         .filter(|name| {
                             *name != &state.project_name
                                 && !ps.channel_lead_sessions.contains_key(*name)
@@ -3745,9 +3796,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         })
                         .cloned()
                         .collect();
-                    let coworker_effects =
-                        stream::process_coworker_output(&events, &coworker_names);
-
                     let fork_bound_threads = state.fork_bound_threads.lock().unwrap();
                     let universal_effects = stream::process_universal_events(
                         &events,

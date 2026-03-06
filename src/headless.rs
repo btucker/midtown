@@ -224,6 +224,22 @@ pub enum StreamEvent {
         #[serde(flatten)]
         extra: serde_json::Value,
     },
+    /// Progress events (tool execution progress, sub-agent activity).
+    ///
+    /// Sub-agent progress has `data.type == "agent_progress"` with:
+    /// - `data.message`: the sub-agent's message (assistant tool_use or user tool_result)
+    /// - `parentToolUseID`: the parent Agent/Task/Skill tool_use block ID
+    /// - `toolUseID`: the specific sub-agent tool_use ID
+    #[serde(rename = "progress")]
+    Progress {
+        data: serde_json::Value,
+        #[serde(rename = "parentToolUseID", alias = "parent_tool_use_id")]
+        parent_tool_use_id: Option<String>,
+        #[serde(rename = "toolUseID", alias = "tool_use_id")]
+        tool_use_id: Option<String>,
+        #[serde(flatten)]
+        extra: serde_json::Value,
+    },
     /// Catch-all for event types added by newer CLI versions (e.g. rate_limit_event).
     #[serde(other)]
     Unknown,

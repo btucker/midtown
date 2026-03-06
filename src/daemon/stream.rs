@@ -101,7 +101,7 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
 ///
 /// - The main lead's text is posted to the main channel (`channel: None`).
 /// - Each channel lead's text is posted to its respective topic channel.
-/// - Coworker text is handled separately by [`process_coworker_output()`].
+/// - Coworker text is handled separately by [`process_agent_output()`].
 ///
 /// `channel_lead_sessions` maps channel name → session ID for active channel leads.
 pub fn process_lead_output(
@@ -197,14 +197,20 @@ fn detect_provider(events: &[StreamEvent]) -> Option<String> {
     }
 }
 
-/// Extract `parentToolUseID` from a stream event's `extra` field.
+/// Extract `parent_tool_use_id` from a stream event's `extra` field.
 ///
-/// Claude Code's `--output-format stream-json` emits this on every event
-/// that originates inside a sub-agent, linking it back to the parent tool_use.
+/// Claude Code's `--output-format stream-json` emits this on every
+/// assistant/user event that originates inside a sub-agent (Agent/Task/Skill),
+/// linking it back to the parent tool_use block's `id`.
+///
+/// Checks both `parent_tool_use_id` (current format, snake_case) and
+/// `parentToolUseID` (legacy camelCase) for forward/backward compatibility.
 fn get_parent_tool_use_id(extra: &serde_json::Value) -> Option<String> {
     extra
-        .get("parentToolUseID")
+        .get("parent_tool_use_id")
+        .or_else(|| extra.get("parentToolUseID"))
         .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
 }
 
@@ -218,7 +224,7 @@ fn get_parent_tool_use_id(extra: &serde_json::Value) -> Option<String> {
 /// `parent_tool_use_id` (from the event's `parentToolUseID` field) for
 /// sub-agent thread resolution.
 fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
-    // Collect tool results keyed by call_id.
+    // Collect tool results keyed by call_id from top-level User events.
     let mut results: HashMap<String, (serde_json::Value, bool)> = HashMap::new();
     for event in events {
         if let StreamEvent::User { message, .. } = event
@@ -242,7 +248,38 @@ fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
         }
     }
 
-    // Extract tool calls with their results.
+    // Also collect tool results from sub-agent progress events.
+    // Progress events with data.type == "agent_progress" and data.message.type == "user"
+    // carry tool_result blocks from sub-agent execution.
+    for event in events {
+        if let StreamEvent::Progress { data, .. } = event
+            && data.get("type").and_then(|t| t.as_str()) == Some("agent_progress")
+            && let Some(inner_msg) = data.get("message").and_then(|m| m.get("message"))
+            && data
+                .get("message")
+                .and_then(|m| m.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("user")
+            && let Some(arr) = inner_msg.get("content").and_then(|c| c.as_array())
+        {
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                    let call_id = block
+                        .get("tool_use_id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let output = extract_tool_result_json(block);
+                    results.insert(call_id, (output, is_error));
+                }
+            }
+        }
+    }
+
+    // Extract tool calls with their results from top-level Assistant events.
     let mut blocks = Vec::new();
     for event in events {
         if let StreamEvent::Assistant { message, extra, .. } = event
@@ -250,6 +287,57 @@ fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
             && let Some(arr) = content.as_array()
         {
             let parent_tool_use_id = get_parent_tool_use_id(extra);
+            for block in arr {
+                if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                    let name = block
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let call_id = block
+                        .get("id")
+                        .and_then(json_value_as_string)
+                        .unwrap_or_default();
+                    let (output, error) = match results.get(&call_id) {
+                        Some((out, is_err)) => (Some(out.clone()), *is_err),
+                        None => (None, false),
+                    };
+                    blocks.push(ToolBlock {
+                        tool_name: name,
+                        input,
+                        output,
+                        error,
+                        call_id: Some(call_id),
+                        parent_tool_use_id: parent_tool_use_id.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    // Extract tool calls from sub-agent progress events.
+    // Progress events with data.type == "agent_progress" and data.message.type == "assistant"
+    // carry tool_use blocks from sub-agent execution, with parentToolUseID on the event.
+    for event in events {
+        if let StreamEvent::Progress {
+            data,
+            parent_tool_use_id,
+            ..
+        } = event
+            && data.get("type").and_then(|t| t.as_str()) == Some("agent_progress")
+            && parent_tool_use_id.is_some()
+            && let Some(inner_msg) = data.get("message").and_then(|m| m.get("message"))
+            && data
+                .get("message")
+                .and_then(|m| m.get("type"))
+                .and_then(|t| t.as_str())
+                == Some("assistant")
+            && let Some(arr) = inner_msg.get("content").and_then(|c| c.as_array())
+        {
             for block in arr {
                 if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                     let name = block
@@ -324,29 +412,54 @@ fn extract_assistant_text_split(events: &[StreamEvent]) -> (String, HashMap<Stri
     let mut sub_agent: HashMap<String, String> = HashMap::new();
 
     for event in events {
-        if let StreamEvent::Assistant { message, extra, .. } = event {
-            let text = extract_text_blocks(message);
-            if text.is_empty() {
-                continue;
+        match event {
+            StreamEvent::Assistant { message, extra, .. } => {
+                let text = extract_text_blocks(message);
+                if text.is_empty() {
+                    continue;
+                }
+                if let Some(parent_id) = get_parent_tool_use_id(extra) {
+                    sub_agent.entry(parent_id).or_default().push_str(&text);
+                } else {
+                    top_level.push_str(&text);
+                }
             }
-            if let Some(parent_id) = get_parent_tool_use_id(extra) {
-                sub_agent.entry(parent_id).or_default().push_str(&text);
-            } else {
-                top_level.push_str(&text);
+            // Sub-agent text from progress events (agent_progress with assistant text).
+            StreamEvent::Progress {
+                data,
+                parent_tool_use_id: Some(parent_id),
+                ..
+            } if data.get("type").and_then(|t| t.as_str()) == Some("agent_progress")
+                && data
+                    .get("message")
+                    .and_then(|m| m.get("type"))
+                    .and_then(|t| t.as_str())
+                    == Some("assistant") =>
+            {
+                if let Some(inner_msg) = data.get("message").and_then(|m| m.get("message")) {
+                    let text = extract_text_blocks(inner_msg);
+                    if !text.is_empty() {
+                        sub_agent
+                            .entry(parent_id.clone())
+                            .or_default()
+                            .push_str(&text);
+                    }
+                }
             }
+            _ => {}
         }
     }
 
     (top_level, sub_agent)
 }
 
-/// Process coworker output and generate DM channel posting effects.
+/// Process agent output and generate DM channel posting effects.
 ///
 /// DM channels are a complete stream of the agent — text AND tool calls.
 /// All content uses `auto_output: false` because DM channels echo everything
 /// (there's no distinction between "auto" and "explicit" output).
 ///
-/// For each coworker session, posts:
+/// For each agent session, posts:
 /// - Top-level text output (assistant prose) with provider metadata
 /// - Extracted `★ Insight` blocks as `PostInsight` effects (routed to the task's channel)
 /// - Top-level tool calls as `tool_data`, tagged with `tool_use_id` for thread parent lookup
@@ -355,15 +468,15 @@ fn extract_assistant_text_split(events: &[StreamEvent]) -> (String, HashMap<Stri
 /// Effects are ordered: top-level (thread parents) first, sub-agent (thread children) second,
 /// so the effect executor can resolve thread parents before children reference them.
 ///
-/// `coworker_names` is the set of active coworker session names (excluding the
-/// main lead, channel leads, and fork-bound sessions).
-pub fn process_coworker_output(
+/// `agent_names` is the set of session names whose output should be posted
+/// to DM channels.
+pub fn process_agent_output(
     events: &HashMap<String, Vec<StreamEvent>>,
-    coworker_names: &HashSet<String>,
+    agent_names: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for name in coworker_names {
+    for name in agent_names {
         if let Some(coworker_events) = events.get(name.as_str()) {
             let dm_channel = format!("dm-{}", name);
             let provider = detect_provider(coworker_events);
@@ -398,6 +511,20 @@ pub fn process_coworker_output(
 
             // Split tool blocks into top-level vs sub-agent.
             let all_blocks = extract_tool_blocks(coworker_events);
+            if !all_blocks.is_empty() {
+                let sub_count = all_blocks
+                    .iter()
+                    .filter(|b| b.parent_tool_use_id.is_some())
+                    .count();
+                if sub_count > 0 {
+                    tracing::debug!(
+                        coworker = %name,
+                        total_blocks = all_blocks.len(),
+                        sub_agent_blocks = sub_count,
+                        "Splitting tool blocks into top-level vs sub-agent"
+                    );
+                }
+            }
             let mut top_level_blocks = Vec::new();
             let mut sub_agent_blocks: HashMap<String, Vec<ToolBlock>> = HashMap::new();
 
@@ -413,12 +540,21 @@ pub fn process_coworker_output(
             }
 
             // Post top-level tool blocks, tagged with tool_use_id from the first block.
+            // Include a tool name summary (e.g. "[Bash, Read]") for TUI visibility,
+            // since the terminal renderer only displays msg.content, not tool_data.
             if !top_level_blocks.is_empty() {
                 let tool_use_id = top_level_blocks.first().and_then(|b| b.call_id.clone());
-                let summary = tool_summary(&top_level_blocks);
+                let tool_summary = format!(
+                    "[{}]",
+                    top_level_blocks
+                        .iter()
+                        .map(|b| b.tool_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: summary,
+                    message: tool_summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -451,10 +587,17 @@ pub fn process_coworker_output(
 
             // Post sub-agent tool blocks as thread replies (grouped by parent_tool_use_id).
             for (parent_id, blocks) in sub_agent_blocks {
-                let summary = tool_summary(&blocks);
+                let tool_summary = format!(
+                    "[{}]",
+                    blocks
+                        .iter()
+                        .map(|b| b.tool_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: summary,
+                    message: tool_summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -469,22 +612,6 @@ pub fn process_coworker_output(
     }
 
     effects
-}
-
-/// Build a lightweight text summary of tool blocks for CLI TUI rendering.
-/// The CLI renders `message.content` via `render_content_lines()` and does not
-/// read `tool_data`, so tool-only messages need a text fallback to remain visible.
-/// Produces e.g. `"[Bash]"`, `"[Bash, Read, Edit]"`, or `"[3 tool calls]"` for >3 tools.
-fn tool_summary(blocks: &[ToolBlock]) -> String {
-    if blocks.is_empty() {
-        return String::new();
-    }
-    let names: Vec<&str> = blocks.iter().map(|b| b.tool_name.as_str()).collect();
-    if names.len() <= 3 {
-        format!("[{}]", names.join(", "))
-    } else {
-        format!("[{} tool calls]", names.len())
-    }
 }
 
 /// Maximum bytes for tool result output in DM channel messages.
@@ -527,7 +654,7 @@ pub fn process_universal_events(
     main_lead_session_name: &str,
     fork_bound_channels: &HashMap<String, String>,
     fork_bound_threads: &HashMap<String, String>,
-    coworker_names: &HashSet<String>,
+    agent_names: &HashSet<String>,
 ) -> Vec<Effect> {
     let timestamp = chrono::Utc::now();
     let mut effects = Vec::new();
@@ -581,7 +708,7 @@ pub fn process_universal_events(
     }
 
     // Coworkers → shown in their DM channels (dm-<name>).
-    for name in coworker_names {
+    for name in agent_names {
         if let Some(cw_events) = events.get(name.as_str()) {
             let items = crate::universal_events::claude::extract_tool_events(cw_events, timestamp);
             if !items.is_empty() {

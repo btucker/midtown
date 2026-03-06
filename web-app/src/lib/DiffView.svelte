@@ -7,7 +7,7 @@
  *   oldString — the text that was replaced
  *   newString — the replacement text
  */
-import hljs from "highlight.js/lib/core";
+import { highlightLine } from "./highlighting.js";
 
 let { filePath, oldString, newString } = $props();
 let expanded = $state(false);
@@ -39,22 +39,15 @@ function getLanguage(path) {
 	return ext ? EXT_TO_LANG[ext] || null : null;
 }
 
-function highlightLine(text, lang) {
-	if (!lang || !hljs.getLanguage(lang)) return escapeHtml(text);
-	try {
-		return hljs.highlight(text, { language: lang }).value;
-	} catch {
-		return escapeHtml(text);
-	}
-}
-
-function escapeHtml(str) {
-	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 let lang = $derived(getLanguage(filePath));
 let oldLines = $derived((oldString || "").split("\n"));
 let newLines = $derived((newString || "").split("\n"));
+
+// Filter out empty single-line arrays for display
+let hasOldContent = $derived(oldLines.length > 0 && !(oldLines.length === 1 && oldLines[0] === ""));
+let hasNewContent = $derived(newLines.length > 0 && !(newLines.length === 1 && newLines[0] === ""));
+let totalLines = $derived((hasOldContent ? oldLines.length : 0) + (hasNewContent ? newLines.length : 0));
+let isLong = $derived(totalLines > 8);
 
 // Short filename for display
 let shortPath = $derived(filePath || "unknown");
@@ -70,38 +63,37 @@ function toggle() {
     onclick={toggle}
     aria-expanded={expanded}
   >
-    <span class="diff-chevron">{expanded ? '▾' : '▸'}</span>
+    <span class="diff-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
+    <span class="diff-label">Edit</span>
     <span class="diff-path">{shortPath}</span>
     <span class="diff-stats">
-      {#if oldLines.length > 0 && !(oldLines.length === 1 && oldLines[0] === '')}
+      {#if hasOldContent}
         <span class="diff-stat-del">−{oldLines.length}</span>
       {/if}
-      {#if newLines.length > 0 && !(newLines.length === 1 && newLines[0] === '')}
+      {#if hasNewContent}
         <span class="diff-stat-add">+{newLines.length}</span>
       {/if}
     </span>
   </button>
 
-  {#if expanded}
-    <div class="diff-body">
-      {#each oldLines as line}
-        {#if !(oldLines.length === 1 && line === '')}
-          <div class="diff-line diff-line-del">
-            <span class="diff-line-prefix">−</span>
-            <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
-          </div>
-        {/if}
-      {/each}
-      {#each newLines as line}
-        {#if !(newLines.length === 1 && line === '')}
-          <div class="diff-line diff-line-add">
-            <span class="diff-line-prefix">+</span>
-            <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
-          </div>
-        {/if}
-      {/each}
-    </div>
-  {/if}
+  <div class="diff-body" class:diff-collapsed={isLong && !expanded}>
+    {#each oldLines as line}
+      {#if !(oldLines.length === 1 && line === '')}
+        <div class="diff-line diff-line-del">
+          <span class="diff-line-prefix">−</span>
+          <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
+        </div>
+      {/if}
+    {/each}
+    {#each newLines as line}
+      {#if !(newLines.length === 1 && line === '')}
+        <div class="diff-line diff-line-add">
+          <span class="diff-line-prefix">+</span>
+          <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
+        </div>
+      {/if}
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -141,6 +133,12 @@ function toggle() {
     font-size: 0.7rem;
   }
 
+  .diff-label {
+    flex-shrink: 0;
+    color: hsl(var(--muted-foreground));
+    font-weight: 600;
+  }
+
   .diff-path {
     flex: 1;
     min-width: 0;
@@ -177,6 +175,23 @@ function toggle() {
     overflow-x: auto;
     max-height: 400px;
     overflow-y: auto;
+  }
+
+  .diff-collapsed {
+    max-height: 10em;
+    overflow-y: hidden;
+    position: relative;
+  }
+
+  .diff-collapsed::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3em;
+    background: linear-gradient(transparent, hsl(var(--card)));
+    pointer-events: none;
   }
 
   .diff-line {

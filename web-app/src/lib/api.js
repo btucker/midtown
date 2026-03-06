@@ -492,6 +492,7 @@ function updateKanbanData(data) {
 	kanbanData.set({
 		backlog: tasks.filter((t) => t.status === "pending"),
 		inProgress: tasks.filter((t) => t.status === "in_progress"),
+		completedTasks: tasks.filter((t) => t.status === "completed"),
 		review: prs.map((pr) => ({
 			number: pr.number,
 			title: pr.title,
@@ -618,8 +619,7 @@ export function handleUpdate(update) {
 
 			if (msg.thread_parent_id) {
 				// Thread reply — update thread panel if open for this parent, and
-				// bump reply_count on the parent message, but do NOT add to the
-				// main channel timeline.
+				// bump reply_count on the parent message.
 				threadData.update((td) => {
 					if (td && td.parentMessage?.id === msg.thread_parent_id) {
 						// Remove the first pending optimistic reply with matching content/sender before
@@ -721,6 +721,9 @@ export function handleUpdate(update) {
 						}));
 					}
 				}
+
+				// DM channels: thread replies stay in the thread panel (consistent
+				// with regular channels). The coworker owns the DM like a channel lead.
 			} else {
 				// Top-level message — add to stores, removing any matching pending optimistic message first.
 				// Add to legacy messages array
@@ -1260,8 +1263,9 @@ export function openTaskThread(task, channelName) {
 		task.thread_id ?? channelMsgs.find((m) => m.id === task.message_id)?.thread_parent_id ?? task.message_id;
 
 	// Find all tasks whose thread roots under the same parent
-	const { inProgress, backlog } = get(kanbanData);
-	const allTasks = [...inProgress, ...backlog];
+	// Also include completed tasks from kanbanData.done
+	const { inProgress, backlog, done } = get(kanbanData);
+	const allTasks = [...inProgress, ...backlog, ...done];
 	const tasks = allTasks.filter((t) => {
 		if (!t.thread_id && !t.message_id) return false;
 		const tParent = t.thread_id ?? channelMsgs.find((m) => m.id === t.message_id)?.thread_parent_id ?? t.message_id;

@@ -11,6 +11,7 @@ import {
 	getChannelTaskCount,
 	getChannelTasks,
 	getChannelThreads,
+	getCompletedTaskThreadIds,
 	getTaskThreadIds,
 } from "./channelUtils.js";
 import { getSenderColor } from "./messageUtils.js";
@@ -33,8 +34,10 @@ import ThreadList from "./ThreadList.svelte";
 // Build a map of coworker name → coworker object for quick lookup
 $: coworkerMap = new Map($coworkers.map((cw) => [cw.name, cw]));
 
-// Thread IDs that are already represented by tasks (for dedup)
+// Thread IDs that are already represented by active tasks (for dedup)
 $: taskThreadIds = getTaskThreadIds($kanbanData);
+// Thread IDs from completed tasks (for visual indicator)
+$: completedTaskThreadIds = getCompletedTaskThreadIds($kanbanData);
 
 let showCreateInput = false;
 let newChannelName = "";
@@ -289,7 +292,7 @@ function handleKeyDown(event) {
           <div class="flex items-center gap-1.5">
             {#if !isExpanded && (hasActiveTasks || hasTrackedThreads)}
               {@const tasks = hasActiveTasks ? getChannelTasks(channel.name, $kanbanData) : []}
-              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds).threads : []}
+              {@const threads = hasTrackedThreads ? getChannelThreads(channel.name, $trackedThreads, $threadUnreadCounts, taskThreadIds, completedTaskThreadIds).threads : []}
               {@const unreadThreads = threads.filter(t => t.unread > 0)}
               <div class="flex items-center gap-[3px]">
                 {#each tasks as task}
