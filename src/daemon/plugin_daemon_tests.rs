@@ -96,6 +96,51 @@ async fn manager_update_plugin_dirs_resets_backoff() {
 }
 
 #[tokio::test]
+async fn manager_merge_plugin_dirs_adds_new() {
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-plugin-daemon.sock".into(),
+        vec!["/tmp/project-plugins".into()],
+        "/tmp/sdk".into(),
+    );
+
+    // Merge in a channel-specific dir.
+    manager
+        .merge_plugin_dirs(vec![
+            "/tmp/channel-plugins".into(),
+            "/tmp/project-plugins".into(), // already present — should not duplicate
+        ])
+        .await;
+
+    let inner = manager.inner.lock().await;
+    assert_eq!(inner.plugin_dirs.len(), 2);
+    assert_eq!(inner.plugin_dirs[0], PathBuf::from("/tmp/project-plugins"));
+    assert_eq!(inner.plugin_dirs[1], PathBuf::from("/tmp/channel-plugins"));
+}
+
+#[tokio::test]
+async fn manager_merge_plugin_dirs_noop_when_all_present() {
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-plugin-daemon.sock".into(),
+        vec!["/tmp/plugins".into()],
+        "/tmp/sdk".into(),
+    );
+
+    // Set crash state — should NOT be reset if nothing changed.
+    {
+        let mut inner = manager.inner.lock().await;
+        inner.crash_count = 3;
+        inner.last_crash = Some(Instant::now());
+    }
+
+    // All dirs already present — should be a no-op.
+    manager.merge_plugin_dirs(vec!["/tmp/plugins".into()]).await;
+
+    let inner = manager.inner.lock().await;
+    assert_eq!(inner.crash_count, 3);
+    assert_eq!(inner.plugin_dirs.len(), 1);
+}
+
+#[tokio::test]
 async fn manager_update_plugin_dirs_noop_when_same() {
     let dirs = vec![PathBuf::from("/tmp/plugins")];
     let manager = PluginDaemonManager::new(
