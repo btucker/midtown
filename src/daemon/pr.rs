@@ -429,10 +429,11 @@ pub(super) fn detect_abandoned_pr_tasks(
 /// Resolve the owner of a PR from snapshot data.
 ///
 /// Tries session-based resolution first (PR# → task → session → current_name),
-/// then falls back to task-based metadata from snapshot tasks (PR title/task ID, branch
-/// task ID pattern, and task.pr field), and finally branch-based lookup via the
-/// worktree registry's branch_owners map.
-/// Returns `None` if neither path yields an owner.
+/// then task-based metadata from snapshot tasks (PR title/task ID, branch
+/// task ID pattern, and task.pr field), then branch-based lookup via the
+/// worktree registry's branch_owners map, and finally PR body frontmatter
+/// (`<!-- midtown: name -->`) as a crash-resilient fallback.
+/// Returns `None` if no path yields an owner.
 fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pf.number,
@@ -514,7 +515,8 @@ fn resolve_pr_owner_from_body(body: &str) -> Option<String> {
 /// Resolve PR owner from persistent state (used by webhook handlers).
 ///
 /// Locks persistent_state once, tries session → task metadata → branch →
-/// PR worktree registry → body frontmatter → fallback.
+/// PR worktree registry → fallback (caller-provided, typically from body
+/// frontmatter via `determine_pr_coworker()`).
 async fn resolve_pr_owner_from_state(
     state: &DaemonState,
     pr_number: u64,
