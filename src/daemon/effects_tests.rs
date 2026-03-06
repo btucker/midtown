@@ -2406,3 +2406,235 @@ async fn test_post_insight_no_thread_when_no_thread_id() {
         "message should not have thread_parent_id when task has no thread binding"
     );
 }
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_nudges_active_coworker() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+    let coworker_name = "columbus";
+    let channel_name = format!("dm-{}", coworker_name);
+    let session_id = "sess-columbus-1".to_string();
+    let dm_content = "Hey, can you check the auth module?";
+
+    // Register the coworker as active via name_to_session
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(coworker_name.to_string(), session_id.clone());
+
+    // Set up hook to capture the nudge
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let observed_for_hook = observed.clone();
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(move |sid, msg| {
+            observed_for_hook
+                .lock()
+                .unwrap()
+                .push((sid.to_string(), msg.to_string()));
+            Ok(())
+        })));
+
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel_name.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: dm_content.to_string(),
+                msg_id: "msg-dm-001".to_string(),
+                coworker_name: coworker_name.to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let calls = observed.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "should nudge exactly once");
+    assert_eq!(
+        calls[0].0, session_id,
+        "should nudge the coworker's session"
+    );
+    assert!(
+        calls[0].1.contains(dm_content),
+        "nudge message should contain the DM content"
+    );
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_no_active_session_logs_warning() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+    let coworker_name = "columbus";
+    let channel_name = format!("dm-{}", coworker_name);
+
+    // No session registered — coworker is not active and has no stored record.
+    // The effect should not panic and should not attempt to send any messages.
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let observed_for_hook = observed.clone();
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(move |sid, msg| {
+            observed_for_hook
+                .lock()
+                .unwrap()
+                .push((sid.to_string(), msg.to_string()));
+            Ok(())
+        })));
+
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel_name.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: "hello?".to_string(),
+                msg_id: "msg-dm-002".to_string(),
+                coworker_name: coworker_name.to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let calls = observed.lock().unwrap().clone();
+    assert!(
+        calls.is_empty(),
+        "should not attempt to nudge when no session exists"
+    );
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_project_lead_uses_nudge_lead() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+
+    // Don't register any session — the lead uses headed intercom fallback.
+    // This should not panic — it falls through to nudge_lead()
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: "dm-myrepo".to_string(),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: "hey lead".to_string(),
+                msg_id: "msg-lead-001".to_string(),
+                coworker_name: "myrepo".to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+    // Success: no panic, no error. nudge_lead() handled it.
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_channel_lead_uses_stored_session() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+    let channel_lead_name = "auth";
+    let session_id = "sess-auth-lead-1".to_string();
+
+    // Register ONLY in channel_lead_sessions (not name_to_session).
+    // This simulates a channel lead whose session is not currently active in
+    // the name_to_session map — the DM nudge should fall through the active-session
+    // check and then detect the channel lead via channel_lead_sessions, delegating
+    // to the existing channel lead resume/spawn machinery.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel_lead_name.to_string(), session_id.clone());
+    }
+
+    // The hook captures send_message_to_session_id calls — should be empty since
+    // there is no active session (name_to_session is empty). The channel lead
+    // fallback re-emits NudgeChannelLead with the topic channel name, which goes
+    // through the non-DM branch and uses channel_lead_sessions to find the session.
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let observed_for_hook = observed.clone();
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(move |sid, msg| {
+            observed_for_hook
+                .lock()
+                .unwrap()
+                .push((sid.to_string(), msg.to_string()));
+            Ok(())
+        })));
+
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: format!("dm-{}", channel_lead_name),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: "check auth".to_string(),
+                msg_id: "msg-dm-auth-001".to_string(),
+                coworker_name: channel_lead_name.to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let calls = observed.lock().unwrap().clone();
+    assert_eq!(
+        calls.len(),
+        1,
+        "should nudge exactly once via channel lead path"
+    );
+    assert_eq!(
+        calls[0].0, session_id,
+        "should use the stored channel lead session_id"
+    );
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_fork_no_respawn() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
+    let fork_name = "auth-web-push-a1b2";
+
+    // Register the fork in fork_bound_threads but NOT in name_to_session (dead fork).
+    // Also add a stored SessionRecord — without the fork guard, the coworker fallback
+    // would attempt to resume this record. The type-aware branch should detect the
+    // fork_bound_threads entry and skip respawn entirely.
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(fork_name.to_string(), "thread-001".to_string());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-fork-dead".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-fork-dead".to_string(),
+                current_name: Some(fork_name.to_string()),
+                preferred_name: Some(fork_name.to_string()),
+                working_dir: "/tmp".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let observed_for_hook = observed.clone();
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(move |sid, msg| {
+            observed_for_hook
+                .lock()
+                .unwrap()
+                .push((sid.to_string(), msg.to_string()));
+            Ok(())
+        })));
+
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: format!("dm-{}", fork_name),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: "hey fork".to_string(),
+                msg_id: "msg-dm-fork-001".to_string(),
+                coworker_name: fork_name.to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let calls = observed.lock().unwrap().clone();
+    assert!(
+        calls.is_empty(),
+        "dead fork should not be nudged or respawned"
+    );
+}

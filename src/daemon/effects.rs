@@ -1186,6 +1186,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to post channel message: {}", e);
                 }
 
+                // Debug: log DM thread resolution results.
+                if is_dm_channel && (tool_use_id.is_some() || parent_tool_use_id.is_some()) {
+                    tracing::debug!(
+                        tool_use_id = ?tool_use_id,
+                        parent_tool_use_id = ?parent_tool_use_id,
+                        resolved_thread_parent = ?msg.thread_parent_id,
+                        msg_id = %msg.id,
+                        "DM thread resolution"
+                    );
+                }
+
                 // After posting: register tool_use_id → message.id for DM thread lookup.
                 // This allows sub-agent events in later drain cycles to find this message
                 // as their thread parent.
@@ -2831,6 +2842,120 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let default_channel = state.channel_router.default_channel_name();
                 if channel_name == default_channel {
                     state.nudge_lead(&reason.to_nudge_message()).await;
+                } else if let Some(agent_name) = channel_name.strip_prefix("dm-") {
+                    // DM channel: resolve the agent type and use the appropriate
+                    // resume mechanism (project lead, channel lead, fork, coworker).
+                    let msg = reason.to_nudge_message();
+
+                    // 1. Try to nudge the active session (covers all types)
+                    let session_id = state
+                        .name_to_session
+                        .lock()
+                        .unwrap()
+                        .get(agent_name)
+                        .cloned();
+                    let mut nudge_delivered = false;
+
+                    if let Some(ref sid) = session_id
+                        && state
+                            .session_manager
+                            .send_message_to_session_id(sid, &msg)
+                            .await
+                            .is_ok()
+                    {
+                        nudge_delivered = true;
+                    }
+
+                    if nudge_delivered {
+                        continue;
+                    }
+
+                    // 2. No active session — determine agent type and fall back.
+                    if agent_name == state.project_name {
+                        // Project lead: use headed intercom fallback
+                        state.nudge_lead(&msg).await;
+                    } else if state
+                        .persistent_state
+                        .lock()
+                        .await
+                        .channel_lead_sessions
+                        .contains_key(agent_name)
+                    {
+                        // Channel lead: re-emit NudgeChannelLead with the topic
+                        // channel name (stripping dm- prefix) so the existing
+                        // channel lead resume/spawn machinery handles it.
+                        Box::pin(execute_effects(
+                            vec![Effect::NudgeChannelLead {
+                                channel_name: agent_name.to_string(),
+                                reason,
+                            }],
+                            state,
+                        ))
+                        .await;
+                    } else if state
+                        .fork_bound_threads
+                        .lock()
+                        .unwrap()
+                        .contains_key(agent_name)
+                    {
+                        // Fork: dead forks are not respawned (crash recovery
+                        // handles them separately). Just log.
+                        warn!(
+                            "NudgeChannelLead for DM '{}': fork '{}' is dead, not respawning",
+                            channel_name, agent_name
+                        );
+                    } else {
+                        // Coworker fallback: find a stored SessionRecord and resume
+                        let stored_record = {
+                            let ps = state.persistent_state.lock().await;
+                            ps.sessions
+                                .iter()
+                                .find(|(_, r)| {
+                                    r.preferred_name.as_deref() == Some(agent_name)
+                                        || r.current_name.as_deref() == Some(agent_name)
+                                })
+                                .map(|(sid, r)| (sid.clone(), r.clone()))
+                        };
+
+                        if let Some((stored_session_id, record)) = stored_record {
+                            let mut config = crate::launch::LaunchConfig::coworker(
+                                agent_name,
+                                state.paths.dir_key(),
+                                crate::launch::SessionMode::ResumeSession(
+                                    stored_session_id.clone(),
+                                ),
+                                Some(msg),
+                                record.task_id.clone(),
+                            );
+                            config.working_dir = Some(record.working_dir.clone().into());
+
+                            match spawn_with_resume_fallback(
+                                state,
+                                state.paths.dir_key(),
+                                &mut config,
+                            )
+                            .await
+                            {
+                                Ok((new_session_id, _resumed)) => {
+                                    info!(
+                                        "Resumed coworker '{}' for DM nudge (session: {})",
+                                        agent_name, new_session_id
+                                    );
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to resume coworker '{}' for DM nudge: {}",
+                                        agent_name, e
+                                    );
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "NudgeChannelLead for DM '{}': no active session or stored record for '{}'",
+                                channel_name, agent_name
+                            );
+                        }
+                    }
                 } else {
                     let session_name = crate::launch::channel_lead_session_name(&channel_name);
                     let msg = reason.to_nudge_message();
