@@ -131,10 +131,8 @@ pub enum Effect {
         nudge_type: Option<String>,
         /// Structured tool call data for DM channel messages.
         /// When present, the Message will carry raw tool blocks for client-side rendering.
-        #[allow(dead_code)]
         tool_data: Option<Vec<crate::message::ToolBlock>>,
         /// AI provider that produced this message (e.g., "claude", "codex").
-        #[allow(dead_code)]
         provider: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
