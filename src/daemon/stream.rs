@@ -120,6 +120,8 @@ pub fn process_lead_output(
                 message: trimmed,
                 channel: None,
                 auto_output: true,
+                message_type: None,
+                nudge_type: None,
             });
         }
     }
@@ -134,6 +136,8 @@ pub fn process_lead_output(
                     message: trimmed,
                     channel: Some(channel_name.clone()),
                     auto_output: true,
+                    message_type: None,
+                    nudge_type: None,
                 });
             }
         }
@@ -149,6 +153,8 @@ pub fn process_lead_output(
                     message: trimmed,
                     channel: Some(channel_name.clone()),
                     auto_output: true,
+                    message_type: None,
+                    nudge_type: None,
                 });
             }
         }
@@ -187,6 +193,8 @@ pub fn process_coworker_output(
                     message: trimmed,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 });
             }
 
@@ -198,6 +206,8 @@ pub fn process_coworker_output(
                     message: tool_md,
                     channel: Some(dm_channel),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 });
             }
         }

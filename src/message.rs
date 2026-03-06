@@ -32,6 +32,28 @@ pub enum MessageType {
     Action,
     /// Insight message (architectural diagram, codebase learning)
     Insight,
+    /// Nudge message (session wake-up notification routed to DM channel)
+    Nudge,
+}
+
+impl MessageType {
+    /// Returns the stable wire-protocol string for this message type.
+    ///
+    /// This is used by the RPC layer to serialize `msg_type` in channel
+    /// history responses. Using an explicit match (rather than `Debug` format)
+    /// ensures the wire contract is stable even if variants are renamed.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            MessageType::Text => "text",
+            MessageType::System => "system",
+            MessageType::Command => "command",
+            MessageType::Status => "status",
+            MessageType::Error => "error",
+            MessageType::Action => "action",
+            MessageType::Insight => "insight",
+            MessageType::Nudge => "nudge",
+        }
+    }
 }
 
 /// A message in the channel log.
@@ -103,6 +125,11 @@ pub struct Message {
     /// to apply muted styling for background output.
     #[serde(default, skip_serializing_if = "is_false")]
     pub auto_output: bool,
+    /// Specific nudge variant for client-side rendering differentiation.
+    /// Only set when `message_type` is `Nudge`. Values like "task_assigned",
+    /// "mention", "review_assigned", etc. map to `WakeReason` variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nudge_type: Option<String>,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -137,6 +164,7 @@ impl Message {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         }
     }
 
@@ -166,6 +194,7 @@ impl Message {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         }
     }
 
@@ -305,6 +334,10 @@ impl Message {
     }
 }
 
+#[path = "message_tests.rs"]
+#[cfg(test)]
+mod message_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +428,7 @@ mod tests {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         };
         assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
     }

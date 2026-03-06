@@ -284,6 +284,10 @@ pub struct ChannelMessageData {
     /// Whether this message was auto-posted from streaming output.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub auto_output: bool,
+    /// Specific nudge variant for client-side rendering differentiation.
+    /// Only set when `msg_type` is `"nudge"`. Maps to `WakeReason` variants.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nudge_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -649,6 +653,7 @@ async fn api_channel_history(
                         last_reply: None,
                         reply_participants: None,
                         auto_output: m.auto_output,
+                        nudge_type: m.nudge_type.clone(),
                     }
                 })
                 .collect()
@@ -715,6 +720,7 @@ async fn api_channel_history(
                         last_reply,
                         reply_participants,
                         auto_output: m.auto_output,
+                        nudge_type: m.nudge_type,
                     }
                 })
                 .collect()
@@ -2474,6 +2480,7 @@ pub fn channel_message_update(message: &Message) -> WebUpdate {
         last_reply: None,
         reply_participants: None,
         auto_output: message.auto_output,
+        nudge_type: message.nudge_type.clone(),
     })
 }
 

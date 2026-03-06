@@ -218,6 +218,8 @@ fn test_dedup_preserves_non_nudge_effects() {
             message: "hello".into(),
             channel: None,
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
         Effect::nudge_session("sess-riverside-1", "nudge 1"),
         Effect::RecordCooldown {
@@ -230,6 +232,8 @@ fn test_dedup_preserves_non_nudge_effects() {
             message: "world".into(),
             channel: None,
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
     ];
 
@@ -1430,6 +1434,8 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
             message: "hello from bound thread".into(),
             channel: None,
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         }],
         &state,
     )

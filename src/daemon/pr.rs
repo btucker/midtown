@@ -1515,6 +1515,8 @@ fn pr_action_to_effects(
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1543,6 +1545,8 @@ fn pr_action_to_effects(
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -1583,6 +1587,8 @@ fn pr_action_to_effects(
                     message,
                     channel: channel.clone(),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2535,6 +2541,8 @@ fn comment_action_to_effects(
                     message: crate::daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2562,6 +2570,8 @@ fn comment_action_to_effects(
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2602,6 +2612,8 @@ fn comment_action_to_effects(
                     message,
                     channel: channel.clone(),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -2661,6 +2673,8 @@ fn handoff_to_coworker_effects(
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2682,6 +2696,8 @@ fn handoff_to_coworker_effects(
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
         Effect::RecordPrNudge {
             pr_number,
@@ -2970,6 +2986,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 message: user_msg,
                 channel,
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             });
             effects.push(Effect::RecordPrNudge {
                 pr_number,
@@ -3248,6 +3266,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
             // DM separator so the reviewer's output streams to dm-<name>
             Effect::PostSystemMessage {
@@ -3298,6 +3318,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
         ];
 
@@ -3439,6 +3461,8 @@ fn review_complete_action_to_effects(
                     message: daemon_messages::called_in_review_feedback(&owner, pr_number),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3466,6 +3490,8 @@ fn review_complete_action_to_effects(
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,
@@ -3506,6 +3532,8 @@ fn review_complete_action_to_effects(
                     message,
                     channel: channel.clone(),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
                 Effect::RecordPrNudge {
                     pr_number,

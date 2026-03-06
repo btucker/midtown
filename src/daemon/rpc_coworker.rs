@@ -522,6 +522,8 @@ pub(super) async fn handle_coworker_report_state(
                             message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
                             channel: Some(OPS_CHANNEL.to_string()),
                             auto_output: false,
+                            message_type: None,
+                            nudge_type: None,
                         }];
                         effects::execute_effects(completion_effects, state).await;
                     }
