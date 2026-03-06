@@ -16,6 +16,7 @@
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
+  import ToolDataBlocks from './ToolDataBlocks.svelte'
   import DayDivider from './DayDivider.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskRow from './TaskRow.svelte'
@@ -596,6 +597,9 @@
               {/if}
             {/each}
           {/if}
+          {#if $threadData.parentMessage.tool_data?.length}
+            <ToolDataBlocks blocks={$threadData.parentMessage.tool_data} />
+          {/if}
         </MessageRow>
 
         <!-- Separator with reply count -->
@@ -679,6 +683,9 @@
                   <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
+            {/if}
+            {#if msg.tool_data?.length}
+              <ToolDataBlocks blocks={msg.tool_data} />
             {/if}
           </MessageRow>
         {/if}
@@ -816,6 +823,9 @@
               {/if}
             {/each}
           {/if}
+          {#if $threadData.parentMessage.tool_data?.length}
+            <ToolDataBlocks blocks={$threadData.parentMessage.tool_data} />
+          {/if}
         </MessageRow>
 
         <!-- Separator with reply count -->
@@ -899,6 +909,9 @@
                   <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
+            {/if}
+            {#if msg.tool_data?.length}
+              <ToolDataBlocks blocks={msg.tool_data} />
             {/if}
           </MessageRow>
         {/if}

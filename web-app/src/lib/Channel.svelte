@@ -10,6 +10,7 @@
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import Autocomplete from './Autocomplete.svelte'
   import MessageRow from './MessageRow.svelte'
+  import ToolDataBlocks from './ToolDataBlocks.svelte'
   import DayDivider from './DayDivider.svelte'
   import { clearMobileTextarea } from './mobileInput.js'
   import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from './channelUtils.js'
@@ -833,6 +834,9 @@
                   <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
                 {/if}
               {/each}
+            {/if}
+            {#if msg.tool_data?.length}
+              <ToolDataBlocks blocks={msg.tool_data} />
             {/if}
           </MessageRow>
 
