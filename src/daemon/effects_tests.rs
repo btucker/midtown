@@ -220,6 +220,8 @@ fn test_dedup_preserves_non_nudge_effects() {
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         },
         Effect::nudge_session("sess-riverside-1", "nudge 1"),
         Effect::RecordCooldown {
@@ -234,6 +236,8 @@ fn test_dedup_preserves_non_nudge_effects() {
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         },
     ];
 
@@ -1436,6 +1440,8 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
             auto_output: false,
             message_type: None,
             nudge_type: None,
+            tool_data: None,
+            provider: None,
         }],
         &state,
     )

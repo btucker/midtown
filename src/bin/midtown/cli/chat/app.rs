@@ -4471,6 +4471,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -4601,6 +4603,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -4679,6 +4683,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -4736,6 +4742,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -5244,6 +5252,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
@@ -5811,6 +5821,8 @@ pub(super) mod tests {
                 thread_parent_id: None,
                 auto_output: false,
                 nudge_type: None,
+                tool_data: None,
+                provider: None,
             })
             .collect();
 
