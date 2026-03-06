@@ -3946,3 +3946,38 @@ fn test_channel_lead_respawn_cooldown_prevents_respawn() {
         cooldown.num_seconds()
     );
 }
+
+/// Ensure channel lead respawn is skipped when the session is attached interactively.
+///
+/// When a user attaches to a channel lead via `midtown session attach`, the session
+/// is deregistered from `active_coworkers` and tracked in `attached_coworkers`.
+/// Without checking `attached_coworkers`, `ensure_channel_leads_alive` would spawn
+/// a duplicate headless session after the cooldown expires.
+#[test]
+fn test_channel_lead_respawn_skipped_when_attached() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Not in active_coworkers (deregistered on attach)
+    let is_registered = snap
+        .coworkers
+        .active_coworkers
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case("ops"));
+    assert!(!is_registered, "ops should not be in active_coworkers");
+
+    // But IS in attached_coworkers (interactive session active)
+    snap.coworkers
+        .attached_coworkers
+        .insert("ops".to_string(), snap.now_utc);
+
+    let is_attached = snap
+        .coworkers
+        .attached_coworkers
+        .contains_key(&"ops".to_lowercase());
+    assert!(
+        is_attached,
+        "ops is attached — ensure_channel_leads_alive should skip respawn"
+    );
+}

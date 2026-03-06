@@ -1370,6 +1370,16 @@ pub async fn ensure_channel_leads_alive(
             continue;
         }
 
+        // Check if the channel lead is currently attached interactively — if so,
+        // the daemon shouldn't spawn a headless session that would conflict.
+        if snap
+            .coworkers
+            .attached_coworkers
+            .contains_key(&channel_name.to_lowercase())
+        {
+            continue;
+        }
+
         // Cooldown: if the channel lead was recently stopped, don't respawn yet
         if let Some(stop_time) = snap
             .coworkers
