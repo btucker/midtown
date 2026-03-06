@@ -415,9 +415,10 @@ pub fn process_coworker_output(
             // Post top-level tool blocks, tagged with tool_use_id from the first block.
             if !top_level_blocks.is_empty() {
                 let tool_use_id = top_level_blocks.first().and_then(|b| b.call_id.clone());
+                let summary = tool_summary(&top_level_blocks);
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: String::new(),
+                    message: summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -450,9 +451,10 @@ pub fn process_coworker_output(
 
             // Post sub-agent tool blocks as thread replies (grouped by parent_tool_use_id).
             for (parent_id, blocks) in sub_agent_blocks {
+                let summary = tool_summary(&blocks);
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: String::new(),
+                    message: summary,
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -467,6 +469,22 @@ pub fn process_coworker_output(
     }
 
     effects
+}
+
+/// Build a lightweight text summary of tool blocks for CLI TUI rendering.
+/// The CLI renders `message.content` via `render_content_lines()` and does not
+/// read `tool_data`, so tool-only messages need a text fallback to remain visible.
+/// Produces e.g. `"[Bash]"`, `"[Bash, Read, Edit]"`, or `"[3 tool calls]"` for >3 tools.
+fn tool_summary(blocks: &[ToolBlock]) -> String {
+    if blocks.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = blocks.iter().map(|b| b.tool_name.as_str()).collect();
+    if names.len() <= 3 {
+        format!("[{}]", names.join(", "))
+    } else {
+        format!("[{} tool calls]", names.len())
+    }
 }
 
 /// Maximum bytes for tool result output in DM channel messages.
