@@ -23,7 +23,7 @@ async fn manager_no_plugins_returns_false() {
     );
     assert!(!manager.ensure_running().await);
     assert!(!manager.is_running().await);
-    assert!(!manager.has_plugins().await);
+    assert!(!manager.has_plugins());
 }
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn manager_has_plugins_reflects_dirs() {
         vec!["/tmp/plugins".into()],
         "/tmp/sdk".into(),
     );
-    assert!(manager.has_plugins().await);
+    assert!(manager.has_plugins());
 }
 
 #[tokio::test]
@@ -353,4 +353,95 @@ while true; do sleep 1; done
     );
     let content = std::fs::read_to_string(&marker_path).unwrap();
     assert_eq!(content.trim(), "sigterm");
+}
+
+#[tokio::test]
+async fn send_event_returns_none_when_not_running() {
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-send-event-norun.sock".into(),
+        vec!["/tmp/plugins".into()],
+        "/tmp/sdk".into(),
+    );
+
+    let result = manager
+        .send_event(r#"{"type":"timer.tick","event":{}}"#)
+        .await;
+    assert!(
+        result.is_none(),
+        "send_event should return None when daemon is not running"
+    );
+}
+
+#[tokio::test]
+async fn send_event_round_trip_via_socket() {
+    // Stand up a minimal Unix socket server that returns a canned response.
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("test-roundtrip.sock");
+    let sock_clone = socket_path.clone();
+
+    // Spawn a fake Python daemon server.
+    let server_handle = tokio::spawn(async move {
+        let listener = tokio::net::UnixListener::bind(&sock_clone).unwrap();
+        // Accept one connection.
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut line = String::new();
+        buf_reader.read_line(&mut line).await.unwrap();
+
+        // Parse the request to verify we received it.
+        let _request: serde_json::Value = serde_json::from_str(&line).unwrap();
+
+        // Send back a response with actions.
+        let response = r#"{"ok":true,"actions":[{"method":"channel.post","params":{"message":"hello"}}],"default_prevented":true}"#;
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(response.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+    });
+
+    // Give server time to bind.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Create a manager that thinks it's running (we fake the process state).
+    let manager = PluginDaemonManager::new(
+        socket_path.clone(),
+        vec!["/tmp/plugins".into()],
+        "/tmp/sdk".into(),
+    );
+    // Inject a fake "running" state so send_event doesn't bail early.
+    {
+        let mut inner = manager.inner.lock().await;
+        // Create a dummy child process (just `sleep 60`).
+        let child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdout_drain = tokio::spawn(async {});
+        let stderr_drain = tokio::spawn(async {});
+        inner.process = Some(DaemonProcess {
+            child,
+            _stdout_drain: stdout_drain,
+            _stderr_drain: stderr_drain,
+        });
+    }
+
+    let result = manager
+        .send_event(r#"{"type":"timer.tick","event":{"type":"timer.tick","channel":"test"}}"#)
+        .await;
+
+    server_handle.await.unwrap();
+
+    let result = result.expect("send_event should return a result");
+    assert!(result.ok);
+    assert!(result.default_prevented);
+    assert_eq!(result.actions.len(), 1);
+    assert_eq!(result.actions[0].method, "channel.post");
+
+    // Cleanup.
+    manager.shutdown().await;
 }

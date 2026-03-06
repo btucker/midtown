@@ -29,6 +29,7 @@ mod rpc_status;
 mod rpc_task;
 mod rpc_workflow;
 pub(crate) mod sessions;
+#[allow(dead_code)]
 pub(crate) mod sidecar;
 pub mod snapshot;
 mod startup;
@@ -721,8 +722,6 @@ pub(crate) struct DaemonState {
     /// Ephemeral — not persisted across daemon restarts. Entries are added
     /// on spawn and removed in `cleanup_coworker_state`.
     pub(crate) session_profile_map: std::sync::Mutex<HashMap<String, String>>,
-    /// Manages persistent workflow sidecar processes.
-    ///
     /// Per-channel locks for workflow state file writes.
     ///
     /// Prevents TOCTOU races when concurrent `set_state` calls for different plugin
@@ -730,10 +729,6 @@ pub(crate) struct DaemonState {
     /// `std::sync::Mutex` is held briefly to look up or create the per-channel lock;
     /// the inner `tokio::sync::Mutex` serializes actual file I/O.
     workflow_state_locks: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
-    /// Instead of spawning `uv run workflow.py` per event (~300-800ms overhead),
-    /// sidecars keep a Python process alive and receive events via stdin.
-    /// Falls back to subprocess-per-event when the script doesn't support sidecar mode.
-    pub(crate) workflow_sidecar: sidecar::WorkflowSidecarManager,
     /// Manages the long-running Python plugin daemon process.
     /// Spawns `uv run python -m midtown` when plugins are detected in
     /// discovery paths. Communicates via Unix socket.
@@ -1397,8 +1392,6 @@ impl DaemonState {
             }
         }
 
-        let workflow_sidecar = sidecar::WorkflowSidecarManager::new(socket_path.clone());
-
         // Discover plugin directories and set up the plugin daemon manager.
         let project_root = all_repo_paths.first().cloned().unwrap_or_default();
         let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, paths.dir_key());
@@ -1468,7 +1461,6 @@ impl DaemonState {
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
             workflow_state_locks: std::sync::Mutex::new(HashMap::new()),
-            workflow_sidecar,
             plugin_daemon,
         })
     }
@@ -3578,12 +3570,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
             _ = session_drain_interval.tick() => {
-                // Check workflow sidecar health (try_wait on child PIDs; may yield if a per-entry lock is contended).
-                state.workflow_sidecar.check_health().await;
-
                 // Check plugin daemon health and ensure it's running if plugins exist.
                 state.plugin_daemon.check_health().await;
-                if state.plugin_daemon.has_plugins().await {
+                if state.plugin_daemon.has_plugins() {
                     state.plugin_daemon.ensure_running().await;
                 }
 
@@ -4138,10 +4127,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             e
         );
     }
-
-    // Shut down workflow sidecars
-    info!("Shutting down workflow sidecars...");
-    state.workflow_sidecar.shutdown_all().await;
 
     // Shut down plugin daemon
     info!("Shutting down plugin daemon...");
