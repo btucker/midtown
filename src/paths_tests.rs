@@ -808,3 +808,66 @@ fn test_workflow_state_file_different_repos_differ() {
     let path_b = workflow_state_file("my-channel", "repo-b");
     assert_ne!(path_a, path_b);
 }
+
+// ── Plugin discovery tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_discover_plugin_dirs_empty_when_no_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    assert!(dirs.is_empty());
+}
+
+#[test]
+fn test_discover_plugin_dirs_finds_repo_plugins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("my_plugin.py"), "# plugin").unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    assert_eq!(dirs.len(), 1);
+    assert_eq!(dirs[0], plugin_dir);
+}
+
+#[test]
+fn test_discover_plugin_dirs_skips_empty_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    // No .py files — should be skipped.
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    assert!(dirs.is_empty());
+}
+
+#[test]
+fn test_discover_plugin_dirs_skips_underscore_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    // Only __init__.py — should be skipped.
+    std::fs::write(plugin_dir.join("__init__.py"), "").unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    assert!(dirs.is_empty());
+}
+
+#[test]
+fn test_discover_plugin_dirs_finds_non_underscore_py() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("__init__.py"), "").unwrap();
+    std::fs::write(plugin_dir.join("hooks.py"), "# hooks").unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    assert_eq!(dirs.len(), 1);
+}

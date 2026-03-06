@@ -296,6 +296,11 @@ impl ProjectPaths {
         self.state_base.join("daemon.sock")
     }
 
+    /// Plugin daemon socket: `~/.local/state/midtown/<dir_key>/plugin-daemon.sock`.
+    pub fn plugin_daemon_socket(&self) -> PathBuf {
+        self.state_base.join("plugin-daemon.sock")
+    }
+
     /// Daemon log directory: `~/.midtown/projects/<dir_key>/logs/`.
     pub fn daemon_log_dir(&self) -> PathBuf {
         self.base.join("logs")
@@ -378,6 +383,38 @@ fn state_dir() -> PathBuf {
                 .join(".local")
                 .join("state")
         })
+}
+
+/// Resolve the Python SDK directory (`sdk/python`).
+///
+/// Checks candidates in order and returns the first that exists:
+/// 1. Next to the running executable (`exe_dir/sdk/python`) — source builds
+/// 2. In the source tree (`CARGO_MANIFEST_DIR/sdk/python`) — `cargo run` dev builds
+/// 3. In the XDG data directory (`~/.local/share/midtown/sdk/python`) — binary installs
+///
+/// Falls back to the XDG data-dir path even if it doesn't exist.
+pub fn resolve_python_sdk_dir() -> PathBuf {
+    // Candidate 1: next to the executable
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+    {
+        let candidate = exe_dir.join("sdk").join("python");
+        if candidate.join("pyproject.toml").exists() {
+            return candidate;
+        }
+    }
+
+    // Candidate 2: source tree (baked in at compile time)
+    let source_candidate = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("sdk")
+        .join("python");
+    if source_candidate.join("pyproject.toml").exists() {
+        return source_candidate;
+    }
+
+    // Candidate 3: XDG data dir (binary installs)
+    midtown_data_dir().join("sdk").join("python")
 }
 
 /// Get the data directory for midtown.
@@ -784,6 +821,40 @@ pub fn workflow_script_for_channel(
     }
 
     None
+}
+
+/// Discover plugin directories that contain `.py` files.
+///
+/// Scans the following paths in priority order, collecting all that contain
+/// at least one `.py` file:
+///
+/// 1. `<project_root>/.midtown/plugins/` — project-wide, in repo
+/// 2. `~/.midtown/projects/<repo>/plugins/` — project-wide, local
+///
+/// Returns an empty `Vec` if no directories with plugin files are found.
+pub fn discover_plugin_dirs(project_root: &Path, repo: &str) -> Vec<PathBuf> {
+    let candidates = [
+        project_root.join(".midtown").join("plugins"),
+        projects_dir_for_repo(repo).join("plugins"),
+    ];
+
+    candidates
+        .into_iter()
+        .filter(|dir| {
+            dir.is_dir()
+                && dir
+                    .read_dir()
+                    .ok()
+                    .map(|entries| {
+                        entries.filter_map(|e| e.ok()).any(|e| {
+                            let name = e.file_name();
+                            let name = name.to_string_lossy();
+                            name.ends_with(".py") && !name.starts_with('_')
+                        })
+                    })
+                    .unwrap_or(false)
+        })
+        .collect()
 }
 
 /// Get the workflow state file path for a channel.
