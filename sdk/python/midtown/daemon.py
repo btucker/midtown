@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
 import logging
+import os
+import sys
 import types
 from pathlib import Path
 from typing import Any
@@ -162,11 +166,108 @@ class WorkflowDaemon:
         return all_actions
 
     async def run(self) -> None:
-        """Main event loop (placeholder).
+        """Start the Unix socket server and process events.
 
-        The unix socket server will be implemented in a later task.
+        Listens on :attr:`socket_path` for connections from the Rust daemon.
+        Each connection sends one newline-delimited JSON request and receives
+        one newline-delimited JSON response.
+
+        Request format::
+
+            {"type": "pr.opened", "event": {...}, "task_id": "7", ...}
+
+        Response format::
+
+            {"ok": true, "actions": [...], "default_prevented": false}
+
+        On startup, writes ``{"ready":true}`` to stdout so the Rust daemon
+        knows the Python process is initialised and accepting connections.
+
+        Checks for plugin file changes before each dispatch (hot-reload).
         """
-        logger.info("Starting workflow daemon on %s", self.socket_path)
-        # TODO: Implement unix socket server
-        while True:
-            await asyncio.sleep(1)
+        # Clean up stale socket file
+        try:
+            os.unlink(self.socket_path)
+        except FileNotFoundError:
+            pass
+
+        server = await asyncio.start_unix_server(
+            self._handle_connection,
+            path=self.socket_path,
+        )
+        self._server = server
+
+        logger.info("Workflow daemon listening on %s", self.socket_path)
+
+        # Signal readiness to the Rust daemon
+        sys.stdout.write('{"ready":true}\n')
+        sys.stdout.flush()
+
+        async with server:
+            await server.serve_forever()
+
+    async def _handle_connection(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        """Handle a single connection from the Rust daemon."""
+        try:
+            line = await reader.readline()
+            if not line:
+                return
+
+            request = json.loads(line)
+            response = self._process_request(request)
+
+            writer.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+            await writer.drain()
+        except json.JSONDecodeError as exc:
+            error_resp = {"ok": False, "error": f"invalid JSON: {exc}"}
+            writer.write(json.dumps(error_resp, separators=(",", ":")).encode() + b"\n")
+            await writer.drain()
+        except Exception:
+            logger.exception("Error handling connection")
+            try:
+                error_resp = {"ok": False, "error": "internal error"}
+                writer.write(
+                    json.dumps(error_resp, separators=(",", ":")).encode() + b"\n"
+                )
+                await writer.drain()
+            except Exception:
+                pass
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    def _process_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Process a single event request and return the response dict.
+
+        Hot-reloads changed plugins before dispatching.
+        """
+        self.reload_changed()
+
+        event_type = request.get("type", "")
+        event = request.get("event", {})
+        task_id = request.get("task_id")
+        task_state = request.get("task_state")
+        prev_task_state = request.get("prev_task_state")
+        state = request.get("state")
+
+        if not event_type:
+            return {"ok": False, "error": "missing 'type' field"}
+
+        actions = self.dispatch_event(
+            event_type,
+            event,
+            task_id=task_id,
+            task_state=task_state,
+            prev_task_state=prev_task_state,
+            state=state,
+        )
+
+        return {
+            "ok": True,
+            "actions": [dataclasses.asdict(a) for a in actions],
+            "default_prevented": False,
+        }

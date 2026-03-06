@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import tempfile
 import time
 from pathlib import Path
+
+import pytest
 
 from midtown.daemon import WorkflowDaemon
 
@@ -451,3 +455,326 @@ class TestEventDispatch:
 
             assert len(actions) == 1
             assert actions[0].params["message"] == "pr.opened:42:7"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for socket server tests
+# ---------------------------------------------------------------------------
+
+
+async def _send_request(socket_path: str, request: dict) -> dict:
+    """Connect to the daemon socket, send a request, and return the response."""
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        writer.write(json.dumps(request, separators=(",", ":")).encode() + b"\n")
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        return json.loads(line)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _start_daemon(daemon: WorkflowDaemon, timeout: float = 5.0) -> asyncio.Task:
+    """Start the daemon server and wait for it to begin listening."""
+    import stat
+
+    task = asyncio.create_task(daemon.run())
+    # Wait for the socket file to appear (must be an actual socket, not a
+    # regular file — important for the stale-socket-cleanup test).
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        if asyncio.get_event_loop().time() > deadline:
+            raise TimeoutError("Daemon did not start in time")
+        p = Path(daemon.socket_path)
+        if p.exists() and stat.S_ISSOCK(p.stat().st_mode):
+            break
+        await asyncio.sleep(0.01)
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Socket server tests
+# ---------------------------------------------------------------------------
+
+
+class TestSocketServer:
+    """Tests for the Unix socket server."""
+
+    @pytest.mark.asyncio
+    async def test_server_starts_and_accepts_connections(self) -> None:
+        """The server should start, listen, and handle a basic request."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {"pr_number": 1}},
+                )
+                assert response["ok"] is True
+                assert response["actions"] == []
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_event_dispatch_round_trip(self) -> None:
+        """Events dispatched over the socket should return plugin actions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            (plugin_dir / "my_plugin.py").write_text(_plugin_source("socket works"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {"pr_number": 42}},
+                )
+                assert response["ok"] is True
+                assert len(response["actions"]) == 1
+                assert response["actions"][0]["method"] == "channel.post"
+                assert response["actions"][0]["params"]["message"] == "socket works"
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_missing_type_field_returns_error(self) -> None:
+        """A request without a 'type' field should return an error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(sock_path, {"event": {}})
+                assert response["ok"] is False
+                assert "type" in response["error"]
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_returns_error(self) -> None:
+        """Sending invalid JSON should return an error, not crash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+
+            server_task = await _start_daemon(daemon)
+            try:
+                reader, writer = await asyncio.open_unix_connection(sock_path)
+                writer.write(b"not valid json\n")
+                await writer.drain()
+                line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+                response = json.loads(line)
+                assert response["ok"] is False
+                assert "invalid JSON" in response["error"]
+                writer.close()
+                await writer.wait_closed()
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_multiple_sequential_requests(self) -> None:
+        """The server should handle multiple sequential connections."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+            (plugin_dir / "counter.py").write_text(_plugin_source("counted"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                for i in range(3):
+                    response = await _send_request(
+                        sock_path,
+                        {"type": "pr.opened", "event": {"pr_number": i}},
+                    )
+                    assert response["ok"] is True
+                    assert len(response["actions"]) == 1
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_plugin_error_isolation(self) -> None:
+        """A plugin that raises should not crash the server or block others."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # Plugin that raises on dispatch
+            (plugin_dir / "bad_plugin.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    raise RuntimeError("plugin exploded")\n'
+            )
+            # Good plugin that should still work
+            (plugin_dir / "good_plugin.py").write_text(_plugin_source("still works"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                # The request should not crash the server — pluggy calls all
+                # hooks and propagates the first exception. The server catches
+                # it and returns an error response.
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {"pr_number": 1}},
+                )
+                # Server should still be alive for next request
+                response2 = await _send_request(
+                    sock_path,
+                    {"type": "pr.merged", "event": {}},
+                )
+                assert response2["ok"] is True
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_hot_reload_during_socket_operation(self) -> None:
+        """Plugins modified while the server is running should be reloaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            plugin_file = plugin_dir / "my_plugin.py"
+            plugin_file.write_text(_plugin_source("v1"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                # First request should see v1
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {"pr_number": 1}},
+                )
+                assert response["actions"][0]["params"]["message"] == "v1"
+
+                # Update plugin file
+                time.sleep(0.05)
+                plugin_file.write_text(_plugin_source("v2"))
+
+                # Next request should trigger hot-reload and see v2
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {"pr_number": 2}},
+                )
+                assert response["actions"][0]["params"]["message"] == "v2"
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_stale_socket_cleanup(self) -> None:
+        """Starting the daemon should clean up a stale socket file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+
+            # Create a stale socket file
+            Path(sock_path).touch()
+
+            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(
+                    sock_path,
+                    {"type": "pr.opened", "event": {}},
+                )
+                assert response["ok"] is True
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_task_context_forwarded_over_socket(self) -> None:
+        """Task context fields should be forwarded through the socket protocol."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            (plugin_dir / "inspector.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                "    msg = f'{ctx.task_id}:{ctx.task_state}'\n"
+                "    return [ctx.actions.post_to_channel(msg)]\n"
+            )
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(
+                    sock_path,
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 42},
+                        "task_id": "7",
+                        "task_state": "in_review",
+                    },
+                )
+                assert response["ok"] is True
+                assert response["actions"][0]["params"]["message"] == "7:in_review"
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
