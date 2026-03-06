@@ -929,7 +929,7 @@ pub(super) async fn handle_channel_read(
                 "from": m.from,
                 "message": m.content,
                 "timestamp": m.timestamp.to_rfc3339(),
-                "msg_type": format!("{:?}", m.message_type).to_lowercase(),
+                "msg_type": m.message_type.wire_name(),
             });
             if let Some(ref parent_id) = m.thread_parent_id {
                 obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());

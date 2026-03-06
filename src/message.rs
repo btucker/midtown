@@ -36,6 +36,26 @@ pub enum MessageType {
     Nudge,
 }
 
+impl MessageType {
+    /// Returns the stable wire-protocol string for this message type.
+    ///
+    /// This is used by the RPC layer to serialize `msg_type` in channel
+    /// history responses. Using an explicit match (rather than `Debug` format)
+    /// ensures the wire contract is stable even if variants are renamed.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            MessageType::Text => "text",
+            MessageType::System => "system",
+            MessageType::Command => "command",
+            MessageType::Status => "status",
+            MessageType::Error => "error",
+            MessageType::Action => "action",
+            MessageType::Insight => "insight",
+            MessageType::Nudge => "nudge",
+        }
+    }
+}
+
 /// A message in the channel log.
 ///
 /// Messages are the primary unit of communication in midtown channels.
@@ -314,6 +334,10 @@ impl Message {
     }
 }
 
+#[path = "message_tests.rs"]
+#[cfg(test)]
+mod message_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,45 +459,6 @@ mod tests {
         assert_eq!(msg.thread_parent_id, None);
         let json = serde_json::to_string(&msg).unwrap();
         assert!(!json.contains("thread_parent_id")); // skip_serializing_if = None
-    }
-
-    #[test]
-    fn test_nudge_type_serialization() {
-        let mut msg = Message::new("midtown", "Task assigned", MessageType::Nudge);
-        msg.nudge_type = Some("task_assigned".to_string());
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"nudge\""), "type should be nudge");
-        assert!(
-            json.contains("\"nudge_type\":\"task_assigned\""),
-            "nudge_type should be serialized"
-        );
-        let parsed: Message = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.message_type, MessageType::Nudge);
-        assert_eq!(parsed.nudge_type, Some("task_assigned".to_string()));
-    }
-
-    #[test]
-    fn test_nudge_type_omitted_when_none() {
-        let msg = Message::text("agent1", "Regular message");
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(
-            !json.contains("nudge_type"),
-            "nudge_type should be omitted when None"
-        );
-    }
-
-    #[test]
-    fn test_nudge_type_backward_compat_deserialize() {
-        // Old messages without nudge_type should deserialize with None
-        let old_json = r#"{
-            "id": "test-id",
-            "timestamp": "2026-01-01T00:00:00Z",
-            "from": "midtown",
-            "content": "Task assigned",
-            "type": "text"
-        }"#;
-        let msg: Message = serde_json::from_str(old_json).unwrap();
-        assert_eq!(msg.nudge_type, None);
     }
 
     #[test]
