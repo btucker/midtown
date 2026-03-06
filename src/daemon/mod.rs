@@ -3746,7 +3746,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         .cloned()
                         .collect();
                     let coworker_effects =
-                        stream::process_coworker_output(&events, &coworker_names);
+                        stream::process_agent_output(&events, &coworker_names);
 
                     let fork_bound_threads = state.fork_bound_threads.lock().unwrap();
                     let universal_effects = stream::process_universal_events(

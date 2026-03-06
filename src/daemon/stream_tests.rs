@@ -1175,18 +1175,18 @@ fn test_process_universal_events_coworker_text_only_no_tool_effect() {
     );
 }
 
-// ── process_coworker_output tests ────────────────────────────────────
+// ── process_agent_output tests ────────────────────────────────────
 
 #[test]
-fn test_process_coworker_output_no_events() {
+fn test_process_agent_output_no_events() {
     let events = HashMap::new();
     let coworker_names = HashSet::from(["park".to_string()]);
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert!(effects.is_empty());
 }
 
 #[test]
-fn test_process_coworker_output_posts_to_dm_channel() {
+fn test_process_agent_output_posts_to_dm_channel() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1200,7 +1200,7 @@ fn test_process_coworker_output_posts_to_dm_channel() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -1220,7 +1220,7 @@ fn test_process_coworker_output_posts_to_dm_channel() {
 }
 
 #[test]
-fn test_process_coworker_output_multiple_coworkers() {
+fn test_process_agent_output_multiple_coworkers() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1244,7 +1244,7 @@ fn test_process_coworker_output_multiple_coworkers() {
     );
     let coworker_names = HashSet::from(["park".to_string(), "madison".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 2);
 
     let park_effect = effects
@@ -1265,7 +1265,7 @@ fn test_process_coworker_output_multiple_coworkers() {
 }
 
 #[test]
-fn test_process_coworker_output_empty_text_not_posted() {
+fn test_process_agent_output_empty_text_not_posted() {
     // When events contain only tool_use blocks (no text), only the tool call
     // message is posted — no separate text message.
     let mut events = HashMap::new();
@@ -1281,16 +1281,16 @@ fn test_process_coworker_output_empty_text_not_posted() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     // Should have exactly 1 effect — the tool_data message (no text effect).
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
             message, tool_data, ..
         } => {
-            assert_eq!(
-                message, "[Read]",
-                "tool message should have CLI-visible summary"
+            assert!(
+                message.is_empty(),
+                "DM tool message should have empty content"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
@@ -1301,7 +1301,7 @@ fn test_process_coworker_output_empty_text_not_posted() {
 }
 
 #[test]
-fn test_process_coworker_output_no_content_produces_no_effects() {
+fn test_process_agent_output_no_content_produces_no_effects() {
     // Truly empty events (no text, no tool calls) should produce no effects.
     let mut events = HashMap::new();
     events.insert(
@@ -1314,12 +1314,12 @@ fn test_process_coworker_output_no_content_produces_no_effects() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert!(effects.is_empty(), "Should not post if no content at all");
 }
 
 #[test]
-fn test_process_coworker_output_whitespace_only_not_posted() {
+fn test_process_agent_output_whitespace_only_not_posted() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1333,7 +1333,7 @@ fn test_process_coworker_output_whitespace_only_not_posted() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert!(
         effects.is_empty(),
         "Should not post whitespace-only messages"
@@ -1341,7 +1341,7 @@ fn test_process_coworker_output_whitespace_only_not_posted() {
 }
 
 #[test]
-fn test_process_coworker_output_ignores_non_coworker_events() {
+fn test_process_agent_output_ignores_non_coworker_events() {
     let mut events = HashMap::new();
     events.insert(
         "lead".to_string(),
@@ -1366,7 +1366,7 @@ fn test_process_coworker_output_ignores_non_coworker_events() {
     // Only "park" is a coworker — "lead" events should be ignored.
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { sender, .. } => {
@@ -1377,7 +1377,7 @@ fn test_process_coworker_output_ignores_non_coworker_events() {
 }
 
 #[test]
-fn test_process_coworker_output_trims_text() {
+fn test_process_agent_output_trims_text() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1391,7 +1391,7 @@ fn test_process_coworker_output_trims_text() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { message, .. } => {
@@ -1419,7 +1419,7 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     // Should produce 2 effects: text message + tool_data-only message.
     assert_eq!(
         effects.len(),
@@ -1444,9 +1444,9 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
             auto_output,
             ..
         } => {
-            assert_eq!(
-                message, "[Bash]",
-                "tool message should have CLI-visible summary"
+            assert!(
+                message.is_empty(),
+                "DM tool message should have empty content"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
@@ -1607,10 +1607,10 @@ fn test_extract_tool_blocks_multiple_calls() {
     assert_eq!(blocks[1].tool_name, "Bash");
 }
 
-// ── process_coworker_output tool_data tests ──────────────────────────
+// ── process_agent_output tool_data tests ──────────────────────────
 
 #[test]
-fn test_process_coworker_output_tool_data_populated() {
+fn test_process_agent_output_tool_data_populated() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1626,7 +1626,7 @@ fn test_process_coworker_output_tool_data_populated() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -1645,7 +1645,7 @@ fn test_process_coworker_output_tool_data_populated() {
 }
 
 #[test]
-fn test_process_coworker_output_text_has_no_tool_data() {
+fn test_process_agent_output_text_has_no_tool_data() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1659,7 +1659,7 @@ fn test_process_coworker_output_text_has_no_tool_data() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -1678,7 +1678,7 @@ fn test_process_coworker_output_text_has_no_tool_data() {
 }
 
 #[test]
-fn test_process_coworker_output_codex_provider() {
+fn test_process_agent_output_codex_provider() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1692,7 +1692,7 @@ fn test_process_coworker_output_codex_provider() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { provider, .. } => {
@@ -1796,10 +1796,10 @@ fn test_extract_insights_no_backticks() {
     assert!(insights[0].contains("Bare insight"));
 }
 
-// ── process_coworker_output insight extraction tests ────────────────
+// ── process_agent_output insight extraction tests ────────────────
 
 #[test]
-fn test_process_coworker_output_extracts_insights() {
+fn test_process_agent_output_extracts_insights() {
     let text_with_insight = "Working on the feature.\n\n`★ Insight ─────────────────────────────────────`\nThe auth module uses JWT tokens.\n`─────────────────────────────────────────────────`\n\nDone.";
     let mut events = HashMap::new();
     events.insert(
@@ -1814,7 +1814,7 @@ fn test_process_coworker_output_extracts_insights() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
 
     // Should have a PostInsight effect and a PostToChannel effect
     let insight_effects: Vec<_> = effects
@@ -1835,7 +1835,7 @@ fn test_process_coworker_output_extracts_insights() {
 }
 
 #[test]
-fn test_process_coworker_output_no_insight_in_regular_text() {
+fn test_process_agent_output_no_insight_in_regular_text() {
     let mut events = HashMap::new();
     events.insert(
         "park".to_string(),
@@ -1849,7 +1849,7 @@ fn test_process_coworker_output_no_insight_in_regular_text() {
     );
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
 
     let insight_effects: Vec<_> = effects
         .iter()
@@ -1917,7 +1917,7 @@ fn test_extract_tool_blocks_captures_parent_tool_use_id() {
 }
 
 #[test]
-fn test_process_coworker_output_splits_subagent_tool_blocks() {
+fn test_process_agent_output_splits_subagent_tool_blocks() {
     // Top-level tool_use + sub-agent tool_use (with parentToolUseID)
     let events_vec = vec![
         StreamEvent::Assistant {
@@ -1949,7 +1949,7 @@ fn test_process_coworker_output_splits_subagent_tool_blocks() {
     events.insert("park".to_string(), events_vec);
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
 
     // Should have separate effects: top-level tool block + sub-agent tool block
     let channel_effects: Vec<_> = effects
@@ -1990,7 +1990,7 @@ fn test_process_coworker_output_splits_subagent_tool_blocks() {
 }
 
 #[test]
-fn test_process_coworker_output_splits_subagent_text() {
+fn test_process_agent_output_splits_subagent_text() {
     let events_vec = vec![
         // Top-level text
         StreamEvent::Assistant {
@@ -2013,7 +2013,7 @@ fn test_process_coworker_output_splits_subagent_text() {
     events.insert("park".to_string(), events_vec);
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
 
     let channel_effects: Vec<_> = effects
         .iter()
@@ -2049,7 +2049,7 @@ fn test_process_coworker_output_splits_subagent_text() {
 }
 
 #[test]
-fn test_process_coworker_output_no_subagent_when_no_parent_id() {
+fn test_process_agent_output_no_subagent_when_no_parent_id() {
     // All events are top-level (no parentToolUseID)
     let events_vec = vec![
         StreamEvent::Assistant {
@@ -2081,7 +2081,7 @@ fn test_process_coworker_output_no_subagent_when_no_parent_id() {
     events.insert("park".to_string(), events_vec);
     let coworker_names = HashSet::from(["park".to_string()]);
 
-    let effects = process_coworker_output(&events, &coworker_names);
+    let effects = process_agent_output(&events, &coworker_names);
 
     let channel_effects: Vec<_> = effects
         .iter()
@@ -2120,54 +2120,196 @@ fn test_get_parent_tool_use_id_returns_none_when_absent() {
     assert!(get_parent_tool_use_id(&json!({"provider": "claude"})).is_none());
 }
 
-// ── tool_summary tests ──────────────────────────────────────────────
+// ── sub-agent extraction tests (parent_tool_use_id on regular events) ──
 
+/// Sub-agent events appear as regular assistant/user events with
+/// `parent_tool_use_id` in the `extra` field (captured via serde flatten).
+/// This is the format used by Claude Code 2.1.70+.
 #[test]
-fn test_tool_summary_empty() {
-    assert_eq!(tool_summary(&[]), "");
+fn test_extract_tool_blocks_with_parent_tool_use_id_on_events() {
+    let events = vec![
+        // Top-level Agent tool_use
+        StreamEvent::Assistant {
+            message: json!({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_agent", "name": "Agent", "input": {"prompt": "explore"}}]
+            }),
+            session_id: Some("sess1".into()),
+            extra: json!({"parent_tool_use_id": null}),
+        },
+        // Sub-agent assistant: Bash tool_use (parent_tool_use_id set)
+        StreamEvent::Assistant {
+            message: json!({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "ls"}}]
+            }),
+            session_id: Some("sess1".into()),
+            extra: json!({"parent_tool_use_id": "toolu_agent"}),
+        },
+        // Sub-agent user: tool_result for Bash
+        StreamEvent::User {
+            message: json!({
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_bash", "content": "README.md\nsrc/"}]
+            }),
+            extra: json!({"parent_tool_use_id": "toolu_agent"}),
+        },
+    ];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 2, "should have Agent + Bash blocks");
+
+    assert_eq!(blocks[0].tool_name, "Agent");
+    assert!(blocks[0].parent_tool_use_id.is_none());
+
+    assert_eq!(blocks[1].tool_name, "Bash");
+    assert_eq!(blocks[1].call_id.as_deref(), Some("toolu_bash"));
+    assert_eq!(
+        blocks[1].parent_tool_use_id.as_deref(),
+        Some("toolu_agent"),
+        "sub-agent block should reference parent via parent_tool_use_id"
+    );
+    assert!(
+        blocks[1].output.is_some(),
+        "should have matched tool_result"
+    );
 }
 
 #[test]
-fn test_tool_summary_single() {
-    let blocks = vec![ToolBlock {
-        tool_name: "Bash".to_string(),
-        input: json!({}),
-        output: None,
-        error: false,
-        call_id: None,
-        parent_tool_use_id: None,
-    }];
-    assert_eq!(tool_summary(&blocks), "[Bash]");
+fn test_extract_assistant_text_split_with_parent_tool_use_id() {
+    let events = vec![
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Top-level response."}]
+            }),
+            session_id: None,
+            extra: json!({"parent_tool_use_id": null}),
+        },
+        StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Sub-agent found the files."}]
+            }),
+            session_id: None,
+            extra: json!({"parent_tool_use_id": "toolu_agent"}),
+        },
+    ];
+
+    let (top, sub) = extract_assistant_text_split(&events);
+    assert_eq!(top, "Top-level response.");
+    assert_eq!(
+        sub.get("toolu_agent").map(|s| s.as_str()),
+        Some("Sub-agent found the files."),
+    );
+}
+
+// ── progress event extraction tests (legacy format) ──────────────────
+#[test]
+fn test_extract_tool_blocks_from_progress_events() {
+    // Progress events with data.type == "agent_progress" carry sub-agent tool_use blocks.
+    // extract_tool_blocks should extract these with parent_tool_use_id set.
+    let events = vec![
+        // Top-level Agent tool_use
+        StreamEvent::Assistant {
+            message: json!({
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "toolu_agent", "name": "Agent", "input": {"prompt": "list files"}}]
+            }),
+            session_id: Some("sess1".into()),
+            extra: json!({}),
+        },
+        // Sub-agent progress: assistant with Bash tool_use
+        StreamEvent::Progress {
+            data: json!({
+                "type": "agent_progress",
+                "message": {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "ls"}}]
+                    }
+                }
+            }),
+            parent_tool_use_id: Some("toolu_agent".into()),
+            tool_use_id: Some("toolu_bash".into()),
+            extra: json!({}),
+        },
+        // Sub-agent progress: user with tool_result for Bash
+        StreamEvent::Progress {
+            data: json!({
+                "type": "agent_progress",
+                "message": {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "toolu_bash", "content": "file1.txt\nfile2.txt"}]
+                    }
+                }
+            }),
+            parent_tool_use_id: Some("toolu_agent".into()),
+            tool_use_id: Some("toolu_bash".into()),
+            extra: json!({}),
+        },
+    ];
+
+    let blocks = extract_tool_blocks(&events);
+    assert_eq!(blocks.len(), 2, "should have Agent + Bash blocks");
+
+    // Top-level Agent block (no parent)
+    assert_eq!(blocks[0].tool_name, "Agent");
+    assert_eq!(blocks[0].call_id.as_deref(), Some("toolu_agent"));
+    assert!(blocks[0].parent_tool_use_id.is_none());
+
+    // Sub-agent Bash block (parent = Agent)
+    assert_eq!(blocks[1].tool_name, "Bash");
+    assert_eq!(blocks[1].call_id.as_deref(), Some("toolu_bash"));
+    assert_eq!(
+        blocks[1].parent_tool_use_id.as_deref(),
+        Some("toolu_agent"),
+        "sub-agent block should reference parent Agent tool_use"
+    );
+    // Tool result should be matched
+    assert!(
+        blocks[1].output.is_some(),
+        "sub-agent block should have output from tool_result"
+    );
 }
 
 #[test]
-fn test_tool_summary_three() {
-    let blocks: Vec<ToolBlock> = ["Bash", "Read", "Edit"]
-        .iter()
-        .map(|name| ToolBlock {
-            tool_name: name.to_string(),
-            input: json!({}),
-            output: None,
-            error: false,
-            call_id: None,
-            parent_tool_use_id: None,
-        })
-        .collect();
-    assert_eq!(tool_summary(&blocks), "[Bash, Read, Edit]");
-}
+fn test_extract_assistant_text_split_from_progress_events() {
+    // Sub-agent text from progress events should be captured in sub_agent_texts.
+    let events = vec![
+        // Top-level text
+        StreamEvent::Assistant {
+            message: json!({
+                "role": "assistant",
+                "content": [{"type": "text", "text": "I'll use an agent to check."}]
+            }),
+            session_id: Some("sess1".into()),
+            extra: json!({}),
+        },
+        // Sub-agent text from progress event
+        StreamEvent::Progress {
+            data: json!({
+                "type": "agent_progress",
+                "message": {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Found 3 files in the directory."}]
+                    }
+                }
+            }),
+            parent_tool_use_id: Some("toolu_agent".into()),
+            tool_use_id: Some("agent_msg_1".into()),
+            extra: json!({}),
+        },
+    ];
 
-#[test]
-fn test_tool_summary_four_or_more_uses_count() {
-    let blocks: Vec<ToolBlock> = ["Bash", "Read", "Edit", "Grep"]
-        .iter()
-        .map(|name| ToolBlock {
-            tool_name: name.to_string(),
-            input: json!({}),
-            output: None,
-            error: false,
-            call_id: None,
-            parent_tool_use_id: None,
-        })
-        .collect();
-    assert_eq!(tool_summary(&blocks), "[4 tool calls]");
+    let (top_text, sub_texts) = extract_assistant_text_split(&events);
+    assert_eq!(top_text, "I'll use an agent to check.");
+    assert_eq!(
+        sub_texts.get("toolu_agent").map(|s| s.as_str()),
+        Some("Found 3 files in the directory."),
+        "sub-agent text should be grouped under parent tool_use_id"
+    );
 }
