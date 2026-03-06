@@ -118,8 +118,7 @@ impl PluginDaemonManager {
     }
 
     /// Returns the socket path the Python daemon listens on.
-    /// Used by Phase 2.4 (bidirectional event dispatch) to connect to the daemon.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn socket_path(&self) -> PathBuf {
         self.socket_path.clone()
     }
@@ -227,8 +226,9 @@ impl PluginDaemonManager {
     }
 
     /// Update the plugin directories. If they changed, restart the daemon.
-    /// Used by Phase 4.1 (hot-reload) to respond to `.midtown/` file changes.
-    #[allow(dead_code)]
+    ///
+    /// Called periodically by the event loop when `.midtown/` directory
+    /// changes are detected (new plugin dirs appearing or old ones removed).
     pub async fn update_plugin_dirs(&self, new_dirs: Vec<PathBuf>) {
         let mut inner = self.inner.lock().await;
         if inner.plugin_dirs == new_dirs {
@@ -334,6 +334,50 @@ impl PluginDaemonManager {
                     DISPATCH_TIMEOUT.as_secs()
                 );
                 None
+            }
+        }
+    }
+    /// Send a reload command to the Python plugin daemon.
+    ///
+    /// Tells the Python daemon to check for file changes, unload deleted
+    /// plugins, reload modified ones, and discover newly added plugins.
+    /// Called by the Rust event loop when `.midtown/` file changes are detected.
+    ///
+    /// Returns `true` if the reload was acknowledged, `false` if the daemon
+    /// is not running or the command failed.
+    pub async fn send_reload(&self) -> bool {
+        if !self.is_running().await {
+            return false;
+        }
+
+        let socket_path = self.socket_path.clone();
+        let reload_json = r#"{"type":"reload"}"#;
+
+        match tokio::time::timeout(
+            DISPATCH_TIMEOUT,
+            send_event_to_socket(&socket_path, reload_json),
+        )
+        .await
+        {
+            Ok(Ok(result)) => {
+                if result.ok {
+                    debug!("Plugin daemon reload acknowledged");
+                    true
+                } else {
+                    warn!(
+                        "Plugin daemon reload failed: {}",
+                        result.error.unwrap_or_default()
+                    );
+                    false
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Plugin daemon reload error: {}", e);
+                false
+            }
+            Err(_timeout) => {
+                warn!("Plugin daemon reload timed out");
+                false
             }
         }
     }

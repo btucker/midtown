@@ -1309,3 +1309,227 @@ class TestPreventDefault:
 
             assert result.default_prevented is False
             assert len(result.actions) == 1
+
+
+class TestScanForNewPlugins:
+    """Tests for discovering newly added plugins."""
+
+    def test_scan_discovers_new_bare_plugin(self) -> None:
+        """A new .py file added after init should be picked up by scan."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert len(daemon._loaded_plugins) == 0
+
+            # Add a new plugin file after daemon started
+            new_plugin = plugin_dir / "new_plugin.py"
+            new_plugin.write_text(_plugin_source("new"))
+
+            newly_loaded = daemon.scan_for_new_plugins()
+            assert new_plugin in newly_loaded
+            assert len(daemon._loaded_plugins) == 1
+
+            # Dispatch should work
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "new"
+
+    def test_scan_discovers_new_agentskills_plugin(self) -> None:
+        """A new AgentSkills directory added after init should be discovered."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert len(daemon._loaded_plugins) == 0
+
+            # Add a new AgentSkills plugin
+            skill_dir = plugin_dir / "new_skill"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: new_skill\n---\n# New Skill\n"
+            )
+            hooks_file = scripts_dir / "hooks.py"
+            hooks_file.write_text(_plugin_source("new skill"))
+
+            newly_loaded = daemon.scan_for_new_plugins()
+            assert hooks_file in newly_loaded
+            assert len(daemon._loaded_plugins) == 1
+            assert skill_dir in daemon._skill_metadata
+
+    def test_scan_skips_already_loaded(self) -> None:
+        """Already-loaded plugins should not be reloaded by scan."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+            (plugin_dir / "existing.py").write_text(_plugin_source("existing"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert len(daemon._loaded_plugins) == 1
+
+            # Scan should not re-add it
+            newly_loaded = daemon.scan_for_new_plugins()
+            assert newly_loaded == []
+            assert len(daemon._loaded_plugins) == 1
+
+    def test_scan_skips_underscore_files(self) -> None:
+        """Files starting with _ should be skipped even by scan."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            (plugin_dir / "_private.py").write_text("x = 1\n")
+            newly_loaded = daemon.scan_for_new_plugins()
+            assert newly_loaded == []
+
+    def test_reload_changed_discovers_new_plugins(self) -> None:
+        """reload_changed() should also discover new plugins."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+            assert len(daemon._loaded_plugins) == 0
+
+            # Add a new plugin and call reload_changed
+            (plugin_dir / "added.py").write_text(_plugin_source("added"))
+            daemon.reload_changed()
+
+            assert len(daemon._loaded_plugins) == 1
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions[0].params["message"] == "added"
+
+
+class TestReloadCommand:
+    """Tests for the reload command over the socket."""
+
+    @pytest.mark.asyncio
+    async def test_reload_command_returns_loaded_plugins(self) -> None:
+        """The reload command should return the list of loaded plugins."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+            (plugin_dir / "my_plugin.py").write_text(_plugin_source("hello"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                response = await _send_request(sock_path, {"type": "reload"})
+                assert response["ok"] is True
+                assert response["reloaded"] is True
+                assert len(response["loaded_plugins"]) == 1
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_reload_discovers_new_plugin(self) -> None:
+        """A reload command should discover a newly added plugin."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                # Initially no plugins
+                response = await _send_request(
+                    sock_path, {"type": "pr.opened", "event": {"pr_number": 1}}
+                )
+                assert response["actions"] == []
+
+                # Add a new plugin
+                (plugin_dir / "new_plugin.py").write_text(
+                    _plugin_source("discovered")
+                )
+
+                # Send reload command
+                response = await _send_request(sock_path, {"type": "reload"})
+                assert response["ok"] is True
+                assert len(response["loaded_plugins"]) == 1
+
+                # Now the plugin should fire
+                response = await _send_request(
+                    sock_path, {"type": "pr.opened", "event": {"pr_number": 2}}
+                )
+                assert len(response["actions"]) == 1
+                assert response["actions"][0]["params"]["message"] == "discovered"
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
+
+    @pytest.mark.asyncio
+    async def test_reload_unloads_deleted_plugin(self) -> None:
+        """A reload command should unload a deleted plugin."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+            plugin_file = plugin_dir / "my_plugin.py"
+            plugin_file.write_text(_plugin_source("hello"))
+
+            sock_path = str(Path(tmpdir) / "daemon.sock")
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, plugin_dirs=[plugin_dir]
+            )
+
+            server_task = await _start_daemon(daemon)
+            try:
+                # Plugin fires initially
+                response = await _send_request(
+                    sock_path, {"type": "pr.opened", "event": {"pr_number": 1}}
+                )
+                assert len(response["actions"]) == 1
+
+                # Delete the plugin
+                plugin_file.unlink()
+
+                # Send reload command
+                response = await _send_request(sock_path, {"type": "reload"})
+                assert response["ok"] is True
+                assert response["loaded_plugins"] == []
+
+                # Plugin should no longer fire
+                response = await _send_request(
+                    sock_path, {"type": "pr.opened", "event": {"pr_number": 2}}
+                )
+                assert response["actions"] == []
+            finally:
+                server_task.cancel()
+                try:
+                    await server_task
+                except asyncio.CancelledError:
+                    pass
