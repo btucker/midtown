@@ -72,8 +72,11 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
                 client.channel_post_in_thread(message, channel.as_deref(), parent_id)
             } else if let Ok(env_task_id) = std::env::var("MIDTOWN_TASK_ID") {
                 // Auto-thread to the task when MIDTOWN_TASK_ID env var is set
-                // (injected by the daemon at spawn time via LaunchConfig.task_id)
-                client.channel_post_for_task(message, channel.as_deref(), &env_task_id)
+                // (injected by the daemon at spawn time via LaunchConfig.task_id).
+                // Fall back to regular post if the task no longer exists (stale ID).
+                client
+                    .channel_post_for_task(message, channel.as_deref(), &env_task_id)
+                    .or_else(|_| client.channel_post(message, channel.as_deref()))
             } else {
                 client.channel_post(message, channel.as_deref())
             }
