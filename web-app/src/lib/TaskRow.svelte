@@ -117,7 +117,7 @@
         {/if}
       </div>
     {/if}
-    {#if isActive && hasProgress && task.owner}
+    {#if isActive && (hasProgress || effectiveReviewer) && task.owner}
       {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
       {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
       <div class="flex items-center gap-1.5 pr-0.5">
