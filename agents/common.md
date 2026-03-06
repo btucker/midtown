@@ -65,7 +65,7 @@ midtown channel post "found the root cause in auth.rs" --task 42
 
 In the TUI, use `/thread` to pick a message and open the thread panel.
 
-**Thread notifications:** There is **no automatic broadcast** to thread participants. If you want a coworker or reviewer to see your thread reply, you **must @mention them** — otherwise they won't be notified. This applies to all thread replies, not just forks. Always @mention when your reply contains information someone needs to act on (a decision, a question, feedback). Don't @mention for routine updates only you need to track.
+**Thread notifications:** Thread replies are routed to the forked lead session that owns the thread, but there is **no automatic broadcast to other thread participants**. If you want a coworker or reviewer to see your thread reply, you **must @mention them** — otherwise they won't be notified. The fork should @mention others when a reply contains information they need to act on (e.g., a question directed at them, a decision affecting their work, or context they explicitly requested). Don't @mention for routine updates the fork can handle alone.
 
 ## Useful Commands
 
