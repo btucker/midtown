@@ -3817,3 +3817,244 @@ fn test_dead_reviewer_respawn_emits_coworker_stuck_workflow_event() {
     assert_eq!(tid, Some(task_id.to_string()));
     assert_eq!(cw, "lexington");
 }
+
+// -----------------------------------------------------------------------
+// Session role determination uses correct labels
+// -----------------------------------------------------------------------
+
+/// The session role determination logic should use "Lead" for project leads,
+/// "Channel lead" for channel leads, and "Coworker" for regular coworkers.
+///
+/// Regression test for the logging issue where lead sessions were reported
+/// as "Coworker" exits in channel messages.
+#[test]
+fn test_session_role_determination_labels() {
+    use std::collections::HashSet;
+
+    let project_name = "midtown";
+
+    // Build channel lead names set (simulating what snap.channel_lead_names() returns)
+    let channel_lead_names: HashSet<String> = HashSet::from(["ops".to_string()]);
+
+    // Helper closure matching the logic in check_and_handle_auth_errors and mod.rs
+    let determine_role = |name: &str| -> &'static str {
+        let is_lead = crate::daemon::helpers::is_project_lead(name, project_name);
+        let is_channel_lead = channel_lead_names.contains(name);
+        if is_lead {
+            "Lead"
+        } else if is_channel_lead {
+            "Channel lead"
+        } else {
+            "Coworker"
+        }
+    };
+
+    assert_eq!(determine_role("midtown"), "Lead");
+    assert_eq!(determine_role("Midtown"), "Lead"); // case-insensitive
+    assert_eq!(determine_role("lead"), "Lead"); // legacy name
+    assert_eq!(determine_role("ops"), "Channel lead");
+    assert_eq!(determine_role("lexington"), "Coworker");
+    assert_eq!(determine_role("park"), "Coworker");
+}
+
+/// Ensure channel leads are detected as missing when not registered.
+/// This validates the preconditions that `ensure_channel_leads_alive` checks.
+#[test]
+fn test_channel_lead_respawn_preconditions_when_missing() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // No active coworkers registered — channel lead should be respawned.
+    let is_registered = snap
+        .coworkers
+        .active_coworkers
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case("ops"));
+    assert!(
+        !is_registered,
+        "ops should not be registered, triggering respawn"
+    );
+
+    // Verify no cooldown would block respawn (no stop time recorded)
+    let has_stop_time = snap
+        .coworkers
+        .coworker_stop_times
+        .get(&"ops".to_lowercase());
+    assert!(
+        has_stop_time.is_none(),
+        "No stop time means no cooldown delay"
+    );
+}
+
+/// Ensure channel lead respawn is skipped when already registered.
+#[test]
+fn test_channel_lead_respawn_skipped_when_registered() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Register ops as an active coworker
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "ops".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: String::new(),
+        profile: String::new(),
+        provider: crate::auth::AuthProvider::Claude,
+    });
+
+    let is_registered = snap
+        .coworkers
+        .active_coworkers
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case("ops"));
+    assert!(
+        is_registered,
+        "ops is registered — ensure_channel_leads_alive should no-op"
+    );
+}
+
+/// Ensure channel lead respawn respects cooldown from coworker_stop_times.
+#[test]
+fn test_channel_lead_respawn_cooldown_prevents_respawn() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Set stop time to 1 second ago (within 5-minute cooldown)
+    let recent_stop = snap.now_utc - chrono::Duration::seconds(1);
+    snap.coworkers
+        .coworker_stop_times
+        .insert("ops".to_string(), recent_stop);
+
+    let since_stop = snap
+        .now_utc
+        .signed_duration_since(*snap.coworkers.coworker_stop_times.get("ops").unwrap());
+    let cooldown = chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default();
+
+    assert!(
+        since_stop < cooldown,
+        "Stop was {}s ago, cooldown is {}s — should block respawn",
+        since_stop.num_seconds(),
+        cooldown.num_seconds()
+    );
+}
+
+/// Ensure channel lead respawn is skipped when the session is attached interactively.
+///
+/// When a user attaches to a channel lead via `midtown session attach`, the session
+/// is deregistered from `active_coworkers` and tracked in `attached_coworkers`.
+/// Without checking `attached_coworkers`, `ensure_channel_leads_alive` would spawn
+/// a duplicate headless session after the cooldown expires.
+#[test]
+fn test_channel_lead_respawn_skipped_when_attached() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Not in active_coworkers (deregistered on attach)
+    let is_registered = snap
+        .coworkers
+        .active_coworkers
+        .iter()
+        .any(|c| c.name.eq_ignore_ascii_case("ops"));
+    assert!(!is_registered, "ops should not be in active_coworkers");
+
+    // But IS in attached_coworkers (interactive session active)
+    snap.coworkers
+        .attached_coworkers
+        .insert("ops".to_string(), snap.now_utc);
+
+    let is_attached = snap
+        .coworkers
+        .attached_coworkers
+        .contains_key(&"ops".to_lowercase());
+    assert!(
+        is_attached,
+        "ops is attached — ensure_channel_leads_alive should skip respawn"
+    );
+
+    // Directly verify the pure function returns no effects
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "attached channel lead should not produce respawn effects"
+    );
+}
+
+/// Direct test: ensure_channel_leads_alive emits RespawnChannelLead when
+/// a channel lead is in channel_lead_sessions but not in active_coworkers
+/// and has no cooldown or interactive attachment.
+#[test]
+fn test_ensure_channel_leads_alive_emits_respawn_effect() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // No active coworkers, no stop time, no attachment → should respawn
+    let effects = ensure_channel_leads_alive(&snap);
+    assert_eq!(effects.len(), 1, "expected exactly one respawn effect");
+    match &effects[0] {
+        Effect::RespawnChannelLead { channel_name } => {
+            assert_eq!(channel_name, "ops");
+        }
+        other => panic!("expected RespawnChannelLead, got {:?}", other),
+    }
+}
+
+/// Direct test: ensure_channel_leads_alive returns empty when the channel
+/// lead is already registered as an active coworker.
+#[test]
+fn test_ensure_channel_leads_alive_noop_when_registered() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "ops".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: chrono::Utc::now(),
+        current_task: None,
+        session_id: None,
+        model: String::new(),
+        profile: String::new(),
+        provider: crate::auth::AuthProvider::Claude,
+    });
+
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "registered channel lead should not produce respawn effects"
+    );
+}
+
+/// Direct test: cooldown prevents respawn within LEAD_RESPAWN_COOLDOWN window.
+#[test]
+fn test_ensure_channel_leads_alive_respects_cooldown() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Stopped 1 second ago — within the 5-minute cooldown
+    let recent_stop = snap.now_utc - chrono::Duration::seconds(1);
+    snap.coworkers
+        .coworker_stop_times
+        .insert("ops".to_string(), recent_stop);
+
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "recently stopped channel lead should not be respawned during cooldown"
+    );
+}

@@ -3944,10 +3944,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         }
                     }
 
+                    // Determine session role for the exit message
+                    let session_role = if helpers::is_project_lead(&name, &state.project_name) {
+                        "Lead"
+                    } else if state
+                        .persistent_state
+                        .lock()
+                        .await
+                        .channel_lead_sessions
+                        .contains_key(&name)
+                    {
+                        "Channel lead"
+                    } else {
+                        "Coworker"
+                    };
+
                     // Format message with stderr if available
                     let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
                         if stderr_lines.is_empty() {
-                            format!("⚠️ Coworker {} session exited unexpectedly", name)
+                            format!("⚠️ {} {} session exited unexpectedly", session_role, name)
                         } else {
                             // Include last N lines of stderr (up to 10 lines)
                             let last_n: Vec<&str> = stderr_lines
@@ -3958,14 +3973,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 .map(|s| s.as_str())
                                 .collect();
                             format!(
-                                "⚠️ Coworker {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
+                                "⚠️ {} {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
+                                session_role,
                                 name,
                                 stderr_lines.len(),
                                 last_n.join("\n")
                             )
                         }
                     } else {
-                        format!("⚠️ Coworker {} session exited unexpectedly", name)
+                        format!("⚠️ {} {} session exited unexpectedly", session_role, name)
                     };
 
                     let msg = crate::message::Message::text("midtown", message_text);

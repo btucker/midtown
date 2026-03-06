@@ -934,7 +934,20 @@ pub(super) fn check_and_handle_auth_errors(
     let mut effects = Vec::new();
     let mut newly_detected = Vec::new();
 
+    let channel_lead_names = snap.channel_lead_names();
+
     for name in &snap.health.auth_error_coworkers {
+        // Determine session role for logging
+        let is_lead = super::helpers::is_project_lead(name, &snap.project_name);
+        let is_channel_lead = channel_lead_names.contains(name);
+        let session_role = if is_lead {
+            "Lead"
+        } else if is_channel_lead {
+            "Channel lead"
+        } else {
+            "Coworker"
+        };
+
         // Check cooldown - only act if we haven't already handled this coworker
         let should_handle = {
             let cooldowns = state.cooldowns.lock().unwrap();
@@ -949,11 +962,13 @@ pub(super) fn check_and_handle_auth_errors(
         newly_detected.push(name.clone());
 
         info!(
-            "Coworker {} hit auth error (OAuth token expired) — shutting down",
-            name
+            "{} {} hit auth error (OAuth token expired) — shutting down",
+            session_role, name
         );
 
-        // Shut down the coworker - no point retrying with expired token
+        // Shut down the session - no point retrying with expired token.
+        // Lead and channel lead sessions will be respawned by
+        // ensure_lead_alive() / ensure_channel_leads_alive() after auth recovers.
         effects.push(Effect::ShutdownCoworker {
             name: name.clone(),
             message: String::new(),
@@ -971,8 +986,8 @@ pub(super) fn check_and_handle_auth_errors(
         let names_str = newly_detected.join(", ");
 
         let message = format!(
-            "🔐 OAuth token expired — coworkers {} shut down. Re-authenticate with: midtown auth login\n\
-             Coworkers with pending tasks will be respawned after re-authentication.",
+            "🔐 OAuth token expired — sessions {} shut down. Re-authenticate with: midtown auth login\n\
+             Sessions with pending tasks will be respawned after re-authentication.",
             names_str
         );
 
@@ -1326,6 +1341,71 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     }
 
     vec![Effect::SpawnCoworker(config)]
+}
+
+/// Ensure channel lead sessions are always running.
+///
+/// Channel leads are long-lived domain expert sessions that should be respawned
+/// when they die unexpectedly. This is the channel lead equivalent of
+/// `ensure_lead_alive()` for the project lead.
+///
+/// For each channel in `channel_lead_sessions`, checks if the session is still
+/// alive. If not, emits a `RespawnChannelLead` effect (I/O deferred to executor).
+/// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
+pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for channel_name in snap.channel_lead_sessions.keys() {
+        // Check if the channel lead is already registered (any status)
+        let is_registered = snap
+            .coworkers
+            .active_coworkers
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(channel_name));
+
+        if is_registered {
+            continue;
+        }
+
+        // Check if the channel lead is currently attached interactively — if so,
+        // the daemon shouldn't spawn a headless session that would conflict.
+        if snap
+            .coworkers
+            .attached_coworkers
+            .contains_key(&channel_name.to_lowercase())
+        {
+            continue;
+        }
+
+        // Cooldown: if the channel lead was recently stopped, don't respawn yet
+        if let Some(stop_time) = snap
+            .coworkers
+            .coworker_stop_times
+            .get(&channel_name.to_lowercase())
+        {
+            let since_stop = snap.now_utc.signed_duration_since(*stop_time);
+            if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
+                debug!(
+                    "Channel lead '{}' respawn cooldown: stopped {}s ago (need {}s)",
+                    channel_name,
+                    since_stop.num_seconds(),
+                    LEAD_RESPAWN_COOLDOWN.as_secs()
+                );
+                continue;
+            }
+        }
+
+        warn!(
+            "Channel lead '{}' is not running — respawning",
+            channel_name
+        );
+
+        effects.push(Effect::RespawnChannelLead {
+            channel_name: channel_name.clone(),
+        });
+    }
+
+    effects
 }
 
 /// Periodically refresh the lead session to prevent context drift.
