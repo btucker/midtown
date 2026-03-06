@@ -118,8 +118,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         );
     }
 
-    // Split channels into regular and DM groups.
-    // Use the `is_dm` flag from ChannelInfo when available, fall back to prefix check.
+    // Split channels into regular and DM groups using the `is_dm` flag from ChannelInfo.
     let dm_names: HashSet<String> = available_channels_clone
         .iter()
         .filter(|ci| ci.is_dm)
@@ -128,7 +127,7 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let mut regular_channels: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
     let mut dm_channels: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
     for (name, tasks) in channels_to_display {
-        if dm_names.contains(&name) || name.starts_with("dm-") {
+        if dm_names.contains(&name) {
             dm_channels.insert(name, tasks);
         } else {
             regular_channels.insert(name, tasks);
@@ -177,9 +176,13 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
             });
             if task_phase_label(task, task_pr, coworker_phase).is_some() {
                 if title_wraps {
+                    // The phase label is merged into the first continuation line (wrapped_lines[1]).
+                    // That line's position is current_line - wrapped_lines.len() + 1.
+                    // Register it so click-to-attach works on the continuation line too.
                     let continuation_line = current_line - wrapped_lines.len() as u16 + 1;
                     task_line_map.insert(continuation_line, (task.id.clone(), task.owner.clone()));
                 } else {
+                    // Label is a separate line below the title; register it.
                     task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
                     current_line += 1;
                 }
@@ -214,10 +217,14 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
                 });
                 if task_phase_label(task, task_pr, coworker_phase).is_some() {
                     if title_wraps {
+                        // The phase label is merged into the first continuation line (wrapped_lines[1]).
+                        // That line's position is current_line - wrapped_lines.len() + 1.
+                        // Register it so click-to-attach works on the continuation line too.
                         let continuation_line = current_line - wrapped_lines.len() as u16 + 1;
                         task_line_map
                             .insert(continuation_line, (task.id.clone(), task.owner.clone()));
                     } else {
+                        // Label is a separate line below the title; register it.
                         task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
                         current_line += 1;
                     }

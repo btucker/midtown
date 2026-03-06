@@ -417,6 +417,82 @@ fn test_dm_channels_in_channel_line_map() {
     );
 }
 
+/// A non-DM channel whose name starts with "dm-" but has `is_dm: false` must appear
+/// in the regular channels section, not the DM section.
+#[test]
+fn test_dm_prefix_channel_with_is_dm_false_appears_in_regular_section() {
+    use midtown::ChannelInfo;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.available_channels = vec![
+        ChannelInfo {
+            name: "tui".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+        ChannelInfo {
+            name: "dm-debug-logs".to_string(),
+            is_archived: false,
+            is_dm: false, // NOT a DM despite the "dm-" prefix
+        },
+        ChannelInfo {
+            name: "dm-park".to_string(),
+            is_archived: false,
+            is_dm: true, // actual DM
+        },
+    ];
+
+    let backend = TestBackend::new(40, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    // Extract rendered text from the terminal buffer
+    let mut rendered_lines = Vec::new();
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        for x in 0..buffer.area.width {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        rendered_lines.push(line.trim_end().to_string());
+    }
+
+    let dm_header_y = rendered_lines
+        .iter()
+        .position(|l| l.contains("DIRECT MESSAGES"))
+        .expect("should have DIRECT MESSAGES header since dm-park is a real DM");
+
+    // "dm-debug-logs" (is_dm=false) should appear ABOVE the DM header, in the regular section.
+    // Note: format_channel_display_name renders "dm-*" names as "@*", so it appears as "@debug-logs".
+    let debug_logs_line = rendered_lines
+        .iter()
+        .position(|l| l.contains("@debug-logs"));
+    assert!(
+        debug_logs_line.is_some(),
+        "dm-debug-logs should be rendered in regular section, rendered:\n{}",
+        rendered_lines.join("\n")
+    );
+    assert!(
+        debug_logs_line.unwrap() < dm_header_y,
+        "dm-debug-logs (is_dm=false) should be above DIRECT MESSAGES (in regular section)"
+    );
+
+    // "dm-park" (is_dm=true) should appear BELOW the DM header
+    let park_line = rendered_lines.iter().position(|l| l.contains("@park"));
+    assert!(
+        park_line.is_some() && park_line.unwrap() > dm_header_y,
+        "@park should be below DIRECT MESSAGES"
+    );
+}
+
 /// The project lead named by repo name (canonical naming, e.g. "midtown") should NOT
 /// appear in the coworkers sidebar. test_app() uses project_name = "test".
 /// Regression test for !1723 (Codex review feedback).
