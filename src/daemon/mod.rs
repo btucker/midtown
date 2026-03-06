@@ -12,6 +12,7 @@ pub(crate) mod effects;
 pub(crate) mod events;
 mod health;
 pub mod helpers;
+pub(crate) mod plugin_daemon;
 mod pr;
 pub(crate) mod profile_pool;
 mod rpc;
@@ -733,6 +734,10 @@ pub(crate) struct DaemonState {
     /// sidecars keep a Python process alive and receive events via stdin.
     /// Falls back to subprocess-per-event when the script doesn't support sidecar mode.
     pub(crate) workflow_sidecar: sidecar::WorkflowSidecarManager,
+    /// Manages the long-running Python plugin daemon process.
+    /// Spawns `uv run python -m midtown` when plugins are detected in
+    /// discovery paths. Communicates via Unix socket.
+    pub(crate) plugin_daemon: plugin_daemon::PluginDaemonManager,
 }
 
 impl DaemonState {
@@ -1394,6 +1399,17 @@ impl DaemonState {
 
         let workflow_sidecar = sidecar::WorkflowSidecarManager::new(socket_path.clone());
 
+        // Discover plugin directories and set up the plugin daemon manager.
+        let project_root = all_repo_paths.first().cloned().unwrap_or_default();
+        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, paths.dir_key());
+        let plugin_daemon_socket = paths.base_dir().join("workflow-daemon.sock");
+        let python_sdk_dir = crate::paths::resolve_python_sdk_dir();
+        let plugin_daemon = plugin_daemon::PluginDaemonManager::new(
+            plugin_daemon_socket,
+            plugin_dirs,
+            python_sdk_dir,
+        );
+
         Ok(Self {
             coworkers,
             channel_router,
@@ -1453,6 +1469,7 @@ impl DaemonState {
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
             workflow_state_locks: std::sync::Mutex::new(HashMap::new()),
             workflow_sidecar,
+            plugin_daemon,
         })
     }
 
@@ -3564,6 +3581,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Check workflow sidecar health (try_wait on child PIDs; may yield if a per-entry lock is contended).
                 state.workflow_sidecar.check_health().await;
 
+                // Check plugin daemon health and ensure it's running if plugins exist.
+                state.plugin_daemon.check_health().await;
+                if state.plugin_daemon.has_plugins() {
+                    state.plugin_daemon.ensure_running().await;
+                }
+
                 let (events, stopped, stderr_by_name) = state.session_manager.drain_events().await;
 
                 // Update health state from SessionManager (used by snapshot for decision functions)
@@ -4119,6 +4142,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Shut down workflow sidecars
     info!("Shutting down workflow sidecars...");
     state.workflow_sidecar.shutdown_all().await;
+
+    // Shut down plugin daemon
+    info!("Shutting down plugin daemon...");
+    state.plugin_daemon.shutdown().await;
 
     // Mark all sessions to be detached (not killed) on drop
     // CRITICAL: Always detach even if persistence failed above - sessions should

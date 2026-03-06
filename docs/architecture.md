@@ -737,6 +737,24 @@ Response format:
 
 **CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--plugin-dirs` arguments.
 
+### Plugin Daemon Lifecycle Manager (Rust)
+
+`PluginDaemonManager` (`src/daemon/plugin_daemon.rs`) manages the lifecycle of the Python plugin daemon process from the Rust side. It follows a similar pattern to `WorkflowSidecarManager` but manages a single process (not per-script).
+
+**Spawning:** Runs `uv run --project <sdk_path> python -m midtown --socket-path <path> --plugin-dirs <dirs>`. The SDK path is resolved via `paths::resolve_python_sdk_dir()` which checks: next to executable → `CARGO_MANIFEST_DIR/sdk/python` → `~/.local/share/midtown/sdk/python`.
+
+**Ready handshake:** After spawning, waits up to 30s for `{"ready":true}` on stdout, confirming the Unix socket is accepting connections.
+
+**Health monitoring:** On each session drain interval, `check_health()` calls `try_wait()` on the child process to detect exits. If the process has exited, it records a crash and enters backoff.
+
+**Restart with backoff:** Exponential backoff starting at 500ms, doubling per consecutive crash, capped at 60s. Backoff resets on successful ready handshake. `ensure_running()` on each drain tick attempts restart when the backoff period has elapsed.
+
+**Plugin discovery:** `paths::discover_plugin_dirs()` scans for `.py` files (excluding `_`-prefixed) in `<project>/.midtown/plugins/` and `~/.midtown/projects/<repo>/plugins/`. The manager only starts when at least one directory has plugin files.
+
+**Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for it to exit, then cleans up the socket file.
+
+**State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()` with discovered plugin dirs, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
+
 ### Python SDK
 
 The Midtown Python SDK (`sdk/python/midtown/`) provides `run()` (single-shot) and `run_loop()` (persistent sidecar) entry points, plus the `MidtownRPC` client. `run()` auto-detects `--sidecar` in `sys.argv` and delegates to `run_loop()`, so existing scripts gain sidecar support without code changes. A typical workflow script:
