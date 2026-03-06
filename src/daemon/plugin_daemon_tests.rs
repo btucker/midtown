@@ -84,10 +84,14 @@ async fn manager_update_plugin_dirs_resets_backoff() {
         inner.last_crash = Some(Instant::now());
     }
 
-    // Update dirs should reset backoff.
-    manager
+    // Update dirs should reset backoff and return true (dirs changed).
+    let changed = manager
         .update_plugin_dirs(vec!["/tmp/new-plugins".into()])
         .await;
+    assert!(
+        changed,
+        "update_plugin_dirs should return true when dirs changed"
+    );
 
     let inner = manager.inner.lock().await;
     assert_eq!(inner.crash_count, 0);
@@ -156,8 +160,12 @@ async fn manager_update_plugin_dirs_noop_when_same() {
         inner.last_crash = Some(Instant::now());
     }
 
-    // Same dirs — should not reset backoff.
-    manager.update_plugin_dirs(dirs).await;
+    // Same dirs — should not reset backoff, return false.
+    let changed = manager.update_plugin_dirs(dirs).await;
+    assert!(
+        !changed,
+        "update_plugin_dirs should return false when dirs unchanged"
+    );
 
     let inner = manager.inner.lock().await;
     assert_eq!(inner.crash_count, 3);
@@ -483,6 +491,86 @@ async fn send_event_returns_none_when_not_running() {
         result.is_none(),
         "send_event should return None when daemon is not running"
     );
+}
+
+#[tokio::test]
+async fn send_reload_returns_false_when_not_running() {
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-send-reload-norun.sock".into(),
+        vec!["/tmp/plugins".into()],
+        "/tmp/sdk".into(),
+    );
+
+    let result = manager.send_reload().await;
+    assert!(
+        !result,
+        "send_reload should return false when daemon is not running"
+    );
+}
+
+#[tokio::test]
+async fn send_reload_round_trip_via_socket() {
+    // Stand up a minimal Unix socket server that returns a canned reload response.
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("test-reload.sock");
+    let sock_clone = socket_path.clone();
+
+    // Spawn a fake Python daemon server that handles reload.
+    let server_handle = tokio::spawn(async move {
+        let listener = tokio::net::UnixListener::bind(&sock_clone).unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut buf_reader = tokio::io::BufReader::new(reader);
+        let mut line = String::new();
+        buf_reader.read_line(&mut line).await.unwrap();
+
+        // Verify we received a reload command.
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["type"], "reload");
+
+        // Send back a reload response.
+        let response = r#"{"ok":true,"reloaded":true,"loaded_plugins":["test.py"]}"#;
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(response.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.shutdown().await.unwrap();
+    });
+
+    // Give server time to bind.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let manager = PluginDaemonManager::new(
+        socket_path.clone(),
+        vec!["/tmp/plugins".into()],
+        "/tmp/sdk".into(),
+    );
+    // Inject a fake "running" state.
+    {
+        let mut inner = manager.inner.lock().await;
+        let child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let stdout_drain = tokio::spawn(async {});
+        let stderr_drain = tokio::spawn(async {});
+        inner.process = Some(DaemonProcess {
+            child,
+            _stdout_drain: stdout_drain,
+            _stderr_drain: stderr_drain,
+        });
+    }
+
+    let result = manager.send_reload().await;
+    server_handle.await.unwrap();
+
+    assert!(result, "send_reload should return true on success");
+
+    // Cleanup.
+    manager.shutdown().await;
 }
 
 #[tokio::test]

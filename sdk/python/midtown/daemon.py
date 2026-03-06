@@ -254,8 +254,42 @@ class WorkflowDaemon:
             plugin_name = getattr(module, "__name__", path.stem)
             self.pm.register(module, name=plugin_name)
 
+    def scan_for_new_plugins(self) -> list[Path]:
+        """Scan plugin directories for new plugins not yet loaded.
+
+        Returns a list of newly discovered plugin paths that were loaded.
+        This complements :meth:`check_for_changes` which only watches
+        already-tracked files.
+        """
+        newly_loaded: list[Path] = []
+        for directory in self.plugin_dirs:
+            if not directory.exists():
+                continue
+            for entry in sorted(directory.iterdir()):
+                if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
+                    if entry not in self._loaded_plugins and entry not in self._mtimes:
+                        self.load_plugin(entry)
+                        if entry in self._loaded_plugins:
+                            newly_loaded.append(entry)
+                elif entry.is_dir():
+                    skill_md = entry / "SKILL.md"
+                    if skill_md.exists() and entry not in self._skill_metadata:
+                        # Check if the hooks file for this skill is already loaded
+                        metadata = parse_skill_file(skill_md)
+                        hooks_path = entry / metadata.hooks_path
+                        if hooks_path not in self._loaded_plugins:
+                            self._load_agentskills_plugin(entry, skill_md)
+                            if hooks_path in self._loaded_plugins:
+                                newly_loaded.append(hooks_path)
+        return newly_loaded
+
     def reload_changed(self) -> None:
         """Hot-reload any plugins whose files have changed on disk.
+
+        Only checks already-tracked files for mtime changes and removes
+        deleted plugins. Does NOT scan for new plugins — that is handled
+        separately by the ``"reload"`` command handler which calls
+        :meth:`scan_for_new_plugins` after this method.
 
         After reloading, all plugins are re-registered in midtown_order
         to preserve correct execution order (pluggy LIFO).
@@ -288,6 +322,7 @@ class WorkflowDaemon:
         # Re-register all plugins in correct midtown_order to maintain
         # execution order after LIFO disruption from individual reloads.
         self._reorder_plugins()
+
 
     def dispatch_event(
         self,
@@ -416,13 +451,33 @@ class WorkflowDaemon:
             await writer.wait_closed()
 
     def _process_request(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Process a single event request and return the response dict.
+        """Process a single request and return the response dict.
 
-        Hot-reloads changed plugins before dispatching.
+        Handles two request types:
+
+        - **``"reload"``** — Forces a full reload check (mtime changes,
+          deleted files, and new plugin discovery).  Sent by the Rust daemon
+          when it detects ``.midtown/`` file-system changes.
+
+        - **Event dispatch** (any other ``type`` value) — Hot-reloads changed
+          plugins, then dispatches the event to all registered hooks.
         """
+        request_type = request.get("type", "")
+
+        # Handle reload command — full scan including new plugin discovery
+        if request_type == "reload":
+            self.reload_changed()
+            self.scan_for_new_plugins()
+            loaded = list(self._loaded_plugins.keys())
+            return {
+                "ok": True,
+                "reloaded": True,
+                "loaded_plugins": [str(p) for p in loaded],
+            }
+
         self.reload_changed()
 
-        event_type = request.get("type", "")
+        event_type = request_type
         event = request.get("event", {})
         task_id = request.get("task_id")
         task_state = request.get("task_state")

@@ -62,6 +62,26 @@ pub(crate) struct PluginDispatchResult {
     pub default_prevented: bool,
 }
 
+/// Result of sending a reload command to the Python plugin daemon.
+///
+/// Distinct from `PluginDispatchResult` because the reload response includes
+/// different fields (`reloaded`, `loaded_plugins`) instead of actions.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // Fields deserialized from Python response; kept for logging/future use.
+pub(crate) struct PluginReloadResult {
+    /// Whether the reload succeeded.
+    pub ok: bool,
+    /// Error message (only when `ok` is false).
+    #[serde(default)]
+    pub error: Option<String>,
+    /// Whether a reload was actually performed.
+    #[serde(default)]
+    pub reloaded: bool,
+    /// Paths of currently loaded plugins after the reload.
+    #[serde(default)]
+    pub loaded_plugins: Vec<String>,
+}
+
 /// Internal state of the plugin daemon process.
 struct DaemonProcess {
     child: Child,
@@ -118,8 +138,7 @@ impl PluginDaemonManager {
     }
 
     /// Returns the socket path the Python daemon listens on.
-    /// Used by Phase 2.4 (bidirectional event dispatch) to connect to the daemon.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn socket_path(&self) -> PathBuf {
         self.socket_path.clone()
     }
@@ -227,12 +246,16 @@ impl PluginDaemonManager {
     }
 
     /// Update the plugin directories. If they changed, restart the daemon.
-    /// Used by Phase 4.1 (hot-reload) to respond to `.midtown/` file changes.
-    #[allow(dead_code)]
-    pub async fn update_plugin_dirs(&self, new_dirs: Vec<PathBuf>) {
+    ///
+    /// Called periodically by the event loop when `.midtown/` directory
+    /// changes are detected (new plugin dirs appearing or old ones removed).
+    ///
+    /// Returns `true` if the directories changed (and the daemon was
+    /// killed so it restarts with the new list on the next `ensure_running`).
+    pub async fn update_plugin_dirs(&self, new_dirs: Vec<PathBuf>) -> bool {
         let mut inner = self.inner.lock().await;
         if inner.plugin_dirs == new_dirs {
-            return;
+            return false;
         }
         info!(
             old = ?inner.plugin_dirs,
@@ -248,6 +271,7 @@ impl PluginDaemonManager {
         }
         inner.crash_count = 0;
         inner.last_crash = None;
+        true
     }
 
     /// Merge new plugin directories into the existing set. Only restarts the
@@ -337,6 +361,53 @@ impl PluginDaemonManager {
             }
         }
     }
+    /// Send a reload command to the Python plugin daemon.
+    ///
+    /// Tells the Python daemon to check for file changes, unload deleted
+    /// plugins, reload modified ones, and discover newly added plugins.
+    /// Called by the Rust event loop on the periodic plugin scan interval.
+    ///
+    /// Returns `true` if the reload was acknowledged, `false` if the daemon
+    /// is not running or the command failed.
+    pub async fn send_reload(&self) -> bool {
+        if !self.is_running().await {
+            return false;
+        }
+
+        let socket_path = self.socket_path.clone();
+        let reload_json = r#"{"type":"reload"}"#;
+
+        match tokio::time::timeout(
+            DISPATCH_TIMEOUT,
+            send_reload_to_socket(&socket_path, reload_json),
+        )
+        .await
+        {
+            Ok(Ok(result)) => {
+                if result.ok {
+                    debug!(
+                        loaded_plugins = result.loaded_plugins.len(),
+                        "Plugin daemon reload acknowledged"
+                    );
+                    true
+                } else {
+                    warn!(
+                        "Plugin daemon reload failed: {}",
+                        result.error.unwrap_or_default()
+                    );
+                    false
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Plugin daemon reload error: {}", e);
+                false
+            }
+            Err(_timeout) => {
+                warn!("Plugin daemon reload timed out");
+                false
+            }
+        }
+    }
 }
 
 /// Send an event to the plugin daemon over the Unix socket and parse the response.
@@ -370,6 +441,34 @@ async fn send_event_to_socket(
 
     serde_json::from_str::<PluginDispatchResult>(&response_line)
         .map_err(|e| io::Error::other(format!("invalid plugin daemon response: {e}")))
+}
+
+/// Send a reload command to the plugin daemon and parse the reload-specific response.
+async fn send_reload_to_socket(
+    socket_path: &Path,
+    reload_json: &str,
+) -> Result<PluginReloadResult, io::Error> {
+    let stream = tokio::net::UnixStream::connect(socket_path).await?;
+    let (reader, mut writer) = stream.into_split();
+
+    writer.write_all(reload_json.as_bytes()).await?;
+    if !reload_json.ends_with('\n') {
+        writer.write_all(b"\n").await?;
+    }
+    writer.shutdown().await?;
+
+    let mut buf_reader = BufReader::new(reader);
+    let mut response_line = String::new();
+    buf_reader.read_line(&mut response_line).await?;
+
+    if response_line.is_empty() {
+        return Err(io::Error::other(
+            "plugin daemon closed connection without responding",
+        ));
+    }
+
+    serde_json::from_str::<PluginReloadResult>(&response_line)
+        .map_err(|e| io::Error::other(format!("invalid plugin daemon reload response: {e}")))
 }
 
 /// Spawn the Python plugin daemon process.

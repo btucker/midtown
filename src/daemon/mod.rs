@@ -3190,6 +3190,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Skip the first tick (which fires immediately)
     ci_notification_flush_interval.tick().await;
 
+    // Timer for re-scanning plugin directories (every 5 seconds).
+    // Detects new plugins appearing, old plugins deleted, and directory
+    // structure changes that require restarting the Python plugin daemon.
+    let mut plugin_scan_interval = interval(std::time::Duration::from_secs(5));
+    plugin_scan_interval.tick().await;
+
     // Nudge any coworkers discovered on startup to continue their tasks.
     // This runs once at startup after the daemon has fully initialized.
     // Data gathering + pure decision → effects executed in background task.
@@ -4070,6 +4076,29 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         if let Err(e) = state.send_and_broadcast_async(&message).await {
                             error!("Failed to post batched CI notification: {}", e);
                         }
+                    }
+                }
+            }
+
+            // Periodic plugin directory re-scan: detect new/removed plugin dirs
+            // and tell the Python daemon to reload changed files.
+            _ = plugin_scan_interval.tick() => {
+                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                let new_dirs = crate::paths::discover_plugin_dirs(
+                    &project_root,
+                    state.paths.dir_key(),
+                    None,
+                );
+                // If plugin directories changed (new dirs appeared or old ones removed),
+                // restart the Python daemon with the updated list. The new daemon
+                // loads all plugins on startup, so skip the reload in that case.
+                let dirs_changed = state.plugin_daemon.update_plugin_dirs(new_dirs).await;
+                if state.plugin_daemon.has_plugins() {
+                    state.plugin_daemon.ensure_running().await;
+                    // Only send reload when dirs didn't change — the daemon
+                    // was already running and just needs to check for file changes.
+                    if !dirs_changed {
+                        state.plugin_daemon.send_reload().await;
                     }
                 }
             }
