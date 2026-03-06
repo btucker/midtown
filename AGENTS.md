@@ -49,7 +49,7 @@ sccache --show-stats   # verify cache hits after a second build
 
 **Test file placement**: Put unit tests in separate files (`src/daemon/pr_tests.rs`) rather than inline `#[cfg(test)] mod tests` blocks. Use `#[path = "pr_tests.rs"] #[cfg(test)] mod tests;` in the source file to maintain private access. This keeps PR diffs focused — reviewers can see how much is test vs. implementation at a glance. Integration/E2E tests go in `tests/` as usual.
 
-**Pre-commit hooks** (cargo-husky): `cargo fmt` and `cargo clippy` run automatically on commit. If clippy fails, the commit is rejected — fix before retrying.
+**Pre-commit hooks** (cargo-husky): `cargo fmt`, `cargo clippy`, and `biome check` (web-app) run automatically on commit. If any check fails, the commit is rejected — fix before retrying. The biome check only runs when `web-app/node_modules` is installed, so pure Rust worktrees are unaffected.
 
 **E2E tests** run with `--ignored`. CI uses `MIDTOWN_WEBHOOK_PORT=0` and `MIDTOWN_CHAT_MONITOR=0` to disable network features during testing.
 

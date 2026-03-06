@@ -11,5 +11,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo '+cargo fmt --all -- --check'
 cargo fmt --all -- --check
 
-echo '+cd web-app && npx biome check .'
-(cd web-app && npx biome check .)
+if [ -d web-app/node_modules ]; then
+  echo '+cd web-app && npx biome check .'
+  (cd web-app && npx biome check .)
+fi
