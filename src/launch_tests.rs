@@ -113,11 +113,27 @@ fn test_channel_lead_disallowed_tools_contains_code_modification_tools() {
     use crate::launch::channel_lead_disallowed_tools;
 
     let tools = channel_lead_disallowed_tools();
+    assert!(tools.contains(&"Write".to_string()));
+    assert!(tools.contains(&"NotebookEdit".to_string()));
+    // Edit is intentionally NOT blocked — channel leads need it for
+    // maintaining notes and workflow files.
+    assert!(!tools.contains(&"Edit".to_string()));
+    // Bash is intentionally NOT blocked — channel leads need it for
+    // coordination commands (midtown task create, midtown channel post, etc.)
+    assert!(!tools.contains(&"Bash".to_string()));
+}
+
+#[test]
+fn test_channel_lead_fork_disallowed_tools_includes_edit() {
+    use crate::launch::channel_lead_fork_disallowed_tools;
+
+    let tools = channel_lead_fork_disallowed_tools();
+    // Fork sessions re-add Edit to the hard-block list because forks have
+    // narrower context and historically ignored prompt-based restrictions
+    // (see PR #1667).
     assert!(tools.contains(&"Edit".to_string()));
     assert!(tools.contains(&"Write".to_string()));
     assert!(tools.contains(&"NotebookEdit".to_string()));
-    // Bash is intentionally NOT blocked — channel leads need it for
-    // coordination commands (midtown task create, midtown channel post, etc.)
     assert!(!tools.contains(&"Bash".to_string()));
 }
 
@@ -130,8 +146,8 @@ fn test_channel_lead_headless_config_has_disallowed_tools() {
         "Channel lead should have disallowed tools"
     );
     assert!(
-        headless.disallowed_tools.contains(&"Edit".to_string()),
-        "Channel lead should disallow Edit"
+        !headless.disallowed_tools.contains(&"Edit".to_string()),
+        "Channel lead should NOT disallow Edit (needed for notes/workflow files)"
     );
     assert!(
         headless.disallowed_tools.contains(&"Write".to_string()),
@@ -244,7 +260,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         !headless.disallowed_tools.is_empty(),
         "Claude channel lead should still have disallowed_tools"
     );
-    assert!(headless.disallowed_tools.contains(&"Edit".to_string()));
+    assert!(!headless.disallowed_tools.contains(&"Edit".to_string()));
     assert!(headless.disallowed_tools.contains(&"Write".to_string()));
 }
 

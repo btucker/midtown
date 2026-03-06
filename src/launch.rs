@@ -274,10 +274,25 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 ///
 /// Note: `Bash` is intentionally NOT included because channel leads need it for
 /// coordination commands (`midtown task create`, `midtown channel post`, etc.).
+/// `Edit` is intentionally NOT included because channel leads need it to
+/// maintain their notes and workflow files in `~/.midtown/projects/*/channels/*/`.
 /// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
-/// modify code", which is sufficient since Edit/Write are hard-blocked for
+/// modify code", which is sufficient since Write is hard-blocked for
 /// Claude/z.ai and prompt-restricted for Codex.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
+    ["Write", "NotebookEdit"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Disallowed tools for channel lead **fork sessions** (thread-scoped).
+///
+/// Fork sessions have narrower context and are historically more prone to
+/// ignoring prompt-based restrictions (see PR #1667). `Edit` is re-added to
+/// the hard-block list here because forks don't need to maintain notes — only
+/// the top-level channel lead session does.
+pub fn channel_lead_fork_disallowed_tools() -> Vec<String> {
     ["Edit", "Write", "NotebookEdit"]
         .iter()
         .map(|s| s.to_string())

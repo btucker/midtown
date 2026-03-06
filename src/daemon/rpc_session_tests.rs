@@ -1163,6 +1163,48 @@ fn test_build_fork_config_uses_project_auth_profile() {
     );
 }
 
+/// Fork sessions for channel leads should hard-block Edit (in addition to
+/// Write and NotebookEdit). Top-level channel leads allow Edit for notes,
+/// but forks have narrower context and historically ignored prompt-based
+/// restrictions (PR #1667).
+#[test]
+fn test_fork_channel_lead_disallows_edit() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-abc123",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        true, // is_channel_lead
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        headless_config
+            .disallowed_tools
+            .contains(&"Edit".to_string()),
+        "Fork sessions should hard-block Edit"
+    );
+    assert!(
+        headless_config
+            .disallowed_tools
+            .contains(&"Write".to_string()),
+        "Fork sessions should hard-block Write"
+    );
+    assert!(
+        headless_config
+            .disallowed_tools
+            .contains(&"NotebookEdit".to_string()),
+        "Fork sessions should hard-block NotebookEdit"
+    );
+}
+
 /// Demonstrates that `build_fork_config` re-derives a *different* name when
 /// given an existing fork name as a hint. This is why `respawn_fork` must
 /// use the original fork name directly rather than relying on the generated name —
