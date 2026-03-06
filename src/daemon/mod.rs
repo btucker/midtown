@@ -3761,14 +3761,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // All active sessions get DM output (dm-<name>). Channel leads
                     // and forks retain their topic channel output via process_lead_output
-                    // in addition to this new DM output.
-                    let dm_agent_names: std::collections::HashSet<String> = state
+                    // in addition to this new DM output. Always include project_name so the
+                    // lead's DM channel is populated even if it runs headless without a
+                    // SessionRecord yet (headed sessions produce no events here, but when the
+                    // lead runs headless its events are keyed by project_name in drain_events).
+                    let mut dm_agent_names: std::collections::HashSet<String> = state
                         .name_to_session
                         .lock()
                         .unwrap()
                         .keys()
                         .cloned()
                         .collect();
+                    dm_agent_names.insert(state.project_name.clone());
                     let coworker_effects =
                         stream::process_agent_output(&events, &dm_agent_names);
 
