@@ -400,6 +400,74 @@ while true; do sleep 1; done
     assert_eq!(content.trim(), "sigterm");
 }
 
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn manager_merge_plugin_dirs_sends_sigterm() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let sdk_dir = dir.path().join("sdk");
+    std::fs::create_dir_all(&sdk_dir).unwrap();
+
+    let marker_path = dir.path().join("sigterm-received-merge");
+    let marker_str = marker_path.to_str().unwrap();
+
+    // Create a fake uv that traps SIGTERM and writes a marker file.
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake_uv = bin_dir.join("uv");
+    std::fs::write(
+        &fake_uv,
+        format!(
+            r#"#!/bin/sh
+cleanup() {{
+    echo "sigterm" > "{marker_str}"
+    exit 0
+}}
+trap cleanup TERM
+echo '{{"ready":true}}'
+while true; do sleep 1; done
+"#
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let socket_path = dir.path().join("test-merge-sigterm.sock");
+    let plugin_dir = dir.path().join("plugins");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(plugin_dir.join("test.py"), "# plugin").unwrap();
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+    }
+
+    let manager = PluginDaemonManager::new(socket_path, vec![plugin_dir], sdk_dir);
+
+    assert!(manager.ensure_running().await);
+    assert!(manager.is_running().await);
+
+    // Merge in a new directory — should trigger graceful SIGTERM restart.
+    manager
+        .merge_plugin_dirs(vec!["/tmp/new-channel-plugins".into()])
+        .await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Daemon should be stopped after merge (awaiting restart via ensure_running).
+    assert!(!manager.is_running().await);
+    assert!(
+        marker_path.exists(),
+        "merge_plugin_dirs should send SIGTERM, not SIGKILL"
+    );
+    let content = std::fs::read_to_string(&marker_path).unwrap();
+    assert_eq!(content.trim(), "sigterm");
+}
+
 #[tokio::test]
 async fn send_event_returns_none_when_not_running() {
     let manager = PluginDaemonManager::new(
