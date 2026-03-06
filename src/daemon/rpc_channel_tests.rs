@@ -1353,12 +1353,26 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         .headed_poll(&state.project_name, adapter_id, 0, 10)
         .await;
 
+    let fork_name = "auth-refactor-thread-fork";
+
     // Register a topic session for this thread
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(thread_id.clone(), fork_session_id.to_string());
+    // Register session_to_name so the lazy respawn check can look up the fork name
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_session_id.to_string(), fork_name.to_string());
+    // Mark the fork as alive so it's not treated as dead
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == fork_name
+        })));
 
     // User posts a thread reply in the topic channel
     let response = handle_channel_post(
@@ -1865,6 +1879,7 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
     // Post a parent message in the topic channel to get a valid thread_parent_id
     let thread_parent_id = post_parent_message(&state, Some("web")).await;
     let fork_session_id = "existing-fork-session-id";
+    let fork_name = "web-thread-existing";
 
     // Pre-register a fork session for this thread
     state
@@ -1872,6 +1887,18 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), fork_session_id.to_string());
+    // Register session_to_name so the lazy respawn check can look up the fork name
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_session_id.to_string(), fork_name.to_string());
+    // Mark the fork as alive so it's not treated as dead
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == fork_name
+        })));
 
     // User posts a thread reply to this thread
     let response = handle_channel_post(
@@ -1971,6 +1998,188 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
         topic.get(&thread_parent_id).map(String::as_str),
         Some("pending"),
         "pending sentinel should be untouched by a thread reply"
+    );
+}
+
+// ── Lazy fork restoration tests ───────────────────────────────────────────────
+
+/// When a thread reply targets a fork session that is dead (e.g., after daemon
+/// restart), the stale `topic_sessions` entry should be cleaned up and the
+/// message should fall back to the channel lead instead of being silently dropped.
+#[tokio::test]
+async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dead-fork-cleanup");
+
+    // Post a parent message to get a valid thread_parent_id
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+    let dead_fork_sid = "dead-fork-session-after-restart";
+    let dead_fork_name = "web-thread-abc123";
+
+    // Simulate post-restart state: topic_sessions and session_to_name have
+    // entries rebuilt from persisted state, but no process is running.
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(dead_fork_sid.to_string(), dead_fork_name.to_string());
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(dead_fork_name.to_string(), dead_fork_sid.to_string());
+
+    // Also insert a persisted SessionRecord so respawn metadata can be read
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            dead_fork_sid.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: dead_fork_sid.to_string(),
+                task_id: None,
+                current_name: Some(dead_fork_name.to_string()),
+                preferred_name: Some(dead_fork_name.to_string()),
+                working_dir: String::new(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: "channel-lead".to_string(),
+                is_running: false,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+                bound_thread_id: Some(thread_parent_id.clone()),
+                last_active: chrono::Utc::now(),
+                purpose: "test fork".to_string(),
+                pid: None,
+                channel: Some("web".to_string()),
+                provider: Some(crate::auth::AuthProvider::Claude),
+                platform: None,
+                profile: None,
+            },
+        );
+    }
+
+    // is_alive returns false by default (no process in session_manager),
+    // so the fork will be detected as dead.
+
+    // Post a thread reply — should detect dead fork and clean up
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "follow-up question in thread",
+        Some("web"),
+        Some(&thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed even with dead fork"
+    );
+
+    // The stale topic_sessions entry should be cleaned up since respawn
+    // fails in test env (no actual headless process can be spawned).
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(&thread_parent_id)
+            || topic.get(&thread_parent_id).map(String::as_str) != Some(dead_fork_sid),
+        "stale topic_sessions entry for dead fork should be cleaned up"
+    );
+}
+
+/// When a fork session is alive, thread replies should route to it normally
+/// without triggering any respawn logic.
+#[tokio::test]
+async fn test_thread_reply_to_alive_fork_routes_normally() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-alive-fork-routing");
+
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+    let fork_sid = "alive-fork-session-id";
+    let fork_name = "web-thread-xyz789";
+
+    // Register the fork in topic_sessions and session_to_name
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.clone(), fork_sid.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_sid.to_string(), fork_name.to_string());
+
+    // Hook is_alive to return true for this fork
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == fork_name
+        })));
+
+    // Post a thread reply
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "follow-up in thread",
+        Some("web"),
+        Some(&thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed for alive fork"
+    );
+
+    // topic_sessions should be unchanged — fork is alive, no cleanup needed
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(
+        topic.get(&thread_parent_id).map(String::as_str),
+        Some(fork_sid),
+        "alive fork session should remain in topic_sessions"
+    );
+}
+
+/// When `topic_sessions` has a fork entry but `session_to_name` has no mapping
+/// (orphaned entry), the stale entry should be cleaned up.
+#[tokio::test]
+async fn test_thread_reply_to_orphaned_fork_entry_cleans_up() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-orphaned-fork-cleanup");
+
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+    let orphaned_sid = "orphaned-fork-no-name-mapping";
+
+    // topic_sessions has an entry but session_to_name does NOT
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.clone(), orphaned_sid.to_string());
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "question in thread",
+        Some("web"),
+        Some(&thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed with orphaned fork entry"
+    );
+
+    // Orphaned entry should be cleaned up
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(&thread_parent_id),
+        "orphaned topic_sessions entry should be removed"
     );
 }
 
