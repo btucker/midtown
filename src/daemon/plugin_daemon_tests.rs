@@ -23,7 +23,7 @@ async fn manager_no_plugins_returns_false() {
     );
     assert!(!manager.ensure_running().await);
     assert!(!manager.is_running().await);
-    assert!(!manager.has_plugins());
+    assert!(!manager.has_plugins().await);
 }
 
 #[tokio::test]
@@ -53,7 +53,7 @@ async fn manager_has_plugins_reflects_dirs() {
         vec!["/tmp/plugins".into()],
         "/tmp/sdk".into(),
     );
-    assert!(manager.has_plugins());
+    assert!(manager.has_plugins().await);
 }
 
 #[tokio::test]

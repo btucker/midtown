@@ -87,11 +87,8 @@ impl PluginDaemonManager {
     }
 
     /// Returns true if plugin directories are configured (non-empty).
-    pub fn has_plugins(&self) -> bool {
-        self.inner
-            .try_lock()
-            .map(|inner| !inner.plugin_dirs.is_empty())
-            .unwrap_or(false)
+    pub async fn has_plugins(&self) -> bool {
+        !self.inner.lock().await.plugin_dirs.is_empty()
     }
 
     /// Ensure the daemon is running. If it's not running and we're past

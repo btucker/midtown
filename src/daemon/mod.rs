@@ -3583,7 +3583,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                 // Check plugin daemon health and ensure it's running if plugins exist.
                 state.plugin_daemon.check_health().await;
-                if state.plugin_daemon.has_plugins() {
+                if state.plugin_daemon.has_plugins().await {
                     state.plugin_daemon.ensure_running().await;
                 }
 
