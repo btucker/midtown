@@ -234,6 +234,47 @@ fn detect_issues_finds_ci_failure() {
 }
 
 #[test]
+fn detect_issues_finds_ci_failure_from_commit_status() {
+    // Commit statuses (e.g. Codecov) use `state` instead of `conclusion`
+    let pr = json!({
+        "number": 42,
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "failure"}
+        ],
+        "reviewDecision": ""
+    });
+
+    let issues = detect_pr_issues(&pr);
+
+    assert!(
+        issues.contains(&PrIssueType::CiFailed),
+        "should detect CI failure from commit status `state` field"
+    );
+}
+
+#[test]
+fn detect_issues_finds_ci_error_from_commit_status() {
+    // Commit statuses can also report `error`
+    let pr = json!({
+        "number": 42,
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": [
+            {"state": "error"}
+        ],
+        "reviewDecision": ""
+    });
+
+    let issues = detect_pr_issues(&pr);
+
+    assert!(
+        issues.contains(&PrIssueType::CiFailed),
+        "should detect CI error from commit status `state` field"
+    );
+}
+
+#[test]
 fn detect_issues_finds_changes_requested() {
     // Polling discovers review state via `gh pr list --json reviewDecision`
     let pr = json!({
@@ -389,6 +430,38 @@ fn auto_merge_succeeds_when_all_conditions_met() {
     );
 }
 
+#[test]
+fn auto_mergeable_with_commit_status_success() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "success"}
+        ],
+        "reviewDecision": "APPROVED"
+    });
+
+    assert!(
+        is_auto_mergeable(&pr),
+        "approved PR with commit status state=success should be auto-mergeable"
+    );
+}
+
+#[test]
+fn not_auto_mergeable_with_commit_status_pending() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "pending"}
+        ],
+        "reviewDecision": "APPROVED"
+    });
+
+    assert!(
+        !is_auto_mergeable(&pr),
+        "approved PR with commit status state=pending should not be auto-mergeable"
+    );
+}
+
 // -------------------------------------------------------------------------
 // all_ci_checks_passed — verifies CI status for PR break decisions
 // -------------------------------------------------------------------------
@@ -461,6 +534,67 @@ fn ci_passed_with_no_checks() {
     assert!(
         all_ci_checks_passed(&pr),
         "no CI checks configured = considered passing"
+    );
+}
+
+#[test]
+fn ci_passed_with_commit_status_success() {
+    // Commit statuses (like Codecov) use `state` instead of `conclusion`
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "success"}
+        ]
+    });
+
+    assert!(
+        all_ci_checks_passed(&pr),
+        "commit status with state=success should count as passed"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_failure() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "failure"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=failure should count as failed"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_pending() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "pending"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=pending should count as pending"
+    );
+}
+
+#[test]
+fn ci_not_passed_with_commit_status_error() {
+    let pr = json!({
+        "statusCheckRollup": [
+            {"conclusion": "SUCCESS"},
+            {"state": "error"}
+        ]
+    });
+
+    assert!(
+        !all_ci_checks_passed(&pr),
+        "commit status with state=error should count as failed"
     );
 }
 
