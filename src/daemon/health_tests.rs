@@ -1268,6 +1268,7 @@ fn stuck_reviewer_restart_propagates_session_id() {
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.health.headless_process_health,
         &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewed_prs,
         &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
@@ -1560,6 +1561,7 @@ fn pending_api_call_exempts_reviewer_from_stuck_detection() {
     let restarts = crate::rules::decide_stuck_reviewer_restarts(
         &snap.health.headless_process_health,
         &snap.reviewer.reviewer_pr_assignments,
+        &snap.reviewer.reviewed_prs,
         &snap.reviewer.reviewer_restart_counts,
         &exemptions,
         snap.now_utc,
@@ -2307,6 +2309,49 @@ fn dead_reviewer_at_max_restarts_escalates_to_ops() {
     assert!(
         has_record_escalation,
         "expected RecordReviewerEscalation for PR #1352, got: {:#?}",
+        effects
+    );
+}
+
+/// Bug !2104: The stuck reviewer escalation logic in `check_and_restart_stuck_reviewers`
+/// must skip reviewers whose PRs have already been reviewed. Previously, the inline
+/// escalation code didn't check `reviewed_prs`, causing spurious escalation warnings.
+#[test]
+fn stuck_reviewer_escalation_skipped_when_review_already_posted() {
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    // Reviewer is alive but stuck (no events for a long time)
+    snap.health.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: true,
+            last_event_at: Some(now - chrono::Duration::minutes(20)),
+            ..Default::default()
+        },
+    );
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("broadway".to_string(), 1825u64);
+    snap.reviewer
+        .reviewer_restart_counts
+        .insert(1825u64, MAX_REVIEWER_RESTARTS); // at max restarts
+    // Review was already posted
+    snap.reviewer.reviewed_prs.insert(1825u64);
+
+    let effects = check_and_restart_stuck_reviewers(&snap);
+
+    // Should produce no effects — review was posted, no escalation needed
+    let has_escalation = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { message, .. } if message.contains("1825")
+        )
+    });
+    assert!(
+        !has_escalation,
+        "no escalation expected when review was already posted, got: {:#?}",
         effects
     );
 }
