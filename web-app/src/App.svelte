@@ -4,6 +4,7 @@
   import Channel from '$lib/Channel.svelte'
   import ChannelPrList from '$lib/ChannelPrList.svelte'
   import ChannelNotes from '$lib/ChannelNotes.svelte'
+  import ChannelWorkflow from '$lib/ChannelWorkflow.svelte'
   import ChannelList from '$lib/ChannelList.svelte'
   import ChannelHeader from '$lib/ChannelHeader.svelte'
   import ThreadPanel from '$lib/ThreadPanel.svelte'
@@ -332,7 +333,7 @@
               <ChannelHeader />
               {#if !isActiveDm}
                 <div class="channel-tab-bar">
-                  {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes']] as [tab, label]}
+                  {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes'], ['workflow', 'Workflow']] as [tab, label]}
                     {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
                     <button
                       class="channel-tab"
@@ -349,6 +350,8 @@
                 <ChannelPrList />
               {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'notes'}
                 <ChannelNotes />
+              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'workflow'}
+                <ChannelWorkflow />
               {/if}
             </div>
 
