@@ -94,6 +94,17 @@ class TestActions:
         assert action.params["description"] == "Details"
         assert action.params["channel"] == "dev"
 
+    def test_update_task(self) -> None:
+        action = Actions.update_task("42", owner="park", status="in_review", pr=99)
+        assert action.method == "task.update"
+        assert action.params["id"] == "42"
+        assert action.params["owner"] == "park"
+        assert action.params["status"] == "in_review"
+        assert action.params["pr"] == 99
+        # Unset params should be omitted
+        assert "description" not in action.params
+        assert "channel" not in action.params
+
     def test_spawn_coworker(self) -> None:
         action = Actions.spawn_coworker(prompt="do something")
         assert action == DaemonAction(
@@ -108,6 +119,7 @@ class TestPluginManager:
         # Hook specs are registered
         assert hasattr(pm.hook, "on_pr_opened")
         assert hasattr(pm.hook, "on_coworker_idle")
+        assert hasattr(pm.hook, "on_task_completed")
         assert hasattr(pm.hook, "workflow_started")
 
     def test_register_and_call_plugin(self) -> None:

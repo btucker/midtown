@@ -11,7 +11,7 @@ implementations) to build return values without constructing raw
             ctx.actions.spawn_reviewer(ctx.pr_number),
         ]
 
-Each method mirrors an :class:`~midtown.MidtownRPC` method but returns a
+Each method mirrors a :class:`~midtown.MidtownRPC` method but returns a
 ``DaemonAction`` instead of performing I/O.
 """
 
@@ -25,7 +25,7 @@ from midtown.hooks import DaemonAction
 class Actions:
     """Factory for building :class:`DaemonAction` objects.
 
-    Methods mirror :class:`~midtown.MidtownRPC` for a familiar API.
+    Methods mirror a subset of :class:`~midtown.MidtownRPC` for a familiar API.
     """
 
     # -- Channel ------------------------------------------------------------
@@ -70,6 +70,36 @@ class Actions:
         if model is not None:
             params["model"] = model
         return DaemonAction(method="task.create", params=params)
+
+    @staticmethod
+    def update_task(
+        task_id: str,
+        *,
+        owner: str | None = None,
+        status: str | None = None,
+        description: str | None = None,
+        blocked_by: list[str] | None = None,
+        channel: str | None = None,
+        model: str | None = None,
+        pr: int | None = None,
+    ) -> DaemonAction:
+        """Update an existing task."""
+        params: dict[str, Any] = {"id": task_id}
+        if owner is not None:
+            params["owner"] = owner
+        if status is not None:
+            params["status"] = status
+        if description is not None:
+            params["description"] = description
+        if blocked_by is not None:
+            params["blocked_by"] = blocked_by
+        if channel is not None:
+            params["channel"] = channel
+        if model is not None:
+            params["model"] = model
+        if pr is not None:
+            params["pr"] = pr
+        return DaemonAction(method="task.update", params=params)
 
     @staticmethod
     def complete_task(task_id: str) -> DaemonAction:

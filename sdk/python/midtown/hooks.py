@@ -68,8 +68,8 @@ class HookContext:
 
     Provides read-only access to the event, task state, and an ``actions``
     helper for constructing :class:`DaemonAction` return values.  Plugins
-    should treat ``state`` as read-only; mutations are not persisted (use
-    :meth:`actions.set_state` instead).
+    should treat ``state`` as read-only; mutations are not persisted.
+    Return :class:`DaemonAction` objects to effect changes.
     """
 
     # Event data
@@ -142,11 +142,15 @@ class WorkflowHooks:
 
 
 class TaskHooks:
-    """Per-event hooks invoked when the daemon emits a workflow event.
+    """Event-dispatch hooks invoked when the daemon emits a workflow event.
 
     Each method corresponds to one event type.  The method name is the event
     type with dots replaced by underscores and prefixed with ``on_``
     (e.g. ``pr.opened`` → ``on_pr_opened``).
+
+    .. note::
+       Prompt-customization hooks (e.g. ``get_system_prompt``) are planned
+       as a separate hook spec class in a future iteration.
 
     Hooks receive a :class:`HookContext` populated with event data and return
     a list of :class:`DaemonAction` objects.  Return an empty list for no
@@ -165,6 +169,10 @@ class TaskHooks:
     @hookspec
     def on_task_assigned(self, ctx: HookContext) -> list[DaemonAction]:
         """A task was assigned to a coworker."""
+
+    @hookspec
+    def on_task_completed(self, ctx: HookContext) -> list[DaemonAction]:
+        """A task was completed (PR merged or marked done)."""
 
     # -- PR lifecycle -------------------------------------------------------
 
