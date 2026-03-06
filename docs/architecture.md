@@ -713,12 +713,14 @@ uv run workflow.py --event '{"type":"pr.opened",...}' \
 
 ### State Persistence
 
-The state file (`workflow-state.json`, path from `workflow_state_file()` in `src/paths.rs`) stores the script's mutable state between invocations. Both single-shot and sidecar modes use the same state file. The `run()` / `run_loop()` entry points in the SDK load state before calling the handler and save it atomically afterward.
+Workflow state is owned by the daemon in-memory (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json` alongside other daemon state. This is a `HashMap<String, serde_json::Value>` keyed by channel name. Each channel's state is further namespaced by plugin key when plugins use the `plugin` parameter.
 
-Workflow scripts can also access state programmatically via two RPC methods handled by `rpc_workflow.rs`:
+Two RPC methods in `rpc_workflow.rs` provide access:
 
-- **`workflow.get_state`** — reads the state file for a channel, optionally scoped to a plugin key. Returns `null` when absent.
-- **`workflow.set_state`** — writes state atomically (temp file + rename). With a `plugin` key, merges at that key; without, replaces the entire file. Concurrent writes to the same channel are serialized by a per-channel `tokio::sync::Mutex` in `DaemonState.workflow_state_locks` to prevent TOCTOU races.
+- **`workflow.get_state`** — reads from the in-memory `workflow_state` map for a channel, optionally scoped to a plugin key. Returns `null` when absent.
+- **`workflow.set_state`** — updates the in-memory state and persists to `daemon-state.json`. With a `plugin` key, merges at that key; without, replaces the entire channel state. Concurrent writes are serialized by the `persistent_state` Mutex.
+
+**Legacy migration:** On first startup after upgrade, per-channel `workflow-state.json` files are automatically migrated into `daemon-state.json` and the old files are removed. The `--state` CLI flag is still passed to legacy `workflow.py` scripts for backward compatibility, but new plugin-based workflows should use RPC exclusively.
 
 ### Plugin Daemon (Unix Socket IPC)
 

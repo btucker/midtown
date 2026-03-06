@@ -28,7 +28,7 @@
 //!         │       ├── notes/                 # Channel lead knowledge files
 //!         │       ├── cursors/               # Per-agent read cursors
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
-//!         │       └── workflow-state.json    # Persistent workflow state between invocations
+//!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
 //!         ├── logs/                  # Daemon logs
 //!         ├── daemon.pid             # Daemon PID file
 //!         ├── screenshots/           # Screenshots for PR embedding (UUID-named)
@@ -45,7 +45,7 @@
 //! 3. `<project_root>/.midtown/workflow.py` — project default, in repo
 //! 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local
 //!
-//! See [`workflow_script_for_channel`] and [`workflow_state_file`].
+//! See [`workflow_script_for_channel`] and [`workflow_state_file`] (legacy, kept for backward compat).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1013,14 +1013,15 @@ fn parse_skill_md_name_and_body(content: &str, plugin_dir: &Path) -> (String, St
     (name, body)
 }
 
-/// Get the workflow state file path for a channel.
+/// Get the workflow state file path for a channel (legacy).
 ///
 /// Returns `~/.midtown/projects/<repo>/channels/<channel>/workflow-state.json`.
 ///
-/// This file stores serialized workflow state between invocations. The
-/// subprocess-per-event model requires external persistence: the daemon passes
-/// this path to each `uv run` invocation so the script can load and save its
-/// state machine state transparently.
+/// **Deprecated:** Workflow state is now owned by the daemon in-memory
+/// (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json`.
+/// This path is still passed to legacy `workflow.py` scripts via `--state` for
+/// backward compatibility, but new plugin-based workflows should use the
+/// `workflow.get_state` / `workflow.set_state` RPC methods instead.
 pub fn workflow_state_file(channel: &str, repo: &str) -> PathBuf {
     projects_dir_for_repo(repo)
         .join("channels")

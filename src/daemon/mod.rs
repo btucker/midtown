@@ -725,10 +725,6 @@ pub(crate) struct DaemonState {
     /// Per-channel locks for workflow state file writes.
     ///
     /// Prevents TOCTOU races when concurrent `set_state` calls for different plugin
-    /// keys on the same channel both read-modify-write the state file. The outer
-    /// `std::sync::Mutex` is held briefly to look up or create the per-channel lock;
-    /// the inner `tokio::sync::Mutex` serializes actual file I/O.
-    workflow_state_locks: std::sync::Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     /// Manages the long-running Python plugin daemon process.
     /// Spawns `uv run python -m midtown` when plugins are detected in
     /// discovery paths. Communicates via Unix socket.
@@ -1462,7 +1458,6 @@ impl DaemonState {
             fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
             fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
-            workflow_state_locks: std::sync::Mutex::new(HashMap::new()),
             plugin_daemon,
         })
     }

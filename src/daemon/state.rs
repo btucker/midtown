@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -236,6 +237,18 @@ pub struct DaemonPersistentState {
     /// so LRU ordering and usage-limit state survive restarts.
     #[serde(default)]
     pub profile_pool_state: HashMap<String, ProfileState>,
+
+    /// Workflow plugin state, owned by the daemon.
+    ///
+    /// Maps channel name → per-channel state (JSON object). Each channel's
+    /// state is further namespaced by plugin key when plugins use the
+    /// `plugin` parameter on `workflow.set_state`.
+    ///
+    /// Previously stored in per-channel `workflow-state.json` files. Now
+    /// persisted as part of `daemon-state.json` for single-source-of-truth
+    /// semantics and atomic updates.
+    #[serde(default)]
+    pub workflow_state: HashMap<String, serde_json::Value>,
 }
 
 impl DaemonPersistentState {
@@ -254,8 +267,34 @@ impl DaemonPersistentState {
                 })?;
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
+
+                // Migrate legacy per-channel workflow-state.json files if
+                // workflow_state is empty (upgrade from pre-migration installs).
+                if state.workflow_state.is_empty() {
+                    let (migrated, files_to_delete) = Self::migrate_workflow_state_files(repo);
+                    if !migrated.is_empty() {
+                        debug!(
+                            "Migrated {} legacy workflow-state.json file(s) into existing daemon state",
+                            migrated.len()
+                        );
+                        state.workflow_state = migrated;
+                        // Persist the migrated state before deleting legacy files
+                        if let Err(e) = state.save_for_repo(repo) {
+                            warn!(
+                                "Failed to save daemon state after workflow migration: {}",
+                                e
+                            );
+                        } else {
+                            for path in &files_to_delete {
+                                let _ = fs::remove_file(path);
+                                debug!("Removed legacy workflow-state.json: {}", path.display());
+                            }
+                        }
+                    }
+                }
+
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -267,7 +306,8 @@ impl DaemonPersistentState {
                     state.task_thread_id.len(),
                     state.task_message_id.len(),
                     state.channel_lead_sessions.len(),
-                    state.profile_pool_state.len()
+                    state.profile_pool_state.len(),
+                    state.workflow_state.len()
                 );
                 Ok(state)
             }
@@ -290,7 +330,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -300,7 +340,8 @@ impl DaemonPersistentState {
             self.task_plan.len(),
             self.task_execution_skill.len(),
             self.channel_lead_sessions.len(),
-            self.profile_pool_state.len()
+            self.profile_pool_state.len(),
+            self.workflow_state.len()
         );
         Ok(())
     }
@@ -367,6 +408,9 @@ impl DaemonPersistentState {
             ReminderState::default()
         });
 
+        // Migrate any existing per-channel workflow-state.json files.
+        let (workflow_state, workflow_files_to_delete) = Self::migrate_workflow_state_files(repo);
+
         let state = Self {
             github,
             reminders,
@@ -381,6 +425,7 @@ impl DaemonPersistentState {
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
+            workflow_state,
         };
 
         // Save the unified file
@@ -389,7 +434,9 @@ impl DaemonPersistentState {
             return Err(e);
         }
 
-        // Clean up legacy files (best-effort, don't fail if removal fails)
+        // Clean up legacy files (best-effort, don't fail if removal fails).
+        // Deletion is deferred until after save_for_repo succeeds to avoid
+        // data loss if a crash occurs between reading and writing.
         let github_path = crate::paths::github_state_file_for_repo(repo);
         if github_path.exists() {
             let _ = fs::remove_file(&github_path);
@@ -398,6 +445,10 @@ impl DaemonPersistentState {
         if reminder_path.exists() {
             let _ = fs::remove_file(&reminder_path);
             debug!("Removed legacy reminders.json after migration");
+        }
+        for path in &workflow_files_to_delete {
+            let _ = fs::remove_file(path);
+            debug!("Removed legacy workflow-state.json: {}", path.display());
         }
 
         Ok(state)
@@ -447,6 +498,75 @@ impl DaemonPersistentState {
     /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
     pub fn channel_lead_names(&self) -> std::collections::HashSet<String> {
         self.channel_lead_sessions.keys().cloned().collect()
+    }
+
+    /// Migrate per-channel `workflow-state.json` files into in-memory state.
+    ///
+    /// Scans `~/.midtown/projects/<repo>/channels/*/workflow-state.json`,
+    /// loads each file's content, and collects them into a HashMap keyed
+    /// by channel name. Returns the migrated state and paths to legacy files
+    /// that should be deleted after the combined state is persisted.
+    fn migrate_workflow_state_files(
+        repo: &str,
+    ) -> (HashMap<String, serde_json::Value>, Vec<PathBuf>) {
+        let channels_dir = crate::paths::projects_dir_for_repo(repo).join("channels");
+        Self::migrate_workflow_state_from_dir(&channels_dir)
+    }
+
+    /// Core migration logic that scans a channels directory for legacy
+    /// `workflow-state.json` files. Separated from `migrate_workflow_state_files`
+    /// for testability (no dependency on global paths).
+    ///
+    /// Returns (migrated_state, legacy_files_to_delete). Callers must persist
+    /// the combined state before deleting the legacy files to avoid data loss
+    /// on crash.
+    fn migrate_workflow_state_from_dir(
+        channels_dir: &Path,
+    ) -> (HashMap<String, serde_json::Value>, Vec<PathBuf>) {
+        let mut workflow_state = HashMap::new();
+        let mut files_to_delete = Vec::new();
+
+        let entries = match fs::read_dir(channels_dir) {
+            Ok(e) => e,
+            Err(_) => return (workflow_state, files_to_delete), // No channels dir — nothing to migrate
+        };
+
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let channel_name = entry.file_name().to_string_lossy().to_string();
+            let state_file = entry.path().join("workflow-state.json");
+
+            if let Ok(content) = fs::read_to_string(&state_file) {
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(value) => {
+                        debug!(
+                            channel = %channel_name,
+                            "Migrated workflow-state.json into daemon state"
+                        );
+                        workflow_state.insert(channel_name, value);
+                        files_to_delete.push(state_file);
+                    }
+                    Err(e) => {
+                        warn!(
+                            channel = %channel_name,
+                            "Failed to parse legacy workflow-state.json during migration: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        if !workflow_state.is_empty() {
+            debug!(
+                "Migrated {} channel workflow-state.json file(s) into daemon state",
+                workflow_state.len()
+            );
+        }
+
+        (workflow_state, files_to_delete)
     }
 }
 
