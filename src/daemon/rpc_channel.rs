@@ -82,7 +82,11 @@ pub(crate) fn fork_initial_framing(channel_name: &str) -> String {
         "You are a thread-scoped fork of the channel lead for #{channel_name}. \
          Your job is to investigate the user's request, scope the work, and create a task. \
          You do NOT write code — use Read, Glob, Grep to understand the codebase, \
-         then create a well-described task for a coworker via `midtown task create`."
+         then create a well-described task for a coworker via `midtown task create`.\n\n\
+         IMPORTANT: To communicate with the channel lead who forked you, @mention them \
+         as @{channel_name} in your thread replies. Do NOT use the SendMessage tool — \
+         it is not supported in this environment. All coordination happens through \
+         @mentions in the channel thread you are bound to."
     )
 }
 
@@ -286,6 +290,40 @@ pub(super) async fn handle_channel_post(
             },
         );
         crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
+    }
+
+    // Nudge fork sessions when any sender (coworker, channel lead) posts a
+    // thread reply in a topic channel with a bound fork. Skip self-nudging
+    // (when the fork itself is posting). User messages are handled below in the
+    // is_user_sender block which also handles DM/main channel nudging.
+    if !state.is_user_sender(from) {
+        let default_channel = state.channel_router.default_channel_name();
+        let is_topic = channel_name != default_channel && !channel_name.starts_with("dm-");
+        if is_topic && let Some(parent_id) = thread_parent_id {
+            let fork_session_id = state
+                .topic_sessions
+                .lock()
+                .unwrap()
+                .get(parent_id)
+                .filter(|s| s.as_str() != "pending")
+                .cloned();
+            if let Some(ref fork_sid) = fork_session_id {
+                // Avoid self-nudge: don't nudge the fork if it's the sender.
+                let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+                let is_self = fork_name.as_deref() == Some(from);
+                if !is_self {
+                    let wake_msg_id = msg.thread_anchor_id().to_string();
+                    let nudge_effect = build_topic_thread_nudge_effect(
+                        channel_name,
+                        &content,
+                        wake_msg_id,
+                        fork_session_id,
+                        Some(parent_id),
+                    );
+                    crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+                }
+            }
+        }
     }
 
     // Nudge lead when user messages arrive (from web UI or TUI input)
