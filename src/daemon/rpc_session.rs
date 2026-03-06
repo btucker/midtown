@@ -1395,7 +1395,7 @@ pub(super) async fn create_fork_session(
             fork_session_id.clone(),
             crate::daemon::state::SessionRecord {
                 session_id: fork_session_id.clone(),
-                task_id: None,
+                task_id: parent_record.as_ref().and_then(|r| r.task_id.clone()),
                 current_name: Some(fork_name.clone()),
                 preferred_name: Some(fork_name.clone()),
                 working_dir: working_dir.clone().unwrap_or_default(),

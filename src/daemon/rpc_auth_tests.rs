@@ -648,11 +648,19 @@ fn test_build_fresh_coworker_relaunch_config_preserves_task_id() {
         Some("42".to_string()),
         "task_id must be passed through to the config"
     );
+    assert!(
+        config_with.initial_prompt.as_ref().unwrap().contains("42"),
+        "initial prompt should reference the task ID"
+    );
 
     let config_without = build_fresh_coworker_relaunch_config(&coworker, "midtown", None);
     assert_eq!(
         config_without.task_id, None,
         "task_id must be None when not provided"
+    );
+    assert!(
+        config_without.initial_prompt.is_none(),
+        "initial prompt must be None when task_id is not provided"
     );
 }
 
