@@ -417,6 +417,88 @@ class TestPluginUnloading:
             assert result.actions[0].params["message"] == "v2"
 
 
+class TestMidtownOrder:
+    """Tests for midtown_order-based plugin execution order."""
+
+    def test_plugins_execute_in_order(self) -> None:
+        """Lower midtown_order plugins should execute first (produce actions first)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # AgentSkills plugin with order=10 (should execute first)
+            early_dir = plugin_dir / "early"
+            scripts = early_dir / "scripts"
+            scripts.mkdir(parents=True)
+            (early_dir / "SKILL.md").write_text(
+                "---\nname: early\nmetadata:\n  midtown_order: 10\n---\n"
+            )
+            (scripts / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("early")]\n'
+            )
+
+            # AgentSkills plugin with order=100 (should execute second)
+            late_dir = plugin_dir / "late"
+            scripts2 = late_dir / "scripts"
+            scripts2.mkdir(parents=True)
+            (late_dir / "SKILL.md").write_text(
+                "---\nname: late\nmetadata:\n  midtown_order: 100\n---\n"
+            )
+            (scripts2 / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("late")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            messages = [a.params["message"] for a in result.actions]
+            assert messages == ["early", "late"]
+
+    def test_default_order_for_bare_plugins(self) -> None:
+        """Bare .py plugins get default order 1000, after low-order AgentSkills."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # Bare plugin (default order 1000)
+            (plugin_dir / "bare.py").write_text(_plugin_source("bare"))
+
+            # AgentSkills plugin with order=50 (should execute first)
+            skill_dir = plugin_dir / "priority"
+            scripts = skill_dir / "scripts"
+            scripts.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: priority\nmetadata:\n  midtown_order: 50\n---\n"
+            )
+            (scripts / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_opened(ctx):\n"
+                '    return [ctx.actions.post_to_channel("priority")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            messages = [a.params["message"] for a in result.actions]
+            assert messages == ["priority", "bare"]
+
+
 class TestHotReload:
     """Tests for mtime-based hot-reload."""
 
