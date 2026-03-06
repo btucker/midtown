@@ -237,6 +237,186 @@ fn test_coworker_line_map_excludes_project_lead() {
     );
 }
 
+// --- DM channel separation tests ---
+
+/// DM channels should appear after regular channels, separated by a "DIRECT MESSAGES" header.
+#[test]
+fn test_dm_channels_separated_from_regular_channels() {
+    use midtown::ChannelInfo;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.available_channels = vec![
+        ChannelInfo {
+            name: "tui".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+        ChannelInfo {
+            name: "ops".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+        ChannelInfo {
+            name: "dm-park".to_string(),
+            is_archived: false,
+            is_dm: true,
+        },
+        ChannelInfo {
+            name: "dm-york".to_string(),
+            is_archived: false,
+            is_dm: true,
+        },
+    ];
+
+    let backend = TestBackend::new(40, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    let mut rendered_lines = Vec::new();
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    // Extract rendered text from the terminal buffer
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        for x in 0..buffer.area.width {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        rendered_lines.push(line.trim_end().to_string());
+    }
+
+    // Find the "DIRECT MESSAGES" header line
+    let dm_header_line = rendered_lines
+        .iter()
+        .position(|l| l.contains("DIRECT MESSAGES"));
+    assert!(
+        dm_header_line.is_some(),
+        "should have a 'DIRECT MESSAGES' section header, rendered:\n{}",
+        rendered_lines.join("\n")
+    );
+    let dm_header_y = dm_header_line.unwrap();
+
+    // Regular channels (#tui, #ops) should appear before the DM header
+    let tui_line = rendered_lines.iter().position(|l| l.contains("#tui"));
+    let ops_line = rendered_lines.iter().position(|l| l.contains("#ops"));
+    assert!(tui_line.is_some(), "should render #tui");
+    assert!(ops_line.is_some(), "should render #ops");
+    assert!(
+        tui_line.unwrap() < dm_header_y,
+        "#tui should be above DIRECT MESSAGES"
+    );
+    assert!(
+        ops_line.unwrap() < dm_header_y,
+        "#ops should be above DIRECT MESSAGES"
+    );
+
+    // DM channels (@park, @york) should appear after the DM header
+    let park_line = rendered_lines.iter().position(|l| l.contains("@park"));
+    let york_line = rendered_lines.iter().position(|l| l.contains("@york"));
+    assert!(park_line.is_some(), "should render @park");
+    assert!(york_line.is_some(), "should render @york");
+    assert!(
+        park_line.unwrap() > dm_header_y,
+        "@park should be below DIRECT MESSAGES"
+    );
+    assert!(
+        york_line.unwrap() > dm_header_y,
+        "@york should be below DIRECT MESSAGES"
+    );
+}
+
+/// When there are no DM channels, the "DIRECT MESSAGES" header should not appear.
+#[test]
+fn test_no_dm_header_when_no_dm_channels() {
+    use midtown::ChannelInfo;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.available_channels = vec![
+        ChannelInfo {
+            name: "tui".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+        ChannelInfo {
+            name: "ops".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+    ];
+
+    let backend = TestBackend::new(40, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let mut line = String::new();
+        for x in 0..buffer.area.width {
+            line.push_str(buffer[(x, y)].symbol());
+        }
+        assert!(
+            !line.contains("DIRECT MESSAGES"),
+            "DIRECT MESSAGES header should not appear when there are no DM channels"
+        );
+    }
+}
+
+/// DM channels should be clickable via channel_line_map even when in the DM section.
+#[test]
+fn test_dm_channels_in_channel_line_map() {
+    use midtown::ChannelInfo;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = test_app();
+    app.available_channels = vec![
+        ChannelInfo {
+            name: "tui".to_string(),
+            is_archived: false,
+            is_dm: false,
+        },
+        ChannelInfo {
+            name: "dm-park".to_string(),
+            is_archived: false,
+            is_dm: true,
+        },
+    ];
+
+    let backend = TestBackend::new(40, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            draw_board_panel(f, &mut app, area);
+        })
+        .unwrap();
+
+    let channel_names: Vec<&String> = app.channel_line_map.values().collect();
+    assert!(
+        channel_names.iter().any(|n| n.as_str() == "tui"),
+        "tui should be in channel_line_map"
+    );
+    assert!(
+        channel_names.iter().any(|n| n.as_str() == "dm-park"),
+        "dm-park should be in channel_line_map"
+    );
+}
+
 /// The project lead named by repo name (canonical naming, e.g. "midtown") should NOT
 /// appear in the coworkers sidebar. test_app() uses project_name = "test".
 /// Regression test for !1723 (Codex review feedback).

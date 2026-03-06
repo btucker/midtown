@@ -118,6 +118,23 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
         );
     }
 
+    // Split channels into regular and DM groups.
+    // Use the `is_dm` flag from ChannelInfo when available, fall back to prefix check.
+    let dm_names: HashSet<String> = available_channels_clone
+        .iter()
+        .filter(|ci| ci.is_dm)
+        .map(|ci| ci.name.clone())
+        .collect();
+    let mut regular_channels: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
+    let mut dm_channels: BTreeMap<String, Vec<&KanbanTask>> = BTreeMap::new();
+    for (name, tasks) in channels_to_display {
+        if dm_names.contains(&name) || name.starts_with("dm-") {
+            dm_channels.insert(name, tasks);
+        } else {
+            regular_channels.insert(name, tasks);
+        }
+    }
+
     let wrap_width = area.width.saturating_sub(2).max(20) as usize;
 
     // Build task_line_map and channel_line_map before rendering (to avoid borrow conflicts)
@@ -127,8 +144,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     let mut channel_line_map: HashMap<u16, String> = HashMap::new();
     let mut current_line: u16 = 0;
 
-    // First pass: calculate line positions
-    for (channel_name, tasks) in &channels_to_display {
+    // First pass: calculate line positions for regular channels
+    for (channel_name, tasks) in &regular_channels {
         // Record channel header line for click-to-select
         channel_line_map.insert(current_line, channel_name.clone());
         current_line += 1; // Channel header
@@ -160,15 +177,50 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
             });
             if task_phase_label(task, task_pr, coworker_phase).is_some() {
                 if title_wraps {
-                    // The phase label is merged into the first continuation line (wrapped_lines[1]).
-                    // That line's position is current_line - wrapped_lines.len() + 1.
-                    // Register it so click-to-attach works on the continuation line too.
                     let continuation_line = current_line - wrapped_lines.len() as u16 + 1;
                     task_line_map.insert(continuation_line, (task.id.clone(), task.owner.clone()));
                 } else {
-                    // Label is a separate line below the title; register it.
                     task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
                     current_line += 1;
+                }
+            }
+        }
+    }
+
+    // First pass: calculate line positions for DM channels
+    if !dm_channels.is_empty() {
+        current_line += 1; // DM section header line
+        for (channel_name, tasks) in &dm_channels {
+            channel_line_map.insert(current_line, channel_name.clone());
+            current_line += 1;
+            for task in tasks {
+                task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
+                let prefix = format!("!{} ", task.id);
+                let task_line = format!("{}{}", prefix, task.subject);
+                let wrapped_lines = wrap_content(&task_line, wrap_width);
+                current_line += wrapped_lines.len() as u16;
+                let title_wraps = wrapped_lines.len() > 1;
+                let task_pr = prs_clone.iter().find(|pr| {
+                    pr.task_id
+                        .map(|id| id.to_string() == task.id)
+                        .unwrap_or(false)
+                });
+                let coworker_phase = coworkers_clone.iter().find_map(|cw| {
+                    if cw.task_id.map(|id| id.to_string()) == Some(task.id.clone()) {
+                        cw.phase.as_deref()
+                    } else {
+                        None
+                    }
+                });
+                if task_phase_label(task, task_pr, coworker_phase).is_some() {
+                    if title_wraps {
+                        let continuation_line = current_line - wrapped_lines.len() as u16 + 1;
+                        task_line_map
+                            .insert(continuation_line, (task.id.clone(), task.owner.clone()));
+                    } else {
+                        task_line_map.insert(current_line, (task.id.clone(), task.owner.clone()));
+                        current_line += 1;
+                    }
                 }
             }
         }
@@ -178,8 +230,8 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     app.task_line_map = task_line_map;
     app.channel_line_map = channel_line_map;
 
-    // Render each channel as a swimlane
-    for (channel_name, tasks) in &channels_to_display {
+    // Render regular channels
+    for (channel_name, tasks) in &regular_channels {
         render_channel_header(app, channel_name, &mut lines);
 
         let task_indentation = compute_task_indentation(tasks);
@@ -193,6 +245,34 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
                 wrap_width,
                 &mut lines,
             );
+        }
+    }
+
+    // Render DM channels in a separate section
+    if !dm_channels.is_empty() {
+        let palette = app.theme.palette();
+        lines.push(Line::from(vec![Span::styled(
+            "DIRECT MESSAGES".to_string(),
+            Style::default()
+                .fg(palette.muted)
+                .add_modifier(Modifier::DIM),
+        )]));
+
+        for (channel_name, tasks) in &dm_channels {
+            render_channel_header(app, channel_name, &mut lines);
+
+            let task_indentation = compute_task_indentation(tasks);
+
+            for task in tasks {
+                render_task_item(
+                    app,
+                    task,
+                    channel_name,
+                    &task_indentation,
+                    wrap_width,
+                    &mut lines,
+                );
+            }
         }
     }
 
