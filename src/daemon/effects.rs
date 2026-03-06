@@ -11,7 +11,7 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
-async fn load_channel_lead_context(
+pub(super) async fn load_channel_lead_context(
     base_dir: PathBuf,
     channel_name: &str,
     project_root: PathBuf,
