@@ -180,10 +180,11 @@ mod tests {
         // Verify no Stop hook (removed - daemon handles work assignment)
         assert!(settings["hooks"]["Stop"].is_null());
 
-        // Verify PostToolUse hooks for task operations, questions, and insights
+        // Verify PostToolUse hooks for task operations and questions
+        // (Insight hook removed — daemon extracts insights from DM stream)
         let post_tool_hooks = &settings["hooks"]["PostToolUse"];
         assert!(post_tool_hooks.is_array());
-        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 4);
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
 
         // TaskUpdate hook
         assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
@@ -205,14 +206,6 @@ mod tests {
             post_tool_hooks[2]["hooks"][0]["command"],
             "midtown hook ask"
         );
-
-        // Insight hook (no matcher)
-        assert!(post_tool_hooks[3]["matcher"].is_null());
-        assert_eq!(
-            post_tool_hooks[3]["hooks"][0]["command"],
-            "midtown hook insight"
-        );
-
         // Verify Notification hook for idle
         let notification_hooks = &settings["hooks"]["Notification"];
         assert!(notification_hooks.is_array());

@@ -8,7 +8,6 @@
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — one-shot execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
-//! - `rpc_insight` — insight reporting and deduplication
 //! - `rpc_prs` — PR data and operations (`prs.status`, `pr.review`, `pr.merge`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
@@ -659,15 +658,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 (_, Err(e)) => Response::error(request.id, RpcError::new(-32602, e)),
                 (None, Ok(_)) => Response::error(request.id, RpcError::invalid_params()),
             }
-        }
-
-        // ---- Insight ----
-        "insight.report" => {
-            let agent = require_str!(params, "agent", request.id);
-            let insight = require_str!(params, "insight", request.id);
-            let channel = params.str_param("channel");
-            super::rpc_insight::handle_insight_report(request.id, agent, insight, channel, state)
-                .await
         }
 
         // ---- Sessions ----

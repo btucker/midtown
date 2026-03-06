@@ -565,15 +565,6 @@ impl DaemonClient {
         )
     }
 
-    // Insight commands
-
-    pub fn report_insight(&self, agent: &str, insight: &str) -> Result<Value, String> {
-        self.send_raw(
-            "insight.report",
-            Some(serde_json::json!({ "agent": agent, "insight": insight })),
-        )
-    }
-
     // Session commands (attach/detach headless coworkers)
 
     /// Request attaching to a headless coworker session.

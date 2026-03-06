@@ -4941,6 +4941,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::PostPrComment { .. } => "PostPrComment",
         Effect::EmitWorkflowEvent(_) => "EmitWorkflowEvent",
         Effect::RespawnFork { .. } => "RespawnFork",
+        Effect::PostInsight { .. } => "PostInsight",
     }
 }
 

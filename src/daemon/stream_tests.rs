@@ -2002,3 +2002,118 @@ fn test_tool_block_with_output_serialization() {
     assert_eq!(parsed.tool_name, "Bash");
     assert_eq!(parsed.output, Some(json!("hi\n")));
 }
+
+// ── extract_insights tests ──────────────────────────────────────────
+
+#[test]
+fn test_extract_insights_single() {
+    let text = r#"Some text before
+
+`★ Insight ─────────────────────────────────────`
+This is an insight about something important.
+It can span multiple lines.
+`─────────────────────────────────────────────────`
+
+Some text after"#;
+
+    let insights = extract_insights(text);
+    assert_eq!(insights.len(), 1);
+    assert!(insights[0].contains("This is an insight"));
+}
+
+#[test]
+fn test_extract_insights_multiple() {
+    let text = r#"
+`★ Insight ─────────────────────────────────────`
+First insight
+`─────────────────────────────────────────────────`
+
+Some middle text
+
+`★ Insight ─────────────────────────────────────`
+Second insight
+`─────────────────────────────────────────────────`
+"#;
+
+    let insights = extract_insights(text);
+    assert_eq!(insights.len(), 2);
+    assert!(insights[0].contains("First"));
+    assert!(insights[1].contains("Second"));
+}
+
+#[test]
+fn test_extract_insights_none() {
+    let text = "Just some regular text without any insights.";
+    let insights = extract_insights(text);
+    assert!(insights.is_empty());
+}
+
+#[test]
+fn test_extract_insights_no_backticks() {
+    let text = "★ Insight ─────────────────────────────────────\nBare insight without backticks\n─────────────────────────────────────────────────";
+    let insights = extract_insights(text);
+    assert_eq!(insights.len(), 1);
+    assert!(insights[0].contains("Bare insight"));
+}
+
+// ── process_coworker_output insight extraction tests ────────────────
+
+#[test]
+fn test_process_coworker_output_extracts_insights() {
+    let text_with_insight = "Working on the feature.\n\n`★ Insight ─────────────────────────────────────`\nThe auth module uses JWT tokens.\n`─────────────────────────────────────────────────`\n\nDone.";
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": text_with_insight}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    // Should have a PostInsight effect and a PostToChannel effect
+    let insight_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostInsight { .. }))
+        .collect();
+    assert_eq!(insight_effects.len(), 1);
+    if let Effect::PostInsight { agent, insight } = insight_effects[0] {
+        assert_eq!(agent, "park");
+        assert!(insight.contains("JWT tokens"));
+    }
+
+    let channel_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostToChannel { .. }))
+        .collect();
+    assert_eq!(channel_effects.len(), 1);
+}
+
+#[test]
+fn test_process_coworker_output_no_insight_in_regular_text() {
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Just regular text, no insights."}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_coworker_output(&events, &coworker_names);
+
+    let insight_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::PostInsight { .. }))
+        .collect();
+    assert!(insight_effects.is_empty());
+}
