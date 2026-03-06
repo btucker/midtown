@@ -11,7 +11,7 @@ import {
 	senderChanged,
 	timeChanged,
 } from "./messageUtils.js";
-import { activeProject, coworkers } from "./store.js";
+import { activeProject, channels } from "./store.js";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";
@@ -57,10 +57,14 @@ let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead);
 let displayName = $derived(isForkWithParent ? forkParentLead : msg.from);
 let displayColor = $derived(getSenderColor(displayName, senderOverrides, channelName));
 
-const coworkerNames = $derived(new Set($coworkers.map((cw) => cw.name)));
+const agentNames = $derived(new Set(
+	$channels
+		.filter((ch) => ch.name.startsWith("dm-"))
+		.map((ch) => ch.name.slice(3))
+));
 
 function handleSenderClick(name) {
-	if (coworkerNames.has(name)) selectDm(name);
+	if (agentNames.has(name)) selectDm(name);
 }
 
 let permalinkUrl = $derived(
@@ -103,11 +107,11 @@ function handleTimestampClick(e) {
   <div class="flex items-start gap-[0.5rem] pt-[3px] {senderClass} {extraClass}" data-msg-id={msg.id} style={index > 0 ? `margin-top: ${senderSpacing}` : ''}>
     <!-- Avatar -->
     <div
-      class="relative flex-shrink-0 {coworkerNames.has(displayName) ? 'cursor-pointer' : ''}"
+      class="relative flex-shrink-0 {agentNames.has(displayName) ? 'cursor-pointer' : ''}"
       style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}"
       onclick={() => handleSenderClick(displayName)}
-      role={coworkerNames.has(displayName) ? 'button' : undefined}
-      title={coworkerNames.has(displayName) ? `Open DM with ${displayName}` : undefined}
+      role={agentNames.has(displayName) ? 'button' : undefined}
+      title={agentNames.has(displayName) ? `Open DM with ${displayName}` : undefined}
     >
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
@@ -125,7 +129,7 @@ function handleTimestampClick(e) {
     <!-- Header + content -->
     <div class="flex-1 min-w-0">
       <div class="whitespace-nowrap overflow-hidden text-ellipsis flex items-baseline gap-3">
-        {#if coworkerNames.has(displayName)}
+        {#if agentNames.has(displayName)}
           <button
             class="font-mono font-semibold text-[1rem] text-foreground bg-transparent border-none p-0 m-0 cursor-pointer hover:underline"
             data-testid="message-sender"
@@ -174,7 +178,7 @@ function handleTimestampClick(e) {
     {#if timeChanged(msgs, index) && permalinkUrl}
       <a
         href={permalinkUrl}
-        class="timestamp-link text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap no-underline hover:text-muted-foreground relative"
+        class="timestamp-link text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap no-underline hover:text-muted-foreground relative flex justify-end pr-[5px]"
         style="width: {AVATAR_SIZE}"
         onclick={handleTimestampClick}
       >
@@ -185,7 +189,7 @@ function handleTimestampClick(e) {
       </a>
     {:else}
       <span
-        class="text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap"
+        class="text-muted-foreground/70 flex-shrink-0 select-none text-[0.7rem] leading-[1.55rem] whitespace-nowrap flex justify-end pr-[5px]"
         style="width: {AVATAR_SIZE}"
       >{timeChanged(msgs, index) ? formatTimeCompact(msg.timestamp) : ''}</span>
     {/if}
