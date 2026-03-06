@@ -789,3 +789,26 @@ fn test_channel_lead_system_prompt_skips_empty_skill_body() {
         "Empty skill body should not add a section"
     );
 }
+
+#[test]
+fn test_channel_lead_system_prompt_preserves_literal_placeholders_in_injected_content() {
+    // Plugin content may contain literal {name} or {project_name} (e.g., documentation
+    // showing template syntax). These must NOT be rewritten by template substitution.
+    let agents = "Use {name} as the template variable in your config.";
+    let skills = vec![(
+        "docs".to_string(),
+        "Set {project_name} in settings.json.".to_string(),
+    )];
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents), &skills);
+
+    assert!(
+        prompt.contains("Use {name} as the template variable"),
+        "Literal {{name}} in AGENTS.md should be preserved, got: {}",
+        prompt
+    );
+    assert!(
+        prompt.contains("Set {project_name} in settings.json"),
+        "Literal {{project_name}} in SKILL.md should be preserved, got: {}",
+        prompt
+    );
+}

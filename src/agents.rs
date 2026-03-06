@@ -358,6 +358,16 @@ pub fn channel_lead_system_prompt(
         prompt = format!("{prompt}\n\n{ops_extra}");
     }
 
+    // Apply template substitutions BEFORE appending injected content so that
+    // literal placeholders like {name} in plugin AGENTS.md / SKILL.md text are
+    // preserved verbatim.
+    prompt = prompt
+        .replace("{channel_name}", channel_name)
+        .replace("{domain_context}", domain_context)
+        .replace("{project_name}", project_name)
+        .replace("{channel_lead}", channel_name) // channel lead IS the lead
+        .replace("{name}", channel_name); // channel lead's {name} = channel name
+
     // Append AGENTS.md — workflow facilitation instructions (HOW to facilitate)
     if let Some(agents) = agents_md {
         let agents = agents.trim();
@@ -375,11 +385,6 @@ pub fn channel_lead_system_prompt(
     }
 
     prompt
-        .replace("{channel_name}", channel_name)
-        .replace("{domain_context}", domain_context)
-        .replace("{project_name}", project_name)
-        .replace("{channel_lead}", channel_name) // channel lead IS the lead
-        .replace("{name}", channel_name) // channel lead's {name} = channel name
 }
 
 #[path = "agents_tests.rs"]
