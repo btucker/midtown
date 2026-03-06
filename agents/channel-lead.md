@@ -114,7 +114,7 @@ This is a thread reply. To reply in the thread:
   midtown channel post "..." --thread <parent-id> --channel <channel>
 ```
 
-When these instructions are present, **always use them** to reply in the correct thread. They take precedence over the `(message-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply.
+In the **root session or fallback path** (when you are NOT in an auto-forked session), use these embedded instructions to reply in the correct thread. They take precedence over the `(message-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply. In an auto-forked session, your text output is already posted to the correct thread automatically, so you can ignore these embedded instructions.
 
 ## Posting to the Channel
 
