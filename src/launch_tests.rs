@@ -10,7 +10,7 @@ fn test_paths(dir_key: &str, project_name: &str) -> paths::ProjectPaths {
 
 #[test]
 fn test_launch_config_ops_channel_lead_model() {
-    let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "");
+    let config = LaunchConfig::channel_lead("ops", "myrepo", SessionMode::Fresh, "", None, vec![]);
     let execution_fallback = crate::config::get_channel_lead_model_fallback("myrepo");
     let expected = crate::config::get_channel_leads_config("myrepo")
         .model_for_channel_with_fallback("ops", execution_fallback);
@@ -139,7 +139,7 @@ fn test_channel_lead_fork_disallowed_tools_includes_edit() {
 
 #[test]
 fn test_channel_lead_headless_config_has_disallowed_tools() {
-    let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "");
+    let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "", None, vec![]);
     let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
     assert!(
         !headless.disallowed_tools.is_empty(),
@@ -209,6 +209,8 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         role: CoworkerRole::ChannelLead {
             channel_name: "ops".to_string(),
             domain_context: String::new(),
+            agents_md: None,
+            skill_bodies: vec![],
         },
         initial_prompt: None,
         additional_dirs: vec![],
@@ -241,6 +243,8 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         role: CoworkerRole::ChannelLead {
             channel_name: "ops".to_string(),
             domain_context: String::new(),
+            agents_md: None,
+            skill_bodies: vec![],
         },
         initial_prompt: None,
         additional_dirs: vec![],

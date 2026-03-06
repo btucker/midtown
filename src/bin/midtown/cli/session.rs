@@ -751,6 +751,8 @@ pub(crate) fn build_attach_shell_command(
         midtown::launch::CoworkerRole::ChannelLead {
             channel_name: channel.unwrap_or(name).to_string(),
             domain_context: String::new(),
+            agents_md: None,
+            skill_bodies: vec![],
         }
     } else {
         midtown::launch::CoworkerRole::Coworker
@@ -829,7 +831,15 @@ pub(crate) fn build_attach_shell_command(
         midtown::launch::CoworkerRole::ChannelLead {
             channel_name,
             domain_context,
-        } => midtown::agents::channel_lead_system_prompt(channel_name, domain_context, &repo_name),
+            agents_md,
+            skill_bodies,
+        } => midtown::agents::channel_lead_system_prompt(
+            channel_name,
+            domain_context,
+            &repo_name,
+            agents_md.as_deref(),
+            skill_bodies,
+        ),
     };
 
     // Build provider-specific headed CLI args.

@@ -426,15 +426,47 @@ pub(super) async fn handle_auth_switch(
                 }
             }
             crate::config::ExecutionRole::ChannelLead => {
+                let channel_name = coworker.name.clone();
+                let notes_base = state.paths.base_dir().to_path_buf();
+                let notes_channel = channel_name.clone();
+                let dir_key = state.paths.dir_key().to_string();
+                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                let discover_channel = channel_name.clone();
+                let (domain_context, agents_md, skill_bodies) =
+                    tokio::task::spawn_blocking(move || {
+                        let notes = crate::channel::load_channel_notes(&notes_base, &notes_channel);
+                        let agents = crate::paths::agents_md_for_channel(
+                            &discover_channel,
+                            &project_root,
+                            &dir_key,
+                        );
+                        let plugin_dirs = crate::paths::discover_plugin_dirs(
+                            &project_root,
+                            &dir_key,
+                            Some(&discover_channel),
+                        );
+                        let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
+                        (notes, agents, skills)
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!(
+                            "Channel lead discovery task failed for '{}': {}",
+                            channel_name, e
+                        );
+                        (String::new(), None, vec![])
+                    });
                 let mut channel_lead = crate::launch::LaunchConfig::channel_lead(
-                    coworker.name.clone(),
+                    channel_name,
                     state.paths.dir_key(),
                     if resume_compatible {
                         crate::launch::SessionMode::Resume
                     } else {
                         crate::launch::SessionMode::Fresh
                     },
-                    "",
+                    domain_context,
+                    agents_md,
+                    skill_bodies,
                 );
                 channel_lead.model = coworker.model.clone();
                 channel_lead

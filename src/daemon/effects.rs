@@ -2082,19 +2082,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     let notes_base = base_dir.clone();
                     let notes_channel = name.clone();
-                    let domain_context = tokio::task::spawn_blocking(move || {
-                        crate::channel::load_channel_notes(&notes_base, &notes_channel)
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        warn!("load_channel_notes task failed for '{}': {}", name, e);
-                        String::new()
-                    });
+                    let dir_key = state.paths.dir_key().to_string();
+                    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                    let discover_channel = name.clone();
+                    let (domain_context, agents_md, skill_bodies) =
+                        tokio::task::spawn_blocking(move || {
+                            let notes =
+                                crate::channel::load_channel_notes(&notes_base, &notes_channel);
+                            let agents = crate::paths::agents_md_for_channel(
+                                &discover_channel,
+                                &project_root,
+                                &dir_key,
+                            );
+                            let plugin_dirs = crate::paths::discover_plugin_dirs(
+                                &project_root,
+                                &dir_key,
+                                Some(&discover_channel),
+                            );
+                            let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
+                            (notes, agents, skills)
+                        })
+                        .await
+                        .unwrap_or_else(|e| {
+                            warn!("Channel lead discovery task failed for '{}': {}", name, e);
+                            (String::new(), None, vec![])
+                        });
                     let config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         state.paths.dir_key(),
                         crate::launch::SessionMode::Fresh,
                         domain_context,
+                        agents_md,
+                        skill_bodies,
                     );
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
@@ -2805,20 +2824,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => false,
                     };
 
-                    let base_dir = state.paths.base_dir().to_path_buf();
-                    let notes_base = base_dir;
+                    let notes_base = state.paths.base_dir().to_path_buf();
                     let notes_channel = channel_name.clone();
-                    let domain_context = tokio::task::spawn_blocking(move || {
-                        crate::channel::load_channel_notes(&notes_base, &notes_channel)
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        warn!(
-                            "load_channel_notes task failed for '{}': {}",
-                            channel_name, e
-                        );
-                        String::new()
-                    });
+                    let dir_key = state.paths.dir_key().to_string();
+                    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                    let discover_channel = channel_name.clone();
+                    let (domain_context, agents_md, skill_bodies) =
+                        tokio::task::spawn_blocking(move || {
+                            let notes =
+                                crate::channel::load_channel_notes(&notes_base, &notes_channel);
+                            let agents = crate::paths::agents_md_for_channel(
+                                &discover_channel,
+                                &project_root,
+                                &dir_key,
+                            );
+                            let plugin_dirs = crate::paths::discover_plugin_dirs(
+                                &project_root,
+                                &dir_key,
+                                Some(&discover_channel),
+                            );
+                            let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
+                            (notes, agents, skills)
+                        })
+                        .await
+                        .unwrap_or_else(|e| {
+                            warn!(
+                                "Channel lead discovery task failed for '{}': {}",
+                                channel_name, e
+                            );
+                            (String::new(), None, vec![])
+                        });
 
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
@@ -2827,6 +2862,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 state.paths.dir_key(),
                                 crate::launch::SessionMode::ResumeSession(id.to_string()),
                                 &domain_context,
+                                agents_md.clone(),
+                                skill_bodies.clone(),
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
 
@@ -2906,6 +2943,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 state.paths.dir_key(),
                                 crate::launch::SessionMode::Fresh,
                                 &domain_context,
+                                agents_md,
+                                skill_bodies,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
                             // Insert empty placeholder before spawning to guard against
