@@ -3871,6 +3871,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Fork crash recovery: if this was a fork session, queue respawn effects.
                     // We captured fork bindings above (before cleanup removed them).
+                    let mut fork_respawning = false;
                     if let Some(thread_parent_id) = fork_thread_id {
                         // Check cooldown to prevent respawn loops
                         let should_respawn = {
@@ -3910,6 +3911,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 "Fork {} process died — queuing respawn for thread {}",
                                 name, thread_parent_id
                             );
+                            fork_respawning = true;
 
                             fork_respawn_effects.push(effects::Effect::RespawnFork {
                                 fork_name: name.clone(),
@@ -3924,12 +3926,38 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 category: "process_respawn".to_string(),
                                 key: name.clone(),
                             });
-                            fork_respawn_effects.push(effects::Effect::PostToChannel {
-                                sender: "midtown".to_string(),
-                                message: format!(
+                            // Include stderr in the respawn message so crash
+                            // context is preserved even if respawn fails.
+                            let respawn_message = {
+                                let base = format!(
                                     "💀 Fork {} process died — respawning for thread {}",
                                     name, thread_parent_id
-                                ),
+                                );
+                                if let Some(stderr_lines) = stderr_by_name.get(&name) {
+                                    if !stderr_lines.is_empty() {
+                                        let last_n: Vec<&str> = stderr_lines
+                                            .iter()
+                                            .rev()
+                                            .take(10)
+                                            .rev()
+                                            .map(|s| s.as_str())
+                                            .collect();
+                                        format!(
+                                            "{}\n\nStderr ({} lines):\n{}",
+                                            base,
+                                            stderr_lines.len(),
+                                            last_n.join("\n")
+                                        )
+                                    } else {
+                                        base
+                                    }
+                                } else {
+                                    base
+                                }
+                            };
+                            fork_respawn_effects.push(effects::Effect::PostToChannel {
+                                sender: "midtown".to_string(),
+                                message: respawn_message,
                                 channel: Some(constants::OPS_CHANNEL.to_string()),
                                 auto_output: false,
                             message_type: None,
@@ -3944,49 +3972,74 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         }
                     }
 
-                    // Determine session role for the exit message
-                    let session_role = if helpers::is_project_lead(&name, &state.project_name) {
-                        "Lead"
-                    } else if state
-                        .persistent_state
-                        .lock()
-                        .await
-                        .channel_lead_sessions
-                        .contains_key(&name)
-                    {
-                        "Channel lead"
+                    // Skip the generic "exited unexpectedly" message for forks being
+                    // respawned — the RespawnFork effect already posts a specific
+                    // "💀 Fork died — respawning" message to #ops.
+                    if fork_respawning {
+                        debug!(
+                            "Skipping generic exit message for fork {} (respawn already queued)",
+                            name
+                        );
                     } else {
-                        "Coworker"
-                    };
-
-                    // Format message with stderr if available
-                    let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
-                        if stderr_lines.is_empty() {
-                            format!("⚠️ {} {} session exited unexpectedly", session_role, name)
+                        // Determine session role for the exit message
+                        let is_lead = helpers::is_project_lead(&name, &state.project_name);
+                        let session_role = if is_lead {
+                            "Lead"
+                        } else if state
+                            .persistent_state
+                            .lock()
+                            .await
+                            .channel_lead_sessions
+                            .contains_key(&name)
+                        {
+                            "Channel lead"
                         } else {
-                            // Include last N lines of stderr (up to 10 lines)
-                            let last_n: Vec<&str> = stderr_lines
-                                .iter()
-                                .rev()
-                                .take(10)
-                                .rev()
-                                .map(|s| s.as_str())
-                                .collect();
-                            format!(
-                                "⚠️ {} {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
-                                session_role,
-                                name,
-                                stderr_lines.len(),
-                                last_n.join("\n")
-                            )
-                        }
-                    } else {
-                        format!("⚠️ {} {} session exited unexpectedly", session_role, name)
-                    };
+                            "Coworker"
+                        };
 
-                    let msg = crate::message::Message::text("midtown", message_text);
-                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                        warn!("Failed to post session exit message for {}: {}", name, e);
+                        // Format message with stderr if available
+                        let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
+                            if stderr_lines.is_empty() {
+                                format!("⚠️ {} {} session exited unexpectedly", session_role, name)
+                            } else {
+                                // Include last N lines of stderr (up to 10 lines)
+                                let last_n: Vec<&str> = stderr_lines
+                                    .iter()
+                                    .rev()
+                                    .take(10)
+                                    .rev()
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                format!(
+                                    "⚠️ {} {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
+                                    session_role,
+                                    name,
+                                    stderr_lines.len(),
+                                    last_n.join("\n")
+                                )
+                            }
+                        } else {
+                            format!("⚠️ {} {} session exited unexpectedly", session_role, name)
+                        };
+
+                        // Lead exits go to main channel (user needs to see them).
+                        // Coworker/channel-lead exits go to #ops (operational noise).
+                        if is_lead {
+                            let msg = crate::message::Message::text("midtown", message_text);
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                warn!("Failed to post session exit message for {}: {}", name, e);
+                            }
+                        } else {
+                            let msg = crate::message::Message::for_channel(
+                                constants::OPS_CHANNEL,
+                                "midtown",
+                                message_text,
+                                crate::message::MessageType::Text,
+                            );
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                warn!("Failed to post session exit message for {}: {}", name, e);
+                            }
+                        }
                     }
                 }
 
