@@ -236,6 +236,18 @@ pub struct DaemonPersistentState {
     /// so LRU ordering and usage-limit state survive restarts.
     #[serde(default)]
     pub profile_pool_state: HashMap<String, ProfileState>,
+
+    /// Workflow plugin state, owned by the daemon.
+    ///
+    /// Maps channel name → per-channel state (JSON object). Each channel's
+    /// state is further namespaced by plugin key when plugins use the
+    /// `plugin` parameter on `workflow.set_state`.
+    ///
+    /// Previously stored in per-channel `workflow-state.json` files. Now
+    /// persisted as part of `daemon-state.json` for single-source-of-truth
+    /// semantics and atomic updates.
+    #[serde(default)]
+    pub workflow_state: HashMap<String, serde_json::Value>,
 }
 
 impl DaemonPersistentState {
@@ -255,7 +267,7 @@ impl DaemonPersistentState {
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -267,7 +279,8 @@ impl DaemonPersistentState {
                     state.task_thread_id.len(),
                     state.task_message_id.len(),
                     state.channel_lead_sessions.len(),
-                    state.profile_pool_state.len()
+                    state.profile_pool_state.len(),
+                    state.workflow_state.len()
                 );
                 Ok(state)
             }
@@ -290,7 +303,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -300,7 +313,8 @@ impl DaemonPersistentState {
             self.task_plan.len(),
             self.task_execution_skill.len(),
             self.channel_lead_sessions.len(),
-            self.profile_pool_state.len()
+            self.profile_pool_state.len(),
+            self.workflow_state.len()
         );
         Ok(())
     }
@@ -367,6 +381,9 @@ impl DaemonPersistentState {
             ReminderState::default()
         });
 
+        // Migrate any existing per-channel workflow-state.json files.
+        let workflow_state = Self::migrate_workflow_state_files(repo);
+
         let state = Self {
             github,
             reminders,
@@ -381,6 +398,7 @@ impl DaemonPersistentState {
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
+            workflow_state,
         };
 
         // Save the unified file
@@ -447,6 +465,59 @@ impl DaemonPersistentState {
     /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
     pub fn channel_lead_names(&self) -> std::collections::HashSet<String> {
         self.channel_lead_sessions.keys().cloned().collect()
+    }
+
+    /// Migrate per-channel `workflow-state.json` files into in-memory state.
+    ///
+    /// Scans `~/.midtown/projects/<repo>/channels/*/workflow-state.json`,
+    /// loads each file's content, and collects them into a HashMap keyed
+    /// by channel name. Removes the legacy files after successful migration.
+    fn migrate_workflow_state_files(repo: &str) -> HashMap<String, serde_json::Value> {
+        let channels_dir = crate::paths::projects_dir_for_repo(repo).join("channels");
+        let mut workflow_state = HashMap::new();
+
+        let entries = match fs::read_dir(&channels_dir) {
+            Ok(e) => e,
+            Err(_) => return workflow_state, // No channels dir — nothing to migrate
+        };
+
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let channel_name = entry.file_name().to_string_lossy().to_string();
+            let state_file = entry.path().join("workflow-state.json");
+
+            if let Ok(content) = fs::read_to_string(&state_file) {
+                match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(value) => {
+                        debug!(
+                            channel = %channel_name,
+                            "Migrated workflow-state.json into daemon state"
+                        );
+                        workflow_state.insert(channel_name, value);
+                        // Remove the legacy file (best-effort)
+                        let _ = fs::remove_file(&state_file);
+                    }
+                    Err(e) => {
+                        warn!(
+                            channel = %channel_name,
+                            "Failed to parse legacy workflow-state.json during migration: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        if !workflow_state.is_empty() {
+            debug!(
+                "Migrated {} channel workflow-state.json file(s) into daemon state",
+                workflow_state.len()
+            );
+        }
+
+        workflow_state
     }
 }
 

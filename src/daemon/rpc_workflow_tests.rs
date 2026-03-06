@@ -61,9 +61,9 @@ fn make_test_state(
     (state, temp_dir, _guard)
 }
 
-/// get_state returns null when no state file exists.
+/// get_state returns null when no state exists for the channel.
 #[tokio::test]
-async fn test_get_state_returns_null_when_no_file() {
+async fn test_get_state_returns_null_when_empty() {
     let (state, _temp_dir, _guard) = make_test_state("wf-get-empty");
 
     let response =
@@ -199,7 +199,7 @@ async fn test_channels_have_isolated_state() {
 }
 
 /// Concurrent set_state calls for different plugin keys on the same channel
-/// both persist (no data loss from TOCTOU race).
+/// both persist (no data loss).
 #[tokio::test]
 async fn test_concurrent_set_state_plugin_keys_no_data_loss() {
     let (state, _temp_dir, _guard) = make_test_state("wf-concurrent");
@@ -270,4 +270,29 @@ async fn test_set_state_replaces_entire_state() {
     let result = resp.result.unwrap();
     assert_eq!(result["state"], new);
     assert!(result["state"]["old_key"].is_null());
+}
+
+/// State persists to daemon-state.json and survives reload.
+#[tokio::test]
+async fn test_state_persists_to_daemon_state_json() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-persist");
+
+    let value = serde_json::json!({"persistent": true, "count": 7});
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        value.clone(),
+        &state,
+    )
+    .await;
+
+    // Reload from disk and verify the workflow state was persisted.
+    let reloaded = crate::daemon::state::DaemonPersistentState::load_for_repo("wf-persist")
+        .expect("reload should succeed");
+    let channel_state = reloaded
+        .workflow_state
+        .get("test-channel")
+        .expect("channel should exist in reloaded state");
+    assert_eq!(*channel_state, value);
 }
