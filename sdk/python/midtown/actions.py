@@ -145,6 +145,13 @@ class Actions:
         """Enable GitHub auto-merge on a pull request."""
         return DaemonAction(method="pr.auto-merge", params={"pr": pr_number})
 
+    # -- State --------------------------------------------------------------
+
+    @staticmethod
+    def set_state(key: str, value: Any) -> DaemonAction:
+        """Set a workflow state value."""
+        return DaemonAction(method="state.set", params={"key": key, "value": value})
+
     # -- Daemon -------------------------------------------------------------
 
     @staticmethod

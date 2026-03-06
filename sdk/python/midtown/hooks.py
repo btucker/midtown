@@ -218,6 +218,14 @@ class TaskHooks:
     def on_coworker_stuck(self, ctx: HookContext) -> list[DaemonAction]:
         """A coworker appears stuck and will be restarted."""
 
+    @hookspec
+    def on_coworker_message(self, ctx: HookContext) -> list[DaemonAction]:
+        """A coworker posted a message to the channel."""
+
+    @hookspec
+    def on_channel_message(self, ctx: HookContext) -> list[DaemonAction]:
+        """A message was posted to the channel (from any source)."""
+
     # -- Catch-all ----------------------------------------------------------
 
     @hookspec
