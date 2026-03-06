@@ -380,5 +380,27 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
     _ = prev_state  # available for custom extensions
 
 
+def diagram() -> str:
+    """Return a Mermaid stateDiagram-v2 representing the workflow state machine."""
+    lines = ["stateDiagram-v2"]
+    lines.append("    [*] --> pending")
+    for t in TRANSITIONS:
+        sources = t["source"] if isinstance(t["source"], list) else [t["source"]]
+        for src in sources:
+            if src == "*":
+                for s in STATES:
+                    if s != t["dest"]:
+                        lines.append(f"    {s} --> {t['dest']} : {t['trigger']}")
+            else:
+                lines.append(f"    {src} --> {t['dest']} : {t['trigger']}")
+    lines.append("    merged --> [*]")
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
-    run(handle)
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--diagram":
+        print(diagram())
+    else:
+        run(handle)
