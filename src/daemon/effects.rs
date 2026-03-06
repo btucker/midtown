@@ -3350,6 +3350,18 @@ async fn dispatch_workflow_event(
 ) -> bool {
     let channel = event.channel().to_string();
 
+    // Discover channel-specific plugin directories and merge with existing dirs.
+    // merge_plugin_dirs is a no-op if the merged set hasn't changed.
+    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+    let channel_dirs =
+        crate::paths::discover_plugin_dirs(&project_root, state.paths.dir_key(), Some(&channel));
+    if !channel_dirs.is_empty() {
+        state.plugin_daemon.merge_plugin_dirs(channel_dirs).await;
+        // merge_plugin_dirs kills the running daemon when new dirs are added.
+        // Restart it before dispatching so the event isn't dropped.
+        state.plugin_daemon.ensure_running().await;
+    }
+
     if !state.plugin_daemon.has_plugins() {
         // No plugins configured — silent no-op.
         return false;

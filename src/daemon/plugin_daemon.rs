@@ -250,6 +250,52 @@ impl PluginDaemonManager {
         inner.last_crash = None;
     }
 
+    /// Merge new plugin directories into the existing set. Only restarts the
+    /// daemon if previously-unseen directories are added. This is used at runtime
+    /// to accumulate channel-specific plugin directories without losing dirs
+    /// from other channels.
+    pub async fn merge_plugin_dirs(&self, new_dirs: Vec<PathBuf>) {
+        let mut inner = self.inner.lock().await;
+        let mut merged = inner.plugin_dirs.clone();
+        let mut changed = false;
+        for dir in new_dirs {
+            if !merged.contains(&dir) {
+                merged.push(dir);
+                changed = true;
+            }
+        }
+        if !changed {
+            return;
+        }
+        info!(
+            old = ?inner.plugin_dirs,
+            merged = ?merged,
+            "Merging new plugin directories"
+        );
+        self.has_plugins_flag.store(true, Ordering::Relaxed);
+        inner.plugin_dirs = merged;
+        // Gracefully stop the current daemon so it restarts with new dirs.
+        // Use SIGTERM with timeout, consistent with shutdown().
+        if let Some(mut proc) = inner.process.take() {
+            if let Some(pid) = proc.child.id() {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                if tokio::time::timeout(Duration::from_secs(3), proc.child.wait())
+                    .await
+                    .is_err()
+                {
+                    let _ = proc.child.kill().await;
+                }
+            } else {
+                let _ = proc.child.kill().await;
+            }
+        }
+        inner.crash_count = 0;
+        inner.last_crash = None;
+    }
+
     /// Check whether the daemon is currently running.
     /// Used by Phase 2.4 (bidirectional dispatch) and tests.
     pub async fn is_running(&self) -> bool {
