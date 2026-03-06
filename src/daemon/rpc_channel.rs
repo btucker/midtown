@@ -157,28 +157,24 @@ pub(super) async fn handle_channel_post(
     // Use provided channel or default to main channel
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
 
-    // Validate DM channels: ensure the target coworker is an active session.
-    // This prevents posting to dm-<unknown> channels that have no one to receive the message.
+    // Validate DM channels: ensure the target coworker has been seen before.
+    // Uses name_to_session (active) or coworker_records (previously active) to
+    // prevent posting to dm-<unknown>. Inactive coworkers will be respawned via
+    // NudgeChannelLead when the user's message is routed.
     if state.is_user_sender(from)
-        && let Some(coworker_name) = channel_name.strip_prefix("dm-")
+        && let Some(agent_name) = channel_name.strip_prefix("dm-")
+        && !state.is_known_agent_name(agent_name).await
     {
-        let is_active = state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .contains_key(coworker_name);
-        if !is_active {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32602,
-                    format!(
-                        "Cannot send DM to '{}': no active session found for this coworker",
-                        coworker_name
-                    ),
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "Cannot send DM to '{}': no known agent with this name",
+                    agent_name
                 ),
-            );
-        }
+            ),
+        );
     }
 
     // Output binding — if the sender is a forked topic session with a bound
@@ -186,7 +182,12 @@ pub(super) async fn handle_channel_post(
     // correct thread without the session needing to pass it explicitly.
     // Uses the in-memory fork_bound_threads cache (sync Mutex) instead of the async
     // persistent_state lock — avoids contention on the channel post hot path.
-    let bound_thread: Option<String> = if thread_parent_id.is_none() {
+    //
+    // Skip for DM channels: the bound thread belongs to the topic channel, not
+    // the DM channel. Applying it would fail validation ("thread_parent_id does
+    // not match any existing message").
+    let is_dm_channel = channel_name.starts_with("dm-");
+    let bound_thread: Option<String> = if thread_parent_id.is_none() && !is_dm_channel {
         state.fork_bound_threads.lock().unwrap().get(from).cloned()
     } else {
         None
@@ -308,31 +309,19 @@ pub(super) async fn handle_channel_post(
         let wake_msg_id = msg.thread_anchor_id().to_string();
 
         if is_dm_channel {
-            // DM channel: nudge the specific coworker directly instead of the channel lead.
-            // We already validated the coworker is active above, so this lookup should succeed.
+            // DM channel: the coworker is the "channel lead" of their DM.
+            // Use NudgeChannelLead for consistent handling: spawn-if-dead,
+            // resume-if-idle, same as regular channel leads.
             let coworker_name = &channel_name["dm-".len()..];
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(coworker_name)
-                .cloned();
-            if let Some(session_id) = session_id {
-                let nudge_effect = crate::daemon::effects::Effect::NudgeSession {
-                    session_id,
-                    reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
-                        content: content.clone(),
-                        msg_id: wake_msg_id,
-                        coworker_name: coworker_name.to_string(),
-                    },
-                };
-                crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
-            } else {
-                warn!(
-                    "channel.post: DM to dm-{} but session lookup failed after validation passed",
-                    coworker_name
-                );
-            }
+            let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+                channel_name: channel_name.to_string(),
+                reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                    content: content.clone(),
+                    msg_id: wake_msg_id,
+                    coworker_name: coworker_name.to_string(),
+                },
+            };
+            crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else if is_topic_channel {
             // Resolve the fork session for this message:
             // - For thread replies: route to the existing dedicated session bound to that thread.

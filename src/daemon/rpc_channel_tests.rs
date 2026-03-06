@@ -2318,3 +2318,96 @@ fn test_build_topic_thread_nudge_effect_thread_context() {
         other => panic!("Expected NudgeChannelLead effect, got {:?}", other),
     }
 }
+
+/// Verify that fork_bound_threads is NOT applied when a coworker posts to a
+/// DM channel. The bound thread belongs to the topic channel, not the DM —
+/// applying it would cause a validation error ("thread_parent_id does not
+/// match any existing message in channel 'dm-...'").
+#[tokio::test]
+async fn test_fork_bound_threads_skipped_for_dm_channels() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dm-skip-binding");
+    let coworker_name = "columbus";
+    let dm_channel = "dm-columbus";
+
+    // Post a parent message to the main channel to get a valid thread ID
+    let topic_thread_id = post_parent_message(&state, None).await;
+
+    // Register the coworker's bound thread (belongs to the main/topic channel)
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert(coworker_name.to_string(), topic_thread_id.clone());
+
+    // Register the coworker as an active session so DM validation passes
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(coworker_name.to_string(), "session-123".to_string());
+
+    // Post from the coworker to their DM channel WITHOUT explicit thread_parent_id.
+    // This should NOT apply fork_bound_threads (the thread is in another channel).
+    let response = handle_channel_post(
+        1_i64.into(),
+        coworker_name,
+        "Here is my update",
+        Some(dm_channel),
+        None, // no explicit thread
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "DM post should succeed without fork_bound_threads: {:?}",
+        response.error
+    );
+
+    // The message should be top-level (no thread_parent_id)
+    let channel = state.channel_router.get_channel(dm_channel).unwrap();
+    let messages = channel.read_all().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(
+        messages[0].thread_parent_id, None,
+        "DM channel post should not have fork_bound_threads applied"
+    );
+}
+
+#[tokio::test]
+async fn test_is_known_agent_name_checks_all_registries() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-is-known-agent");
+
+    // Project lead is always known
+    assert!(
+        state
+            .is_known_agent_name("midtown-test-is-known-agent")
+            .await
+    );
+
+    // Unknown name
+    assert!(!state.is_known_agent_name("nobody").await);
+
+    // Active coworker via name_to_session
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert("park".to_string(), "sess-1".to_string());
+    assert!(state.is_known_agent_name("park").await);
+
+    // Channel lead via channel_lead_sessions
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert("auth".to_string(), "sess-auth".to_string());
+    }
+    assert!(state.is_known_agent_name("auth").await);
+
+    // Fork via fork_bound_threads
+    state
+        .fork_bound_threads
+        .lock()
+        .unwrap()
+        .insert("auth-web-a1b2".to_string(), "thread-1".to_string());
+    assert!(state.is_known_agent_name("auth-web-a1b2").await);
+}

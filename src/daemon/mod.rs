@@ -2237,6 +2237,36 @@ impl DaemonState {
             .unwrap_or_default()
     }
 
+    /// Check if a name corresponds to any known agent session.
+    /// Used for DM channel validation — allows posting to dm-<name>
+    /// for any recognized agent type.
+    pub(crate) async fn is_known_agent_name(&self, name: &str) -> bool {
+        // Active session (any type)
+        if self.name_to_session.lock().unwrap().contains_key(name) {
+            return true;
+        }
+        // Project lead
+        if name == self.project_name {
+            return true;
+        }
+        // Previously active coworker
+        if self.coworker_records.read().await.contains_key(name) {
+            return true;
+        }
+        // Channel lead
+        {
+            let ps = self.persistent_state.lock().await;
+            if ps.channel_lead_sessions.contains_key(name) {
+                return true;
+            }
+        }
+        // Active fork
+        if self.fork_bound_threads.lock().unwrap().contains_key(name) {
+            return true;
+        }
+        false
+    }
+
     /// Look up the name currently assigned to a given session ID.
     ///
     /// Infrastructure for the session-centric model — used by effect handlers
