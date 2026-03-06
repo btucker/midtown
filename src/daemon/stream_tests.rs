@@ -1282,14 +1282,16 @@ fn test_process_coworker_output_empty_text_not_posted() {
     let coworker_names = HashSet::from(["park".to_string()]);
 
     let effects = process_coworker_output(&events, &coworker_names);
-    // Should have exactly 1 effect — the tool call rendering (no text effect).
+    // Should have exactly 1 effect — the tool_data message (no text effect).
     assert_eq!(effects.len(), 1);
     match &effects[0] {
-        Effect::PostToChannel { message, .. } => {
-            assert!(
-                message.contains("read src/main.rs"),
-                "tool call should be rendered: {message}"
-            );
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert!(message.is_empty(), "message content should be empty");
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Read");
         }
         _ => panic!("Expected PostToChannel effect"),
     }
@@ -1396,211 +1398,6 @@ fn test_process_coworker_output_trims_text() {
     }
 }
 
-// ── DM channel fully-rendered tool call tests ──────────────────────────
-
-#[test]
-fn test_dm_tool_bash_renders_command_and_output() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Bash",
-                    "input": {"command": "cargo test --lib"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "content": "running 42 tests\ntest result: ok"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`$ cargo test --lib`"),
-        "should show command: {md}"
-    );
-    assert!(md.contains("running 42 tests"), "should show output: {md}");
-    assert!(md.contains("```"), "output should be in a code block: {md}");
-}
-
-#[test]
-fn test_dm_tool_bash_error_shows_marker() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Bash",
-                    "input": {"command": "false"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "is_error": true,
-                    "content": "command failed"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(md.contains("**✗**"), "should show error marker: {md}");
-    assert!(
-        md.contains("command failed"),
-        "should show error output: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_edit_renders_diff() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "Edit",
-                "input": {
-                    "file_path": "src/main.rs",
-                    "old_string": "println!(\"hello\")",
-                    "new_string": "println!(\"world\")"
-                }
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("## src/main.rs"),
-        "should show file path as header: {md}"
-    );
-    assert!(md.contains("```diff"), "should have diff code block: {md}");
-    assert!(
-        md.contains("- println!(\"hello\")"),
-        "should show old line: {md}"
-    );
-    assert!(
-        md.contains("+ println!(\"world\")"),
-        "should show new line: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_todo_write_renders_checkboxes() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "TodoWrite",
-                "input": {
-                    "todos": [
-                        {"content": "Fix the login bug", "status": "completed"},
-                        {"content": "Add tests for auth", "status": "in_progress"},
-                        {"content": "Update docs", "status": "pending"}
-                    ]
-                }
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("- [x] Fix the login bug"),
-        "completed should be checked: {md}"
-    );
-    assert!(
-        md.contains("- [ ] Add tests for auth"),
-        "in_progress should be unchecked: {md}"
-    );
-    assert!(
-        md.contains("- [ ] Update docs"),
-        "pending should be unchecked: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_other_uses_semantic_header() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [{
-                "type": "tool_use",
-                "id": "tc_1",
-                "name": "Read",
-                "input": {"file_path": "src/lib.rs"}
-            }]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`read src/lib.rs`"),
-        "should use semantic header: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_multiple_calls_separated_by_blank_lines() {
-    let events = vec![StreamEvent::Assistant {
-        message: json!({
-            "content": [
-                {
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "src/a.rs"}
-                },
-                {
-                    "type": "tool_use",
-                    "id": "tc_2",
-                    "name": "Read",
-                    "input": {"file_path": "src/b.rs"}
-                }
-            ]
-        }),
-        session_id: None,
-        extra: json!(null),
-    }];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(
-        md.contains("`read src/a.rs`"),
-        "should have first call: {md}"
-    );
-    assert!(
-        md.contains("`read src/b.rs`"),
-        "should have second call: {md}"
-    );
-    assert!(
-        md.contains("\n\n"),
-        "tool blocks should be separated by blank lines: {md}"
-    );
-}
-
 #[test]
 fn test_dm_tool_text_and_tools_produce_separate_effects() {
     let mut events = HashMap::new();
@@ -1620,7 +1417,7 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
     let coworker_names = HashSet::from(["park".to_string()]);
 
     let effects = process_coworker_output(&events, &coworker_names);
-    // Should produce 2 effects: text message + tool call rendering.
+    // Should produce 2 effects: text message + tool_data-only message.
     assert_eq!(
         effects.len(),
         2,
@@ -1640,85 +1437,18 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
     match &effects[1] {
         Effect::PostToChannel {
             message,
+            tool_data,
             auto_output,
             ..
         } => {
-            assert!(message.contains("cargo test"), "should contain tool call");
+            assert!(message.is_empty(), "tool message content should be empty");
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Bash");
             assert!(!auto_output, "DM messages should not be auto_output");
         }
         _ => panic!("Expected tool PostToChannel"),
     }
-}
-
-#[test]
-fn test_dm_tool_only_errors_shown_for_non_bash_results() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "src/main.rs"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "content": "file contents here..."
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    // Non-Bash successful results should NOT include output (too verbose).
-    assert!(
-        !md.contains("file contents here"),
-        "Read result output should not be included: {md}"
-    );
-}
-
-#[test]
-fn test_dm_tool_error_shown_for_non_bash_tools() {
-    let events = vec![
-        StreamEvent::Assistant {
-            message: json!({
-                "content": [{
-                    "type": "tool_use",
-                    "id": "tc_1",
-                    "name": "Read",
-                    "input": {"file_path": "nonexistent.rs"}
-                }]
-            }),
-            session_id: None,
-            extra: json!(null),
-        },
-        StreamEvent::User {
-            message: json!({
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": "tc_1",
-                    "is_error": true,
-                    "content": "file not found"
-                }]
-            }),
-            extra: json!(null),
-        },
-    ];
-
-    let md = render_dm_tool_blocks(&events);
-    assert!(md.contains("**✗**"), "should show error marker: {md}");
-    assert!(
-        md.contains("file not found"),
-        "error output should be shown: {md}"
-    );
 }
 
 // ── detect_provider tests ────────────────────────────────────────────
