@@ -89,6 +89,9 @@ fn ensure_claude_plugins_installed() -> Result<(), String> {
     eprintln!("Installing {} required Claude plugin(s)...", missing.len());
     for plugin in missing {
         eprint!("  Installing {}... ", plugin);
+        // Uninstall first to clear stale/orphaned entries from installed_plugins.json,
+        // then reinstall fresh. Ignoring uninstall errors (plugin may not be registered).
+        let _ = uninstall_plugin(plugin);
         match install_plugin(plugin) {
             Ok(()) => eprintln!("done"),
             Err(e) => eprintln!("failed: {}", e),
@@ -121,6 +124,47 @@ fn ensure_marketplace_configured() -> Result<(), String> {
     Ok(())
 }
 
+/// Filter plugin list entries to only those with healthy, loadable installations.
+///
+/// Excludes plugins that are orphaned (`.orphaned_at` marker) or missing their
+/// plugin manifest. This causes `ensure_claude_plugins_installed()` to reinstall
+/// them instead of silently accepting broken installations.
+fn filter_healthy_plugins(plugins: &[serde_json::Value]) -> HashSet<String> {
+    plugins
+        .iter()
+        .filter_map(|p| {
+            let id = p.get("id").and_then(|id| id.as_str())?;
+            let install_path = p.get("installPath").and_then(|p| p.as_str())?;
+            let path = Path::new(install_path);
+
+            // Skip plugins whose installation is orphaned or missing content.
+            // Claude Code's plugin auto-updater can mark cached versions as orphaned
+            // (via .orphaned_at marker), stripping their content. Cross-profile
+            // references in installed_plugins.json may point to these stale paths.
+            if path.join(".orphaned_at").exists() {
+                eprintln!(
+                    "Warning: Plugin {} has orphaned installation at {}, will reinstall",
+                    id, install_path
+                );
+                return None;
+            }
+
+            // Verify the plugin has actual content (plugin manifest exists)
+            if !path.join(".claude-plugin").join("plugin.json").exists()
+                && !path.join("plugin.json").exists()
+            {
+                eprintln!(
+                    "Warning: Plugin {} is missing plugin manifest at {}, will reinstall",
+                    id, install_path
+                );
+                return None;
+            }
+
+            Some(id.to_string())
+        })
+        .collect()
+}
+
 fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> {
     let output = std::process::Command::new("claude")
         .args(["plugin", "list", "--json"])
@@ -143,10 +187,19 @@ fn get_installed_plugins() -> Result<std::collections::HashSet<String>, String> 
     let plugins: Vec<serde_json::Value> = serde_json::from_str(trimmed)
         .map_err(|e| format!("Failed to parse plugin list JSON: {}", e))?;
 
-    Ok(plugins
-        .iter()
-        .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
-        .collect())
+    Ok(filter_healthy_plugins(&plugins))
+}
+
+fn uninstall_plugin(name: &str) -> Result<(), String> {
+    let output = std::process::Command::new("claude")
+        .args(["plugin", "uninstall", name])
+        .output()
+        .map_err(|e| format!("Failed to run claude plugin uninstall: {}", e))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
 }
 
 fn install_plugin(name: &str) -> Result<(), String> {
