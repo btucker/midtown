@@ -1,8 +1,9 @@
 <script>
+import { getApiBase } from "./api.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import { activeChannel, activeProject } from "./store.js";
 
-/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
+/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
 let data = $state(null);
 let loading = $state(false);
 let error = $state("");
@@ -18,10 +19,9 @@ $effect(() => {
 	data = null;
 	error = "";
 
-	fetch(
-		`/api/projects/${encodeURIComponent(project)}/proxy/api/channels/workflow?channel=${encodeURIComponent(channel)}`,
-		{ signal: controller.signal },
-	)
+	fetch(`${getApiBase()}/workflow?channel=${encodeURIComponent(channel)}`, {
+		signal: controller.signal,
+	})
 		.then((res) => {
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			return res.json();
@@ -62,14 +62,12 @@ const SOURCE_LABELS = {
   {:else if data}
     <div class="workflow-content">
       <!-- Workflow diagram -->
-      {#if data.mermaid}
-        <section class="workflow-section">
-          <h2 class="section-title">State Machine</h2>
-          <div class="diagram-container">
-            <MermaidDiagram code={data.mermaid} />
-          </div>
-        </section>
-      {/if}
+      <section class="workflow-section">
+        <h2 class="section-title">State Machine</h2>
+        <div class="diagram-container">
+          <MermaidDiagram code={data.mermaid} />
+        </div>
+      </section>
 
       <!-- Workflow source info -->
       <section class="workflow-section">
@@ -77,7 +75,9 @@ const SOURCE_LABELS = {
         <div class="info-card">
           <div class="info-row">
             <span class="info-label">Source</span>
-            <span class="info-value">{SOURCE_LABELS[data.script_source] || data.script_source}</span>
+            <span class="info-value"
+              >{SOURCE_LABELS[data.script_source] || data.script_source}</span
+            >
           </div>
           {#if data.script_path}
             <div class="info-row">
@@ -102,7 +102,9 @@ const SOURCE_LABELS = {
             <div class="info-card">
               <div class="info-row">
                 <span class="info-label">Source</span>
-                <span class="info-value">{SOURCE_LABELS[plugin.source] || plugin.source}</span>
+                <span class="info-value"
+                  >{SOURCE_LABELS[plugin.source] || plugin.source}</span
+                >
               </div>
               <div class="info-row">
                 <span class="info-label">Path</span>
