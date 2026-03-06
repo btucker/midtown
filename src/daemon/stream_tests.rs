@@ -1288,7 +1288,10 @@ fn test_process_coworker_output_empty_text_not_posted() {
         Effect::PostToChannel {
             message, tool_data, ..
         } => {
-            assert!(message.is_empty(), "message content should be empty");
+            assert_eq!(
+                message, "[Read]",
+                "tool message should have CLI-visible summary"
+            );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].tool_name, "Read");
@@ -1441,7 +1444,10 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
             auto_output,
             ..
         } => {
-            assert!(message.is_empty(), "tool message content should be empty");
+            assert_eq!(
+                message, "[Bash]",
+                "tool message should have CLI-visible summary"
+            );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].tool_name, "Bash");
@@ -2112,4 +2118,56 @@ fn test_get_parent_tool_use_id_returns_none_when_absent() {
     assert!(get_parent_tool_use_id(&json!(null)).is_none());
     assert!(get_parent_tool_use_id(&json!({})).is_none());
     assert!(get_parent_tool_use_id(&json!({"provider": "claude"})).is_none());
+}
+
+// ── tool_summary tests ──────────────────────────────────────────────
+
+#[test]
+fn test_tool_summary_empty() {
+    assert_eq!(tool_summary(&[]), "");
+}
+
+#[test]
+fn test_tool_summary_single() {
+    let blocks = vec![ToolBlock {
+        tool_name: "Bash".to_string(),
+        input: json!({}),
+        output: None,
+        error: false,
+        call_id: None,
+        parent_tool_use_id: None,
+    }];
+    assert_eq!(tool_summary(&blocks), "[Bash]");
+}
+
+#[test]
+fn test_tool_summary_three() {
+    let blocks: Vec<ToolBlock> = ["Bash", "Read", "Edit"]
+        .iter()
+        .map(|name| ToolBlock {
+            tool_name: name.to_string(),
+            input: json!({}),
+            output: None,
+            error: false,
+            call_id: None,
+            parent_tool_use_id: None,
+        })
+        .collect();
+    assert_eq!(tool_summary(&blocks), "[Bash, Read, Edit]");
+}
+
+#[test]
+fn test_tool_summary_four_or_more_uses_count() {
+    let blocks: Vec<ToolBlock> = ["Bash", "Read", "Edit", "Grep"]
+        .iter()
+        .map(|name| ToolBlock {
+            tool_name: name.to_string(),
+            input: json!({}),
+            output: None,
+            error: false,
+            call_id: None,
+            parent_tool_use_id: None,
+        })
+        .collect();
+    assert_eq!(tool_summary(&blocks), "[4 tool calls]");
 }
