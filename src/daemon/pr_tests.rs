@@ -3586,10 +3586,11 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
             e,
             Effect::PostToChannel {
                 sender,
+                message,
                 ..
-            } if sender == "midtown"
+            } if sender == "midtown" && message.contains("@user")
         )),
-        "Expected review-complete fallback post to channel output, got: {:#?}",
+        "Expected review-complete fallback to @mention user, got: {:#?}",
         effects
     );
 

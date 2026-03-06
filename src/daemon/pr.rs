@@ -2957,9 +2957,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
 
             let channel = pr_ctx.get_channel(pr_number);
+            // No coworker owns this PR — @mention the user so they see it
+            let user_msg = format!("@user {}", nudge_msg);
             effects.push(Effect::PostToChannel {
                 sender: "midtown".to_string(),
-                message: nudge_msg,
+                message: user_msg,
                 channel,
                 auto_output: false,
             });
