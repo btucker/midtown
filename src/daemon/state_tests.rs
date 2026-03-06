@@ -883,6 +883,120 @@ fn profile_state_default_is_not_limited() {
     assert!(state.last_used_at.is_none());
 }
 
+// ── migrate_workflow_state_from_dir tests ─────────────────────────────────
+
+#[test]
+fn test_migrate_workflow_state_from_dir_with_valid_files() {
+    let dir = tempdir().unwrap();
+    let channels_dir = dir.path().join("channels");
+
+    // Create two channel dirs with valid workflow-state.json
+    let ch1_dir = channels_dir.join("auth");
+    fs::create_dir_all(&ch1_dir).unwrap();
+    fs::write(
+        ch1_dir.join("workflow-state.json"),
+        r#"{"stage": "review", "count": 3}"#,
+    )
+    .unwrap();
+
+    let ch2_dir = channels_dir.join("frontend");
+    fs::create_dir_all(&ch2_dir).unwrap();
+    fs::write(ch2_dir.join("workflow-state.json"), r#"{"stage": "dev"}"#).unwrap();
+
+    let (migrated, files_to_delete) =
+        DaemonPersistentState::migrate_workflow_state_from_dir(&channels_dir);
+
+    assert_eq!(migrated.len(), 2);
+    assert_eq!(migrated["auth"]["stage"], "review");
+    assert_eq!(migrated["auth"]["count"], 3);
+    assert_eq!(migrated["frontend"]["stage"], "dev");
+
+    // Files should NOT have been deleted yet (caller's responsibility)
+    assert_eq!(files_to_delete.len(), 2);
+    for path in &files_to_delete {
+        assert!(
+            path.exists(),
+            "Legacy file should still exist before caller deletes"
+        );
+    }
+}
+
+#[test]
+fn test_migrate_workflow_state_from_dir_skips_invalid_json() {
+    let dir = tempdir().unwrap();
+    let channels_dir = dir.path().join("channels");
+
+    // Valid channel
+    let valid_dir = channels_dir.join("good");
+    fs::create_dir_all(&valid_dir).unwrap();
+    fs::write(valid_dir.join("workflow-state.json"), r#"{"ok": true}"#).unwrap();
+
+    // Invalid JSON channel
+    let bad_dir = channels_dir.join("bad");
+    fs::create_dir_all(&bad_dir).unwrap();
+    fs::write(bad_dir.join("workflow-state.json"), "not valid json{{{").unwrap();
+
+    let (migrated, files_to_delete) =
+        DaemonPersistentState::migrate_workflow_state_from_dir(&channels_dir);
+
+    assert_eq!(migrated.len(), 1);
+    assert!(migrated.contains_key("good"));
+    assert!(!migrated.contains_key("bad"));
+
+    // Only the valid file should be queued for deletion
+    assert_eq!(files_to_delete.len(), 1);
+    // The invalid file should be preserved on disk
+    assert!(bad_dir.join("workflow-state.json").exists());
+}
+
+#[test]
+fn test_migrate_workflow_state_from_dir_no_channels_dir() {
+    let dir = tempdir().unwrap();
+    let channels_dir = dir.path().join("channels"); // does not exist
+
+    let (migrated, files_to_delete) =
+        DaemonPersistentState::migrate_workflow_state_from_dir(&channels_dir);
+
+    assert!(migrated.is_empty());
+    assert!(files_to_delete.is_empty());
+}
+
+#[test]
+fn test_migrate_workflow_state_from_dir_skips_non_directory_entries() {
+    let dir = tempdir().unwrap();
+    let channels_dir = dir.path().join("channels");
+    fs::create_dir_all(&channels_dir).unwrap();
+
+    // Create a regular file (not a directory) in channels/
+    fs::write(channels_dir.join("stray-file.json"), "{}").unwrap();
+
+    // Create a valid channel dir
+    let ch_dir = channels_dir.join("real-channel");
+    fs::create_dir_all(&ch_dir).unwrap();
+    fs::write(ch_dir.join("workflow-state.json"), r#"{"v": 1}"#).unwrap();
+
+    let (migrated, _) = DaemonPersistentState::migrate_workflow_state_from_dir(&channels_dir);
+
+    assert_eq!(migrated.len(), 1);
+    assert!(migrated.contains_key("real-channel"));
+}
+
+#[test]
+fn test_migrate_workflow_state_from_dir_channel_without_state_file() {
+    let dir = tempdir().unwrap();
+    let channels_dir = dir.path().join("channels");
+
+    // Channel dir exists but has no workflow-state.json
+    let ch_dir = channels_dir.join("empty-channel");
+    fs::create_dir_all(&ch_dir).unwrap();
+
+    let (migrated, files_to_delete) =
+        DaemonPersistentState::migrate_workflow_state_from_dir(&channels_dir);
+
+    assert!(migrated.is_empty());
+    assert!(files_to_delete.is_empty());
+}
+
 // ── apply_gc tests ───────────────────────────────────────────────────────
 
 fn make_gc_session(session_id: &str, task_id: Option<&str>, has_prompt: bool) -> SessionRecord {

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, ErrorKind};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -266,6 +267,32 @@ impl DaemonPersistentState {
                 })?;
                 // Rebuild reverse indexes that aren't serialized
                 state.worktree_registry.rebuild_indexes();
+
+                // Migrate legacy per-channel workflow-state.json files if
+                // workflow_state is empty (upgrade from pre-migration installs).
+                if state.workflow_state.is_empty() {
+                    let (migrated, files_to_delete) = Self::migrate_workflow_state_files(repo);
+                    if !migrated.is_empty() {
+                        debug!(
+                            "Migrated {} legacy workflow-state.json file(s) into existing daemon state",
+                            migrated.len()
+                        );
+                        state.workflow_state = migrated;
+                        // Persist the migrated state before deleting legacy files
+                        if let Err(e) = state.save_for_repo(repo) {
+                            warn!(
+                                "Failed to save daemon state after workflow migration: {}",
+                                e
+                            );
+                        } else {
+                            for path in &files_to_delete {
+                                let _ = fs::remove_file(path);
+                                debug!("Removed legacy workflow-state.json: {}", path.display());
+                            }
+                        }
+                    }
+                }
+
                 debug!(
                     "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
                     state.github.pr_reviewers.len(),
@@ -382,7 +409,7 @@ impl DaemonPersistentState {
         });
 
         // Migrate any existing per-channel workflow-state.json files.
-        let workflow_state = Self::migrate_workflow_state_files(repo);
+        let (workflow_state, workflow_files_to_delete) = Self::migrate_workflow_state_files(repo);
 
         let state = Self {
             github,
@@ -407,7 +434,9 @@ impl DaemonPersistentState {
             return Err(e);
         }
 
-        // Clean up legacy files (best-effort, don't fail if removal fails)
+        // Clean up legacy files (best-effort, don't fail if removal fails).
+        // Deletion is deferred until after save_for_repo succeeds to avoid
+        // data loss if a crash occurs between reading and writing.
         let github_path = crate::paths::github_state_file_for_repo(repo);
         if github_path.exists() {
             let _ = fs::remove_file(&github_path);
@@ -416,6 +445,10 @@ impl DaemonPersistentState {
         if reminder_path.exists() {
             let _ = fs::remove_file(&reminder_path);
             debug!("Removed legacy reminders.json after migration");
+        }
+        for path in &workflow_files_to_delete {
+            let _ = fs::remove_file(path);
+            debug!("Removed legacy workflow-state.json: {}", path.display());
         }
 
         Ok(state)
@@ -471,14 +504,31 @@ impl DaemonPersistentState {
     ///
     /// Scans `~/.midtown/projects/<repo>/channels/*/workflow-state.json`,
     /// loads each file's content, and collects them into a HashMap keyed
-    /// by channel name. Removes the legacy files after successful migration.
-    fn migrate_workflow_state_files(repo: &str) -> HashMap<String, serde_json::Value> {
+    /// by channel name. Returns the migrated state and paths to legacy files
+    /// that should be deleted after the combined state is persisted.
+    fn migrate_workflow_state_files(
+        repo: &str,
+    ) -> (HashMap<String, serde_json::Value>, Vec<PathBuf>) {
         let channels_dir = crate::paths::projects_dir_for_repo(repo).join("channels");
-        let mut workflow_state = HashMap::new();
+        Self::migrate_workflow_state_from_dir(&channels_dir)
+    }
 
-        let entries = match fs::read_dir(&channels_dir) {
+    /// Core migration logic that scans a channels directory for legacy
+    /// `workflow-state.json` files. Separated from `migrate_workflow_state_files`
+    /// for testability (no dependency on global paths).
+    ///
+    /// Returns (migrated_state, legacy_files_to_delete). Callers must persist
+    /// the combined state before deleting the legacy files to avoid data loss
+    /// on crash.
+    fn migrate_workflow_state_from_dir(
+        channels_dir: &Path,
+    ) -> (HashMap<String, serde_json::Value>, Vec<PathBuf>) {
+        let mut workflow_state = HashMap::new();
+        let mut files_to_delete = Vec::new();
+
+        let entries = match fs::read_dir(channels_dir) {
             Ok(e) => e,
-            Err(_) => return workflow_state, // No channels dir — nothing to migrate
+            Err(_) => return (workflow_state, files_to_delete), // No channels dir — nothing to migrate
         };
 
         for entry in entries.flatten() {
@@ -496,8 +546,7 @@ impl DaemonPersistentState {
                             "Migrated workflow-state.json into daemon state"
                         );
                         workflow_state.insert(channel_name, value);
-                        // Remove the legacy file (best-effort)
-                        let _ = fs::remove_file(&state_file);
+                        files_to_delete.push(state_file);
                     }
                     Err(e) => {
                         warn!(
@@ -517,7 +566,7 @@ impl DaemonPersistentState {
             );
         }
 
-        workflow_state
+        (workflow_state, files_to_delete)
     }
 }
 
