@@ -258,7 +258,7 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 **Lifecycle:** Channel leads are spawned on-demand by these triggers:
 - **User message** in the channel (via `handle_channel_post`)
 - **Task created** in the channel (via `handle_task_create`)
-- **Insight posted** to the channel (via `handle_insight_report`)
+- **Insight posted** to the channel (via `post_insight` in `effects.rs`)
 - **Explicit nudge** (@mention routing, task feedback)
 
 **Archived-channel redirect:** When a task is created with `--channel <name>` pointing to an archived channel (e.g., `daemon`), `handle_task_create` redirects the task to the ops channel via `resolve_effective_task_channel()`. The effective channel is stored in both the task JSON and `ps.task_channel`, ensuring all downstream routing (announcement posting, `NudgeChannelLead`, `MIDTOWN_CHANNEL` injection, insight posting, `handle_task_metadata`) uses the routable channel. If the ops channel is itself archived, the redirect falls back to the main channel.

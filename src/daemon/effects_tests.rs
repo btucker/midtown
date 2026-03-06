@@ -1,6 +1,7 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
 use crate::github_state::AssignmentSource;
+use std::process::Command;
 
 fn mk_session_record(
     session_id: &str,
@@ -1978,4 +1979,424 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
         matches.len()
     );
     assert_eq!(matches[0].session_id, "new-fork-sess");
+}
+
+// ── post_insight tests ──────────────────────────────────────────────────────
+//
+// Ported from the deleted rpc_insight_tests.rs. These test the async
+// `post_insight()` executor in effects.rs which reimplements the same
+// dedup, suppression, and routing logic.
+
+fn make_insight_test_state(
+    repo_name: &str,
+) -> (
+    DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git config");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(temp_dir.path().to_path_buf())
+        .expect("worktree manager");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+
+    let base_dir = temp_dir.path().to_path_buf();
+    let channel_router = crate::ChannelRouter::new(&base_dir, repo_name);
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let state = DaemonState::new(
+        "/tmp/test.sock".into(),
+        cm,
+        crate::paths::ProjectPaths::with_project_name(repo_name, repo_name),
+        vec![base_dir],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+    (state, temp_dir, _guard)
+}
+
+/// Helper: read all JSONL lines from a channel's history file.
+fn read_channel_messages(
+    temp_dir: &tempfile::TempDir,
+    channel_name: &str,
+) -> Vec<serde_json::Value> {
+    let file = temp_dir
+        .path()
+        .join("channels")
+        .join(channel_name)
+        .join("history")
+        .join("current.jsonl");
+    if !file.exists() {
+        return vec![];
+    }
+    std::fs::read_to_string(&file)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn test_hash_insight_deterministic() {
+    let hash1 = super::hash_insight("Test insight content");
+    let hash2 = super::hash_insight("Test insight content");
+    assert_eq!(hash1, hash2);
+}
+
+#[test]
+fn test_hash_insight_normalizes_whitespace_and_case() {
+    let hash1 = super::hash_insight("This is an insight");
+    let hash2 = super::hash_insight("  This  is   an   insight  ");
+    let hash3 = super::hash_insight("This\n  is\nan\ninsight");
+    let hash4 = super::hash_insight("THIS IS AN INSIGHT");
+
+    assert_eq!(hash1, hash2, "extra whitespace should be normalized");
+    assert_eq!(hash1, hash3, "newlines should be normalized");
+    assert_eq!(hash1, hash4, "case should be normalized");
+}
+
+#[test]
+fn test_hash_insight_different_content() {
+    let hash1 = super::hash_insight("Insight one");
+    let hash2 = super::hash_insight("Insight two");
+    assert_ne!(hash1, hash2);
+}
+
+/// Duplicate insights should be deduplicated: first posts, second is skipped.
+#[tokio::test]
+async fn test_post_insight_deduplication() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    super::post_insight(&state, "coworker1", "Unique insight text").await;
+    super::post_insight(&state, "coworker1", "Unique insight text").await;
+
+    let default_ch = state.channel_router.default_channel_name().to_string();
+    let messages = read_channel_messages(&temp_dir, &default_ch);
+    let insight_msgs: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Unique insight text"))
+        })
+        .collect();
+    assert_eq!(
+        insight_msgs.len(),
+        1,
+        "duplicate insight should be deduplicated"
+    );
+}
+
+/// Insights from channel leads should be suppressed (they auto-post output).
+#[tokio::test]
+async fn test_post_insight_channel_lead_suppressed() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    // Register a running channel-lead session
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "cl-session-abc".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "cl-session-abc".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                working_dir: "/tmp/test".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    super::post_insight(&state, "ops-lead", "Channel lead insight").await;
+
+    let default_ch = state.channel_router.default_channel_name().to_string();
+    let messages = read_channel_messages(&temp_dir, &default_ch);
+    let insight_msgs: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Channel lead insight"))
+        })
+        .collect();
+    assert!(
+        insight_msgs.is_empty(),
+        "channel lead insights should be suppressed"
+    );
+}
+
+/// Dedup-before-suppression ordering: hash is inserted before the channel-lead
+/// check, so a channel-lead insight records the hash and a subsequent non-lead
+/// posting the same text is correctly deduplicated.
+#[tokio::test]
+async fn test_post_insight_dedup_before_suppression_ordering() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    // Register a running channel-lead session
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "cl-session-abc".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "cl-session-abc".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                working_dir: "/tmp/test".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Channel lead posts first — suppressed but hash recorded
+    super::post_insight(&state, "ops-lead", "Shared insight text").await;
+
+    // Non-lead coworker posts same text — should be deduplicated
+    super::post_insight(&state, "coworker1", "Shared insight text").await;
+
+    let default_ch = state.channel_router.default_channel_name().to_string();
+    let messages = read_channel_messages(&temp_dir, &default_ch);
+    let insight_msgs: Vec<_> = messages
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Shared insight text"))
+        })
+        .collect();
+    assert!(
+        insight_msgs.is_empty(),
+        "channel lead suppressed + coworker deduped = no posted insight"
+    );
+}
+
+/// When task_thread_id is set but task_channel is None (inconsistent state),
+/// the insight should post as a top-level message, NOT create a cross-channel
+/// thread reference.
+#[tokio::test]
+async fn test_post_insight_no_cross_channel_thread_when_task_channel_missing() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    let stale_thread_id = "stale-thread-from-old-channel";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("50".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        // Deliberately NOT setting task_channel
+        ps.task_thread_id
+            .insert("50".to_string(), stale_thread_id.to_string());
+    }
+
+    super::post_insight(&state, "coworker1", "Orphaned thread insight").await;
+
+    let default_ch = state.channel_router.default_channel_name().to_string();
+    let messages = read_channel_messages(&temp_dir, &default_ch);
+    let line = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Orphaned thread insight"))
+        })
+        .expect("insight should be posted to default channel");
+    assert!(
+        line.get("thread_parent_id").is_none() || line["thread_parent_id"].is_null(),
+        "insight should NOT have thread_parent_id when task_channel is missing \
+         (prevents cross-channel thread reference)"
+    );
+}
+
+/// When a coworker name is reused across sessions (stale + active), the insight
+/// should route using the active (is_running=true) session's task binding, not
+/// the stale one.
+#[tokio::test]
+async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-99";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Stale session (stopped, different task in different channel)
+        ps.sessions.insert(
+            "old-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "old-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("88".to_string()),
+                is_running: false,
+                ..Default::default()
+            },
+        );
+
+        // Active session (running, correct task)
+        ps.sessions.insert(
+            "new-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "new-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("99".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+
+        // Old task in a different channel
+        ps.task_channel
+            .insert("88".to_string(), "old-channel".to_string());
+        ps.task_thread_id
+            .insert("88".to_string(), "old-thread-id".to_string());
+
+        // Current task in the correct channel
+        ps.task_channel
+            .insert("99".to_string(), "my-feature".to_string());
+        ps.task_thread_id
+            .insert("99".to_string(), thread_parent_id.to_string());
+    }
+
+    super::post_insight(&state, "coworker1", "Insight from reused name session").await;
+
+    // The insight should route to "my-feature" channel, threaded under the task
+    let messages = read_channel_messages(&temp_dir, "my-feature");
+    let line = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Insight from reused name session"))
+        })
+        .expect("insight should be posted to the task channel");
+    assert_eq!(
+        line["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "insight should thread under the active session's task announcement"
+    );
+}
+
+/// When a coworker has a task with both task_channel and task_thread_id set,
+/// the insight should be posted as a thread reply.
+#[tokio::test]
+async fn test_post_insight_routes_to_task_thread() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-42";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("42".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "my-feature".to_string());
+        ps.task_thread_id
+            .insert("42".to_string(), thread_parent_id.to_string());
+    }
+
+    super::post_insight(&state, "coworker1", "A threaded insight").await;
+
+    let messages = read_channel_messages(&temp_dir, "my-feature");
+    let line = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("A threaded insight"))
+        })
+        .expect("insight should be posted to task channel");
+    assert_eq!(
+        line["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "insight should be threaded under the task announcement"
+    );
+}
+
+/// When a coworker has a task with task_channel but no task_thread_id,
+/// the insight should be posted as a top-level message.
+#[tokio::test]
+async fn test_post_insight_no_thread_when_no_thread_id() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("42".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        ps.task_channel
+            .insert("42".to_string(), "my-feature".to_string());
+        // Deliberately NOT setting task_thread_id
+    }
+
+    super::post_insight(&state, "coworker1", "An unthreaded insight").await;
+
+    let messages = read_channel_messages(&temp_dir, "my-feature");
+    let line = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("An unthreaded insight"))
+        })
+        .expect("insight should be posted to task channel");
+    assert!(
+        line.get("thread_parent_id").is_none() || line["thread_parent_id"].is_null(),
+        "message should not have thread_parent_id when task has no thread binding"
+    );
 }

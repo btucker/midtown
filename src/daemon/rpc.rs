@@ -8,7 +8,6 @@
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — one-shot execution and snapshot
 //! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
-//! - `rpc_insight` — insight reporting and deduplication
 //! - `rpc_prs` — PR data and operations (`prs.status`, `pr.review`, `pr.merge`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
