@@ -1399,8 +1399,8 @@ class TestScanForNewPlugins:
             newly_loaded = daemon.scan_for_new_plugins()
             assert newly_loaded == []
 
-    def test_reload_changed_discovers_new_plugins(self) -> None:
-        """reload_changed() should also discover new plugins."""
+    def test_reload_changed_does_not_discover_new_plugins(self) -> None:
+        """reload_changed() should NOT discover new plugins (only scan_for_new_plugins does)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             plugin_dir = Path(tmpdir) / "plugins"
             plugin_dir.mkdir()
@@ -1411,10 +1411,14 @@ class TestScanForNewPlugins:
             )
             assert len(daemon._loaded_plugins) == 0
 
-            # Add a new plugin and call reload_changed
+            # Add a new plugin and call reload_changed — should NOT discover it
             (plugin_dir / "added.py").write_text(_plugin_source("added"))
             daemon.reload_changed()
 
+            assert len(daemon._loaded_plugins) == 0
+
+            # But scan_for_new_plugins should find it
+            daemon.scan_for_new_plugins()
             assert len(daemon._loaded_plugins) == 1
             result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
             assert result.actions[0].params["message"] == "added"

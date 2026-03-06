@@ -286,10 +286,13 @@ class WorkflowDaemon:
     def reload_changed(self) -> None:
         """Hot-reload any plugins whose files have changed on disk.
 
+        Only checks already-tracked files for mtime changes and removes
+        deleted plugins. Does NOT scan for new plugins — that is handled
+        separately by the ``"reload"`` command handler which calls
+        :meth:`scan_for_new_plugins` after this method.
+
         After reloading, all plugins are re-registered in midtown_order
         to preserve correct execution order (pluggy LIFO).
-
-        Also scans for new plugins that appeared in the plugin directories.
         """
         # Unload deleted plugins
         for path in self._find_deleted():
@@ -320,8 +323,6 @@ class WorkflowDaemon:
         # execution order after LIFO disruption from individual reloads.
         self._reorder_plugins()
 
-        # Discover newly added plugins
-        self.scan_for_new_plugins()
 
     def dispatch_event(
         self,
@@ -463,9 +464,10 @@ class WorkflowDaemon:
         """
         request_type = request.get("type", "")
 
-        # Handle reload command
+        # Handle reload command — full scan including new plugin discovery
         if request_type == "reload":
             self.reload_changed()
+            self.scan_for_new_plugins()
             loaded = list(self._loaded_plugins.keys())
             return {
                 "ok": True,

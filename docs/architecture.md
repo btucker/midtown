@@ -724,19 +724,33 @@ Workflow scripts can also access state programmatically via two RPC methods hand
 
 **Protocol:** Newline-delimited JSON, one request per connection. Each connection sends one request and receives one response, then closes.
 
-Request format:
+Request format (event dispatch):
 ```json
 {"type": "pr.opened", "event": {...}, "task_id": "7", "task_state": "in_review"}
 ```
 
-Response format:
+Response format (event dispatch):
 ```json
 {"ok": true, "actions": [...], "default_prevented": false}
 ```
 
+Request format (reload command):
+```json
+{"type": "reload"}
+```
+
+Response format (reload):
+```json
+{"ok": true, "reloaded": true, "loaded_plugins": ["/path/to/plugin.py", ...]}
+```
+
+The Rust side uses `PluginDispatchResult` for event responses and `PluginReloadResult` for reload responses, keeping the deserialization types aligned with their semantics.
+
 **Startup handshake:** On startup, the daemon writes `{"ready":true}\n` to stdout so the Rust parent process knows the socket is accepting connections.
 
-**Hot-reload:** Before processing each request, `_process_request()` calls `reload_changed()` to detect plugin file mtime changes and re-register modified modules. This means plugin updates take effect without restarting the daemon.
+**Hot-reload (two-tier approach):**
+- **Per-event mtime check:** Before processing each event dispatch, `_process_request()` calls `reload_changed()` to detect mtime changes in already-tracked plugin files and re-register modified modules. This does NOT scan for new plugins to avoid unnecessary `iterdir()` overhead on every event.
+- **Periodic full scan:** The Rust event loop runs a `plugin_scan_interval` timer every 5 seconds that: (1) calls `update_plugin_dirs()` to detect new/removed plugin directories (restarting the daemon if dirs changed), and (2) sends a `"reload"` IPC command which triggers both `reload_changed()` AND `scan_for_new_plugins()` to discover newly added plugin files within existing directories.
 
 **Stale socket cleanup:** On startup, any existing socket file at the configured path is unlinked before binding, preventing "address already in use" errors from prior crashes.
 
@@ -757,6 +771,8 @@ Response format:
 **Plugin discovery:** `paths::discover_plugin_dirs()` scans for plugins in up to four directories (priority order): channel-specific in-repo, channel-specific local, project-wide in-repo, project-wide local. A directory is considered to contain plugins if it has at least one `.py` file (not `_`-prefixed) or a subdirectory with a `SKILL.md` file (AgentSkills format). At startup, only project-wide paths are scanned. At runtime, when dispatching workflow events, channel-specific plugin directories are discovered and merged into the running daemon via `merge_plugin_dirs()`. The manager only starts when at least one directory has plugin files.
 
 **AgentSkills format:** Plugin directories can contain AgentSkills — subdirectories with a `SKILL.md` frontmatter file specifying `midtown_hooks` (path to hooks module, default `scripts/hooks.py`) and `midtown_order` (execution priority). The `skill.py` module (`sdk/python/midtown/skill.py`) parses this frontmatter using a minimal YAML subset parser (no PyYAML dependency). `WorkflowDaemon` registers each AgentSkills plugin with a unique name (`agentskills_{name}`) to prevent pluggy conflicts when multiple skills share the same hooks filename.
+
+**Periodic plugin scan:** The main event loop runs a `plugin_scan_interval` (5s) that calls `update_plugin_dirs()` to re-discover plugin directories. If directories changed, the Python daemon is killed and `ensure_running()` spawns a fresh one (which loads all plugins on startup, so no reload is needed). If directories are unchanged, `send_reload()` sends a `"reload"` IPC command so the Python side checks for file-level changes and new plugins. `update_plugin_dirs()` returns a boolean indicating whether dirs changed, preventing a redundant (and potentially racy) reload immediately after a daemon restart.
 
 **Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for graceful exit, then escalates to SIGKILL if needed, then cleans up the socket file.
 

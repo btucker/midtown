@@ -4088,13 +4088,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     None,
                 );
                 // If plugin directories changed (new dirs appeared or old ones removed),
-                // restart the Python daemon with the updated list.
-                state.plugin_daemon.update_plugin_dirs(new_dirs).await;
-                // If the daemon is running, send a reload command so it picks up
-                // new/modified/deleted plugin files within existing directories.
+                // restart the Python daemon with the updated list. The new daemon
+                // loads all plugins on startup, so skip the reload in that case.
+                let dirs_changed = state.plugin_daemon.update_plugin_dirs(new_dirs).await;
                 if state.plugin_daemon.has_plugins() {
                     state.plugin_daemon.ensure_running().await;
-                    state.plugin_daemon.send_reload().await;
+                    // Only send reload when dirs didn't change — the daemon
+                    // was already running and just needs to check for file changes.
+                    if !dirs_changed {
+                        state.plugin_daemon.send_reload().await;
+                    }
                 }
             }
 

@@ -84,10 +84,14 @@ async fn manager_update_plugin_dirs_resets_backoff() {
         inner.last_crash = Some(Instant::now());
     }
 
-    // Update dirs should reset backoff.
-    manager
+    // Update dirs should reset backoff and return true (dirs changed).
+    let changed = manager
         .update_plugin_dirs(vec!["/tmp/new-plugins".into()])
         .await;
+    assert!(
+        changed,
+        "update_plugin_dirs should return true when dirs changed"
+    );
 
     let inner = manager.inner.lock().await;
     assert_eq!(inner.crash_count, 0);
@@ -156,8 +160,12 @@ async fn manager_update_plugin_dirs_noop_when_same() {
         inner.last_crash = Some(Instant::now());
     }
 
-    // Same dirs — should not reset backoff.
-    manager.update_plugin_dirs(dirs).await;
+    // Same dirs — should not reset backoff, return false.
+    let changed = manager.update_plugin_dirs(dirs).await;
+    assert!(
+        !changed,
+        "update_plugin_dirs should return false when dirs unchanged"
+    );
 
     let inner = manager.inner.lock().await;
     assert_eq!(inner.crash_count, 3);
