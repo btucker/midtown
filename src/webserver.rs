@@ -139,6 +139,11 @@ fn discover_projects() -> Vec<ProjectInfo> {
 
         let dir_key = entry.file_name().to_string_lossy().to_string();
 
+        // Skip hidden directories (e.g. .tmp* leftovers from tests/worktrees)
+        if dir_key.starts_with('.') {
+            continue;
+        }
+
         // Skip entries that are coworker names, not real projects.
         // These get created when a coworker process in a worktree incorrectly
         // registers itself as a project using the worktree directory name.
@@ -818,6 +823,31 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"status\":\"running\""));
         assert!(json.contains("\"name\":\"test\""));
+    }
+
+    #[test]
+    fn test_discover_projects_filters_hidden_directories() {
+        // Hidden directories (starting with '.') like .tmp* leftovers should be filtered
+        let temp_dir = tempfile::tempdir().unwrap();
+        let projects_dir = temp_dir.path();
+
+        // Create directories: real projects and hidden dirs
+        std::fs::create_dir(projects_dir.join("midtown")).unwrap();
+        std::fs::create_dir(projects_dir.join("my-app")).unwrap();
+        std::fs::create_dir(projects_dir.join(".tmp00e3hl")).unwrap();
+        std::fs::create_dir(projects_dir.join(".hidden-project")).unwrap();
+        std::fs::create_dir(projects_dir.join(".git")).unwrap();
+
+        let entries = std::fs::read_dir(projects_dir).unwrap();
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        names.sort();
+
+        assert_eq!(names, vec!["midtown", "my-app"]);
     }
 
     #[test]
