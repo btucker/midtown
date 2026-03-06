@@ -1365,6 +1365,7 @@ pub fn auto_migrate(repo: &str) {
         );
         return; // Don't mark as migrated — allow retry
     }
+    let _ = migrate_headless_transcripts_to_sessions(repo);
 
     let mut guard = migrated.lock().unwrap();
     guard.insert(repo.to_string());
@@ -1428,6 +1429,43 @@ fn migrate_legacy_coworker_worktrees(repo: &str) -> std::io::Result<bool> {
     let _ = std::fs::remove_dir(&old_coworkers_dir);
     let coworkers_parent = midtown_base_dir().join("coworkers");
     let _ = std::fs::remove_dir(&coworkers_parent);
+
+    Ok(migrated_any)
+}
+
+/// Migrate `headless-*.jsonl` transcript files from the project root
+/// (`~/.midtown/projects/<repo>/`) into the `sessions/` subdirectory.
+///
+/// Old files are moved (renamed) into `sessions/`. Files that already
+/// exist at the new path are skipped to avoid overwriting active transcripts.
+fn migrate_headless_transcripts_to_sessions(repo: &str) -> std::io::Result<bool> {
+    let project_dir = midtown_base_dir().join("projects").join(repo);
+    let sessions_dir = project_dir.join("sessions");
+
+    let entries = match std::fs::read_dir(&project_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(false),
+    };
+
+    let mut migrated_any = false;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with("headless-") && name_str.ends_with(".jsonl") {
+            // Create sessions/ on first match (avoid creating empty dirs)
+            if !migrated_any {
+                std::fs::create_dir_all(&sessions_dir)?;
+            }
+            let new_path = sessions_dir.join(&name);
+            if !new_path.exists() {
+                if let Err(e) = std::fs::rename(entry.path(), &new_path) {
+                    tracing::warn!("Failed to migrate transcript {}: {}", name_str, e);
+                } else {
+                    migrated_any = true;
+                }
+            }
+        }
+    }
 
     Ok(migrated_any)
 }

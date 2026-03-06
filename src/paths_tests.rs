@@ -1158,3 +1158,79 @@ fn test_collect_skill_md_bodies_skips_bare_py_files() {
     let results = collect_skill_md_bodies(&[plugin_dir]);
     assert!(results.is_empty());
 }
+
+// ── migrate_headless_transcripts_to_sessions ─────────────────────────
+
+#[test]
+fn test_migrate_headless_transcripts_moves_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+    let project_dir = tmp.path().join("projects").join(repo);
+    fs::create_dir_all(&project_dir).unwrap();
+
+    // Create old-style headless transcript files at the project root
+    fs::write(project_dir.join("headless-york.jsonl"), "line1\n").unwrap();
+    fs::write(project_dir.join("headless-park.jsonl"), "line2\n").unwrap();
+    // Non-headless file should NOT be moved
+    fs::write(project_dir.join("daemon.pid"), "12345").unwrap();
+
+    let result = migrate_headless_transcripts_to_sessions(repo);
+    assert!(result.is_ok());
+    assert!(result.unwrap(), "should have migrated");
+
+    let sessions_dir = project_dir.join("sessions");
+    assert!(sessions_dir.join("headless-york.jsonl").exists());
+    assert!(sessions_dir.join("headless-park.jsonl").exists());
+    assert_eq!(
+        fs::read_to_string(sessions_dir.join("headless-york.jsonl")).unwrap(),
+        "line1\n"
+    );
+    // Original files should be gone
+    assert!(!project_dir.join("headless-york.jsonl").exists());
+    assert!(!project_dir.join("headless-park.jsonl").exists());
+    // Non-headless file should remain
+    assert!(project_dir.join("daemon.pid").exists());
+}
+
+#[test]
+fn test_migrate_headless_transcripts_noop_when_no_files() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+    let project_dir = tmp.path().join("projects").join(repo);
+    fs::create_dir_all(&project_dir).unwrap();
+
+    let result = migrate_headless_transcripts_to_sessions(repo);
+    assert!(result.is_ok());
+    assert!(!result.unwrap(), "nothing to migrate");
+    // sessions/ should NOT be created when there's nothing to move
+    assert!(!project_dir.join("sessions").exists());
+}
+
+#[test]
+fn test_migrate_headless_transcripts_skips_existing_target() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo = "test-repo";
+    let project_dir = tmp.path().join("projects").join(repo);
+    let sessions_dir = project_dir.join("sessions");
+    fs::create_dir_all(&sessions_dir).unwrap();
+
+    // Old file at project root
+    fs::write(project_dir.join("headless-york.jsonl"), "old-content\n").unwrap();
+    // Newer file already at sessions/
+    fs::write(sessions_dir.join("headless-york.jsonl"), "new-content\n").unwrap();
+
+    let result = migrate_headless_transcripts_to_sessions(repo);
+    assert!(result.is_ok());
+
+    // Target should NOT be overwritten
+    assert_eq!(
+        fs::read_to_string(sessions_dir.join("headless-york.jsonl")).unwrap(),
+        "new-content\n"
+    );
+}
