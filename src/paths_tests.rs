@@ -817,7 +817,7 @@ fn test_discover_plugin_dirs_empty_when_no_dirs() {
     let project_root = tmp.path().join("project");
     std::fs::create_dir_all(&project_root).unwrap();
 
-    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert!(dirs.is_empty());
 }
 
@@ -829,7 +829,7 @@ fn test_discover_plugin_dirs_finds_repo_plugins() {
     std::fs::create_dir_all(&plugin_dir).unwrap();
     std::fs::write(plugin_dir.join("my_plugin.py"), "# plugin").unwrap();
 
-    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert_eq!(dirs.len(), 1);
     assert_eq!(dirs[0], plugin_dir);
 }
@@ -842,7 +842,7 @@ fn test_discover_plugin_dirs_skips_empty_dir() {
     std::fs::create_dir_all(&plugin_dir).unwrap();
     // No .py files — should be skipped.
 
-    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert!(dirs.is_empty());
 }
 
@@ -855,7 +855,7 @@ fn test_discover_plugin_dirs_skips_underscore_files() {
     // Only __init__.py — should be skipped.
     std::fs::write(plugin_dir.join("__init__.py"), "").unwrap();
 
-    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert!(dirs.is_empty());
 }
 
@@ -868,6 +868,78 @@ fn test_discover_plugin_dirs_finds_non_underscore_py() {
     std::fs::write(plugin_dir.join("__init__.py"), "").unwrap();
     std::fs::write(plugin_dir.join("hooks.py"), "# hooks").unwrap();
 
-    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test");
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
     assert_eq!(dirs.len(), 1);
+}
+
+#[test]
+fn test_discover_plugin_dirs_channel_specific() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+
+    // Set up channel-specific plugin dir
+    let channel_plugin_dir = project_root
+        .join(".midtown")
+        .join("channels")
+        .join("proj-auth")
+        .join("plugins");
+    std::fs::create_dir_all(&channel_plugin_dir).unwrap();
+    std::fs::write(channel_plugin_dir.join("review.py"), "# review").unwrap();
+
+    // Set up project-wide plugin dir
+    let project_plugin_dir = project_root.join(".midtown").join("plugins");
+    std::fs::create_dir_all(&project_plugin_dir).unwrap();
+    std::fs::write(project_plugin_dir.join("default.py"), "# default").unwrap();
+
+    // With channel: both dirs found, channel-specific first
+    let dirs = discover_plugin_dirs(
+        &project_root,
+        "nonexistent-repo-discover-test",
+        Some("proj-auth"),
+    );
+    assert_eq!(dirs.len(), 2);
+    assert_eq!(dirs[0], channel_plugin_dir);
+    assert_eq!(dirs[1], project_plugin_dir);
+
+    // Without channel: only project-wide dir
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
+    assert_eq!(dirs.len(), 1);
+    assert_eq!(dirs[0], project_plugin_dir);
+}
+
+#[test]
+fn test_discover_plugin_dirs_agentskills_format() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+
+    // Create an AgentSkills-format plugin (directory with SKILL.md)
+    let skill_dir = plugin_dir.join("tdw");
+    let scripts_dir = skill_dir.join("scripts");
+    std::fs::create_dir_all(&scripts_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: tdw\n---\n# TDW Plugin",
+    )
+    .unwrap();
+    std::fs::write(scripts_dir.join("hooks.py"), "# hooks").unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
+    assert_eq!(dirs.len(), 1);
+    assert_eq!(dirs[0], plugin_dir);
+}
+
+#[test]
+fn test_discover_plugin_dirs_skips_dir_without_skill_md() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project_root = tmp.path().join("project");
+    let plugin_dir = project_root.join(".midtown").join("plugins");
+
+    // Create a subdirectory WITHOUT SKILL.md — should not count as a plugin
+    let subdir = plugin_dir.join("not-a-plugin");
+    std::fs::create_dir_all(&subdir).unwrap();
+    std::fs::write(subdir.join("README.md"), "# Not a plugin").unwrap();
+
+    let dirs = discover_plugin_dirs(&project_root, "nonexistent-repo-discover-test", None);
+    assert!(dirs.is_empty());
 }

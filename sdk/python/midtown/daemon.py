@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from midtown.actions import Actions
 from midtown.hooks import DaemonAction, HookContext, get_plugin_manager
+from midtown.skill import SkillMetadata, parse_skill_file
 
 logger = logging.getLogger(__name__)
 
@@ -62,41 +63,100 @@ class WorkflowDaemon:
         self._loaded_plugins: dict[Path, Any] = {}
         self._mtimes: dict[Path, float] = {}
 
+        # Track AgentSkills metadata (keyed by plugin directory)
+        self._skill_metadata: dict[Path, SkillMetadata] = {}
+        # Reverse map: hooks file path → plugin directory (for cleanup)
+        self._hooks_to_skill_dir: dict[Path, Path] = {}
+
         # Load initial plugins
         for plugin_dir in plugin_dirs:
             self.load_plugins_from(plugin_dir)
 
     def load_plugins_from(self, directory: Path) -> None:
-        """Load all plugin files from *directory* (recursively).
+        """Load all plugins from *directory*.
 
-        Skips files whose names start with ``_`` (e.g. ``__init__.py``).
+        Supports two formats:
+
+        1. **Bare ``.py`` files** — loaded directly as plugin modules.
+           Skips files whose names start with ``_`` (e.g. ``__init__.py``).
+
+        2. **AgentSkills directories** — subdirectories containing a
+           ``SKILL.md`` file with YAML frontmatter.  The ``midtown_hooks``
+           metadata field specifies the hooks module path (defaults to
+           ``scripts/hooks.py``).
+
         Non-existent directories are silently ignored.
         """
         if not directory.exists():
             return
 
-        for plugin_file in sorted(directory.glob("**/*.py")):
-            if plugin_file.name.startswith("_"):
-                continue
-            self.load_plugin(plugin_file)
+        for entry in sorted(directory.iterdir()):
+            if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
+                # Bare .py plugin file
+                self.load_plugin(entry)
+            elif entry.is_dir():
+                # Check for AgentSkills format (directory with SKILL.md)
+                skill_md = entry / "SKILL.md"
+                if skill_md.exists():
+                    self._load_agentskills_plugin(entry, skill_md)
 
-    def load_plugin(self, path: Path) -> None:
-        """Load and register a single plugin file."""
+    def load_plugin(self, path: Path, *, plugin_name: str | None = None) -> None:
+        """Load and register a single plugin file.
+
+        *plugin_name* overrides the default module name (``path.stem``).
+        This is needed when multiple plugins share the same filename
+        (e.g. ``scripts/hooks.py``) to avoid pluggy duplicate name errors.
+        """
         try:
             # Read source directly and compile to bypass bytecode caching.
             # importlib.util.spec_from_file_location keys .pyc files by
             # source path, so unique module names don't help on hot-reload.
             source = path.read_text()
             code = compile(source, str(path), "exec")
-            module = types.ModuleType(path.stem)
+            name = plugin_name or path.stem
+            module = types.ModuleType(name)
             module.__file__ = str(path)
             exec(code, module.__dict__)  # noqa: S102
-            self.pm.register(module)
+            self.pm.register(module, name=name)
             self._loaded_plugins[path] = module
             self._mtimes[path] = path.stat().st_mtime
             logger.info("Loaded plugin: %s", path)
         except Exception:
             logger.exception("Failed to load plugin %s", path)
+
+    def _load_agentskills_plugin(self, plugin_dir: Path, skill_md: Path) -> None:
+        """Load an AgentSkills-format plugin from a directory with SKILL.md.
+
+        Parses the SKILL.md frontmatter to determine the hooks module path
+        and execution order, then loads the hooks module as a plugin.
+        """
+        metadata = parse_skill_file(skill_md)
+        hooks_path = plugin_dir / metadata.hooks_path
+
+        if not hooks_path.exists():
+            logger.warning(
+                "AgentSkills plugin %s: hooks file not found at %s",
+                plugin_dir.name,
+                hooks_path,
+            )
+            return
+
+        self._skill_metadata[plugin_dir] = metadata
+        self._hooks_to_skill_dir[hooks_path] = plugin_dir
+        # Use a unique plugin name to avoid pluggy duplicate name errors
+        # when multiple AgentSkills share the same hooks filename.
+        unique_name = f"agentskills_{metadata.name or plugin_dir.name}"
+        self.load_plugin(hooks_path, plugin_name=unique_name)
+        logger.info(
+            "Loaded AgentSkills plugin: %s (order=%d, hooks=%s)",
+            metadata.name or plugin_dir.name,
+            metadata.order,
+            metadata.hooks_path,
+        )
+
+    def get_skill_metadata(self) -> dict[Path, SkillMetadata]:
+        """Return metadata for all loaded AgentSkills plugins."""
+        return dict(self._skill_metadata)
 
     def unload_plugin(self, path: Path) -> None:
         """Unregister a previously loaded plugin."""
@@ -104,6 +164,10 @@ class WorkflowDaemon:
             self.pm.unregister(self._loaded_plugins[path])
             del self._loaded_plugins[path]
             del self._mtimes[path]
+            # Clean up AgentSkills metadata if this was an AgentSkills hook
+            skill_dir = self._hooks_to_skill_dir.pop(path, None)
+            if skill_dir is not None:
+                self._skill_metadata.pop(skill_dir, None)
             logger.info("Unloaded plugin: %s", path)
 
     def check_for_changes(self) -> list[Path]:
@@ -128,8 +192,16 @@ class WorkflowDaemon:
 
         for path in self.check_for_changes():
             old_mtime = self._mtimes.get(path)
+            # Remember if this was an AgentSkills plugin so we can
+            # re-load it correctly (re-parsing SKILL.md for metadata).
+            skill_dir = self._hooks_to_skill_dir.get(path)
             self.unload_plugin(path)
-            self.load_plugin(path)
+            if skill_dir is not None:
+                skill_md = skill_dir / "SKILL.md"
+                if skill_md.exists():
+                    self._load_agentskills_plugin(skill_dir, skill_md)
+            else:
+                self.load_plugin(path)
             # If load failed, preserve tracking so the plugin is retried
             # on the next check when the file is fixed.
             if path not in self._mtimes and old_mtime is not None:

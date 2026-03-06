@@ -751,7 +751,9 @@ Response format:
 
 **Restart with backoff:** Exponential backoff starting at 500ms, doubling per consecutive crash, capped at 60s. Backoff resets on successful ready handshake. `ensure_running()` on each drain tick attempts restart when the backoff period has elapsed.
 
-**Plugin discovery:** `paths::discover_plugin_dirs()` scans for `.py` files (excluding `_`-prefixed) in `<project>/.midtown/plugins/` and `~/.midtown/projects/<repo>/plugins/`. The manager only starts when at least one directory has plugin files.
+**Plugin discovery:** `paths::discover_plugin_dirs()` scans for plugins in up to four directories (priority order): channel-specific in-repo, channel-specific local, project-wide in-repo, project-wide local. A directory is considered to contain plugins if it has at least one `.py` file (not `_`-prefixed) or a subdirectory with a `SKILL.md` file (AgentSkills format). When no channel is provided, only the project-wide paths are scanned. The manager only starts when at least one directory has plugin files.
+
+**AgentSkills format:** Plugin directories can contain AgentSkills — subdirectories with a `SKILL.md` frontmatter file specifying `midtown_hooks` (path to hooks module, default `scripts/hooks.py`) and `midtown_order` (execution priority). The `skill.py` module (`sdk/python/midtown/skill.py`) parses this frontmatter using a minimal YAML subset parser (no PyYAML dependency). `WorkflowDaemon` registers each AgentSkills plugin with a unique name (`agentskills_{name}`) to prevent pluggy conflicts when multiple skills share the same hooks filename.
 
 **Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for graceful exit, then escalates to SIGKILL if needed, then cleans up the socket file.
 

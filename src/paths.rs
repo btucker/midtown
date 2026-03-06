@@ -823,38 +823,77 @@ pub fn workflow_script_for_channel(
     None
 }
 
-/// Discover plugin directories that contain `.py` files.
+/// Discover plugin directories that contain plugins (`.py` files or AgentSkills directories).
 ///
 /// Scans the following paths in priority order, collecting all that contain
-/// at least one `.py` file:
+/// at least one plugin:
 ///
-/// 1. `<project_root>/.midtown/plugins/` — project-wide, in repo
-/// 2. `~/.midtown/projects/<repo>/plugins/` — project-wide, local
+/// 1. `<project_root>/.midtown/channels/<channel>/plugins/` — channel-specific, in repo
+/// 2. `~/.midtown/projects/<repo>/channels/<channel>/plugins/` — channel-specific, local
+/// 3. `<project_root>/.midtown/plugins/` — project-wide, in repo
+/// 4. `~/.midtown/projects/<repo>/plugins/` — project-wide, local
 ///
-/// Returns an empty `Vec` if no directories with plugin files are found.
-pub fn discover_plugin_dirs(project_root: &Path, repo: &str) -> Vec<PathBuf> {
-    let candidates = [
-        project_root.join(".midtown").join("plugins"),
-        projects_dir_for_repo(repo).join("plugins"),
-    ];
+/// When `channel` is `None`, only project-wide paths (3 and 4) are scanned.
+///
+/// A directory is considered to contain plugins if it has:
+/// - At least one `.py` file (not starting with `_`), OR
+/// - At least one subdirectory containing a `SKILL.md` file (AgentSkills format)
+///
+/// Returns an empty `Vec` if no directories with plugins are found.
+pub fn discover_plugin_dirs(
+    project_root: &Path,
+    repo: &str,
+    channel: Option<&str>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::with_capacity(4);
+
+    // Channel-specific paths (highest priority)
+    if let Some(ch) = channel {
+        candidates.push(
+            project_root
+                .join(".midtown")
+                .join("channels")
+                .join(ch)
+                .join("plugins"),
+        );
+        candidates.push(
+            projects_dir_for_repo(repo)
+                .join("channels")
+                .join(ch)
+                .join("plugins"),
+        );
+    }
+
+    // Project-wide paths
+    candidates.push(project_root.join(".midtown").join("plugins"));
+    candidates.push(projects_dir_for_repo(repo).join("plugins"));
 
     candidates
         .into_iter()
-        .filter(|dir| {
-            dir.is_dir()
-                && dir
-                    .read_dir()
-                    .ok()
-                    .map(|entries| {
-                        entries.filter_map(|e| e.ok()).any(|e| {
-                            let name = e.file_name();
-                            let name = name.to_string_lossy();
-                            name.ends_with(".py") && !name.starts_with('_')
-                        })
-                    })
-                    .unwrap_or(false)
-        })
+        .filter(|dir| dir.is_dir() && dir_has_plugins(dir))
         .collect()
+}
+
+/// Check whether a directory contains at least one plugin.
+///
+/// A plugin is either:
+/// - A `.py` file whose name does not start with `_`
+/// - A subdirectory containing a `SKILL.md` file (AgentSkills format)
+fn dir_has_plugins(dir: &Path) -> bool {
+    let Ok(entries) = dir.read_dir() else {
+        return false;
+    };
+    entries.filter_map(|e| e.ok()).any(|e| {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        // Bare .py plugin file
+        if name.ends_with(".py") && !name.starts_with('_') {
+            return true;
+        }
+        // AgentSkills directory with SKILL.md
+        let path = e.path();
+        path.is_dir() && path.join("SKILL.md").exists()
+    })
 }
 
 /// Get the workflow state file path for a channel.
