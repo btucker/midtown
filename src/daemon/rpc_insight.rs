@@ -48,12 +48,15 @@ pub(super) async fn handle_insight_report(
 
     // Channel leads auto-post all output to their channel already.
     // Suppress the explicit insight.report to avoid double-posting.
+    // Filter by is_running to avoid matching stale session records that share
+    // the same current_name (name reuse after daemon restart).
     {
         let ps = state.persistent_state.lock().await;
-        let is_channel_lead = ps
-            .sessions
-            .values()
-            .any(|s| s.current_name.as_deref() == Some(agent) && s.coworker_type == "channel-lead");
+        let is_channel_lead = ps.sessions.values().any(|s| {
+            s.is_running
+                && s.current_name.as_deref() == Some(agent)
+                && s.coworker_type == "channel-lead"
+        });
         if is_channel_lead {
             debug!(
                 "insight.report: suppressing insight from channel lead {}, already auto-posted",
@@ -72,12 +75,19 @@ pub(super) async fn handle_insight_report(
     // Resolve channel and thread from the coworker's task binding.
     // Always look these up regardless of explicit --channel, so that insights
     // with an explicit --channel matching the task channel still thread correctly.
+    // Prefer running sessions to avoid matching stale session records that share
+    // the same current_name (name reuse after daemon restart).
     let (task_channel, task_thread_id): (Option<String>, Option<String>) = {
         let ps = state.persistent_state.lock().await;
         let task_id = ps
             .sessions
             .values()
-            .find(|r| r.current_name.as_deref() == Some(agent))
+            .find(|r| r.is_running && r.current_name.as_deref() == Some(agent))
+            .or_else(|| {
+                ps.sessions
+                    .values()
+                    .find(|r| r.current_name.as_deref() == Some(agent))
+            })
             .and_then(|r| r.task_id.as_deref());
         let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
         let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());

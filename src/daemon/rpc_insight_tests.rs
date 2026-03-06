@@ -333,7 +333,7 @@ async fn test_insight_no_thread_when_no_thread_id() {
 async fn test_insight_channel_lead_suppressed() {
     let (state, _temp_dir, _guard) = make_test_state("testrepo");
 
-    // Register a channel lead session via `sessions` — this is what the
+    // Register a running channel lead session via `sessions` — this is what the
     // implementation checks. `channel_lead_sessions` is NOT consulted.
     {
         let mut ps = state.persistent_state.lock().await;
@@ -344,6 +344,7 @@ async fn test_insight_channel_lead_suppressed() {
                 current_name: Some("ops-lead".to_string()),
                 coworker_type: "channel-lead".to_string(),
                 working_dir: "/tmp/test".to_string(),
+                is_running: true,
                 ..Default::default()
             },
         );
@@ -398,7 +399,7 @@ async fn test_insight_channel_lead_sessions_alone_does_not_suppress() {
 async fn test_insight_channel_lead_hash_recorded_for_dedup() {
     let (state, _temp_dir, _guard) = make_test_state("testrepo");
 
-    // Register a channel lead session
+    // Register a running channel lead session
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -408,6 +409,7 @@ async fn test_insight_channel_lead_hash_recorded_for_dedup() {
                 current_name: Some("ops-lead".to_string()),
                 coworker_type: "channel-lead".to_string(),
                 working_dir: "/tmp/test".to_string(),
+                is_running: true,
                 ..Default::default()
             },
         );
@@ -700,5 +702,157 @@ async fn test_insight_no_cross_channel_thread_when_task_channel_changed() {
     assert!(
         msg.get("thread_parent_id").is_none() || msg["thread_parent_id"].is_null(),
         "insight should NOT have thread_parent_id after task channel was changed (stale thread_id from old channel)"
+    );
+}
+
+/// Bug: When a coworker name is reused across sessions (after daemon restart or
+/// session recycling), multiple SessionRecords can have the same `current_name`.
+/// The insight handler's `find(|r| r.current_name == agent)` could return the
+/// stale session (with a different or cleared task_id), causing the insight to
+/// lose its task thread binding and post as a top-level message.
+///
+/// This test creates two session records with the same `current_name` — a stale
+/// one (is_running=false, no task_id) and the active one (is_running=true, with
+/// task_id). The insight should route to the active session's task thread.
+#[tokio::test]
+async fn test_insight_prefers_running_session_over_stale_with_same_name() {
+    let (state, temp_dir, _guard) = make_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-99";
+
+    // Create a stale session record (old session, stopped, task pointing to
+    // a DIFFERENT channel) AND an active session record (current session,
+    // running, with correct task_id). Both have current_name = "coworker1",
+    // simulating name reuse after a daemon restart.
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Stale session — stopped, has a different task_id pointing to "old-channel".
+        // This happens when SpawnSession marks old sessions is_running=false
+        // without clearing current_name after a daemon restart.
+        ps.sessions.insert(
+            "old-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "old-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("88".to_string()), // old task, different channel
+                is_running: false,
+                ..Default::default()
+            },
+        );
+
+        // Active session — running, with correct task_id
+        ps.sessions.insert(
+            "new-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "new-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("99".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+
+        // Old task in a different channel (with its own thread)
+        ps.task_channel
+            .insert("88".to_string(), "old-channel".to_string());
+        ps.task_thread_id
+            .insert("88".to_string(), "old-thread-id".to_string());
+
+        // Current task in the correct channel
+        ps.task_channel
+            .insert("99".to_string(), "my-feature".to_string());
+        ps.task_thread_id
+            .insert("99".to_string(), thread_parent_id.to_string());
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "coworker1",
+        "Insight from reused name session",
+        None,
+        &state,
+    )
+    .await;
+
+    assert_eq!(response.result.expect("should succeed")["posted"], true);
+
+    // The insight should route to "my-feature" channel, threaded under the task
+    let task_channel_file = temp_dir
+        .path()
+        .join("channels")
+        .join("my-feature")
+        .join("history")
+        .join("current.jsonl");
+    assert!(
+        task_channel_file.exists(),
+        "insight should be posted to the task channel, not main"
+    );
+    let content = std::fs::read_to_string(&task_channel_file).unwrap();
+    let line = content
+        .lines()
+        .find(|l| l.contains("Insight from reused name session"))
+        .unwrap();
+    let msg: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        msg["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "insight should thread under the active session's task announcement, \
+         not lose threading due to stale session with same name"
+    );
+}
+
+/// Bug: When a stale channel-lead session record exists with the same name as
+/// an active dev coworker (name reuse after restart), the channel-lead check
+/// could match the stale record and incorrectly suppress the insight.
+#[tokio::test]
+async fn test_insight_not_suppressed_by_stale_channel_lead_with_same_name() {
+    let (state, _temp_dir, _guard) = make_test_state("testrepo");
+
+    // Stale channel-lead session (stopped) and active dev session — same name
+    {
+        let mut ps = state.persistent_state.lock().await;
+
+        // Stale channel-lead session
+        ps.sessions.insert(
+            "old-cl-session".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "old-cl-session".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "channel-lead".to_string(),
+                is_running: false,
+                ..Default::default()
+            },
+        );
+
+        // Active dev session with the same name (name reused)
+        ps.sessions.insert(
+            "new-dev-session".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "new-dev-session".to_string(),
+                current_name: Some("ops-lead".to_string()),
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                task_id: Some("50".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+
+    let response = handle_insight_report(
+        RequestId::Number(1),
+        "ops-lead",
+        "Should not be suppressed by stale channel-lead",
+        None,
+        &state,
+    )
+    .await;
+
+    let result = response.result.expect("should succeed");
+    assert_eq!(
+        result["posted"], true,
+        "insight should NOT be suppressed by a stale (non-running) channel-lead session"
     );
 }
