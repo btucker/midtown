@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from midtown.actions import Actions
 from midtown.hooks import DaemonAction, HookContext, get_plugin_manager
+from midtown.skill import SkillMetadata, parse_skill_file
 
 logger = logging.getLogger(__name__)
 
@@ -62,23 +63,40 @@ class WorkflowDaemon:
         self._loaded_plugins: dict[Path, Any] = {}
         self._mtimes: dict[Path, float] = {}
 
+        # Track AgentSkills metadata (keyed by plugin directory)
+        self._skill_metadata: dict[Path, SkillMetadata] = {}
+
         # Load initial plugins
         for plugin_dir in plugin_dirs:
             self.load_plugins_from(plugin_dir)
 
     def load_plugins_from(self, directory: Path) -> None:
-        """Load all plugin files from *directory* (recursively).
+        """Load all plugins from *directory*.
 
-        Skips files whose names start with ``_`` (e.g. ``__init__.py``).
+        Supports two formats:
+
+        1. **Bare ``.py`` files** — loaded directly as plugin modules.
+           Skips files whose names start with ``_`` (e.g. ``__init__.py``).
+
+        2. **AgentSkills directories** — subdirectories containing a
+           ``SKILL.md`` file with YAML frontmatter.  The ``midtown_hooks``
+           metadata field specifies the hooks module path (defaults to
+           ``scripts/hooks.py``).
+
         Non-existent directories are silently ignored.
         """
         if not directory.exists():
             return
 
-        for plugin_file in sorted(directory.glob("**/*.py")):
-            if plugin_file.name.startswith("_"):
-                continue
-            self.load_plugin(plugin_file)
+        for entry in sorted(directory.iterdir()):
+            if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
+                # Bare .py plugin file
+                self.load_plugin(entry)
+            elif entry.is_dir():
+                # Check for AgentSkills format (directory with SKILL.md)
+                skill_md = entry / "SKILL.md"
+                if skill_md.exists():
+                    self._load_agentskills_plugin(entry, skill_md)
 
     def load_plugin(self, path: Path) -> None:
         """Load and register a single plugin file."""
@@ -97,6 +115,36 @@ class WorkflowDaemon:
             logger.info("Loaded plugin: %s", path)
         except Exception:
             logger.exception("Failed to load plugin %s", path)
+
+    def _load_agentskills_plugin(self, plugin_dir: Path, skill_md: Path) -> None:
+        """Load an AgentSkills-format plugin from a directory with SKILL.md.
+
+        Parses the SKILL.md frontmatter to determine the hooks module path
+        and execution order, then loads the hooks module as a plugin.
+        """
+        metadata = parse_skill_file(skill_md)
+        hooks_path = plugin_dir / metadata.hooks_path
+
+        if not hooks_path.exists():
+            logger.warning(
+                "AgentSkills plugin %s: hooks file not found at %s",
+                plugin_dir.name,
+                hooks_path,
+            )
+            return
+
+        self._skill_metadata[plugin_dir] = metadata
+        self.load_plugin(hooks_path)
+        logger.info(
+            "Loaded AgentSkills plugin: %s (order=%d, hooks=%s)",
+            metadata.name or plugin_dir.name,
+            metadata.order,
+            metadata.hooks_path,
+        )
+
+    def get_skill_metadata(self) -> dict[Path, SkillMetadata]:
+        """Return metadata for all loaded AgentSkills plugins."""
+        return dict(self._skill_metadata)
 
     def unload_plugin(self, path: Path) -> None:
         """Unregister a previously loaded plugin."""

@@ -1394,7 +1394,7 @@ impl DaemonState {
 
         // Discover plugin directories and set up the plugin daemon manager.
         let project_root = all_repo_paths.first().cloned().unwrap_or_default();
-        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, paths.dir_key());
+        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, paths.dir_key(), None);
         let plugin_daemon_socket = paths.plugin_daemon_socket();
         let python_sdk_dir = crate::paths::resolve_python_sdk_dir();
         let plugin_daemon = plugin_daemon::PluginDaemonManager::new(

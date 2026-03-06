@@ -124,6 +124,163 @@ class TestPluginLoading:
             assert len(daemon._loaded_plugins) == 1
 
 
+class TestAgentSkillsLoading:
+    """Tests for loading AgentSkills-format plugins (SKILL.md + scripts/hooks.py)."""
+
+    def test_load_agentskills_plugin(self) -> None:
+        """A directory with SKILL.md and scripts/hooks.py should be loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "tdw"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: tdw\n"
+                "description: Test-Driven Writing\n"
+                "metadata:\n"
+                "  midtown_hooks: scripts/hooks.py\n"
+                "  midtown_order: 50\n"
+                "---\n"
+                "# TDW Plugin\n"
+            )
+            (scripts_dir / "hooks.py").write_text(_plugin_source("from tdw"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            assert len(daemon._loaded_plugins) == 1
+            assert scripts_dir / "hooks.py" in daemon._loaded_plugins
+
+            # Verify metadata was captured
+            assert len(daemon._skill_metadata) == 1
+            meta = daemon._skill_metadata[skill_dir]
+            assert meta.name == "tdw"
+            assert meta.order == 50
+
+    def test_agentskills_plugin_dispatches_events(self) -> None:
+        """Hooks from an AgentSkills plugin should be callable via dispatch."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "review"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: review\n---\n# Review\n"
+            )
+            (scripts_dir / "hooks.py").write_text(_plugin_source("review says hi"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "review says hi"
+
+    def test_agentskills_custom_hooks_path(self) -> None:
+        """The midtown_hooks metadata field should override the default path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "custom"
+            hooks_dir = skill_dir / "my" / "hooks"
+            hooks_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: custom\nmetadata:\n  midtown_hooks: my/hooks/impl.py\n---\n"
+            )
+            (hooks_dir / "impl.py").write_text(_plugin_source("custom path"))
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            assert len(daemon._loaded_plugins) == 1
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions[0].params["message"] == "custom path"
+
+    def test_agentskills_missing_hooks_file(self) -> None:
+        """A SKILL.md pointing to a nonexistent hooks file should be skipped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            skill_dir = plugin_dir / "broken"
+            skill_dir.mkdir(parents=True)
+
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: broken\n---\n# No hooks file\n"
+            )
+            # scripts/hooks.py does not exist
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            assert len(daemon._loaded_plugins) == 0
+
+    def test_mixed_bare_and_agentskills(self) -> None:
+        """Both bare .py files and AgentSkills directories should load."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # Bare .py plugin
+            (plugin_dir / "bare.py").write_text(_plugin_source("bare plugin"))
+
+            # AgentSkills plugin
+            skill_dir = plugin_dir / "skill_plugin"
+            scripts_dir = skill_dir / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("---\nname: skill\n---\n")
+            (scripts_dir / "hooks.py").write_text(
+                "from midtown.hooks import hookimpl\n"
+                "\n"
+                "@hookimpl\n"
+                "def on_pr_merged(ctx):\n"
+                '    return [ctx.actions.post_to_channel("merged")]\n'
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            assert len(daemon._loaded_plugins) == 2
+
+            # Both hooks should fire for their respective events
+            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "bare plugin"
+
+            result = daemon.dispatch_event("pr.merged", {})
+            assert len(result.actions) == 1
+            assert result.actions[0].params["message"] == "merged"
+
+    def test_dir_without_skill_md_ignored(self) -> None:
+        """Subdirectories without SKILL.md should be ignored."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_dir = Path(tmpdir) / "plugins"
+            plugin_dir.mkdir()
+
+            # Directory without SKILL.md — should be ignored
+            not_plugin = plugin_dir / "not_a_plugin"
+            not_plugin.mkdir()
+            (not_plugin / "some_file.py").write_text("x = 1\n")
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                plugin_dirs=[plugin_dir],
+            )
+
+            assert len(daemon._loaded_plugins) == 0
+
+
 class TestPluginUnloading:
     """Tests for plugin unloading."""
 
