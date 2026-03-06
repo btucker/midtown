@@ -929,9 +929,13 @@ pub(super) async fn handle_channel_read(
                 "from": m.from,
                 "message": m.content,
                 "timestamp": m.timestamp.to_rfc3339(),
+                "msg_type": format!("{:?}", m.message_type).to_lowercase(),
             });
             if let Some(ref parent_id) = m.thread_parent_id {
                 obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
+            }
+            if let Some(ref nudge_type) = m.nudge_type {
+                obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
             }
             obj
         })

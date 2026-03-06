@@ -3931,6 +3931,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 ),
                                 channel: Some(constants::OPS_CHANNEL.to_string()),
                                 auto_output: false,
+                            message_type: None,
+                            nudge_type: None,
                             });
                         } else {
                             debug!("Fork respawn cooldown active for {}", name);

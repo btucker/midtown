@@ -123,6 +123,12 @@ pub enum Effect {
         channel: Option<String>,
         /// Whether this message is auto-streamed output (vs. an explicit channel post).
         auto_output: bool,
+        /// Override the default `MessageType::Text`. Used by nudge effects to
+        /// mark DM messages as `MessageType::Nudge`.
+        message_type: Option<crate::message::MessageType>,
+        /// Specific nudge variant for client-side rendering (e.g. "task_assigned").
+        /// Only meaningful when `message_type` is `Nudge`.
+        nudge_type: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     ///
@@ -850,6 +856,8 @@ async fn send_session_nudge(
                     message: msg,
                     channel: Some(format!("dm-{}", name)),
                     auto_output: false,
+                    message_type: Some(crate::message::MessageType::Nudge),
+                    nudge_type: Some(reason.nudge_type().to_owned()),
                 });
             }
             Some(follow_up)
@@ -1053,8 +1061,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 message,
                 channel,
                 auto_output,
+                message_type,
+                nudge_type,
             } => {
                 let has_explicit_channel = channel.is_some();
+                let msg_type = message_type.unwrap_or(crate::message::MessageType::Text);
 
                 // Resolve the target channel:
                 // 1. Use explicit channel if provided
@@ -1088,19 +1099,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut msg = if let Some(parent_id) = bound_thread {
                     let ch = channel_name
                         .unwrap_or_else(|| state.channel_router.default_channel_name().to_string());
-                    Message::thread_reply(
-                        &ch,
-                        &sender,
-                        &message,
-                        parent_id,
-                        crate::message::MessageType::Text,
-                    )
+                    Message::thread_reply(&ch, &sender, &message, parent_id, msg_type)
                 } else if let Some(ch) = channel_name {
-                    Message::for_channel(&ch, &sender, &message, crate::message::MessageType::Text)
+                    Message::for_channel(&ch, &sender, &message, msg_type)
                 } else {
-                    Message::text(&sender, &message)
+                    Message::new(&sender, &message, msg_type)
                 };
                 msg.auto_output = auto_output;
+                msg.nudge_type = nudge_type;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
                 }

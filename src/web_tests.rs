@@ -83,6 +83,7 @@ fn test_web_update_serialization() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -399,6 +400,7 @@ fn test_task_1191_channel_switching_requirements() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     };
     assert_eq!(msg_with_channel.channel, "auth-refactor");
 
@@ -420,6 +422,7 @@ fn test_task_1191_channel_switching_requirements() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     };
     assert_eq!(msg_default.channel, "myproject");
 
@@ -708,6 +711,7 @@ fn test_channel_message_data_with_thread_parent_id() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("thread_parent_id"));
@@ -730,6 +734,7 @@ fn test_channel_message_data_thread_parent_id_omitted_when_none() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("thread_parent_id"));
@@ -753,6 +758,7 @@ fn test_channel_message_data_includes_reply_metadata_when_present() {
         }),
         reply_participants: Some(vec!["park".to_string(), "york".to_string()]),
         auto_output: false,
+        nudge_type: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(json.contains("\"reply_count\":3"));
@@ -776,6 +782,7 @@ fn test_channel_message_data_reply_metadata_omitted_when_none() {
         last_reply: None,
         reply_participants: None,
         auto_output: false,
+        nudge_type: None,
     };
     let json = serde_json::to_string(&data).unwrap();
     assert!(!json.contains("reply_count"));
@@ -803,6 +810,39 @@ fn test_channel_message_update_thread_parent_id_none_for_top_level() {
     match update {
         WebUpdate::ChannelMessage(data) => {
             assert_eq!(data.thread_parent_id, None);
+        }
+        _ => panic!("Expected ChannelMessage"),
+    }
+}
+
+#[test]
+fn test_channel_message_update_includes_nudge_type() {
+    let mut msg = crate::message::Message::new(
+        "midtown",
+        "Task assigned",
+        crate::message::MessageType::Nudge,
+    );
+    msg.nudge_type = Some("task_assigned".to_string());
+    msg.channel = Some("dm-lexington".to_string());
+    let update = channel_message_update(&msg);
+    match update {
+        WebUpdate::ChannelMessage(data) => {
+            assert_eq!(data.msg_type, "nudge");
+            assert_eq!(data.nudge_type, Some("task_assigned".to_string()));
+            assert_eq!(data.channel, "dm-lexington");
+        }
+        _ => panic!("Expected ChannelMessage"),
+    }
+}
+
+#[test]
+fn test_channel_message_update_nudge_type_none_for_regular_messages() {
+    let msg = crate::message::Message::text("park", "regular message");
+    let update = channel_message_update(&msg);
+    match update {
+        WebUpdate::ChannelMessage(data) => {
+            assert_eq!(data.msg_type, "text");
+            assert_eq!(data.nudge_type, None);
         }
         _ => panic!("Expected ChannelMessage"),
     }

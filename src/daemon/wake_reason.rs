@@ -94,6 +94,26 @@ impl WakeReason {
         }
     }
 
+    /// The specific nudge variant name for client-side rendering.
+    ///
+    /// Returns a snake_case identifier matching the `WakeReason` variant,
+    /// used as `nudge_type` on `Message` so the client can apply
+    /// per-nudge-type styling (e.g. task badge, review icon).
+    pub fn nudge_type(&self) -> &str {
+        match self {
+            Self::TaskCreated { .. } => "task_created",
+            Self::UserMessage { .. } => "user_message",
+            Self::InsightPosted { .. } => "insight_posted",
+            Self::TaskAssigned { .. } => "task_assigned",
+            Self::TaskClaimed { .. } => "task_claimed",
+            Self::SessionRecovery { .. } => "session_recovery",
+            Self::ReviewAssigned { .. } => "review_assigned",
+            Self::Mention { .. } => "mention",
+            Self::Nudge { .. } => "nudge",
+            Self::DmFromUser { .. } => "dm_from_user",
+        }
+    }
+
     /// Whether this nudge's content is already present in the DM channel.
     ///
     /// `DmFromUser` messages are written to `dm-<name>` by the RPC post handler

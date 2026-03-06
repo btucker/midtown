@@ -161,6 +161,8 @@ fn task_completed_effects(
             message: channel_message,
             channel: None,
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
         Effect::SendPushNotification {
             title: format!("Task !{} completed", task_id),
@@ -456,6 +458,8 @@ where
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
         ];
 
@@ -482,6 +486,8 @@ where
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                message_type: None,
+                nudge_type: None,
                 },
             ],
         });
@@ -540,6 +546,8 @@ where
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
     ];
 
@@ -566,6 +574,8 @@ where
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+            message_type: None,
+            nudge_type: None,
             },
         ],
     });
@@ -829,6 +839,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
         ];
 
@@ -859,6 +871,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                message_type: None,
+                nudge_type: None,
                 },
             ],
         });
@@ -1017,6 +1031,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
     ];
 
@@ -1043,6 +1059,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
         ],
     });
@@ -1110,6 +1128,8 @@ fn decide_discovered_coworker_nudges(
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             });
         } else if let Some(pr_number) = reviewer_prs.get(&name_lower) {
             info!(
@@ -1135,6 +1155,8 @@ fn decide_discovered_coworker_nudges(
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             });
         } else {
             debug!(
@@ -1259,6 +1281,8 @@ pub fn check_for_duplicate_task_workers(snap: &snapshot::WorldSnapshot) -> Vec<e
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             });
         }
     }
@@ -1569,6 +1593,8 @@ fn dispatch_owned_pending_tasks(
                         message: daemon_messages::called_in_pending_task(o, &tid.to_string()),
                         channel: Some(OPS_CHANNEL.to_string()),
                         auto_output: false,
+                        message_type: None,
+                        nudge_type: None,
                     },
                 ];
 
@@ -1962,6 +1988,8 @@ fn dispatch_unowned_pending_tasks(
                     message: channel_msg,
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
             ];
             if let Some(ch) = &task.channel {
@@ -2032,6 +2060,8 @@ fn dispatch_unowned_pending_tasks(
                     message: channel_msg,
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 },
             ];
             if let Some(ch) = &task.channel {

@@ -217,6 +217,7 @@ fn test_thread_header_renders_code_block_in_parent_message() {
         session_id: None,
         thread_parent_id: None,
         auto_output: false,
+        nudge_type: None,
     };
     let parent_id = parent_msg.id.clone();
     app.messages.push_back(parent_msg);
@@ -299,6 +300,7 @@ fn test_thread_panel_renders_code_block_with_syntax_highlighting_borders() {
         session_id: None,
         thread_parent_id: Some(parent_id),
         auto_output: false,
+        nudge_type: None,
     };
     app.thread_messages.push(reply);
 
@@ -376,6 +378,7 @@ fn test_thread_separator_shows_reply_count() {
             session_id: None,
             thread_parent_id: Some(parent_id.clone()),
             auto_output: false,
+            nudge_type: None,
         });
     }
 
@@ -473,6 +476,7 @@ fn test_first_reply_has_single_blank_line_after_separator() {
         session_id: None,
         thread_parent_id: Some(parent_id),
         auto_output: false,
+        nudge_type: None,
     });
 
     let backend = TestBackend::new(80, 30);
@@ -554,6 +558,7 @@ fn test_first_reply_same_sender_as_parent_suppresses_header() {
         session_id: None,
         thread_parent_id: Some(parent_id),
         auto_output: false,
+        nudge_type: None,
     });
 
     let backend = TestBackend::new(80, 30);

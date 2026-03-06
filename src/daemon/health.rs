@@ -184,6 +184,8 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
                 });
                 false
             }
@@ -319,6 +321,8 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
+                message_type: None,
+                nudge_type: None,
                 });
                 effects.push(Effect::nudge_channel_lead(
                     &snap.project_name,
@@ -571,6 +575,8 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
@@ -664,6 +670,8 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+        message_type: None,
+        nudge_type: None,
         });
     }
 
@@ -682,6 +690,8 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         });
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
@@ -778,6 +788,8 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
             message,
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
     ];
 
@@ -841,6 +853,8 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         });
 
         for session_id in eligible_session_ids {
@@ -936,6 +950,8 @@ pub(super) fn check_and_handle_auth_errors(
                 message: message.clone(),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+                message_type: None,
+                nudge_type: None,
             },
         );
 
@@ -1035,6 +1051,8 @@ pub(super) fn check_and_nudge_api_errors(
                 ),
                 channel: Some(OPS_CHANNEL.to_string()),
                 auto_output: false,
+            message_type: None,
+            nudge_type: None,
             },
         );
     }
@@ -1097,6 +1115,8 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+        message_type: None,
+        nudge_type: None,
         });
     }
 
@@ -1188,6 +1208,8 @@ pub(super) async fn check_and_respawn_dead_processes(
             ),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         });
     }
 
@@ -1327,6 +1349,8 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
             message: "Restarting lead session for a fresh context.".to_string(),
             channel: Some(OPS_CHANNEL.to_string()),
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         },
         Effect::ShutdownCoworker {
             name: lead.name.clone(),
@@ -1421,6 +1445,8 @@ fn effects_for_fired_reminders(
             message: message.clone(),
             channel: None,
             auto_output: false,
+            message_type: None,
+            nudge_type: None,
         });
         effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
@@ -1700,6 +1726,8 @@ fn build_reviewer_respawn_effects(
         ),
         channel: Some(OPS_CHANNEL.to_string()),
         auto_output: false,
+        message_type: None,
+        nudge_type: None,
     }];
 
     effects.push(Effect::SpawnCoworkerWithCallbacks {

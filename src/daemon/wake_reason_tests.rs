@@ -403,6 +403,92 @@ fn user_message_thread_reply_nudge_includes_instructions() {
 }
 
 #[test]
+fn nudge_type_returns_correct_variant_names() {
+    assert_eq!(
+        WakeReason::TaskCreated {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .nudge_type(),
+        "task_created"
+    );
+    assert_eq!(
+        WakeReason::TaskAssigned {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .nudge_type(),
+        "task_assigned"
+    );
+    assert_eq!(
+        WakeReason::TaskClaimed {
+            task_id: "1".into(),
+            subject: "s".into(),
+            plan_section: String::new(),
+        }
+        .nudge_type(),
+        "task_claimed"
+    );
+    assert_eq!(
+        WakeReason::SessionRecovery {
+            task_id: "1".into(),
+            subject: "s".into()
+        }
+        .nudge_type(),
+        "session_recovery"
+    );
+    assert_eq!(
+        WakeReason::ReviewAssigned { pr_number: 42 }.nudge_type(),
+        "review_assigned"
+    );
+    assert_eq!(
+        WakeReason::Mention {
+            from: "lex".into(),
+            content: "c".into(),
+            msg_id: "m".into()
+        }
+        .nudge_type(),
+        "mention"
+    );
+    assert_eq!(
+        WakeReason::Nudge {
+            message: "hi".into()
+        }
+        .nudge_type(),
+        "nudge"
+    );
+    assert_eq!(
+        WakeReason::UserMessage {
+            content: "hi".into(),
+            msg_id: "m".into(),
+            thread_ctx: None,
+        }
+        .nudge_type(),
+        "user_message"
+    );
+    assert_eq!(
+        WakeReason::InsightPosted {
+            insight: "i".into(),
+            agent: "a".into(),
+            msg_id: "m".into(),
+            task_id: None,
+            channel_name: "c".into(),
+        }
+        .nudge_type(),
+        "insight_posted"
+    );
+    assert_eq!(
+        WakeReason::DmFromUser {
+            content: "hi".into(),
+            msg_id: "m".into(),
+            coworker_name: "park".into()
+        }
+        .nudge_type(),
+        "dm_from_user"
+    );
+}
+
+#[test]
 fn user_message_thread_reply_initial_prompt_includes_instructions() {
     let reason = WakeReason::UserMessage {
         content: "Can you fix this?".to_string(),

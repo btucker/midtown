@@ -155,6 +155,7 @@ fn generate_messages(count: usize) -> Vec<Message> {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         })
         .collect()
 }
@@ -175,6 +176,7 @@ fn generate_long_messages(count: usize) -> Vec<Message> {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         })
         .collect()
 }
@@ -196,6 +198,7 @@ fn test_single_message_render_latency() {
         session_id: None,
         thread_parent_id: None,
         auto_output: false,
+        nudge_type: None,
     };
 
     let current_tasks = HashMap::new();
@@ -640,6 +643,7 @@ fn test_unicode_message_rendering() {
             session_id: None,
             thread_parent_id: None,
             auto_output: false,
+            nudge_type: None,
         })
         .collect();
 

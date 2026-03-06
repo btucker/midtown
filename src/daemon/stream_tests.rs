@@ -344,6 +344,7 @@ fn test_process_lead_output_returns_post_effect() {
             message,
             channel,
             auto_output,
+            ..
         } => {
             assert_eq!(sender, "myproject");
             assert_eq!(message, "Hello from lead");
@@ -506,6 +507,7 @@ fn test_process_lead_output_channel_lead_text_posted_to_channel() {
             message,
             channel,
             auto_output,
+            ..
         } => {
             assert_eq!(sender, "web");
             assert_eq!(message, "Hello from web channel lead");
@@ -647,6 +649,7 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
         message,
         channel,
         auto_output,
+        ..
     }) = fork_effect
     {
         assert_eq!(sender, "fork-1234");
@@ -1205,6 +1208,7 @@ fn test_process_coworker_output_posts_to_dm_channel() {
             message,
             channel,
             auto_output,
+            ..
         } => {
             assert_eq!(sender, "park");
             assert_eq!(message, "Working on auth endpoint");
