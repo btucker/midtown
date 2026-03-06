@@ -2502,17 +2502,22 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // 5. Update SessionRecord in persistent state
                         {
                             let mut ps = state.persistent_state.lock().await;
-                            // Mark any old session records with this name as not running.
-                            // Names are reused from the pool, so previous sessions for
-                            // this name may still have is_running=true if they weren't
-                            // properly cleaned up (e.g., after daemon restart).
+                            // Mark any old session records with this name as not running
+                            // and clear their current_name. Names are reused from the
+                            // pool, so previous sessions for this name may still have
+                            // is_running=true if they weren't properly cleaned up
+                            // (e.g., after daemon restart). Clearing current_name
+                            // prevents ambiguous lookups where multiple records share
+                            // the same name (e.g., insight handler's find-by-name).
                             for record in ps.sessions.values_mut() {
                                 if record.session_id != session_id
-                                    && record.is_running
                                     && (record.preferred_name.as_deref() == Some(&name)
                                         || record.current_name.as_deref() == Some(&name))
                                 {
-                                    record.is_running = false;
+                                    if record.is_running {
+                                        record.is_running = false;
+                                    }
+                                    record.current_name = None;
                                 }
                             }
                             // Look up task_thread_id so coworker posts route to the
