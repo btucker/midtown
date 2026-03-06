@@ -9,6 +9,7 @@ from midtown.tdw_workflow import (
     DEFAULT_PATTERNS,
     _build_critique_prompt,
     _find_active_task,
+    _get_or_create_task,
     _get_task,
     _init_task,
     handle,
@@ -29,16 +30,23 @@ def _make_rpc() -> MagicMock:
 
 
 class TestStateHelpers:
-    def test_get_task_creates_if_absent(self) -> None:
+    def test_get_task_returns_none_if_absent(self) -> None:
         state: dict = {}
         task = _get_task(state, "42")
-        assert task == {}
-        assert "42" in state["tdw_tasks"]
+        assert task is None
+        assert "tdw_tasks" not in state  # no state pollution
 
     def test_get_task_returns_existing(self) -> None:
         state = {"tdw_tasks": {"42": {"stage": "draft"}}}
         task = _get_task(state, "42")
+        assert task is not None
         assert task["stage"] == "draft"
+
+    def test_get_or_create_task_creates_if_absent(self) -> None:
+        state: dict = {}
+        task = _get_or_create_task(state, "42")
+        assert task == {}
+        assert "42" in state["tdw_tasks"]
 
     def test_init_task_sets_defaults(self) -> None:
         state: dict = {}
@@ -276,8 +284,8 @@ class TestCritiqueResults:
         assert "3 criteria failed" in msg
         assert "Revise" in msg
 
-    def test_no_number_defaults_to_zero_failures(self) -> None:
-        """If critique message doesn't match the pattern, assume 0 failures."""
+    def test_malformed_critique_stays_in_critique(self) -> None:
+        """If critique message doesn't match the expected format, stay in critique (fail-closed)."""
         rpc = _make_rpc()
         state: dict = {}
         _init_task(state, "10")
@@ -293,7 +301,9 @@ class TestCritiqueResults:
             state,
         )
 
-        assert state["tdw_tasks"]["10"]["stage"] == "final"
+        assert state["tdw_tasks"]["10"]["stage"] == "critique"
+        msg = rpc.post_to_channel.call_args[0][0]
+        assert "Unable to parse" in msg
 
 
 class TestRevisionLoop:
@@ -477,11 +487,11 @@ class TestAddCriterion:
 
 
 class TestAddPattern:
-    def test_add_pattern_to_any_active_task(self) -> None:
+    def test_add_pattern_to_active_task(self) -> None:
         rpc = _make_rpc()
         state: dict = {}
         _init_task(state, "10")
-        state["tdw_tasks"]["10"]["stage"] = "research"
+        state["tdw_tasks"]["10"]["stage"] = "draft"
 
         handle(
             {
@@ -494,6 +504,25 @@ class TestAddPattern:
 
         assert "Use metaphors sparingly" in state["tdw_tasks"]["10"]["patterns"]
         rpc.post_to_channel.assert_called_once()
+
+    def test_add_pattern_inactive_stage_is_silent(self) -> None:
+        """Patterns should not be added to tasks in research or final stages."""
+        rpc = _make_rpc()
+        state: dict = {}
+        _init_task(state, "10")
+        state["tdw_tasks"]["10"]["stage"] = "research"
+
+        handle(
+            {
+                "type": "channel.message",
+                "message": "add pattern: something",
+            },
+            rpc,
+            state,
+        )
+
+        rpc.post_to_channel.assert_not_called()
+        assert "something" not in state["tdw_tasks"]["10"]["patterns"]
 
     def test_empty_state_is_silent(self) -> None:
         rpc = _make_rpc()
@@ -535,8 +564,9 @@ class TestEdgeCases:
             rpc,
             state,
         )
-        # _get_task creates the entry but stage is None so no transition
         rpc.post_to_channel.assert_not_called()
+        # No state pollution — unknown task_id should not create entries
+        assert "tdw_tasks" not in state
 
     def test_wrong_stage_transition_is_noop(self) -> None:
         """Sending 'draft complete' during research stage does nothing."""

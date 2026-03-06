@@ -72,14 +72,19 @@ STAGES = ["research", "outline", "draft", "critique", "revise", "final"]
 # ---------------------------------------------------------------------------
 
 
-def _get_task(state: dict, task_id: str) -> dict:
+def _get_task(state: dict, task_id: str) -> dict | None:
+    """Return the TDW task data dict, or None if unknown."""
+    return state.get("tdw_tasks", {}).get(task_id)
+
+
+def _get_or_create_task(state: dict, task_id: str) -> dict:
     """Return the TDW task data dict, creating it if absent."""
     return state.setdefault("tdw_tasks", {}).setdefault(task_id, {})
 
 
 def _init_task(state: dict, task_id: str) -> dict:
     """Initialise TDW state for a new writing task."""
-    task = _get_task(state, task_id)
+    task = _get_or_create_task(state, task_id)
     task["stage"] = "research"
     task["criteria"] = list(DEFAULT_CRITERIA)
     task["patterns"] = list(DEFAULT_PATTERNS)
@@ -152,6 +157,8 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
     # ------------------------------------------------------------------
     elif event_type == "coworker.message" and task_id:
         task = _get_task(state, task_id)
+        if task is None:
+            return
         stage = task.get("stage")
 
         if not stage:
@@ -195,7 +202,14 @@ def handle(event: dict, rpc: MidtownRPC, state: dict) -> None:  # noqa: C901
         # Observe → Hone or Revise: critique results
         elif stage == "critique" and "critique complete" in msg_lower:
             match = re.search(r"(\d+) criteria failed", msg_lower)
-            failures = int(match.group(1)) if match else 0
+            if not match:
+                rpc.post_to_channel(
+                    "**Unable to parse critique result.**\n"
+                    "Expected format: 'CRITIQUE COMPLETE - N criteria failed'\n"
+                    "Staying in critique stage. Please re-run the critique."
+                )
+                return
+            failures = int(match.group(1))
 
             if failures == 0:
                 task["stage"] = "final"
@@ -263,16 +277,14 @@ def _handle_channel_message(
         match = re.search(r"add pattern:\s*(.+)", message, re.IGNORECASE)
         if match:
             new_pattern = match.group(1).strip()
-            # Patterns can be added at any stage
-            for _task_id, task_data in state.get("tdw_tasks", {}).items():
-                if task_data.get("stage"):
-                    task_data.setdefault("patterns", []).append(new_pattern)
-                    rpc.post_to_channel(
-                        f'Added pattern: "{new_pattern}"\n'
-                        "This is guidance, not a requirement. "
-                        "It helps without blocking."
-                    )
-                    break
+            task_id, task_data = _find_active_task(state)
+            if task_id:
+                task_data.setdefault("patterns", []).append(new_pattern)
+                rpc.post_to_channel(
+                    f'Added pattern: "{new_pattern}"\n'
+                    "This is guidance, not a requirement. "
+                    "It helps without blocking."
+                )
 
 
 if __name__ == "__main__":
