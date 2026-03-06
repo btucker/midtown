@@ -34,6 +34,15 @@ midtown channel post "Your reply" --thread <message-id>
 
 This keeps the channel organized — top-level posts start conversations, replies continue them. If you don't have a message ID (e.g., daemon-generated nudges), post at the top level as usual.
 
+**Embedded thread instructions in nudges:** Some nudges include explicit thread reply instructions appended by the daemon, e.g.:
+
+```
+This is a thread reply. To reply in the thread:
+  midtown channel post "..." --thread <parent-id> --channel <channel>
+```
+
+When these instructions are present, **always use them** to reply in the correct thread. They take precedence over the `(message-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply.
+
 <EXTREMELY_IMPORTANT>
 Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
 
