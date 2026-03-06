@@ -1328,12 +1328,12 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 /// `ensure_lead_alive()` for the project lead.
 ///
 /// For each channel in `channel_lead_sessions`, checks if the session is still
-/// alive. If not, loads domain context and emits a `SpawnCoworker` effect.
+/// alive. If not, emits a `RespawnChannelLead` effect. The effect handler
+/// loads domain context and spawns the session — keeping this function pure.
 /// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
-pub async fn ensure_channel_leads_alive(
-    snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
-) -> Vec<Effect> {
+///
+/// Pure function — no I/O, no `.await`, no mutex locks.
+pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     for channel_name in snap.channel_lead_sessions.keys() {
@@ -1381,33 +1381,9 @@ pub async fn ensure_channel_leads_alive(
             channel_name
         );
 
-        // Load domain context for the channel lead
-        let base_dir = state.paths.base_dir().to_path_buf();
-        let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-        let dir_key = state.paths.dir_key().to_string();
-        let (domain_context, agents_md, skill_bodies) = super::effects::load_channel_lead_context(
-            base_dir,
-            channel_name,
-            project_root,
-            &dir_key,
-        )
-        .await;
-
-        let mut config = crate::launch::LaunchConfig::channel_lead(
-            channel_name.clone(),
-            state.paths.dir_key(),
-            crate::launch::SessionMode::Fresh,
-            domain_context,
-            agents_md,
-            skill_bodies,
-        );
-        config.model = super::helpers::resolve_model_for_role(
-            state.paths.dir_key(),
-            config.auth_provider,
-            &config.role,
-        );
-
-        effects.push(Effect::SpawnCoworker(config));
+        effects.push(Effect::RespawnChannelLead {
+            channel_name: channel_name.clone(),
+        });
     }
 
     effects

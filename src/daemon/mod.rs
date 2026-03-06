@@ -3773,6 +3773,24 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 for name in all_stopped {
                     warn!("Headless session '{}' exited unexpectedly", name);
 
+                    // Determine session role BEFORE any cleanup that might remove
+                    // entries from channel_lead_sessions (e.g., failed_resume cleanup
+                    // at line 3845). Without this, channel leads with failed resumes
+                    // would be mislabeled as "Coworker" in the exit message.
+                    let session_role = if helpers::is_project_lead(&name, &state.project_name) {
+                        "Lead"
+                    } else if state
+                        .persistent_state
+                        .lock()
+                        .await
+                        .channel_lead_sessions
+                        .contains_key(&name)
+                    {
+                        "Channel lead"
+                    } else {
+                        "Coworker"
+                    };
+
                     // Check if this was a failed resume attempt BEFORE removing
                     // the session (remove deletes it from the map).
                     // SAFETY: This check must happen before any cleanup operations
@@ -3932,21 +3950,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             debug!("Fork respawn cooldown active for {}", name);
                         }
                     }
-
-                    // Determine session role for the exit message
-                    let session_role = if helpers::is_project_lead(&name, &state.project_name) {
-                        "Lead"
-                    } else if state
-                        .persistent_state
-                        .lock()
-                        .await
-                        .channel_lead_sessions
-                        .contains_key(&name)
-                    {
-                        "Channel lead"
-                    } else {
-                        "Coworker"
-                    };
 
                     // Format message with stderr if available
                     let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {

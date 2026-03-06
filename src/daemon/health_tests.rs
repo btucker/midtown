@@ -3857,46 +3857,34 @@ fn test_session_role_determination_labels() {
     assert_eq!(determine_role("park"), "Coworker");
 }
 
-/// Ensure channel leads are detected as missing when not registered.
-/// This validates the preconditions that `ensure_channel_leads_alive` checks.
+/// Channel lead missing and no cooldown — should emit RespawnChannelLead.
 #[test]
-fn test_channel_lead_respawn_preconditions_when_missing() {
+fn ensure_channel_leads_alive_respawns_missing_lead() {
     let mut snap = empty_snap();
     snap.channel_lead_sessions
         .insert("ops".to_string(), "sess-ops".to_string());
 
-    // No active coworkers registered — channel lead should be respawned.
-    let is_registered = snap
-        .coworkers
-        .active_coworkers
-        .iter()
-        .any(|c| c.name.eq_ignore_ascii_case("ops"));
-    assert!(
-        !is_registered,
-        "ops should not be registered, triggering respawn"
+    let effects = ensure_channel_leads_alive(&snap);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Should emit one RespawnChannelLead effect"
     );
-
-    // Verify no cooldown would block respawn (no stop time recorded)
-    let has_stop_time = snap
-        .coworkers
-        .coworker_stop_times
-        .get(&"ops".to_lowercase());
     assert!(
-        has_stop_time.is_none(),
-        "No stop time means no cooldown delay"
+        matches!(&effects[0], Effect::RespawnChannelLead { channel_name } if channel_name == "ops"),
+        "Effect should be RespawnChannelLead for ops"
     );
 }
 
-/// Ensure channel lead respawn is skipped when already registered.
+/// Channel lead already registered — should not respawn.
 #[test]
-fn test_channel_lead_respawn_skipped_when_registered() {
+fn ensure_channel_leads_alive_no_op_when_registered() {
     use crate::coworker::{Coworker, CoworkerStatus};
 
     let mut snap = empty_snap();
     snap.channel_lead_sessions
         .insert("ops".to_string(), "sess-ops".to_string());
 
-    // Register ops as an active coworker
     snap.coworkers.active_coworkers.push(Coworker {
         slot_id: uuid::Uuid::new_v4().to_string(),
         name: "ops".to_string(),
@@ -3910,20 +3898,16 @@ fn test_channel_lead_respawn_skipped_when_registered() {
         provider: crate::auth::AuthProvider::Claude,
     });
 
-    let is_registered = snap
-        .coworkers
-        .active_coworkers
-        .iter()
-        .any(|c| c.name.eq_ignore_ascii_case("ops"));
+    let effects = ensure_channel_leads_alive(&snap);
     assert!(
-        is_registered,
-        "ops is registered — ensure_channel_leads_alive should no-op"
+        effects.is_empty(),
+        "Should not respawn when channel lead is alive"
     );
 }
 
-/// Ensure channel lead respawn respects cooldown from coworker_stop_times.
+/// Channel lead within cooldown — should not respawn.
 #[test]
-fn test_channel_lead_respawn_cooldown_prevents_respawn() {
+fn ensure_channel_leads_alive_cooldown_prevents_respawn() {
     let mut snap = empty_snap();
     snap.channel_lead_sessions
         .insert("ops".to_string(), "sess-ops".to_string());
@@ -3934,50 +3918,53 @@ fn test_channel_lead_respawn_cooldown_prevents_respawn() {
         .coworker_stop_times
         .insert("ops".to_string(), recent_stop);
 
-    let since_stop = snap
-        .now_utc
-        .signed_duration_since(*snap.coworkers.coworker_stop_times.get("ops").unwrap());
-    let cooldown = chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default();
-
+    let effects = ensure_channel_leads_alive(&snap);
     assert!(
-        since_stop < cooldown,
-        "Stop was {}s ago, cooldown is {}s — should block respawn",
-        since_stop.num_seconds(),
-        cooldown.num_seconds()
+        effects.is_empty(),
+        "Should not respawn while cooldown is active"
     );
 }
 
-/// Ensure channel lead respawn is skipped when the session is attached interactively.
+/// Channel lead attached interactively — should not respawn.
 ///
 /// When a user attaches to a channel lead via `midtown session attach`, the session
 /// is deregistered from `active_coworkers` and tracked in `attached_coworkers`.
 /// Without checking `attached_coworkers`, `ensure_channel_leads_alive` would spawn
 /// a duplicate headless session after the cooldown expires.
 #[test]
-fn test_channel_lead_respawn_skipped_when_attached() {
+fn ensure_channel_leads_alive_skips_when_attached() {
     let mut snap = empty_snap();
     snap.channel_lead_sessions
         .insert("ops".to_string(), "sess-ops".to_string());
 
-    // Not in active_coworkers (deregistered on attach)
-    let is_registered = snap
-        .coworkers
-        .active_coworkers
-        .iter()
-        .any(|c| c.name.eq_ignore_ascii_case("ops"));
-    assert!(!is_registered, "ops should not be in active_coworkers");
-
-    // But IS in attached_coworkers (interactive session active)
     snap.coworkers
         .attached_coworkers
         .insert("ops".to_string(), snap.now_utc);
 
-    let is_attached = snap
-        .coworkers
-        .attached_coworkers
-        .contains_key(&"ops".to_lowercase());
+    let effects = ensure_channel_leads_alive(&snap);
     assert!(
-        is_attached,
-        "ops is attached — ensure_channel_leads_alive should skip respawn"
+        effects.is_empty(),
+        "Should not respawn when channel lead is attached interactively"
+    );
+}
+
+/// Channel lead past cooldown — should respawn.
+#[test]
+fn ensure_channel_leads_alive_respawns_after_cooldown() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Set stop time to 10 minutes ago (past the 5-minute cooldown)
+    let old_stop = snap.now_utc - chrono::Duration::minutes(10);
+    snap.coworkers
+        .coworker_stop_times
+        .insert("ops".to_string(), old_stop);
+
+    let effects = ensure_channel_leads_alive(&snap);
+    assert_eq!(effects.len(), 1, "Should respawn after cooldown expires");
+    assert!(
+        matches!(&effects[0], Effect::RespawnChannelLead { channel_name } if channel_name == "ops"),
+        "Effect should be RespawnChannelLead for ops"
     );
 }

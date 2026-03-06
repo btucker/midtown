@@ -222,7 +222,7 @@ pub struct ProjectPaths { dir_key, project_name, base, state_base }
 The main lead session name equals the project name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
 
 - **Spawn**: `LaunchConfig::lead()` sets `name` from the `dir_key` param (`src/launch.rs`)
-- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.project_name` (`src/daemon/health.rs`)
+- **Health**: `ensure_lead_alive()`, `ensure_channel_leads_alive()`, and `maybe_refresh_lead_session()` compare against `snap.project_name` (`src/daemon/health.rs`)
 - **Dispatch**: coworker-limit checks use `is_project_lead()` (`src/daemon/dispatch.rs`)
 - **Effects**: auto-detach suffix check uses `state.project_name` (`src/daemon/effects.rs`)
 - **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `project_name.to_lowercase()`
@@ -260,6 +260,8 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 - **Task created** in the channel (via `handle_task_create`)
 - **Insight posted** to the channel (via `handle_insight_report`)
 - **Explicit nudge** (@mention routing, task feedback)
+
+**Auto-respawn:** Channel leads that exit unexpectedly are automatically respawned by `ensure_channel_leads_alive()` in `health.rs`, which runs on each `TaskDispatchTick`. This is the channel lead equivalent of `ensure_lead_alive()` for the project lead. A `LEAD_RESPAWN_COOLDOWN` (5 min) prevents rapid respawn loops. The function is pure — it emits `Effect::RespawnChannelLead { channel_name }` and the effect handler loads domain context (channel notes, agents.md, skill bodies) before spawning.
 
 **Archived-channel redirect:** When a task is created with `--channel <name>` pointing to an archived channel (e.g., `daemon`), `handle_task_create` redirects the task to the ops channel via `resolve_effective_task_channel()`. The effective channel is stored in both the task JSON and `ps.task_channel`, ensuring all downstream routing (announcement posting, `NudgeChannelLead`, `MIDTOWN_CHANNEL` injection, insight posting, `handle_task_metadata`) uses the routable channel. If the ops channel is itself archived, the redirect falls back to the main channel.
 

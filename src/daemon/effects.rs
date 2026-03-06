@@ -11,7 +11,7 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
-pub(super) async fn load_channel_lead_context(
+async fn load_channel_lead_context(
     base_dir: PathBuf,
     channel_name: &str,
     project_root: PathBuf,
@@ -593,6 +593,14 @@ pub enum Effect {
     /// Returned actions are converted to `Effect` variants and executed. If no
     /// plugins are configured, this effect is a no-op.
     EmitWorkflowEvent(crate::workflow::WorkflowEvent),
+
+    /// Respawn a dead channel lead session.
+    ///
+    /// Loads domain context (channel notes, agents.md, skill bodies) from disk
+    /// and spawns a fresh channel lead session. This keeps filesystem I/O out of
+    /// `evaluate_tick()` — the decision function (`ensure_channel_leads_alive`)
+    /// returns this effect, and the executor handles the I/O.
+    RespawnChannelLead { channel_name: String },
 
     /// Respawn a dead fork session bound to a thread.
     ///
@@ -3105,6 +3113,37 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // already skips inline effects when plugins are configured, so this
                 // flag confirms the plugin's intent. Future: use this to conditionally
                 // re-emit compiled-in fallback effects when default_prevented is false.
+            }
+
+            Effect::RespawnChannelLead { channel_name } => {
+                let base_dir = state.paths.base_dir().to_path_buf();
+                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+                let dir_key = state.paths.dir_key().to_string();
+                let (domain_context, agents_md, skill_bodies) =
+                    load_channel_lead_context(base_dir, &channel_name, project_root, &dir_key)
+                        .await;
+
+                let mut config = crate::launch::LaunchConfig::channel_lead(
+                    channel_name.clone(),
+                    state.paths.dir_key(),
+                    crate::launch::SessionMode::Fresh,
+                    domain_context,
+                    agents_md,
+                    skill_bodies,
+                );
+                config.model = super::helpers::resolve_model_for_role(
+                    state.paths.dir_key(),
+                    config.auth_provider,
+                    &config.role,
+                );
+                match state.spawn_coworker(&config).await {
+                    Ok(_) => {
+                        info!("Respawned channel lead '{}' successfully", channel_name);
+                    }
+                    Err(e) => {
+                        warn!("Failed to respawn channel lead '{}': {}", channel_name, e);
+                    }
+                }
             }
 
             Effect::RespawnFork {
