@@ -96,6 +96,7 @@ let prevThreadId = null;
 
   let replyText = $state('')
   let pendingFile = $state(null)
+  let pendingFileUrl = $state(null)
   let uploading = $state(false)
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
@@ -103,6 +104,18 @@ let prevThreadId = null;
   let desktopTextareaEl = $state(null)
   let mobileTextareaEl = $state(null)
   let isDesktop = $state(typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
+
+  // Manage blob URL for file preview — create once per file, revoke on change/unmount.
+  $effect(() => {
+    const file = pendingFile
+    if (file) {
+      const url = URL.createObjectURL(file)
+      pendingFileUrl = url
+      return () => URL.revokeObjectURL(url)
+    } else {
+      pendingFileUrl = null
+    }
+  })
 
   // Optimistic thinking state: true from the moment the user sends a reply until
   // real InProgress tool items arrive (or 30s timeout).
@@ -390,7 +403,8 @@ let prevThreadId = null;
     if (!$threadData) return
     const parentId = $threadData.parentMessage?.id ?? null
 
-    if (pendingFile && !uploading) {
+    if (uploading) return
+    if (pendingFile) {
       uploading = true
       const submittingThreadId = currentThreadId
       const result = await uploadAndSend(pendingFile, replyText, $threadData.channelName, parentId)
@@ -765,7 +779,7 @@ let prevThreadId = null;
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
           {#if pendingFile.type.startsWith('image/')}
-            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
             <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>
@@ -1019,7 +1033,7 @@ let prevThreadId = null;
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
           {#if pendingFile.type.startsWith('image/')}
-            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
             <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>
