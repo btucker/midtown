@@ -1391,3 +1391,121 @@ fn test_detect_repo_name_rejects_path_traversal_in_midtown_dir_key() {
         );
     }
 }
+
+// ── workflow_agents_md_content tests ──────────────────────────────────
+
+#[test]
+fn workflow_agents_md_content_reads_existing_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wf_dir = tmp.path().join("my-workflow");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(
+        wf_dir.join("AGENTS.md"),
+        "# Workflow Instructions\nDo stuff.",
+    )
+    .unwrap();
+
+    let result = super::workflow_agents_md_content(tmp.path(), "my-workflow");
+    assert_eq!(
+        result,
+        Some("# Workflow Instructions\nDo stuff.".to_string())
+    );
+}
+
+#[test]
+fn workflow_agents_md_content_returns_none_for_missing_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let result = super::workflow_agents_md_content(tmp.path(), "nonexistent");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn workflow_agents_md_content_returns_none_for_empty_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wf_dir = tmp.path().join("empty-wf");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("AGENTS.md"), "   \n  ").unwrap();
+
+    let result = super::workflow_agents_md_content(tmp.path(), "empty-wf");
+    assert_eq!(result, None);
+}
+
+#[test]
+fn workflow_agents_md_content_rejects_path_traversal() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Create a directory outside workflows_dir that would be reachable via traversal
+    let secret_dir = tmp.path().join("secret");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    std::fs::write(secret_dir.join("AGENTS.md"), "SECRET CONTENT").unwrap();
+
+    let workflows_dir = tmp.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+
+    // Attempt path traversal
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "../secret"),
+        None,
+        "path traversal with ../ should be rejected"
+    );
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "foo/../../secret"),
+        None,
+        "nested path traversal should be rejected"
+    );
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "/tmp/x"),
+        None,
+        "absolute path should be rejected"
+    );
+}
+
+// ── merge_workflow_agents_md tests ──────────────────────────────────
+
+#[test]
+fn merge_workflow_agents_md_both_present() {
+    let existing = Some("Existing agents instructions".to_string());
+    let workflow = Some("Workflow specific instructions".to_string());
+    let state_summary = Some("- Task !42: phase = observe".to_string());
+
+    let result =
+        super::merge_workflow_agents_md(existing, workflow.as_deref(), state_summary.as_deref());
+    let result = result.unwrap();
+    assert!(result.contains("Existing agents instructions"));
+    assert!(result.contains("## Assigned Workflow Instructions"));
+    assert!(result.contains("Workflow specific instructions"));
+    assert!(result.contains("## Current Workflow State"));
+    assert!(result.contains("Task !42: phase = observe"));
+}
+
+#[test]
+fn merge_workflow_agents_md_only_existing() {
+    let existing = Some("Existing agents".to_string());
+    let result = super::merge_workflow_agents_md(existing, None, None);
+    assert_eq!(result, Some("Existing agents".to_string()));
+}
+
+#[test]
+fn merge_workflow_agents_md_only_workflow() {
+    let workflow = Some("Workflow instructions".to_string());
+    let result = super::merge_workflow_agents_md(None, workflow.as_deref(), None);
+    let result = result.unwrap();
+    assert!(result.contains("## Assigned Workflow Instructions"));
+    assert!(result.contains("Workflow instructions"));
+}
+
+#[test]
+fn merge_workflow_agents_md_none() {
+    let result = super::merge_workflow_agents_md(None, None, None);
+    assert_eq!(result, None);
+}
+
+#[test]
+fn merge_workflow_agents_md_state_without_workflow() {
+    // State summary without workflow AGENTS.md should still be appended
+    let existing = Some("Base agents".to_string());
+    let result = super::merge_workflow_agents_md(existing, None, Some("- Task !1: phase = study"));
+    let result = result.unwrap();
+    assert!(result.contains("Base agents"));
+    assert!(result.contains("## Current Workflow State"));
+    assert!(result.contains("Task !1: phase = study"));
+}

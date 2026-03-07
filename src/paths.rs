@@ -1021,6 +1021,63 @@ pub fn agents_md_for_channel(channel: &str, project_root: &Path, repo: &str) -> 
     None
 }
 
+/// Read the `AGENTS.md` content for a named workflow.
+///
+/// Looks for `<workflows_dir>/<workflow_name>/AGENTS.md` and returns its content
+/// if the file exists and is non-empty.
+pub fn workflow_agents_md_content(workflows_dir: &Path, workflow_name: &str) -> Option<String> {
+    // Reject workflow names that could escape the workflows directory
+    if workflow_name.is_empty()
+        || workflow_name.contains('/')
+        || workflow_name.contains('\\')
+        || workflow_name.contains("..")
+        || workflow_name.starts_with('.')
+    {
+        return None;
+    }
+
+    let path = workflows_dir.join(workflow_name).join("AGENTS.md");
+    match std::fs::read_to_string(&path) {
+        Ok(content) if !content.trim().is_empty() => Some(content),
+        _ => None,
+    }
+}
+
+/// Merge existing `agents_md` with workflow-specific AGENTS.md and state summary.
+///
+/// Combines up to three pieces:
+/// 1. Existing channel/project AGENTS.md (`existing`)
+/// 2. Workflow-specific AGENTS.md (`workflow_agents`)
+/// 3. Brief workflow state summary (`state_summary`)
+///
+/// Returns `None` only when all inputs are `None`.
+pub fn merge_workflow_agents_md(
+    existing: Option<String>,
+    workflow_agents: Option<&str>,
+    state_summary: Option<&str>,
+) -> Option<String> {
+    let has_content = existing.is_some() || workflow_agents.is_some() || state_summary.is_some();
+    if !has_content {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+
+    if let Some(ref e) = existing {
+        parts.push(e.clone());
+    }
+
+    if let Some(wf) = workflow_agents {
+        parts.push(format!("## Assigned Workflow Instructions\n\n{wf}"));
+    }
+
+    if let Some(ss) = state_summary {
+        parts.push(format!("## Current Workflow State\n\n{ss}"));
+    }
+
+    Some(parts.join("\n\n"))
+}
+
 /// Collect SKILL.md body content from all discovered plugin directories.
 ///
 /// For each plugin directory, scans for AgentSkills-format subdirectories
