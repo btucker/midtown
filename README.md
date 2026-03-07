@@ -7,7 +7,7 @@ Midtown provides a familiar, unified interface for collaborating with a team of 
 <p align="center">
   <img src="docs/screenshots/desktop1-web.png" alt="Midtown web UI — desktop" width="600">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/mobile1-web.png" alt="Midtown web UI — mobile PWA" width="160">
+  <img src="docs/screenshots/mobile1-web.png" alt="Midtown web UI — mobile PWA" width="220">
 </p>
 
 ## How Midtown Works
