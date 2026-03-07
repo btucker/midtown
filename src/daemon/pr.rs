@@ -82,6 +82,8 @@ struct PrContext {
     /// while a reviewer is still working, so the contract remains:
     /// "pr.approved = safe to merge".
     has_active_reviewer: bool,
+    /// Channel→workflow assignments for checking if a channel has a workflow.
+    channel_workflows: HashMap<String, String>,
 }
 
 impl PrContext {
@@ -127,6 +129,7 @@ impl PrContext {
             session_context,
             task_session_id,
             has_active_reviewer,
+            channel_workflows: ps.channel_workflows.clone(),
         }
     }
 
@@ -142,6 +145,7 @@ impl PrContext {
             session_context: None,
             task_session_id: None,
             has_active_reviewer: false,
+            channel_workflows: ps.channel_workflows.clone(),
         }
     }
 
@@ -1444,15 +1448,13 @@ fn pr_action_to_effects(
         let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
 
         if !is_handoff {
-            let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-            let has_script = channel.as_ref().is_some_and(|ch| {
-                crate::paths::workflow_script_for_channel(ch, &project_root, state.paths.dir_key())
-                    .is_some()
-            });
+            let has_workflow = channel
+                .as_ref()
+                .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
 
-            if has_script {
-                // Script is authoritative — emit cooldown tracking + event only.
-                // This fires even for Skip actions so the script's state machine
+            if has_workflow {
+                // Workflow is authoritative — emit cooldown tracking + event only.
+                // This fires even for Skip actions so the workflow's state machine
                 // stays in sync.
                 return vec![
                     Effect::RecordPrNudge {
@@ -1466,7 +1468,7 @@ fn pr_action_to_effects(
     }
 
     // Skip actions: no inline effects. Still emit the workflow event if one was
-    // built so the script's state machine stays in sync (the event is a no-op
+    // built so the workflow's state machine stays in sync (the event is a no-op
     // if no script is configured).
     if let PrAction::Skip { reason } = &action {
         debug!("{}", reason);
@@ -1661,6 +1663,8 @@ struct StuckEvalContext<'a> {
     pr_task_associations: HashMap<u64, String>,
     /// Task ID → channel name mapping for workflow event routing.
     task_channel: HashMap<String, String>,
+    /// Channel→workflow assignments for checking if a channel has a workflow.
+    channel_workflows: HashMap<String, String>,
 }
 
 /// Check for stuck conditions and return effects to nudge the lead.
@@ -1717,6 +1721,7 @@ async fn collect_stuck_condition_effects(
         let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
         let pr_task_associations = ps.github.pr_to_task_map();
         let task_channel = ps.task_channel.clone();
+        let channel_workflows = ps.channel_workflows.clone();
         StuckEvalContext {
             review_mode,
             branch_owners,
@@ -1728,6 +1733,7 @@ async fn collect_stuck_condition_effects(
             active_reviewer_prs: active_reviewers,
             pr_task_associations,
             task_channel,
+            channel_workflows,
         }
     };
 
@@ -1781,9 +1787,8 @@ async fn collect_stuck_condition_effects(
         );
     }
 
-    // When a workflow script exists, replace AutoMergePr with EmitWorkflowEvent(PrAutoMerge)
-    // so the script controls whether to proceed with auto-merge.
-    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+    // When a workflow is assigned, replace AutoMergePr with EmitWorkflowEvent(PrAutoMerge)
+    // so the workflow controls whether to proceed with auto-merge.
     effects = effects
         .into_iter()
         .map(|effect| {
@@ -1793,13 +1798,8 @@ async fn collect_stuck_condition_effects(
                 if let Some(task_id) = ctx.pr_task_associations.get(&pr_number)
                     && let Some(channel) = ctx.task_channel.get(task_id)
                 {
-                    let has_script = crate::paths::workflow_script_for_channel(
-                        channel,
-                        &project_root,
-                        state.paths.dir_key(),
-                    )
-                    .is_some();
-                    if has_script {
+                    let has_workflow = ctx.channel_workflows.contains_key(channel);
+                    if has_workflow {
                         return Effect::EmitWorkflowEvent(
                             crate::workflow::WorkflowEvent::PrAutoMerge {
                                 channel: channel.clone(),
@@ -2887,28 +2887,20 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // Check if PR is old enough (enforce review delay).
         //
         // When the polling fallback encounters a PR whose channel has a workflow
-        // script, use the much longer PR_REVIEW_DELAY_SCRIPT_SECS. The script
+        // workflow, use the much longer PR_REVIEW_DELAY_SCRIPT_SECS. The workflow
         // spawns reviewers in real-time via rpc.spawn_reviewer() on pr.opened,
         // so polling should only act as a safety net for missed webhooks — not
-        // race with the script.
+        // race with the workflow.
         let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
-            let has_script = {
+            let has_workflow = {
                 let ps = state.persistent_state.lock().await;
                 pr_task_associations
                     .get(&pr_number)
                     .and_then(|task_id| ps.task_channel.get(task_id).cloned())
-            }
-            .is_some_and(|channel| {
-                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-                crate::paths::workflow_script_for_channel(
-                    &channel,
-                    &project_root,
-                    state.paths.dir_key(),
-                )
-                .is_some()
-            });
+                    .is_some_and(|channel| ps.channel_workflows.contains_key(&channel))
+            };
 
-            if has_script {
+            if has_workflow {
                 PR_REVIEW_DELAY_SCRIPT_SECS
             } else {
                 PR_REVIEW_DELAY_SECS
@@ -3512,13 +3504,11 @@ fn review_complete_action_to_effects(
         let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
 
         if !is_handoff {
-            let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-            let has_script = channel.as_ref().is_some_and(|ch| {
-                crate::paths::workflow_script_for_channel(ch, &project_root, state.paths.dir_key())
-                    .is_some()
-            });
+            let has_workflow = channel
+                .as_ref()
+                .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
 
-            if has_script {
+            if has_workflow {
                 return vec![
                     Effect::RecordPrNudge {
                         pr_number,
@@ -3531,7 +3521,7 @@ fn review_complete_action_to_effects(
     }
 
     // Skip actions: no inline effects. Still emit the workflow event if one was
-    // built so the script's state machine stays in sync.
+    // built so the workflow's state machine stays in sync.
     if let PrAction::Skip { reason } = &action {
         debug!("{}", reason);
         let mut effects = Vec::new();
@@ -3542,7 +3532,7 @@ fn review_complete_action_to_effects(
     }
 
     // Fallback: inline effects for PRs without channel/task associations or
-    // channels without a configured workflow script. When a workflow event
+    // channels without an assigned workflow. When a workflow event
     // exists, it's appended alongside inline effects.
     let mut effects = match action {
         PrAction::NudgeOwner { owner, message } => {

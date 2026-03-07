@@ -40,17 +40,12 @@
 //!         └── assets/                # Coworker-generated screenshots and videos
 //! ```
 //!
-//! ## Workflow Scripts
+//! ## Workflows
 //!
-//! Workflow scripts (`workflow.py`) are invoked by the daemon via `uv run` on
-//! relevant events. Resolution follows a 4-level priority order:
-//!
-//! 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, in repo
-//! 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local
-//! 3. `<project_root>/.midtown/workflow.py` — project default, in repo
-//! 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local
-//!
-//! See [`workflow_script_for_channel`] and [`workflow_state_file`] (legacy, kept for backward compat).
+//! Named workflows live in `~/.midtown/projects/<repo>/workflows/<name>/` with
+//! `workflow.py` (hooks, required) and optional `AGENTS.md` (channel lead instructions).
+//! Channels reference workflows by name via `channel_workflows` in daemon state.
+//! See [`workflow_agents_md_content`] and [`merge_workflow_agents_md`].
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -977,125 +972,6 @@ pub fn hooks_log_file() -> PathBuf {
 /// Implements a 4-level resolution order so scripts can be committed to the repo
 /// (shared with the team) or kept local (machine-specific overrides):
 ///
-/// 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, in repo
-/// 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local
-/// 3. `<project_root>/.midtown/workflow.py` — project default, in repo
-/// 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local
-///
-/// Returns `None` if no workflow script is found at any level, meaning the daemon
-/// falls back to its compiled-in default behavior.
-pub fn workflow_script_for_channel(
-    channel: &str,
-    project_root: &Path,
-    repo: &str,
-) -> Option<PathBuf> {
-    // 1. Channel-specific, in repo
-    let path = project_root
-        .join(".midtown")
-        .join("channels")
-        .join(channel)
-        .join("workflow.py");
-    if path.exists() {
-        return Some(path);
-    }
-
-    // 2. Channel-specific, local
-    let path = projects_dir_for_repo(repo)
-        .join("channels")
-        .join(channel)
-        .join("workflow.py");
-    if path.exists() {
-        return Some(path);
-    }
-
-    // 3. Project default, in repo
-    let path = project_root.join(".midtown").join("workflow.py");
-    if path.exists() {
-        return Some(path);
-    }
-
-    // 4. Project default, local
-    let path = projects_dir_for_repo(repo).join("workflow.py");
-    if path.exists() {
-        return Some(path);
-    }
-
-    None
-}
-
-/// Discover plugin directories that contain plugins (`.py` files or AgentSkills directories).
-///
-/// Scans the following paths in priority order, collecting all that contain
-/// at least one plugin:
-///
-/// 1. `<project_root>/.midtown/channels/<channel>/plugins/` — channel-specific, in repo
-/// 2. `~/.midtown/projects/<repo>/channels/<channel>/plugins/` — channel-specific, local
-/// 3. `<project_root>/.midtown/plugins/` — project-wide, in repo
-/// 4. `~/.midtown/projects/<repo>/plugins/` — project-wide, local
-///
-/// When `channel` is `None`, only project-wide paths (3 and 4) are scanned.
-///
-/// A directory is considered to contain plugins if it has:
-/// - At least one `.py` file (not starting with `_`), OR
-/// - At least one subdirectory containing a `SKILL.md` file (AgentSkills format)
-///
-/// Returns an empty `Vec` if no directories with plugins are found.
-pub fn discover_plugin_dirs(
-    project_root: &Path,
-    repo: &str,
-    channel: Option<&str>,
-) -> Vec<PathBuf> {
-    let mut candidates = Vec::with_capacity(4);
-
-    // Channel-specific paths (highest priority)
-    if let Some(ch) = channel {
-        candidates.push(
-            project_root
-                .join(".midtown")
-                .join("channels")
-                .join(ch)
-                .join("plugins"),
-        );
-        candidates.push(
-            projects_dir_for_repo(repo)
-                .join("channels")
-                .join(ch)
-                .join("plugins"),
-        );
-    }
-
-    // Project-wide paths
-    candidates.push(project_root.join(".midtown").join("plugins"));
-    candidates.push(projects_dir_for_repo(repo).join("plugins"));
-
-    candidates
-        .into_iter()
-        .filter(|dir| dir.is_dir() && dir_has_plugins(dir))
-        .collect()
-}
-
-/// Check whether a directory contains at least one plugin.
-///
-/// A plugin is either:
-/// - A `.py` file whose name does not start with `_`
-/// - A subdirectory containing a `SKILL.md` file (AgentSkills format)
-fn dir_has_plugins(dir: &Path) -> bool {
-    let Ok(entries) = dir.read_dir() else {
-        return false;
-    };
-    entries.filter_map(|e| e.ok()).any(|e| {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        // Bare .py plugin file
-        if name.ends_with(".py") && !name.starts_with('_') {
-            return true;
-        }
-        // AgentSkills directory with SKILL.md
-        let path = e.path();
-        path.is_dir() && path.join("SKILL.md").exists()
-    })
-}
-
 /// Resolve the `AGENTS.md` file for a channel (first found wins).
 ///
 /// Searches the following paths in priority order:
@@ -1191,83 +1067,6 @@ pub fn merge_workflow_agents_md(
     }
 
     Some(parts.join("\n\n"))
-}
-
-/// Collect SKILL.md body content from all discovered plugin directories.
-///
-/// For each plugin directory, scans for AgentSkills-format subdirectories
-/// (those containing a `SKILL.md` file). Reads each `SKILL.md`, strips the
-/// YAML frontmatter, and returns the remaining markdown body along with the
-/// plugin name (from frontmatter or directory name).
-///
-/// Returns a vec of `(name, body)` tuples. Plugins without body content are skipped.
-pub fn collect_skill_md_bodies(plugin_dirs: &[PathBuf]) -> Vec<(String, String)> {
-    let mut results = Vec::new();
-
-    for dir in plugin_dirs {
-        let Ok(entries) = dir.read_dir() else {
-            continue;
-        };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let skill_path = path.join("SKILL.md");
-            let Ok(content) = std::fs::read_to_string(&skill_path) else {
-                continue;
-            };
-
-            let (name, body) = parse_skill_md_name_and_body(&content, &path);
-            if !body.trim().is_empty() {
-                results.push((name, body));
-            }
-        }
-    }
-
-    results
-}
-
-/// Parse a SKILL.md file's content, returning `(name, body)`.
-///
-/// The name is taken from the `name:` frontmatter field, falling back to the
-/// directory name. The body is everything after the closing `---` delimiter.
-fn parse_skill_md_name_and_body(content: &str, plugin_dir: &Path) -> (String, String) {
-    let dir_name = plugin_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    // Check for YAML frontmatter: must start with "---"
-    if !content.starts_with("---") {
-        return (dir_name, content.to_string());
-    }
-
-    // Find closing "---" (skip the opening one)
-    let after_open = &content[3..];
-    let Some(close_pos) = after_open.find("\n---") else {
-        return (dir_name, content.to_string());
-    };
-
-    let frontmatter = &after_open[..close_pos];
-    let body_start = 3 + close_pos + 4; // skip opening "---" + frontmatter + "\n---"
-    let body = if body_start < content.len() {
-        content[body_start..].trim_start_matches('\n').to_string()
-    } else {
-        String::new()
-    };
-
-    // Extract name from frontmatter
-    let name = frontmatter
-        .lines()
-        .find_map(|line| {
-            let trimmed = line.trim();
-            trimmed.strip_prefix("name:").map(|v| v.trim().to_string())
-        })
-        .filter(|n| !n.is_empty())
-        .unwrap_or(dir_name);
-
-    (name, body)
 }
 
 /// Get the workflow state file path for a channel (legacy).

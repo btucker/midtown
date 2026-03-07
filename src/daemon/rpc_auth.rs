@@ -444,41 +444,34 @@ pub(super) async fn handle_auth_switch(
                     (wf, wfs)
                 };
                 let workflows_dir = state.paths.workflows_dir();
-                let (domain_context, agents_md, skill_bodies) =
-                    tokio::task::spawn_blocking(move || {
-                        let notes = crate::channel::load_channel_notes(&notes_base, &notes_channel);
-                        let agents = crate::paths::agents_md_for_channel(
-                            &discover_channel,
-                            &project_root,
-                            &dir_key,
-                        );
-                        let plugin_dirs = crate::paths::discover_plugin_dirs(
-                            &project_root,
-                            &dir_key,
-                            Some(&discover_channel),
-                        );
-                        let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
+                let (domain_context, agents_md) = tokio::task::spawn_blocking(move || {
+                    let notes = crate::channel::load_channel_notes(&notes_base, &notes_channel);
+                    let agents = crate::paths::agents_md_for_channel(
+                        &discover_channel,
+                        &project_root,
+                        &dir_key,
+                    );
 
-                        // Merge workflow AGENTS.md and state summary
-                        let workflow_agents = wf_name.as_deref().and_then(|name| {
-                            crate::paths::workflow_agents_md_content(&workflows_dir, name)
-                        });
-                        let merged_agents = crate::paths::merge_workflow_agents_md(
-                            agents,
-                            workflow_agents.as_deref(),
-                            wf_state_summary.as_deref(),
-                        );
-
-                        (notes, merged_agents, skills)
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        warn!(
-                            "Channel lead discovery task failed for '{}': {}",
-                            channel_name, e
-                        );
-                        (String::new(), None, vec![])
+                    // Merge workflow AGENTS.md and state summary
+                    let workflow_agents = wf_name.as_deref().and_then(|name| {
+                        crate::paths::workflow_agents_md_content(&workflows_dir, name)
                     });
+                    let merged_agents = crate::paths::merge_workflow_agents_md(
+                        agents,
+                        workflow_agents.as_deref(),
+                        wf_state_summary.as_deref(),
+                    );
+
+                    (notes, merged_agents)
+                })
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(
+                        "Channel lead discovery task failed for '{}': {}",
+                        channel_name, e
+                    );
+                    (String::new(), None)
+                });
                 let mut channel_lead = crate::launch::LaunchConfig::channel_lead(
                     channel_name,
                     state.paths.dir_key(),
@@ -489,7 +482,6 @@ pub(super) async fn handle_auth_switch(
                     },
                     domain_context,
                     agents_md,
-                    skill_bodies,
                 );
                 channel_lead.model = coworker.model.clone();
                 channel_lead

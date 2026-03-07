@@ -19,15 +19,13 @@ async fn load_channel_lead_context(
     workflow_name: Option<String>,
     workflows_dir: PathBuf,
     workflow_state_summary: Option<String>,
-) -> (String, Option<String>, Vec<(String, String)>) {
+) -> (String, Option<String>) {
     let channel = channel_name.to_string();
     let channel_for_warn = channel.clone();
     let dk = dir_key.to_string();
     tokio::task::spawn_blocking(move || {
         let notes = crate::channel::load_channel_notes(&base_dir, &channel);
         let agents = crate::paths::agents_md_for_channel(&channel, &project_root, &dk);
-        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, &dk, Some(&channel));
-        let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
 
         // Merge workflow AGENTS.md and state summary into agents_md
         let workflow_agents = workflow_name
@@ -39,7 +37,7 @@ async fn load_channel_lead_context(
             workflow_state_summary.as_deref(),
         );
 
-        (notes, merged_agents, skills)
+        (notes, merged_agents)
     })
     .await
     .unwrap_or_else(|e| {
@@ -47,7 +45,7 @@ async fn load_channel_lead_context(
             "Channel lead discovery task failed for '{}': {}",
             channel_for_warn, e
         );
-        (String::new(), None, vec![])
+        (String::new(), None)
     })
 }
 
@@ -545,7 +543,7 @@ pub enum Effect {
     },
     /// Respawn a channel lead that died unexpectedly.
     ///
-    /// Defers I/O (loading domain context, agents.md, skill bodies) to the
+    /// Defers I/O (loading domain context, agents.md) to the
     /// effect executor, keeping `ensure_channel_leads_alive()` a pure decision
     /// function. The executor loads context via `load_channel_lead_context()`
     /// and spawns a fresh session.
@@ -2261,7 +2259,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             .map(format_workflow_state_summary);
                         (wf, wfs)
                     };
-                    let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                    let (domain_context, agents_md) = load_channel_lead_context(
                         base_dir.clone(),
                         &name,
                         state.all_repo_paths.first().cloned().unwrap_or_default(),
@@ -2277,7 +2275,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         crate::launch::SessionMode::Fresh,
                         domain_context,
                         agents_md,
-                        skill_bodies,
                     );
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
@@ -2645,7 +2642,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         .map(format_workflow_state_summary);
                     (wf, wfs)
                 };
-                let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                let (domain_context, agents_md) = load_channel_lead_context(
                     base_dir,
                     &channel_name,
                     project_root,
@@ -2662,7 +2659,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     crate::launch::SessionMode::Fresh,
                     &domain_context,
                     agents_md,
-                    skill_bodies,
                 );
                 config.model = super::helpers::resolve_model_for_role(
                     state.paths.dir_key(),
@@ -3159,7 +3155,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             .map(format_workflow_state_summary);
                         (wf, wfs)
                     };
-                    let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                    let (domain_context, agents_md) = load_channel_lead_context(
                         state.paths.base_dir().to_path_buf(),
                         &channel_name,
                         state.all_repo_paths.first().cloned().unwrap_or_default(),
@@ -3178,7 +3174,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 crate::launch::SessionMode::ResumeSession(id.to_string()),
                                 &domain_context,
                                 agents_md.clone(),
-                                skill_bodies.clone(),
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
 
@@ -3259,7 +3254,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 crate::launch::SessionMode::Fresh,
                                 &domain_context,
                                 agents_md,
-                                skill_bodies,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
                             // Insert empty placeholder before spawning to guard against

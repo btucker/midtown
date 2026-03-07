@@ -38,8 +38,6 @@ pub enum CoworkerRole {
         domain_context: String,
         /// Optional AGENTS.md content for workflow facilitation instructions.
         agents_md: Option<String>,
-        /// SKILL.md body content from discovered plugins: `(name, body)` pairs.
-        skill_bodies: Vec<(String, String)>,
     },
 }
 
@@ -416,7 +414,7 @@ impl LaunchConfig {
             // Note: domain_context is empty here; callers that need notes
             // should load them via load_channel_notes() and pass directly
             // to channel_lead() to keep this function I/O-free.
-            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "", None, vec![])
+            LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "", None)
         } else {
             // Project Lead
             let auth_provider = crate::config::get_execution_provider_for_role(
@@ -520,7 +518,6 @@ impl LaunchConfig {
     /// Callers load it from channel notes files via `load_channel_notes()`.
     ///
     /// `agents_md` is optional workflow facilitation content from the project's `AGENTS.md`.
-    /// `skill_bodies` is a list of `(plugin_name, skill_body)` pairs from discovered plugins.
     ///
     /// The session name equals the channel name directly (e.g., "auth" for channel "auth").
     /// Channel leads are identified via `channel_lead_sessions` in persistent state,
@@ -531,7 +528,6 @@ impl LaunchConfig {
         session_mode: SessionMode,
         domain_context: impl Into<String>,
         agents_md: Option<String>,
-        skill_bodies: Vec<(String, String)>,
     ) -> Self {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
@@ -551,7 +547,6 @@ impl LaunchConfig {
                 channel_name: channel_name_str.clone(),
                 domain_context: domain_ctx,
                 agents_md,
-                skill_bodies,
             },
             initial_prompt: Some(crate::agents::channel_lead_initial_prompt(
                 &channel_name_str,
@@ -600,13 +595,11 @@ impl LaunchConfig {
                 channel_name,
                 domain_context,
                 agents_md,
-                skill_bodies,
             } => crate::agents::channel_lead_system_prompt(
                 channel_name,
                 domain_context,
                 project_name,
                 agents_md.as_deref(),
-                skill_bodies,
             ),
         };
 
@@ -1410,7 +1403,6 @@ mod tests {
             SessionMode::Fresh,
             "",
             None,
-            vec![],
         );
         // Session name is the channel name directly
         assert_eq!(config.name, "daemon-architecture");
@@ -1420,7 +1412,6 @@ mod tests {
                 channel_name: "daemon-architecture".to_string(),
                 domain_context: "".to_string(),
                 agents_md: None,
-                skill_bodies: vec![],
             }
         );
         let expected =
@@ -1443,8 +1434,7 @@ mod tests {
 
     #[test]
     fn test_channel_lead_headless_config_has_system_prompt() {
-        let config =
-            LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "", None, vec![]);
+        let config = LaunchConfig::channel_lead("tui", "myrepo", SessionMode::Fresh, "", None);
         let headless = config.to_headless_config(&test_paths());
         // Channel lead system prompt references the channel name
         assert!(
