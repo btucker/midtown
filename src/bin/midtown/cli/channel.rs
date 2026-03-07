@@ -58,6 +58,10 @@ pub enum ChannelCommand {
     },
 }
 
+#[path = "channel_post_tests.rs"]
+#[cfg(test)]
+mod tests;
+
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
         ChannelCommand::Post {
@@ -76,7 +80,13 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
                 // Fall back to regular post if the task no longer exists (stale ID).
                 client
                     .channel_post_for_task(message, channel.as_deref(), &env_task_id)
-                    .or_else(|_| client.channel_post(message, channel.as_deref()))
+                    .or_else(|err| {
+                        eprintln!(
+                            "warning: auto-threading to task !{} failed ({}), falling back to regular post",
+                            env_task_id, err
+                        );
+                        client.channel_post(message, channel.as_deref())
+                    })
             } else {
                 client.channel_post(message, channel.as_deref())
             }
