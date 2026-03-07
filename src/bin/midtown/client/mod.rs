@@ -692,12 +692,12 @@ impl DaemonClient {
     pub fn workflow_set_state(
         &self,
         channel: &str,
-        plugin: Option<&str>,
+        key: Option<&str>,
         state: serde_json::Value,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "channel": channel, "state": state });
-        if let Some(p) = plugin {
-            params["plugin"] = serde_json::json!(p);
+        if let Some(k) = key {
+            params["key"] = serde_json::json!(k);
         }
         self.send("workflow.set_state", Some(params))
     }

@@ -582,9 +582,9 @@ cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/d
 
 The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation. See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
 
-#### Hook-Based Plugins
+#### Workflow Hooks
 
-The SDK includes a [pluggy](https://pluggy.readthedocs.io/)-based hook system for extending daemon behavior. Plugins implement hook specs (`WorkflowHooks`, `TaskHooks`) and return `DaemonAction` objects to request daemon actions:
+Each workflow is a Python module (`workflow.py`) that uses [pluggy](https://pluggy.readthedocs.io/)-based hooks to extend daemon behavior. Workflows are assigned to channels one-at-a-time via `midtown workflow assign <channel> <workflow>`, and each gets its own isolated plugin manager:
 
 ```python
 from midtown import hookimpl, HookContext, DaemonAction

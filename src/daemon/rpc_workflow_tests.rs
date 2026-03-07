@@ -69,8 +69,7 @@ fn make_test_state(
 async fn test_get_state_returns_null_when_empty() {
     let (state, _temp_dir, _guard) = make_test_state("wf-get-empty");
 
-    let response =
-        handle_workflow_get_state(RequestId::Number(1), "test-channel", None, &state).await;
+    let response = handle_workflow_get_state(RequestId::Number(1), "test-channel", &state).await;
 
     let result = response.result.expect("should succeed");
     assert!(result["state"].is_null());
@@ -92,83 +91,9 @@ async fn test_set_then_get_roundtrip() {
     .await;
     assert!(set_resp.result.is_some(), "set_state should succeed");
 
-    let get_resp =
-        handle_workflow_get_state(RequestId::Number(2), "test-channel", None, &state).await;
+    let get_resp = handle_workflow_get_state(RequestId::Number(2), "test-channel", &state).await;
     let result = get_resp.result.expect("get_state should succeed");
     assert_eq!(result["state"], value);
-}
-
-/// set_state with plugin key merges into existing state.
-#[tokio::test]
-async fn test_set_state_with_plugin_key_merges() {
-    let (state, _temp_dir, _guard) = make_test_state("wf-plugin-merge");
-
-    // Set plugin-a state
-    let val_a = serde_json::json!({"step": 1});
-    handle_workflow_set_state(
-        RequestId::Number(1),
-        "test-channel",
-        Some("plugin-a"),
-        val_a.clone(),
-        &state,
-    )
-    .await;
-
-    // Set plugin-b state
-    let val_b = serde_json::json!({"step": 2});
-    handle_workflow_set_state(
-        RequestId::Number(2),
-        "test-channel",
-        Some("plugin-b"),
-        val_b.clone(),
-        &state,
-    )
-    .await;
-
-    // get_state without plugin returns entire object
-    let get_all =
-        handle_workflow_get_state(RequestId::Number(3), "test-channel", None, &state).await;
-    let result = get_all.result.expect("should succeed");
-    assert_eq!(result["state"]["plugin-a"], val_a);
-    assert_eq!(result["state"]["plugin-b"], val_b);
-
-    // get_state with plugin returns only that key's value
-    let get_a = handle_workflow_get_state(
-        RequestId::Number(4),
-        "test-channel",
-        Some("plugin-a"),
-        &state,
-    )
-    .await;
-    let result_a = get_a.result.expect("should succeed");
-    assert_eq!(result_a["state"], val_a);
-}
-
-/// get_state with plugin key returns null when key is absent.
-#[tokio::test]
-async fn test_get_state_plugin_key_absent() {
-    let (state, _temp_dir, _guard) = make_test_state("wf-plugin-absent");
-
-    // Set some state first
-    handle_workflow_set_state(
-        RequestId::Number(1),
-        "test-channel",
-        Some("existing-plugin"),
-        serde_json::json!({"data": true}),
-        &state,
-    )
-    .await;
-
-    // Query a non-existent plugin key
-    let resp = handle_workflow_get_state(
-        RequestId::Number(2),
-        "test-channel",
-        Some("nonexistent"),
-        &state,
-    )
-    .await;
-    let result = resp.result.expect("should succeed");
-    assert!(result["state"].is_null());
 }
 
 /// Different channels have isolated state.
@@ -194,17 +119,16 @@ async fn test_channels_have_isolated_state() {
     )
     .await;
 
-    let get_a = handle_workflow_get_state(RequestId::Number(3), "channel-a", None, &state).await;
-    let get_b = handle_workflow_get_state(RequestId::Number(4), "channel-b", None, &state).await;
+    let get_a = handle_workflow_get_state(RequestId::Number(3), "channel-a", &state).await;
+    let get_b = handle_workflow_get_state(RequestId::Number(4), "channel-b", &state).await;
 
     assert_eq!(get_a.result.unwrap()["state"]["ch"], "a");
     assert_eq!(get_b.result.unwrap()["state"]["ch"], "b");
 }
 
-/// Concurrent set_state calls for different plugin keys on the same channel
-/// both persist (no data loss).
+/// Concurrent set_state calls for the same channel — last write wins.
 #[tokio::test]
-async fn test_concurrent_set_state_plugin_keys_no_data_loss() {
+async fn test_concurrent_set_state_last_write_wins() {
     let (state, _temp_dir, _guard) = make_test_state("wf-concurrent");
     let state = std::sync::Arc::new(state);
 
@@ -212,11 +136,10 @@ async fn test_concurrent_set_state_plugin_keys_no_data_loss() {
     for i in 0..10 {
         let s = state.clone();
         handles.push(tokio::spawn(async move {
-            let key = format!("plugin-{i}");
             handle_workflow_set_state(
                 RequestId::Number(i as i64),
                 "test-channel",
-                Some(&key),
+                None,
                 serde_json::json!({"index": i}),
                 &s,
             )
@@ -227,23 +150,16 @@ async fn test_concurrent_set_state_plugin_keys_no_data_loss() {
         h.await.unwrap();
     }
 
-    let resp =
-        handle_workflow_get_state(RequestId::Number(100), "test-channel", None, &state).await;
+    // One of the writes should have won — state should be a valid object with "index".
+    let resp = handle_workflow_get_state(RequestId::Number(100), "test-channel", &state).await;
     let result = resp.result.expect("should succeed");
-    let obj = result["state"].as_object().expect("state should be object");
-
-    // All 10 plugin keys should be present — no writes lost.
-    for i in 0..10 {
-        let key = format!("plugin-{i}");
-        assert!(
-            obj.contains_key(&key),
-            "missing key {key} — concurrent write lost data"
-        );
-        assert_eq!(obj[&key]["index"], i);
-    }
+    assert!(
+        result["state"]["index"].is_number(),
+        "state should have an index field"
+    );
 }
 
-/// set_state without plugin key replaces entire state.
+/// set_state replaces entire state.
 #[tokio::test]
 async fn test_set_state_replaces_entire_state() {
     let (state, _temp_dir, _guard) = make_test_state("wf-replace");
@@ -269,7 +185,7 @@ async fn test_set_state_replaces_entire_state() {
     )
     .await;
 
-    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", None, &state).await;
+    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
     let result = resp.result.unwrap();
     assert_eq!(result["state"], new);
     assert!(result["state"]["old_key"].is_null());
@@ -367,4 +283,95 @@ async fn test_workflow_list_empty() {
     assert!(workflows.is_empty());
     let assignments = result["assignments"].as_object().expect("should be object");
     assert!(assignments.is_empty());
+}
+
+// ── Nested key path tests ────────────────────────────────────────────────
+
+/// set_state with a key sets a nested value without overwriting other keys.
+#[tokio::test]
+async fn test_set_state_with_key_preserves_existing() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-key");
+
+    // Set initial state with some data
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        serde_json::json!({"existing": "data", "tasks": {"100": {"status": "open"}}}),
+        &state,
+    )
+    .await;
+
+    // Set a nested key — should NOT wipe existing state
+    handle_workflow_set_state(
+        RequestId::Number(2),
+        "test-channel",
+        Some("tasks.42.excluded"),
+        serde_json::json!(true),
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    // Original data preserved
+    assert_eq!(result["state"]["existing"], "data");
+    assert_eq!(result["state"]["tasks"]["100"]["status"], "open");
+    // New nested key set
+    assert_eq!(result["state"]["tasks"]["42"]["excluded"], true);
+}
+
+/// set_state with a key and null value removes the nested key.
+#[tokio::test]
+async fn test_set_state_with_key_null_removes() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-remove");
+
+    // Set initial state
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        serde_json::json!({"tasks": {"42": {"excluded": true, "note": "test"}}}),
+        &state,
+    )
+    .await;
+
+    // Remove the "excluded" key
+    handle_workflow_set_state(
+        RequestId::Number(2),
+        "test-channel",
+        Some("tasks.42.excluded"),
+        serde_json::Value::Null,
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    // "excluded" removed, "note" preserved
+    assert!(result["state"]["tasks"]["42"]["excluded"].is_null());
+    assert_eq!(result["state"]["tasks"]["42"]["note"], "test");
+}
+
+/// set_state with a key creates intermediate objects as needed.
+#[tokio::test]
+async fn test_set_state_with_key_creates_intermediates() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-create");
+
+    // No state exists yet — set a deeply nested key
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        Some("tasks.99.excluded"),
+        serde_json::json!(true),
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(2), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    assert_eq!(result["state"]["tasks"]["99"]["excluded"], true);
 }

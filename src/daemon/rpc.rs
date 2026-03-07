@@ -616,19 +616,18 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         // ---- Workflow state ----
         "workflow.get_state" => {
             let channel = require_str!(params, "channel", request.id);
-            let plugin = params.str_param("plugin");
-            super::rpc_workflow::handle_workflow_get_state(request.id, channel, plugin, state).await
+            super::rpc_workflow::handle_workflow_get_state(request.id, channel, state).await
         }
 
         "workflow.set_state" => {
             let channel = require_str!(params, "channel", request.id);
-            let plugin = params.str_param("plugin");
             let new_state = match params.and_then(|p| p.get("state")) {
                 Some(v) => v.clone(),
                 None => return Response::error(request.id, RpcError::invalid_params()),
             };
+            let key = params.str_param("key");
             super::rpc_workflow::handle_workflow_set_state(
-                request.id, channel, plugin, new_state, state,
+                request.id, channel, key, new_state, state,
             )
             .await
         }

@@ -1445,15 +1445,10 @@ fn pr_action_to_effects(
 
         if !is_handoff {
             let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-            let has_script = state.plugin_daemon.has_plugins()
-                || channel.as_ref().is_some_and(|ch| {
-                    crate::paths::workflow_script_for_channel(
-                        ch,
-                        &project_root,
-                        state.paths.dir_key(),
-                    )
+            let has_script = channel.as_ref().is_some_and(|ch| {
+                crate::paths::workflow_script_for_channel(ch, &project_root, state.paths.dir_key())
                     .is_some()
-                });
+            });
 
             if has_script {
                 // Script is authoritative — emit cooldown tracking + event only.
@@ -1798,13 +1793,12 @@ async fn collect_stuck_condition_effects(
                 if let Some(task_id) = ctx.pr_task_associations.get(&pr_number)
                     && let Some(channel) = ctx.task_channel.get(task_id)
                 {
-                    let has_script = state.plugin_daemon.has_plugins()
-                        || crate::paths::workflow_script_for_channel(
-                            channel,
-                            &project_root,
-                            state.paths.dir_key(),
-                        )
-                        .is_some();
+                    let has_script = crate::paths::workflow_script_for_channel(
+                        channel,
+                        &project_root,
+                        state.paths.dir_key(),
+                    )
+                    .is_some();
                     if has_script {
                         return Effect::EmitWorkflowEvent(
                             crate::workflow::WorkflowEvent::PrAutoMerge {
@@ -2898,7 +2892,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // so polling should only act as a safety net for missed webhooks — not
         // race with the script.
         let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
-            let has_script = state.plugin_daemon.has_plugins() || {
+            let has_script = {
                 let ps = state.persistent_state.lock().await;
                 pr_task_associations
                     .get(&pr_number)
@@ -3519,15 +3513,10 @@ fn review_complete_action_to_effects(
 
         if !is_handoff {
             let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-            let has_script = state.plugin_daemon.has_plugins()
-                || channel.as_ref().is_some_and(|ch| {
-                    crate::paths::workflow_script_for_channel(
-                        ch,
-                        &project_root,
-                        state.paths.dir_key(),
-                    )
+            let has_script = channel.as_ref().is_some_and(|ch| {
+                crate::paths::workflow_script_for_channel(ch, &project_root, state.paths.dir_key())
                     .is_some()
-                });
+            });
 
             if has_script {
                 return vec![

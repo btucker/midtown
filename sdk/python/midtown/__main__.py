@@ -22,9 +22,9 @@ def main() -> None:
         help="Path for the Unix domain socket to listen on",
     )
     parser.add_argument(
-        "--plugin-dirs",
+        "--workflows-dir",
         required=True,
-        help="Comma-separated list of plugin directories to load",
+        help="Path to the workflows directory (contains <name>/workflow.py)",
     )
     parser.add_argument(
         "--log-level",
@@ -40,11 +40,9 @@ def main() -> None:
         stream=sys.stderr,
     )
 
-    plugin_dirs = [Path(d.strip()) for d in args.plugin_dirs.split(",") if d.strip()]
-
     daemon = WorkflowDaemon(
         socket_path=args.socket_path,
-        plugin_dirs=plugin_dirs,
+        workflows_dir=Path(args.workflows_dir),
     )
 
     try:

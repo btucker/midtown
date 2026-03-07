@@ -247,14 +247,13 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub channel_workflows: HashMap<String, String>,
 
-    /// Workflow plugin state, owned by the daemon.
+    /// Workflow state, owned by the daemon.
     ///
-    /// Maps channel name → per-channel state (JSON object). Each channel's
-    /// state is further namespaced by plugin key when plugins use the
-    /// `plugin` parameter on `workflow.set_state`.
+    /// Maps channel name → per-channel state (JSON object). Nested keys
+    /// within a channel's state can be set via the `key` parameter on
+    /// `workflow.set_state` (e.g. `tasks.42.excluded`).
     ///
-    /// Previously stored in per-channel `workflow-state.json` files. Now
-    /// persisted as part of `daemon-state.json` for single-source-of-truth
+    /// Persisted as part of `daemon-state.json` for single-source-of-truth
     /// semantics and atomic updates.
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
