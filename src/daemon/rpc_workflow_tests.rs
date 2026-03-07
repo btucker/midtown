@@ -3,7 +3,10 @@
 use std::process::Command;
 
 use super::super::DaemonState;
-use super::{handle_workflow_get_state, handle_workflow_set_state};
+use super::{
+    handle_workflow_assign, handle_workflow_get_state, handle_workflow_list,
+    handle_workflow_set_state, handle_workflow_unassign,
+};
 use crate::rpc::RequestId;
 
 fn make_test_state(
@@ -295,4 +298,73 @@ async fn test_state_persists_to_daemon_state_json() {
         .get("test-channel")
         .expect("channel should exist in reloaded state");
     assert_eq!(*channel_state, value);
+}
+
+// ── workflow.assign / workflow.unassign / workflow.list ───────────────────
+
+/// workflow.assign stores channel→workflow mapping.
+#[tokio::test]
+async fn test_workflow_assign_and_list() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-assign");
+
+    // Create a workflow directory so workflow.list can find it
+    let workflows_dir = state.paths.workflows_dir();
+    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
+    std::fs::write(workflows_dir.join("tdw/AGENTS.md"), "# TDW workflow").unwrap();
+
+    // Assign "tdw" to "proj-auth"
+    let resp = handle_workflow_assign(RequestId::Number(1), "proj-auth", "tdw", &state).await;
+    assert!(resp.result.is_some(), "assign should succeed");
+
+    // Verify via persistent state
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(ps.channel_workflows.get("proj-auth").unwrap(), "tdw");
+    drop(ps);
+
+    // workflow.list should return the workflow
+    let list_resp = handle_workflow_list(RequestId::Number(2), &state).await;
+    let result = list_resp.result.expect("list should succeed");
+    let workflows = result["workflows"].as_array().expect("should be array");
+    assert_eq!(workflows.len(), 1);
+    assert_eq!(workflows[0]["name"], "tdw");
+    assert!(workflows[0]["has_agents_md"].as_bool().unwrap());
+
+    // Also check assignments in list response
+    let assignments = result["assignments"].as_object().expect("should be object");
+    assert_eq!(assignments["proj-auth"], "tdw");
+}
+
+/// workflow.unassign removes the mapping.
+#[tokio::test]
+async fn test_workflow_unassign() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-unassign");
+
+    // Assign first
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_workflows
+            .insert("proj-auth".to_string(), "tdw".to_string());
+    }
+
+    // Unassign
+    let resp = handle_workflow_unassign(RequestId::Number(1), "proj-auth", &state).await;
+    assert!(resp.result.is_some(), "unassign should succeed");
+
+    // Verify removed
+    let ps = state.persistent_state.lock().await;
+    assert!(!ps.channel_workflows.contains_key("proj-auth"));
+}
+
+/// workflow.list returns empty when no workflows exist.
+#[tokio::test]
+async fn test_workflow_list_empty() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-list-empty");
+
+    let resp = handle_workflow_list(RequestId::Number(1), &state).await;
+    let result = resp.result.expect("list should succeed");
+    let workflows = result["workflows"].as_array().expect("should be array");
+    assert!(workflows.is_empty());
+    let assignments = result["assignments"].as_object().expect("should be object");
+    assert!(assignments.is_empty());
 }

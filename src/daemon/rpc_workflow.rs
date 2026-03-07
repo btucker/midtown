@@ -108,6 +108,114 @@ pub(super) async fn handle_workflow_set_state(
     Response::success(id, serde_json::json!({ "ok": true }))
 }
 
+/// Handle `workflow.assign` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+/// - `workflow` (required): workflow name to assign
+///
+/// Stores the channel→workflow mapping in `DaemonPersistentState::channel_workflows`.
+pub(super) async fn handle_workflow_assign(
+    id: RequestId,
+    channel: &str,
+    workflow: &str,
+    daemon_state: &DaemonState,
+) -> Response {
+    let mut ps = daemon_state.persistent_state.lock().await;
+    ps.channel_workflows
+        .insert(channel.to_string(), workflow.to_string());
+
+    if let Err(e) = ps.save_for_repo(daemon_state.paths.dir_key()) {
+        error!(
+            channel = %channel,
+            workflow = %workflow,
+            "workflow.assign: failed to save daemon state: {}",
+            e
+        );
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("failed to persist state: {e}")),
+        );
+    }
+
+    debug!(
+        channel = %channel,
+        workflow = %workflow,
+        "workflow.assign: assigned workflow to channel"
+    );
+
+    Response::success(id, serde_json::json!({ "ok": true }))
+}
+
+/// Handle `workflow.unassign` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+///
+/// Removes the channel's workflow assignment, reverting to daemon defaults.
+pub(super) async fn handle_workflow_unassign(
+    id: RequestId,
+    channel: &str,
+    daemon_state: &DaemonState,
+) -> Response {
+    let mut ps = daemon_state.persistent_state.lock().await;
+    ps.channel_workflows.remove(channel);
+
+    if let Err(e) = ps.save_for_repo(daemon_state.paths.dir_key()) {
+        error!(
+            channel = %channel,
+            "workflow.unassign: failed to save daemon state: {}",
+            e
+        );
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("failed to persist state: {e}")),
+        );
+    }
+
+    debug!(
+        channel = %channel,
+        "workflow.unassign: removed workflow assignment"
+    );
+
+    Response::success(id, serde_json::json!({ "ok": true }))
+}
+
+/// Handle `workflow.list` RPC method.
+///
+/// Returns available workflows (from the workflows directory) and current
+/// channel→workflow assignments.
+pub(super) async fn handle_workflow_list(id: RequestId, daemon_state: &DaemonState) -> Response {
+    let workflows_dir = daemon_state.paths.workflows_dir();
+    let workflows = crate::paths::discover_workflows(&workflows_dir);
+
+    let workflow_list: Vec<serde_json::Value> = workflows
+        .iter()
+        .map(|w| {
+            serde_json::json!({
+                "name": w.name,
+                "dir": w.dir.to_string_lossy(),
+                "has_agents_md": w.agents_md.is_some(),
+            })
+        })
+        .collect();
+
+    let ps = daemon_state.persistent_state.lock().await;
+    let assignments: serde_json::Map<String, serde_json::Value> = ps
+        .channel_workflows
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "workflows": workflow_list,
+            "assignments": assignments,
+        }),
+    )
+}
+
 #[path = "rpc_workflow_tests.rs"]
 #[cfg(test)]
 mod tests;

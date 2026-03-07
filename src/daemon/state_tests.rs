@@ -1145,3 +1145,71 @@ fn apply_gc_combined_operations() {
     );
     assert!(!state.task_channel.contains_key("old-task"));
 }
+
+// ── channel_workflows tests ───────────────────────────────────────────
+
+#[test]
+fn test_channel_workflow_assignment_roundtrip() {
+    let mut state = DaemonPersistentState::default();
+
+    // No workflow assigned initially
+    assert!(!state.channel_workflows.contains_key("proj-auth"));
+
+    // Assign workflow
+    state
+        .channel_workflows
+        .insert("proj-auth".to_string(), "tdw".to_string());
+    assert_eq!(state.channel_workflows.get("proj-auth").unwrap(), "tdw");
+
+    // Serialization round-trip
+    let json = serde_json::to_string(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+    assert_eq!(loaded.channel_workflows.get("proj-auth").unwrap(), "tdw");
+}
+
+#[test]
+fn test_channel_workflows_default_empty() {
+    // Existing state without channel_workflows should deserialize fine
+    let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
+    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(state.channel_workflows.is_empty());
+}
+
+#[test]
+fn test_channel_workflows_multiple_channels() {
+    let mut state = DaemonPersistentState::default();
+    state
+        .channel_workflows
+        .insert("proj-auth".to_string(), "tdw".to_string());
+    state
+        .channel_workflows
+        .insert("proj-infra".to_string(), "tdw".to_string());
+    state
+        .channel_workflows
+        .insert("proj-web".to_string(), "spec-review".to_string());
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(loaded.channel_workflows.len(), 3);
+    // Multiple channels can share the same workflow
+    assert_eq!(loaded.channel_workflows.get("proj-auth").unwrap(), "tdw");
+    assert_eq!(loaded.channel_workflows.get("proj-infra").unwrap(), "tdw");
+    assert_eq!(
+        loaded.channel_workflows.get("proj-web").unwrap(),
+        "spec-review"
+    );
+}
+
+#[test]
+fn test_channel_workflows_unassign() {
+    let mut state = DaemonPersistentState::default();
+    state
+        .channel_workflows
+        .insert("proj-auth".to_string(), "tdw".to_string());
+    state.channel_workflows.remove("proj-auth");
+
+    let json = serde_json::to_string(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+    assert!(!loaded.channel_workflows.contains_key("proj-auth"));
+}

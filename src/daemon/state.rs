@@ -238,6 +238,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub profile_pool_state: HashMap<String, ProfileState>,
 
+    /// Channel-to-workflow assignment mapping.
+    ///
+    /// Maps channel name → workflow name (e.g., "proj-auth" → "tdw").
+    /// Workflows are named entities in `~/.midtown/projects/<project>/workflows/<name>/`.
+    /// Multiple channels can share the same workflow. Channels without an entry
+    /// use the daemon's default behavior (no workflow).
+    #[serde(default)]
+    pub channel_workflows: HashMap<String, String>,
+
     /// Workflow plugin state, owned by the daemon.
     ///
     /// Maps channel name → per-channel state (JSON object). Each channel's
@@ -425,6 +434,7 @@ impl DaemonPersistentState {
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
+            channel_workflows: HashMap::new(),
             workflow_state,
         };
 
