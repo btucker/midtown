@@ -13,9 +13,8 @@ import pytest
 from midtown.daemon import DispatchResult, WorkflowDaemon
 
 
-# Helper to create a plugin that implements on_pr_opened via the new API.
-# Plugins use @hookimpl and receive a single `ctx` argument.
-def _plugin_source(message: str) -> str:
+# Helper to create a workflow.py that implements on_pr_opened.
+def _workflow_source(message: str) -> str:
     return (
         "from midtown.hooks import hookimpl\n"
         "\n"
@@ -25,545 +24,202 @@ def _plugin_source(message: str) -> str:
     )
 
 
-class TestPluginLoading:
-    """Tests for plugin discovery and loading."""
+def _create_workflow(workflows_dir: Path, name: str, source: str) -> Path:
+    """Create a workflow at workflows_dir/<name>/workflow.py and return the file path."""
+    workflow_dir = workflows_dir / name
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    workflow_file = workflow_dir / "workflow.py"
+    workflow_file.write_text(source)
+    return workflow_file
 
-    def test_load_from_nonexistent_directory(self) -> None:
+
+class TestWorkflowLoading:
+    """Tests for workflow discovery and loading."""
+
+    def test_nonexistent_workflows_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[Path(tmpdir) / "nonexistent"],
+                workflows_dir=Path(tmpdir) / "nonexistent",
             )
-            assert len(daemon._loaded_plugins) == 0
+            assert len(daemon._workflows) == 0
 
-    def test_load_from_empty_directory(self) -> None:
+    def test_empty_workflows_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflows_dir.mkdir()
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
-            assert len(daemon._loaded_plugins) == 0
+            assert len(daemon._workflows) == 0
 
-    def test_load_single_plugin(self) -> None:
+    def test_lazy_loading_on_dispatch(self) -> None:
+        """Workflows are not loaded at construction time — only on dispatch."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("hello"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            assert len(daemon._loaded_plugins) == 1
-            assert plugin_file in daemon._loaded_plugins
-
-    def test_skips_underscore_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "__init__.py").write_text("")
-            (plugin_dir / "_private.py").write_text("x = 1\n")
-            (plugin_dir / "good_plugin.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_timer_tick(ctx):\n"
-                "    return None\n"
-            )
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            assert len(daemon._loaded_plugins) == 1
+            # Not loaded yet
+            assert len(daemon._workflows) == 0
 
-    def test_load_multiple_directories(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            dir_a = Path(tmpdir) / "a"
-            dir_b = Path(tmpdir) / "b"
-            dir_a.mkdir()
-            dir_b.mkdir()
-
-            (dir_a / "plugin_a.py").write_text(_plugin_source("from A"))
-            (dir_b / "plugin_b.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_merged(ctx):\n"
-                "    return []\n"
+            # Dispatch triggers lazy load
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
             )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[dir_a, dir_b],
-            )
-
-            assert len(daemon._loaded_plugins) == 2
-
-    def test_bad_plugin_does_not_crash(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "bad.py").write_text("raise RuntimeError('boom')\n")
-            (plugin_dir / "good.py").write_text(_plugin_source("ok"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            # Bad plugin failed to load, but good plugin succeeded
-            assert len(daemon._loaded_plugins) == 1
-
-
-class TestAgentSkillsLoading:
-    """Tests for loading AgentSkills-format plugins (SKILL.md + scripts/hooks.py)."""
-
-    def test_load_agentskills_plugin(self) -> None:
-        """A directory with SKILL.md and scripts/hooks.py should be loaded."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "tdw"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\n"
-                "name: tdw\n"
-                "description: Test-Driven Writing\n"
-                "metadata:\n"
-                "  midtown_hooks: scripts/hooks.py\n"
-                "  midtown_order: 50\n"
-                "---\n"
-                "# TDW Plugin\n"
-            )
-            (scripts_dir / "hooks.py").write_text(_plugin_source("from tdw"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            assert len(daemon._loaded_plugins) == 1
-            assert scripts_dir / "hooks.py" in daemon._loaded_plugins
-
-            # Verify metadata was captured
-            assert len(daemon._skill_metadata) == 1
-            meta = daemon._skill_metadata[skill_dir]
-            assert meta.name == "tdw"
-            assert meta.order == 50
-
-    def test_agentskills_plugin_dispatches_events(self) -> None:
-        """Hooks from an AgentSkills plugin should be callable via dispatch."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "review"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: review\n---\n# Review\n"
-            )
-            (scripts_dir / "hooks.py").write_text(_plugin_source("review says hi"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert len(daemon._workflows) == 1
             assert len(result.actions) == 1
-            assert result.actions[0].params["message"] == "review says hi"
+            assert result.actions[0].params["message"] == "hello"
 
-    def test_agentskills_custom_hooks_path(self) -> None:
-        """The midtown_hooks metadata field should override the default path."""
+    def test_bad_workflow_does_not_crash(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "custom"
-            hooks_dir = skill_dir / "my" / "hooks"
-            hooks_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: custom\nmetadata:\n  midtown_hooks: my/hooks/impl.py\n---\n"
-            )
-            (hooks_dir / "impl.py").write_text(_plugin_source("custom path"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "bad", "raise RuntimeError('boom')\n")
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            assert len(daemon._loaded_plugins) == 1
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert result.actions[0].params["message"] == "custom path"
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="bad"
+            )
+            assert result.actions == []
+            assert not result.default_prevented
 
-    def test_agentskills_missing_hooks_file(self) -> None:
-        """A SKILL.md pointing to a nonexistent hooks file should be skipped."""
+
+class TestSingleWorkflowDispatch:
+    """Tests for dispatching to a single workflow by name."""
+
+    def test_single_workflow_dispatch(self) -> None:
+        """Loading a workflow by name and dispatching to it works."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "broken"
-            skill_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: broken\n---\n# No hooks file\n"
-            )
-            # scripts/hooks.py does not exist
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("tdw response"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            assert len(daemon._loaded_plugins) == 0
-
-    def test_mixed_bare_and_agentskills(self) -> None:
-        """Both bare .py files and AgentSkills directories should load."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # Bare .py plugin
-            (plugin_dir / "bare.py").write_text(_plugin_source("bare plugin"))
-
-            # AgentSkills plugin
-            skill_dir = plugin_dir / "skill_plugin"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text("---\nname: skill\n---\n")
-            (scripts_dir / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_merged(ctx):\n"
-                '    return [ctx.actions.post_to_channel("merged")]\n'
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 42}, channel_workflow="tdw"
             )
 
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            assert len(daemon._loaded_plugins) == 2
-
-            # Both hooks should fire for their respective events
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
             assert len(result.actions) == 1
-            assert result.actions[0].params["message"] == "bare plugin"
+            assert result.actions[0].method == "channel.post"
+            assert result.actions[0].params["message"] == "tdw response"
 
-            result = daemon.dispatch_event("pr.merged", {})
-            assert len(result.actions) == 1
-            assert result.actions[0].params["message"] == "merged"
-
-    def test_dir_without_skill_md_ignored(self) -> None:
-        """Subdirectories without SKILL.md should be ignored."""
+    def test_dispatch_without_workflow_returns_empty(self) -> None:
+        """channel_workflow that doesn't exist returns empty DispatchResult."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # Directory without SKILL.md — should be ignored
-            not_plugin = plugin_dir / "not_a_plugin"
-            not_plugin.mkdir()
-            (not_plugin / "some_file.py").write_text("x = 1\n")
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflows_dir.mkdir()
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            assert len(daemon._loaded_plugins) == 0
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="nonexistent"
+            )
+            assert result.actions == []
+            assert not result.default_prevented
 
-    def test_multiple_agentskills_same_hooks_filename(self) -> None:
-        """Multiple AgentSkills using scripts/hooks.py should not conflict."""
+    def test_dispatch_empty_workflow_returns_empty(self) -> None:
+        """Empty channel_workflow string returns empty DispatchResult."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-
-            # First skill: tdw
-            skill1 = plugin_dir / "tdw" / "scripts"
-            skill1.mkdir(parents=True)
-            (plugin_dir / "tdw" / "SKILL.md").write_text(
-                "---\nname: tdw\n---\n# TDW\n"
-            )
-            (skill1 / "hooks.py").write_text(_plugin_source("from tdw"))
-
-            # Second skill: review (same hooks filename!)
-            skill2 = plugin_dir / "review" / "scripts"
-            skill2.mkdir(parents=True)
-            (plugin_dir / "review" / "SKILL.md").write_text(
-                "---\nname: review\n---\n# Review\n"
-            )
-            (skill2 / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_merged(ctx):\n"
-                '    return [ctx.actions.post_to_channel("review merged")]\n'
-            )
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("tdw"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            # Both plugins should load without ValueError
-            assert len(daemon._loaded_plugins) == 2
-
-            # Both hooks should fire for their respective events
             result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            assert result.actions == []
+            assert not result.default_prevented
+
+    def test_two_workflows_isolated(self) -> None:
+        """Each workflow has its own PluginManager — they don't share hooks."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("from tdw"))
+            _create_workflow(
+                workflows_dir,
+                "review",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_merged(ctx):\n"
+                    '    return [ctx.actions.post_to_channel("review merged")]\n'
+                ),
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                workflows_dir=workflows_dir,
+            )
+
+            # Dispatch to tdw
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
             assert len(result.actions) == 1
             assert result.actions[0].params["message"] == "from tdw"
 
-            result = daemon.dispatch_event("pr.merged", {})
+            # Dispatch to review — different event, different workflow
+            result = daemon.dispatch_event(
+                "pr.merged", {}, channel_workflow="review"
+            )
             assert len(result.actions) == 1
             assert result.actions[0].params["message"] == "review merged"
 
+            # tdw has no on_pr_merged
+            result = daemon.dispatch_event(
+                "pr.merged", {}, channel_workflow="tdw"
+            )
+            assert result.actions == []
 
-class TestPluginUnloading:
-    """Tests for plugin unloading."""
 
-    def test_unload_plugin(self) -> None:
+class TestWorkflowUnloading:
+    """Tests for workflow unloading."""
+
+    def test_unload_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("hello"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
-            assert len(daemon._loaded_plugins) == 1
 
-            daemon.unload_plugin(plugin_file)
-            assert len(daemon._loaded_plugins) == 0
-            assert plugin_file not in daemon._mtimes
+            # Load it first
+            daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert "tdw" in daemon._workflows
+
+            daemon.unload_workflow("tdw")
+            assert "tdw" not in daemon._workflows
 
     def test_unload_nonexistent_is_noop(self) -> None:
-        daemon = WorkflowDaemon(
-            socket_path="/tmp/test.sock",
-            plugin_dirs=[],
-        )
-        # Should not raise
-        daemon.unload_plugin(Path("/nonexistent/plugin.py"))
-
-
-    def test_unload_agentskills_cleans_metadata(self) -> None:
-        """Unloading an AgentSkills plugin should remove its _skill_metadata."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "tdw"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: tdw\nmetadata:\n  midtown_order: 50\n---\n# TDW\n"
-            )
-            hooks_file = scripts_dir / "hooks.py"
-            hooks_file.write_text(_plugin_source("from tdw"))
-
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=Path(tmpdir),
             )
-            assert len(daemon._skill_metadata) == 1
-            assert skill_dir in daemon._skill_metadata
-
-            # Delete the hooks file and reload — metadata should be cleaned up
-            hooks_file.unlink()
-            daemon.reload_changed()
-
-            assert len(daemon._loaded_plugins) == 0
-            assert len(daemon._skill_metadata) == 0
-
-    def test_reload_agentskills_updates_metadata(self) -> None:
-        """Hot-reload of AgentSkills should re-parse SKILL.md metadata."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            skill_dir = plugin_dir / "tdw"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: tdw\nmetadata:\n  midtown_order: 50\n---\n# TDW\n"
-            )
-            hooks_file = scripts_dir / "hooks.py"
-            hooks_file.write_text(_plugin_source("v1"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-            assert daemon._skill_metadata[skill_dir].order == 50
-
-            # Update SKILL.md and hooks file
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: tdw\nmetadata:\n  midtown_order: 10\n---\n# TDW v2\n"
-            )
-            time.sleep(0.05)
-            hooks_file.write_text(_plugin_source("v2"))
-
-            daemon.reload_changed()
-
-            assert daemon._skill_metadata[skill_dir].order == 10
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert result.actions[0].params["message"] == "v2"
-
-
-class TestMidtownOrder:
-    """Tests for midtown_order-based plugin execution order."""
-
-    def test_plugins_execute_in_order(self) -> None:
-        """Lower midtown_order plugins should execute first (produce actions first)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # AgentSkills plugin with order=10 (should execute first)
-            early_dir = plugin_dir / "early"
-            scripts = early_dir / "scripts"
-            scripts.mkdir(parents=True)
-            (early_dir / "SKILL.md").write_text(
-                "---\nname: early\nmetadata:\n  midtown_order: 10\n---\n"
-            )
-            (scripts / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("early")]\n'
-            )
-
-            # AgentSkills plugin with order=100 (should execute second)
-            late_dir = plugin_dir / "late"
-            scripts2 = late_dir / "scripts"
-            scripts2.mkdir(parents=True)
-            (late_dir / "SKILL.md").write_text(
-                "---\nname: late\nmetadata:\n  midtown_order: 100\n---\n"
-            )
-            (scripts2 / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("late")]\n'
-            )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            messages = [a.params["message"] for a in result.actions]
-            assert messages == ["early", "late"]
-
-    def test_default_order_for_bare_plugins(self) -> None:
-        """Bare .py plugins get default order 1000, after low-order AgentSkills."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # Bare plugin (default order 1000)
-            (plugin_dir / "bare.py").write_text(_plugin_source("bare"))
-
-            # AgentSkills plugin with order=50 (should execute first)
-            skill_dir = plugin_dir / "priority"
-            scripts = skill_dir / "scripts"
-            scripts.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: priority\nmetadata:\n  midtown_order: 50\n---\n"
-            )
-            (scripts / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("priority")]\n'
-            )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            messages = [a.params["message"] for a in result.actions]
-            assert messages == ["priority", "bare"]
-
-
-    def test_order_preserved_after_hot_reload(self) -> None:
-        """Touching a high-order plugin should not make it run before a low-order one."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # AgentSkills plugin with order=10 (should always execute first)
-            early_dir = plugin_dir / "early"
-            scripts1 = early_dir / "scripts"
-            scripts1.mkdir(parents=True)
-            (early_dir / "SKILL.md").write_text(
-                "---\nname: early\nmetadata:\n  midtown_order: 10\n---\n"
-            )
-            (scripts1 / "hooks.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("early")]\n'
-            )
-
-            # AgentSkills plugin with order=100 (should always execute second)
-            late_dir = plugin_dir / "late"
-            scripts2 = late_dir / "scripts"
-            scripts2.mkdir(parents=True)
-            (late_dir / "SKILL.md").write_text(
-                "---\nname: late\nmetadata:\n  midtown_order: 100\n---\n"
-            )
-            late_hooks = scripts2 / "hooks.py"
-            late_hooks.write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("late")]\n'
-            )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            # Before reload: order should be correct
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            messages = [a.params["message"] for a in result.actions]
-            assert messages == ["early", "late"]
-
-            # Touch the HIGH-order plugin (order=100) to trigger reload.
-            # Without the fix, this plugin would be re-registered last,
-            # making it run first in pluggy's LIFO order.
-            time.sleep(0.05)
-            late_hooks.write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.post_to_channel("late_v2")]\n'
-            )
-
-            daemon.reload_changed()
-
-            # After reload: order must still be correct
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            messages = [a.params["message"] for a in result.actions]
-            assert messages == ["early", "late_v2"]
+            # Should not raise
+            daemon.unload_workflow("nonexistent")
 
 
 class TestHotReload:
@@ -571,15 +227,19 @@ class TestHotReload:
 
     def test_detect_changed_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("v1"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("v1")
+            )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
+            )
+
+            # Load workflow
+            daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
             )
 
             # No changes yet
@@ -587,121 +247,167 @@ class TestHotReload:
 
             # Touch the file to update mtime
             time.sleep(0.05)
-            plugin_file.write_text(_plugin_source("v2"))
+            workflow_file.write_text(_workflow_source("v2"))
 
             changed = daemon.check_for_changes()
-            assert plugin_file in changed
+            assert "tdw" in changed
 
-    def test_reload_changed_updates_plugin(self) -> None:
+    def test_reload_changed_updates_workflow(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("v1"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("v1")
+            )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
             assert result.actions[0].params["message"] == "v1"
 
-            # Update plugin
+            # Update workflow
             time.sleep(0.05)
-            plugin_file.write_text(_plugin_source("v2"))
+            workflow_file.write_text(_workflow_source("v2"))
 
             daemon.reload_changed()
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert result.actions[0].params["message"] == "v2"
+
+    def test_auto_reload_on_dispatch(self) -> None:
+        """_ensure_loaded detects mtime changes and reloads automatically."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("v1")
+            )
+
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                workflows_dir=workflows_dir,
+            )
+
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert result.actions[0].params["message"] == "v1"
+
+            # Update workflow file
+            time.sleep(0.05)
+            workflow_file.write_text(_workflow_source("v2"))
+
+            # Next dispatch auto-reloads via _ensure_loaded
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
             assert result.actions[0].params["message"] == "v2"
 
     def test_reload_preserves_tracking_on_failure(self) -> None:
-        """A temporary import error should not permanently disable a plugin."""
+        """A temporary error should not permanently disable a workflow."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("v1"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("v1")
+            )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
+
+            # Load workflow
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert result.actions[0].params["message"] == "v1"
 
             # Introduce a syntax error
             time.sleep(0.05)
-            plugin_file.write_text("raise SyntaxError('broken')\n")
-            daemon.reload_changed()
+            workflow_file.write_text("raise SyntaxError('broken')\n")
 
-            # Plugin should still be tracked so next fix is picked up
-            assert plugin_file in daemon._mtimes
+            # _ensure_loaded should keep the old version on failure
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            # Old version still works
+            assert result.actions[0].params["message"] == "v1"
 
-            # Fix the plugin
+            # Fix the workflow
             time.sleep(0.05)
-            plugin_file.write_text(_plugin_source("v2"))
+            workflow_file.write_text(_workflow_source("v2"))
 
-            daemon.reload_changed()
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert len(result.actions) == 1
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
             assert result.actions[0].params["message"] == "v2"
 
-    def test_deleted_plugin_is_unloaded(self) -> None:
-        """Deleting a plugin file should unregister its hooks."""
+    def test_deleted_workflow_is_unloaded(self) -> None:
+        """Deleting a workflow file should unregister its hooks on reload."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("hello"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("hello")
+            )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            assert len(daemon._loaded_plugins) == 1
+            # Load workflow
+            daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert "tdw" in daemon._workflows
 
-            # Delete the plugin file
-            plugin_file.unlink()
+            # Delete the workflow file
+            workflow_file.unlink()
             daemon.reload_changed()
 
-            assert len(daemon._loaded_plugins) == 0
-            assert plugin_file not in daemon._mtimes
+            assert "tdw" not in daemon._workflows
 
             # Hooks should no longer fire
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
             assert result.actions == []
             assert not result.default_prevented
 
 
 class TestEventDispatch:
-    """Tests for event dispatch to plugins."""
+    """Tests for event dispatch to workflows."""
 
     def test_dispatch_to_matching_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "my_plugin.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    return [ctx.actions.post_to_channel(\n"
-                "        f\"PR #{ctx.pr_number} opened\"\n"
-                "    )]\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    "    return [ctx.actions.post_to_channel(\n"
+                    "        f\"PR #{ctx.pr_number} opened\"\n"
+                    "    )]\n"
+                ),
             )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 123})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 123}, channel_workflow="tdw"
+            )
 
             assert len(result.actions) == 1
             assert result.actions[0].method == "channel.post"
@@ -709,104 +415,90 @@ class TestEventDispatch:
             assert not result.default_prevented
 
     def test_dispatch_unknown_event_returns_empty(self) -> None:
-        daemon = WorkflowDaemon(
-            socket_path="/tmp/test.sock",
-            plugin_dirs=[],
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
-        result = daemon.dispatch_event("unknown.event", {})
-        assert result.actions == []
-        assert not result.default_prevented
+            daemon = WorkflowDaemon(
+                socket_path="/tmp/test.sock",
+                workflows_dir=workflows_dir,
+            )
+
+            result = daemon.dispatch_event(
+                "unknown.event", {}, channel_workflow="tdw"
+            )
+            assert result.actions == []
+            assert not result.default_prevented
 
     def test_dispatch_no_matching_hook_returns_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "my_plugin.py").write_text(_plugin_source("hello"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.merged", {})
+            result = daemon.dispatch_event(
+                "pr.merged", {}, channel_workflow="tdw"
+            )
             assert result.actions == []
-
-    def test_multiple_plugins_dispatch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "plugin_a.py").write_text(_plugin_source("from A"))
-            (plugin_dir / "plugin_b.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    return [ctx.actions.nudge_coworker("bob", "from B")]\n'
-            )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-
-            assert len(result.actions) == 2
-            methods = {a.method for a in result.actions}
-            assert "channel.post" in methods
-            assert "coworker.nudge" in methods
 
     def test_plugin_returning_none_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "silent.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    return None\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    "    return None\n"
+                ),
             )
-            (plugin_dir / "talker.py").write_text(_plugin_source("hello"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-
-            assert len(result.actions) == 1
-            assert result.actions[0].params["message"] == "hello"
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
+            assert result.actions == []
 
     def test_action_serialization(self) -> None:
         """Dispatch returns DaemonAction objects with method and params."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "multi_action.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_task_completed(ctx):\n"
-                "    return [\n"
-                '        ctx.actions.post_to_channel("done!"),\n'
-                "        ctx.actions.check_pending(),\n"
-                "    ]\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_task_completed(ctx):\n"
+                    "    return [\n"
+                    '        ctx.actions.post_to_channel("done!"),\n'
+                    "        ctx.actions.check_pending(),\n"
+                    "    ]\n"
+                ),
             )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
             result = daemon.dispatch_event(
-                "task.completed", {"task_id": "42"}, task_id="42"
+                "task.completed",
+                {"task_id": "42"},
+                channel_workflow="tdw",
+                task_id="42",
             )
 
             assert len(result.actions) == 2
@@ -818,24 +510,31 @@ class TestEventDispatch:
     def test_on_event_hook_fires_for_all_events(self) -> None:
         """The global on_event hook should fire alongside specific hooks."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "global_logger.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_event(ctx):\n"
-                '    return [ctx.actions.post_to_channel("global")]\n'
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_event(ctx):\n"
+                    '    return [ctx.actions.post_to_channel("global")]\n'
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    '    return [ctx.actions.post_to_channel("specific")]\n'
+                ),
             )
-            (plugin_dir / "pr_handler.py").write_text(_plugin_source("specific"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
 
             assert len(result.actions) == 2
             messages = {a.params["message"] for a in result.actions}
@@ -845,26 +544,29 @@ class TestEventDispatch:
     def test_context_populated_from_event(self) -> None:
         """HookContext fields should be populated from event and kwargs."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "inspector.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    msg = f'{ctx.event_type}:{ctx.pr_number}:{ctx.task_id}'\n"
-                "    return [ctx.actions.post_to_channel(msg)]\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    "    msg = f'{ctx.event_type}:{ctx.pr_number}:{ctx.task_id}'\n"
+                    "    return [ctx.actions.post_to_channel(msg)]\n"
+                ),
             )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
             result = daemon.dispatch_event(
                 "pr.opened",
                 {"pr_number": 42},
+                channel_workflow="tdw",
                 task_id="7",
             )
 
@@ -921,7 +623,9 @@ class TestSocketServer:
         """The server should start, listen, and handle a basic request."""
         with tempfile.TemporaryDirectory() as tmpdir:
             sock_path = str(Path(tmpdir) / "daemon.sock")
-            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, workflows_dir=Path(tmpdir) / "workflows"
+            )
 
             server_task = await _start_daemon(daemon)
             try:
@@ -940,23 +644,25 @@ class TestSocketServer:
 
     @pytest.mark.asyncio
     async def test_event_dispatch_round_trip(self) -> None:
-        """Events dispatched over the socket should return plugin actions."""
+        """Events dispatched over the socket should return workflow actions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "my_plugin.py").write_text(_plugin_source("socket works"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("socket works"))
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
             try:
                 response = await _send_request(
                     sock_path,
-                    {"type": "pr.opened", "event": {"pr_number": 42}},
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 42},
+                        "channel_workflow": "tdw",
+                    },
                 )
                 assert response["ok"] is True
                 assert len(response["actions"]) == 1
@@ -974,7 +680,9 @@ class TestSocketServer:
         """A request without a 'type' field should return an error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             sock_path = str(Path(tmpdir) / "daemon.sock")
-            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, workflows_dir=Path(tmpdir) / "workflows"
+            )
 
             server_task = await _start_daemon(daemon)
             try:
@@ -993,7 +701,9 @@ class TestSocketServer:
         """Sending invalid JSON should return an error, not crash."""
         with tempfile.TemporaryDirectory() as tmpdir:
             sock_path = str(Path(tmpdir) / "daemon.sock")
-            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, workflows_dir=Path(tmpdir) / "workflows"
+            )
 
             server_task = await _start_daemon(daemon)
             try:
@@ -1017,13 +727,12 @@ class TestSocketServer:
     async def test_multiple_sequential_requests(self) -> None:
         """The server should handle multiple sequential connections."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-            (plugin_dir / "counter.py").write_text(_plugin_source("counted"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("counted"))
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
@@ -1031,7 +740,11 @@ class TestSocketServer:
                 for i in range(3):
                     response = await _send_request(
                         sock_path,
-                        {"type": "pr.opened", "event": {"pr_number": i}},
+                        {
+                            "type": "pr.opened",
+                            "event": {"pr_number": i},
+                            "channel_workflow": "tdw",
+                        },
                     )
                     assert response["ok"] is True
                     assert len(response["actions"]) == 1
@@ -1044,40 +757,45 @@ class TestSocketServer:
 
     @pytest.mark.asyncio
     async def test_plugin_error_isolation(self) -> None:
-        """A plugin that raises should not crash the server or block others."""
+        """A workflow that raises should not crash the server."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # Plugin that raises on dispatch
-            (plugin_dir / "bad_plugin.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                '    raise RuntimeError("plugin exploded")\n'
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "bad",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    '    raise RuntimeError("plugin exploded")\n'
+                ),
             )
-            # Good plugin that should still work
-            (plugin_dir / "good_plugin.py").write_text(_plugin_source("still works"))
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
             try:
-                # The request should not crash the server — pluggy calls all
-                # hooks and propagates the first exception. The server catches
-                # it and returns an error response.
+                # The request should not crash the server
                 response = await _send_request(
                     sock_path,
-                    {"type": "pr.opened", "event": {"pr_number": 1}},
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 1},
+                        "channel_workflow": "bad",
+                    },
                 )
                 # Server should still be alive for next request
                 response2 = await _send_request(
                     sock_path,
-                    {"type": "pr.merged", "event": {}},
+                    {
+                        "type": "pr.merged",
+                        "event": {},
+                        "channel_workflow": "bad",
+                    },
                 )
                 assert response2["ok"] is True
             finally:
@@ -1089,17 +807,16 @@ class TestSocketServer:
 
     @pytest.mark.asyncio
     async def test_hot_reload_during_socket_operation(self) -> None:
-        """Plugins modified while the server is running should be reloaded."""
+        """Workflows modified while the server is running should be reloaded."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("v1"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("v1")
+            )
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
@@ -1107,18 +824,26 @@ class TestSocketServer:
                 # First request should see v1
                 response = await _send_request(
                     sock_path,
-                    {"type": "pr.opened", "event": {"pr_number": 1}},
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 1},
+                        "channel_workflow": "tdw",
+                    },
                 )
                 assert response["actions"][0]["params"]["message"] == "v1"
 
-                # Update plugin file
+                # Update workflow file
                 time.sleep(0.05)
-                plugin_file.write_text(_plugin_source("v2"))
+                workflow_file.write_text(_workflow_source("v2"))
 
                 # Next request should trigger hot-reload and see v2
                 response = await _send_request(
                     sock_path,
-                    {"type": "pr.opened", "event": {"pr_number": 2}},
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 2},
+                        "channel_workflow": "tdw",
+                    },
                 )
                 assert response["actions"][0]["params"]["message"] == "v2"
             finally:
@@ -1137,7 +862,9 @@ class TestSocketServer:
             # Create a stale socket file
             Path(sock_path).touch()
 
-            daemon = WorkflowDaemon(socket_path=sock_path, plugin_dirs=[])
+            daemon = WorkflowDaemon(
+                socket_path=sock_path, workflows_dir=Path(tmpdir) / "workflows"
+            )
 
             server_task = await _start_daemon(daemon)
             try:
@@ -1157,21 +884,23 @@ class TestSocketServer:
     async def test_task_context_forwarded_over_socket(self) -> None:
         """Task context fields should be forwarded through the socket protocol."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "inspector.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    msg = f'{ctx.task_id}:{ctx.task_state}'\n"
-                "    return [ctx.actions.post_to_channel(msg)]\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    "    msg = f'{ctx.task_id}:{ctx.task_state}'\n"
+                    "    return [ctx.actions.post_to_channel(msg)]\n"
+                ),
             )
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
@@ -1181,6 +910,7 @@ class TestSocketServer:
                     {
                         "type": "pr.opened",
                         "event": {"pr_number": 42},
+                        "channel_workflow": "tdw",
                         "task_id": "7",
                         "task_state": "in_review",
                     },
@@ -1201,24 +931,28 @@ class TestPreventDefault:
     def test_prevent_default(self) -> None:
         """Plugin calling prevent_default() sets default_prevented in result."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "blocker.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_auto_merge(ctx):\n"
-                "    ctx.prevent_default()\n"
-                "    return []\n"
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_auto_merge(ctx):\n"
+                    "    ctx.prevent_default()\n"
+                    "    return []\n"
+                ),
             )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.auto_merge", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.auto_merge", {"pr_number": 1}, channel_workflow="tdw"
+            )
 
             assert result.default_prevented is True
             assert result.actions == []
@@ -1226,226 +960,83 @@ class TestPreventDefault:
     def test_prevent_default_with_replacement_actions(self) -> None:
         """Plugin can prevent_default and return replacement actions."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "replacer.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    ctx.prevent_default()\n"
-                '    return [ctx.actions.post_to_channel("custom handling")]\n'
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(
+                workflows_dir,
+                "tdw",
+                (
+                    "from midtown.hooks import hookimpl\n"
+                    "\n"
+                    "@hookimpl\n"
+                    "def on_pr_opened(ctx):\n"
+                    "    ctx.prevent_default()\n"
+                    '    return [ctx.actions.post_to_channel("custom handling")]\n'
+                ),
             )
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
 
             assert result.default_prevented is True
             assert len(result.actions) == 1
             assert result.actions[0].params["message"] == "custom handling"
 
-    def test_prevent_default_shared_across_plugins(self) -> None:
-        """If one plugin calls prevent_default, later plugins can see it.
-
-        Pluggy uses LIFO order (last registered = first called).
-        Files load alphabetically, so plugin_z loads last -> runs first.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            # plugin_z loads last -> runs first in LIFO -> calls prevent_default
-            (plugin_dir / "plugin_z.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    ctx.prevent_default()\n"
-                '    return [ctx.actions.post_to_channel("blocked")]\n'
-            )
-            # plugin_a loads first -> runs second in LIFO -> sees prevention
-            (plugin_dir / "plugin_a.py").write_text(
-                "from midtown.hooks import hookimpl\n"
-                "\n"
-                "@hookimpl\n"
-                "def on_pr_opened(ctx):\n"
-                "    if ctx.is_default_prevented():\n"
-                '        return [ctx.actions.post_to_channel("saw prevention")]\n'
-                "    return []\n"
-            )
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-
-            assert result.default_prevented is True
-            assert len(result.actions) == 2
-            messages = [a.params["message"] for a in result.actions]
-            assert "blocked" in messages
-            assert "saw prevention" in messages
-
     def test_no_prevent_default_by_default(self) -> None:
         """Default dispatch without prevent_default keeps default_prevented False."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            (plugin_dir / "passthrough.py").write_text(_plugin_source("hello"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
             daemon = WorkflowDaemon(
                 socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
+                workflows_dir=workflows_dir,
             )
 
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
+            result = daemon.dispatch_event(
+                "pr.opened", {"pr_number": 1}, channel_workflow="tdw"
+            )
 
             assert result.default_prevented is False
             assert len(result.actions) == 1
-
-
-class TestScanForNewPlugins:
-    """Tests for discovering newly added plugins."""
-
-    def test_scan_discovers_new_bare_plugin(self) -> None:
-        """A new .py file added after init should be picked up by scan."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-            assert len(daemon._loaded_plugins) == 0
-
-            # Add a new plugin file after daemon started
-            new_plugin = plugin_dir / "new_plugin.py"
-            new_plugin.write_text(_plugin_source("new"))
-
-            newly_loaded = daemon.scan_for_new_plugins()
-            assert new_plugin in newly_loaded
-            assert len(daemon._loaded_plugins) == 1
-
-            # Dispatch should work
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert len(result.actions) == 1
-            assert result.actions[0].params["message"] == "new"
-
-    def test_scan_discovers_new_agentskills_plugin(self) -> None:
-        """A new AgentSkills directory added after init should be discovered."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-            assert len(daemon._loaded_plugins) == 0
-
-            # Add a new AgentSkills plugin
-            skill_dir = plugin_dir / "new_skill"
-            scripts_dir = skill_dir / "scripts"
-            scripts_dir.mkdir(parents=True)
-            (skill_dir / "SKILL.md").write_text(
-                "---\nname: new_skill\n---\n# New Skill\n"
-            )
-            hooks_file = scripts_dir / "hooks.py"
-            hooks_file.write_text(_plugin_source("new skill"))
-
-            newly_loaded = daemon.scan_for_new_plugins()
-            assert hooks_file in newly_loaded
-            assert len(daemon._loaded_plugins) == 1
-            assert skill_dir in daemon._skill_metadata
-
-    def test_scan_skips_already_loaded(self) -> None:
-        """Already-loaded plugins should not be reloaded by scan."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-            (plugin_dir / "existing.py").write_text(_plugin_source("existing"))
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-            assert len(daemon._loaded_plugins) == 1
-
-            # Scan should not re-add it
-            newly_loaded = daemon.scan_for_new_plugins()
-            assert newly_loaded == []
-            assert len(daemon._loaded_plugins) == 1
-
-    def test_scan_skips_underscore_files(self) -> None:
-        """Files starting with _ should be skipped even by scan."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-
-            (plugin_dir / "_private.py").write_text("x = 1\n")
-            newly_loaded = daemon.scan_for_new_plugins()
-            assert newly_loaded == []
-
-    def test_reload_changed_does_not_discover_new_plugins(self) -> None:
-        """reload_changed() should NOT discover new plugins (only scan_for_new_plugins does)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-
-            daemon = WorkflowDaemon(
-                socket_path="/tmp/test.sock",
-                plugin_dirs=[plugin_dir],
-            )
-            assert len(daemon._loaded_plugins) == 0
-
-            # Add a new plugin and call reload_changed — should NOT discover it
-            (plugin_dir / "added.py").write_text(_plugin_source("added"))
-            daemon.reload_changed()
-
-            assert len(daemon._loaded_plugins) == 0
-
-            # But scan_for_new_plugins should find it
-            daemon.scan_for_new_plugins()
-            assert len(daemon._loaded_plugins) == 1
-            result = daemon.dispatch_event("pr.opened", {"pr_number": 1})
-            assert result.actions[0].params["message"] == "added"
 
 
 class TestReloadCommand:
     """Tests for the reload command over the socket."""
 
     @pytest.mark.asyncio
-    async def test_reload_command_returns_loaded_plugins(self) -> None:
-        """The reload command should return the list of loaded plugins."""
+    async def test_reload_command_returns_loaded_workflows(self) -> None:
+        """The reload command should return the list of loaded workflows."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-            (plugin_dir / "my_plugin.py").write_text(_plugin_source("hello"))
+            workflows_dir = Path(tmpdir) / "workflows"
+            _create_workflow(workflows_dir, "tdw", _workflow_source("hello"))
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
             try:
+                # First load the workflow via a dispatch
+                await _send_request(
+                    sock_path,
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 1},
+                        "channel_workflow": "tdw",
+                    },
+                )
+
                 response = await _send_request(sock_path, {"type": "reload"})
                 assert response["ok"] is True
                 assert response["reloaded"] is True
-                assert len(response["loaded_plugins"]) == 1
+                assert "tdw" in response["loaded_workflows"]
             finally:
                 server_task.cancel()
                 try:
@@ -1454,81 +1045,48 @@ class TestReloadCommand:
                     pass
 
     @pytest.mark.asyncio
-    async def test_reload_discovers_new_plugin(self) -> None:
-        """A reload command should discover a newly added plugin."""
+    async def test_reload_unloads_deleted_workflow(self) -> None:
+        """A reload command should unload a deleted workflow."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
+            workflows_dir = Path(tmpdir) / "workflows"
+            workflow_file = _create_workflow(
+                workflows_dir, "tdw", _workflow_source("hello")
+            )
 
             sock_path = str(Path(tmpdir) / "daemon.sock")
             daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
+                socket_path=sock_path, workflows_dir=workflows_dir
             )
 
             server_task = await _start_daemon(daemon)
             try:
-                # Initially no plugins
+                # Load workflow via dispatch
                 response = await _send_request(
-                    sock_path, {"type": "pr.opened", "event": {"pr_number": 1}}
+                    sock_path,
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 1},
+                        "channel_workflow": "tdw",
+                    },
                 )
-                assert response["actions"] == []
+                assert len(response["actions"]) == 1
 
-                # Add a new plugin
-                (plugin_dir / "new_plugin.py").write_text(
-                    _plugin_source("discovered")
-                )
+                # Delete the workflow
+                workflow_file.unlink()
 
                 # Send reload command
                 response = await _send_request(sock_path, {"type": "reload"})
                 assert response["ok"] is True
-                assert len(response["loaded_plugins"]) == 1
+                assert response["loaded_workflows"] == []
 
-                # Now the plugin should fire
+                # Workflow should no longer fire
                 response = await _send_request(
-                    sock_path, {"type": "pr.opened", "event": {"pr_number": 2}}
-                )
-                assert len(response["actions"]) == 1
-                assert response["actions"][0]["params"]["message"] == "discovered"
-            finally:
-                server_task.cancel()
-                try:
-                    await server_task
-                except asyncio.CancelledError:
-                    pass
-
-    @pytest.mark.asyncio
-    async def test_reload_unloads_deleted_plugin(self) -> None:
-        """A reload command should unload a deleted plugin."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            plugin_dir = Path(tmpdir) / "plugins"
-            plugin_dir.mkdir()
-            plugin_file = plugin_dir / "my_plugin.py"
-            plugin_file.write_text(_plugin_source("hello"))
-
-            sock_path = str(Path(tmpdir) / "daemon.sock")
-            daemon = WorkflowDaemon(
-                socket_path=sock_path, plugin_dirs=[plugin_dir]
-            )
-
-            server_task = await _start_daemon(daemon)
-            try:
-                # Plugin fires initially
-                response = await _send_request(
-                    sock_path, {"type": "pr.opened", "event": {"pr_number": 1}}
-                )
-                assert len(response["actions"]) == 1
-
-                # Delete the plugin
-                plugin_file.unlink()
-
-                # Send reload command
-                response = await _send_request(sock_path, {"type": "reload"})
-                assert response["ok"] is True
-                assert response["loaded_plugins"] == []
-
-                # Plugin should no longer fire
-                response = await _send_request(
-                    sock_path, {"type": "pr.opened", "event": {"pr_number": 2}}
+                    sock_path,
+                    {
+                        "type": "pr.opened",
+                        "event": {"pr_number": 2},
+                        "channel_workflow": "tdw",
+                    },
                 )
                 assert response["actions"] == []
             finally:
