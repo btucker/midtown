@@ -1110,6 +1110,14 @@ pub(super) async fn handle_pr_review_post(
                 comment_id, repo_full_name
             );
 
+            // Mark the PR as reviewed immediately so the stuck-reviewer
+            // check doesn't kill the reviewer and overwrite the real review
+            // before the webhook/polling discovers it.
+            {
+                let mut ps = state.persistent_state.lock().await;
+                ps.github.mark_reviewed_pr(pr_number);
+            }
+
             // Clear the placeholder cache since the comment has been updated
             {
                 let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
