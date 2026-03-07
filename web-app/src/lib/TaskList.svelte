@@ -1,7 +1,10 @@
 <script>
 import { openTaskThread } from "./api.js";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 import { coworkers, kanbanData } from "./store.js";
 import TaskRow from "./TaskRow.svelte";
+
+const sidebar = useSidebar();
 
 let { channelName = "" } = $props();
 
@@ -49,6 +52,7 @@ const taskReviewerMap = $derived.by(() => {
 });
 
 function handleTaskClick(task) {
+	if (sidebar.isMobile) sidebar.setOpenMobile(false);
 	openTaskThread(task, task.channel || channelName);
 }
 </script>

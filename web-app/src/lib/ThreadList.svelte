@@ -2,8 +2,11 @@
 import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";
 import { dismissThread, openThread } from "./api.js";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.js";
 import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.js";
+
+const sidebar = useSidebar();
 
 let { channelName = "" } = $props();
 
@@ -31,6 +34,7 @@ $effect(() => {
 });
 
 function handleClick(thread) {
+	if (sidebar.isMobile) sidebar.setOpenMobile(false);
 	// Try to find the parent message in the channel's message store
 	const channelMsgs = $messagesByChannel[channelName] || [];
 	const parentMsg = channelMsgs.find((m) => m.id === thread.id);
