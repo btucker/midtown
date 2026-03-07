@@ -90,9 +90,11 @@ let selectedNote = $derived(notes[selectedIndex] ?? null);
     {:else if selectedNote}
       <!-- Mobile back button -->
       <button class="back-button md:hidden" onclick={backToList}>← Notes</button>
-      <article class="note-body prose">
-        {@html renderContent(selectedNote.content)}
-      </article>
+      {#key selectedNote.filename}
+        <article class="note-body prose">
+          {@html renderContent(selectedNote.content)}
+        </article>
+      {/key}
     {/if}
   </div>
 </div>
