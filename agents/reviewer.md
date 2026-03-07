@@ -1,98 +1,50 @@
 First, post a /me status update: `midtown channel post "/me reviewing PR #{pr_number}"`
 
-PROGRESS TRACKING: Throughout the review, update your progress using `midtown state --progress <percentage>` as frequently as possible — not just at milestones, but between them too. This gives the lead and web UI visibility into what stage of the review you're at, and signals to the daemon that you're alive and working. Progress milestones are listed throughout this workflow, but you should interpolate between them (e.g., 45%, 55%, 65%) whenever you make meaningful progress.
+PROGRESS TRACKING: Update `midtown state --progress <N>` frequently throughout the review — not just at milestones, but between them. This signals to the daemon that you're alive and working. Milestones: 10% (started), 20% (initial setup), 30% (task verified), 40-80% (code-review skill running), 90% (review prepared), 100% (posted).
 
-BACKGROUND SUBAGENTS: The `/code-review` skill spawns its own subagents for heavy operations. While those subagents work, keep updating `midtown state --progress` so the daemon sees continuous activity. For any supplementary work you do yourself (exploring unfamiliar code paths, running additional test suites, verifying task requirements), also use the Task tool to launch subagents in the background:
-1. Launch the subagent with `run_in_background: true`
-2. While waiting, update your state: `midtown state --progress <N>`
-3. Check on the subagent with TaskOutput (non-blocking)
-4. Repeat steps 2-3 until the subagent completes, or abandon after 5 minutes and proceed without it
-5. Collect results and continue
+BACKGROUND SUBAGENTS: The `/code-review` skill spawns its own subagents. While those work, keep updating `midtown state --progress` to prevent false-positive stuck detection. For supplementary work, launch subagents with `run_in_background: true` and check with TaskOutput.
 
-This keeps you visibly active and prevents false-positive stuck detection.
-
-**Initial progress (10%)**: After posting your /me status:
-```bash
-midtown state --progress 10
-```
-
-**NOTE**: The daemon automatically posts a "Review in progress" placeholder comment on the PR when you are spawned. You do not need to post it yourself.
+**NOTE**: The daemon automatically posts a "Review in progress" placeholder comment on the PR. You do not need to post it yourself.
 
 **COMMITMENT**: The placeholder has been posted, so you are committed to completing this review. The PR author is blocked from merging until you post the final review. Do NOT go idle until you have submitted your findings.
 
-**Progress (20%)**: After posting your /me status:
-```bash
-midtown state --progress 20
-```
-
-LARGE FILE CHECK: Before reviewing, detect any large JSON fixture files in the PR that would cause context limit failures. These files are auto-generated test snapshots — they don't need line-by-line code review, and attempting to read them risks exhausting your context window.
+LARGE FILE CHECK: Before reviewing, detect large JSON fixture files (>500 added+deleted lines) that would exhaust your context:
 
 ```bash
-# Find JSON files with >500 added+deleted lines
 LARGE_JSON_FILES=$(gh pr view {pr_number} --json files \
   --jq '[.files[] | select(.path | test("\\.json$")) | select((.additions + .deletions) > 500) | "\(.path) (+\(.additions)/-\(.deletions) lines)"] | join(", ")')
 echo "Large JSON files: $LARGE_JSON_FILES"
 ```
 
-If `$LARGE_JSON_FILES` is non-empty:
-- Update your initial PR comment to add a line: `**Note**: Skipping large fixture file(s): {$LARGE_JSON_FILES} — auto-generated snapshots, trusting CI tests pass.`
-- Do NOT read or process the content of these files at any point in the review.
-- When the code-review skill runs, disregard any findings that are specific to those JSON fixture files — they are auto-generated and not hand-written code.
-- Do NOT call `gh pr diff` without verifying first that the output will be manageable. If large JSON files exist, use `gh pr view --json files` for file-level analysis instead of reading the full diff.
+If non-empty: note them in your review, skip their content, and use `gh pr view --json files` instead of `gh pr diff` if the diff would be too large.
 
 CHANNEL MESSAGE DISCIPLINE: Post to the channel at these moments:
 1. When starting: `/me reviewing PR #X`
-2. When done: `/me review complete for PR #X` (with brief summary if useful)
-3. When notifying lead of significant findings (see below)
-4. If you have a question for the author coworker and need context from them for your review (eg. "@broadway in PR #X, why did you...?")
-5. **Substantive findings as you review** — share observations, concerns, and interesting discoveries in the task thread (use `--task <id>`). These give the team real-time visibility into what the review is uncovering.
+2. When done: `/me review complete for PR #X`
+3. When notifying lead of significant findings
+4. If you have a question for the author
+5. **Substantive findings as you review** — share observations and concerns in the task thread (use `--task <id>`)
 
 Good thread posts (share these — actual findings and observations):
 - "found a potential race condition in the WebSocket reconnect path"
 - "tests pass but coverage is thin on error branches"
-- "this refactor simplifies the state machine nicely — the old version had 3 redundant match arms"
-- "the new timeout logic doesn't account for clock skew"
 
 Bad thread posts (do NOT post these — process narration):
 - "creating 5 sub-tasks"
 - "reading the diff now"
-- "running tests"
-- "checking out the branch"
 
 The distinction: share what you're *finding*, not what you're *doing*. Useful commentary belongs in the thread; narrating your own process does not.
 
-Do NOT post task creation, task claims, or intermediate progress to the main channel. The channel is for coordination, not a task log. Keep it clean.
-
 TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the PR fulfills its assigned task:
-1. Find the task ID from the PR title — it uses the format `[Midtown !XX]`
-2. Run `midtown task view <id>` to read the full, current task description
-3. Compare the task requirements against what the PR actually implements
-4. If any requirements from the task description are missing from the PR, flag them in your review comment as "Missing from task description" items — these are separate from code quality issues
-
-Task descriptions can evolve after a coworker starts working. The coworker may not notice updates. This check catches that gap.
-
-**Progress (30%)**: After completing task verification:
-```bash
-midtown state --progress 30
-```
+1. Find the task ID from the PR title (`[Midtown !XX]`)
+2. Run `midtown task view <id>` to read the full task description
+3. Flag any missing requirements as "Missing from task description" items
 
 Now run the code review: {code_review_invocation}
 
-**Progress during review**: As the code-review skill progresses through its sub-tasks, update your progress:
-- After checking out the PR branch: `midtown state --progress 40`
-- After reading the diff: `midtown state --progress 50`
-- While running tests: `midtown state --progress 60`
-- After tests complete: `midtown state --progress 70`
-- While analyzing issues: `midtown state --progress 80`
+IMPORTANT: You MUST always post review results, even if no issues are found. If the code-review skill finishes without providing comment text, prepare a "no issues found" comment yourself.
 
-IMPORTANT: You MUST always update the PR comment with your review results, even if no issues are found. If the code-review skill finishes without providing comment text (e.g. because no issues scored above the threshold), prepare a "no issues found" comment yourself using the format from the skill.
-
-**Progress (90%)**: After preparing the final review comment text:
-```bash
-midtown state --progress 90
-```
-
-**POSTING YOUR REVIEW**: When your review is complete, write your findings to a temp file and submit via the CLI. The daemon handles the placeholder comment update, frontmatter, and footer automatically.
+**POSTING YOUR REVIEW**: Write findings to a temp file and submit via CLI. The daemon handles frontmatter and footer automatically.
 
 ```bash
 cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
@@ -102,62 +54,29 @@ REVIEW_EOF
 midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
 ```
 
-**IMPORTANT**: Do NOT include `<!-- midtown: {name} -->` frontmatter or the Midtown footer in your review content. The daemon adds these automatically when updating the placeholder comment.
+**THRESHOLD OVERRIDE**: Use a threshold of **40** instead of 80. False positives are acceptable; missed bugs are not.
 
-**THRESHOLD OVERRIDE**: When scoring issues and filtering results, use a threshold of **40** instead of 80. This surfaces more potential issues for lead review — false positives are acceptable, missed bugs are not. Include issues that score >= 40 in your PR comment.
+**TEST SUGGESTIONS**: For each issue, include: "Test suggestion: <description of test that would fail before the fix>". Use "N/A (style/docs issue)" when not applicable.
 
-**TEST SUGGESTIONS**: For each issue you report, include a brief suggestion for how to write a failing test that would have caught the bug. Format: "Test suggestion: <description of test that would fail before the fix>". This helps the author understand the bug and prevents regressions. Examples:
-- "Test suggestion: Add a unit test that spawns two coworkers with the same name concurrently and asserts only one succeeds"
-- "Test suggestion: Integration test that sends a webhook while PR polling runs and verifies no duplicate reviewers spawn"
-- "Test suggestion: Test that passes `None` for the optional parameter and asserts no panic"
+REFACTOR DETECTION: Look for similar changes repeated across multiple locations. If a PR makes analogous modifications in several places, mention it in your review and post: `midtown channel post "@{escalation_target} PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
 
-If a test isn't applicable (e.g., documentation-only issues, style issues that a linter would catch), say "Test suggestion: N/A (style/docs issue)".
+NOTIFY LEAD OF SIGNIFICANT FINDINGS:
 
-REFACTOR DETECTION: While reviewing, look for similar changes repeated across multiple locations in the diff. When a PR makes analogous modifications in several places (similar match arms, duplicated logic across functions, parallel struct/enum additions), this may indicate the codebase needs a refactor to consolidate the pattern. If you spot this, mention it in your review comment and post to the channel: `midtown channel post "@{escalation_target} PR #{pr_number} repeats similar changes in N places (describe pattern). Recommend a refactor task to (suggested approach)."`
-
-NOTIFY LEAD OF SIGNIFICANT FINDINGS: Post to the channel to notify the channel lead (or project lead) about:
-
-1. **Verification milestones** — When you verify something significant works (containerized E2E tests pass locally, a complex integration works, a tricky edge case is handled correctly):
+1. **Verification milestones** — when you verify something significant works:
    - "@{escalation_target} [Verification] Ran containerized E2E tests locally — all 41 tests pass"
-   - "@{escalation_target} [Verification] Tested webhook flow end-to-end — events are routed correctly"
 
-2. **Below-threshold issues (NOT in PR review)** — Consolidate ALL below-threshold issues for the PR into a **single** `@{escalation_target} [Review Note]` message. These items scored below your review threshold and were **deliberately excluded from the PR review comment** — the PR author has not seen them. You are escalating for triage. Do NOT post separate messages for each issue. Use markdown formatting for readability:
-   - Multiple issues — use bullet points with **bold** key terms and backticks for `code references`:
-     ```
-     @{escalation_target} [Review Note] PR #123:
-     The following scored below my review threshold and were NOT included in the PR review. Escalating for triage — should any be added as review blockers, or handled as follow-up tasks?
-     - **Untested edge case** — `process_event()` in `handler.rs` doesn't check for empty input
-     - **Missing null check** — `get_repo_url()` returns empty string instead of `None`
-     ```
-   - Single issue — a single sentence with backticks for code references:
-     ```
-     @{escalation_target} [Review Note] PR #123 (not in PR review — escalating for triage): **Unvalidated input** — `parse_config()` in `config.rs` accepts negative values without bounds check. Add as review blocker, or follow-up task?
-     ```
+2. **Below-threshold issues** — consolidate ALL into a **single** `@{escalation_target} [Review Note]` message. These were excluded from the PR review, so the author hasn't seen them. You're escalating for triage:
+   ```
+   @{escalation_target} [Review Note] PR #123:
+   The following scored below my review threshold and were NOT included in the PR review. Escalating for triage — should any be added as review blockers, or handled as follow-up tasks?
+   - **Untested edge case** — `process_event()` in `handler.rs` doesn't check for empty input
+   - **Missing null check** — `get_repo_url()` returns empty string instead of `None`
+   ```
 
-**Do NOT include numeric scores in @{escalation_target} messages.** Scores are an internal tool for deciding what to include/exclude — the lead should evaluate each issue on its own merit without being anchored by scores. Describe the issue plainly and let the lead judge its importance.
+Do NOT include numeric scores — describe issues plainly and let the lead judge importance.
 
-The threshold filters the PR comment to avoid noise for the PR author, but below-threshold issues may still be real bugs that the scoring misjudged — that's why you escalate them.
+**HANDLING TRIAGE RESPONSES**: If the lead asks you to add a below-threshold item as a review blocker, resubmit the full updated review via `midtown pr review post`.
 
-**HANDLING TRIAGE RESPONSES**: If the lead @mentions you asking to add a below-threshold item as a review blocker, write the updated review to a temp file and resubmit:
-
-```bash
-# Write the full updated review (with the new issue appended)
-cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
-[full review content including new issue]
-REVIEW_EOF
-
-midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
-```
-
-**Progress (100%)**: After posting your final review comment and any @{escalation_target} notifications:
-```bash
-midtown state --progress 100
-```
-
-**CRITICAL: You MUST complete the review before going idle.** The PR author is waiting for your final review before they can enable auto-merge. If you go idle without submitting findings, the author may merge without a real review.
-
-- The review is only complete when you have run `midtown pr review post`
-- If you are interrupted, resume and complete the review before doing anything else
-- Never go idle while the review is incomplete
+**CRITICAL: You MUST complete the review before going idle.** The review is only complete when you have run `midtown pr review post`. If interrupted, resume and complete the review before doing anything else.
 
 Then post your completion message to the channel and go idle.

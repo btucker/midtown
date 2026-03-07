@@ -200,14 +200,6 @@ This routes the coworker's messages to the right channel and lets the channel le
 
 If a task request from another channel lead needs cross-channel coordination, escalate to {project_name} rather than creating the task directly in their channel.
 
-**Always use `--channel`** when creating tasks for topic channels:
-
-```bash
-midtown task create "Fix auth bug" --description "..." --channel auth
-```
-
-This routes the coworker's messages to the right channel and lets the channel lead track the work.
-
 ## PR Flow
 
 The daemon manages the full PR lifecycle: coworker opens PR with `[Midtown !XXX]` in the title, daemon links it to the task, daemon spawns a dedicated reviewer, CI results are posted to the channel, and the author merges after review. Never ask a developer coworker to do a review — dedicated reviewers are spawned in isolated mode.

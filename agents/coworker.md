@@ -205,30 +205,11 @@ gh pr list --search "Midtown !XXX" --state open --json number,headRefName
    midtown channel post "@{project_name} PR already exists for task XXX but my branch diverged - need help"
    ```
 
-**If no PR exists**, push and create a new PR (see "Example PR creation" below).
+**If no PR exists**, push and create a new PR.
 
-**If you accidentally pushed a branch without creating a PR**, delete it immediately to avoid orphaned branches:
+**If you accidentally pushed a branch without creating a PR**, delete it: `git push origin --delete <branch>`.
 
-```bash
-# Delete the orphaned remote branch
-git push origin --delete accidentally-pushed-branch
-```
-
-**If you accidentally created a new branch when a PR already existed**, clean up both branches:
-
-```bash
-# Get the PR's actual branch name
-PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
-
-# Delete your accidentally created branch (if you pushed it)
-git push origin --delete accidentally-created-branch
-
-# Verify your HEAD contains the PR's work before force-pushing
-git merge-base --is-ancestor origin/$PR_BRANCH HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
-
-# Only if safe — force-push your work to the correct PR branch
-git push --force origin HEAD:$PR_BRANCH
-```
+**If you accidentally created a new branch when a PR already existed**, delete the accidental branch and force-push to the PR's actual branch (after verifying ancestry as above).
 
 **When done**, push and create a PR.
 
@@ -236,46 +217,23 @@ git push --force origin HEAD:$PR_BRANCH
 
 ### Screenshots for Visual Changes
 
-> **You CAN capture screenshots and videos in a headless session.** The `midtown coworker screenshot` command uses Playwright's headless Chromium — it renders pages offscreen in memory. No display server, no GUI, no X11 required. "Headless session" (no terminal UI) and "headless browser" (no visible window) are different things. Playwright works perfectly in both. **Do not skip visual captures.** If Playwright fails, debug the error and fix it. See also [Visual Documentation](#visual-documentation) below.
+> **You CAN capture screenshots in a headless session.** `midtown coworker screenshot` uses Playwright's headless Chromium — no display server needed.
 
-When your PR includes visual changes to the web UI, include before/after screenshots:
+When your PR includes visual changes, capture before/after screenshots:
 
 ```bash
-# Before/after workflow — one command each:
+# Before/after for channel posts:
 BEFORE=$(midtown coworker screenshot http://localhost:5173 --before)
 # ... make your changes ...
 AFTER=$(midtown coworker screenshot http://localhost:5173 --after)
+midtown channel post "Before: $BEFORE\nAfter: $AFTER" --task 42
 
-# Post to channel
-midtown channel post "Before: $BEFORE" --task 42
-midtown channel post "After: $AFTER" --task 42
-```
-
-```bash
-# Or take a single screenshot with a custom name:
+# Single screenshot with custom name:
 midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
 ```
 
-The command runs Playwright, captures the page, and prints `[Attached: /path]` markdown ready for **channel posts**. Post screenshots to the channel for lead review before opening the PR.
+**For GitHub PR descriptions**, use `--github` to get `![alt](URL)` markdown instead of `[Attached: /path]`:
 
-### Screenshots in GitHub PR Descriptions
-
-The `[Attached: /path]` format works in midtown channels but renders as literal text on GitHub. For PR descriptions, use `--github` to get standard markdown image syntax:
-
-```bash
-# Capture a screenshot with GitHub-compatible markdown output:
-SCREENSHOT=$(midtown coworker screenshot http://localhost:5173 --github)
-# Output: ![screenshot](https://localhost:47022/api/projects/<repo>/screenshots/<uuid>.png)
-
-# Before/after with --github:
-BEFORE=$(midtown coworker screenshot http://localhost:5173 --before --github)
-# ... make your changes ...
-AFTER=$(midtown coworker screenshot http://localhost:5173 --after --github)
-```
-
-The `--github` flag outputs `![alt](URL)` pointing to the standalone webserver's screenshot endpoint. These URLs render as inline images on GitHub when the webserver is accessible.
-
-Example PR creation with screenshots:
 ```bash
 BEFORE=$(midtown coworker screenshot http://localhost:5173 --before --github)
 # ... make changes ...
@@ -365,122 +323,65 @@ A code review is **not complete** until you have:
 - Shared the comment URL in the channel
 
 ### Responding to PR Review Feedback
-When your PR receives review comments with suggested changes:
 
 **IMPORTANT: ALWAYS use the existing PR branch. NEVER create a new branch.**
 
-Creating a new branch when a PR already exists leaves orphaned remote branches that confuse the daemon and waste GitHub resources. When addressing review feedback:
+Push fixes to the PR's existing branch:
+```bash
+PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+git merge-base --is-ancestor origin/$PR_BRANCH HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+git push --force origin HEAD:$PR_BRANCH  # only if safe
+```
 
-1. **First, check if the PR is still open**:
-   ```bash
-   gh pr view <number> --json state --jq '.state'
-   ```
+**If the PR was already MERGED**, don't push to the old branch. Comment on the merged PR acknowledging the feedback, then `git fetch origin main && git checkout -b <your-name>/followup-pr-<number> origin/main` and create a follow-up PR.
 
-2. **If OPEN**: Address feedback by pushing to the PR's existing branch:
-   - Make your changes (including rebases, force-pushes, etc.)
-   - **Always push to the same branch** the PR is tracking:
-     ```bash
-     # Get the PR's branch name first
-     PR_BRANCH=$(gh pr view <number> --json headRefName --jq '.headRefName')
+**For each review comment**, immediately reply with an acknowledgment, then edit it with the resolution:
 
-     # Verify your HEAD contains the PR's work before force-pushing
-     git merge-base --is-ancestor origin/$PR_BRANCH HEAD && echo "✓ Safe to force-push" || echo "⚠️  WARNING: branches are unrelated!"
+```bash
+# 1. Acknowledge immediately
+COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
+  -f body="👍 Addressing this now...")
+REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
 
-     # Only if safe — push to that branch (force-push if you rebased)
-     git push --force origin HEAD:$PR_BRANCH
-     ```
-   - **NEVER** run `git checkout -b` to create a new branch when a PR exists
-   - **NEVER** push to a different branch name
+# 2. Fix the issue and push
 
-3. **If MERGED**: **Do NOT push to the old branch or create a new branch from your current work.** The PR is already on main. Create a follow-up:
-  1. **Acknowledge the original feedback** by replying on the merged PR:
-     ```bash
-     gh pr comment <merged-pr-number> --body "<!-- midtown: {name} -->
+# 3. Edit reply with addresses-review tag (REQUIRED for merge gate)
+gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
+  -f body="<!-- midtown: {your_name} -->
+<!-- addresses-review: {review_comment_id} -->
+✅ Addressed in $(git rev-parse --short HEAD)"
+```
 
-     Creating follow-up PR to address these review comments.
+**You MUST include the `<!-- addresses-review: {id} -->` tag** in every reply — the daemon checks for this when you call `midtown pr merge` and rejects the merge if any review comments are unaddressed.
 
-     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
-     ```
-  2. **Start a new branch from origin/main** (never checkout main in your worktree):
-     ```bash
-     git fetch origin main
-     git checkout -b <your-name>/followup-pr-<number> origin/main
-     ```
-  3. **Re-implement the feedback** on the new branch (don't rebase or cherry-pick from the old branch — main already has the original changes)
-  4. **Push and create a new PR** with context: "Follow-up to PR #N — addresses review feedback"
-  5. **Delete the old remote branch** (it's no longer needed since the PR was merged):
-     ```bash
-     git push origin --delete <old-branch-name>
-     ```
+**Three response options:**
+1. **Fix it** — address in the PR, push, tag with `addresses-review`
+2. **Ask about it** — post a GitHub PR comment as a follow-up question (the daemon auto-resumes the reviewer). Do NOT use @mentions in GitHub comments
+3. **Defer it** — run `midtown task request "description"`, tag your reply with `addresses-review` and note the follow-up task
 
-**IMMEDIATE ACKNOWLEDGMENT**: Post an initial reply to each review comment immediately, then edit it with the final resolution. This provides visibility that you're actively addressing the feedback.
+### Before Merging
 
-1. **Address in the PR** - If the change is small or directly related to the PR's scope:
-   - Reply to the comment immediately with an acknowledgment comment:
-     ```bash
-     COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
-       -f body="👍 Addressing this now...")
-     REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
-     ```
-   - Make the fix
-   - Push to the branch
-   - Edit your reply to confirm it's addressed, **including the `addresses-review` tag**:
-     ```bash
-     gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
-       -f body="<!-- midtown: {your_name} -->
-     <!-- addresses-review: {review_comment_id} -->
-     ✅ Addressed in $(git rev-parse --short HEAD)"
-     ```
-   - The `review_comment_id` is the GitHub comment ID of the reviewer's review comment. You can find it via `gh api` when listing issue comments.
-   - **You MUST include the `<!-- addresses-review: {id} -->` tag** — the daemon checks for this tag when you call `midtown pr merge` and will reject the merge if any review comments are unaddressed.
+Complete ALL of these checks before calling `midtown pr merge`:
 
-2. **Unsure about a comment** - If you're not sure what the reviewer means or disagree:
-   - Post a **GitHub PR comment** as a follow-up question to the reviewer. The daemon detects the new comment via webhook and automatically resumes the reviewer's session.
-   - **Do NOT use @mentions in the GitHub comment** — GitHub sends email notifications to real accounts that share coworker names. Just post a plain reply; the daemon handles routing.
-
-3. **Request a follow-up task** - If the suggestion is out of scope or would significantly expand the PR:
-   - Reply to the comment immediately with an acknowledgment:
-     ```bash
-     COMMENT_URL=$(gh api -X POST "/repos/{owner}/{repo}/issues/comments/{review_comment_id}/replies" \
-       -f body="👍 Will create a follow-up task...")
-     REPLY_ID=$(echo "$COMMENT_URL" | grep -o '[0-9]*$')
-     ```
-   - Run `midtown task request "description"` to notify the lead
-   - Edit your reply to confirm the follow-up task was created, **including the `addresses-review` tag**:
-     ```bash
-     gh api -X PATCH "/repos/{owner}/{repo}/issues/comments/$REPLY_ID" \
-       -f body="<!-- midtown: {your_name} -->
-     <!-- addresses-review: {review_comment_id} -->
-     📋 Created follow-up task: [description]"
-     ```
-
-**Before merging**, complete ALL of these checks:
-
-**1. Check for human (midtown) reviews in issue comments:**
+**1. Check for human reviews in issue comments** (these do NOT appear in `gh pr view --json reviews`):
 ```bash
 repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 gh api "repos/$repo/issues/<PR_NUMBER>/comments" \
   --jq '.[] | select(.body | contains("<!-- midtown:")) | "\(.user.login): \(.body[:500])"'
 ```
-Human coworker reviews are posted as issue comments with `<!-- midtown: reviewer_name -->` frontmatter — they do **NOT** appear in `gh pr view --json reviews`. You MUST check issue comments explicitly and address every issue listed there before merging. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
 
-**2. Check the channel to see if the lead or user has said NOT to merge:**
+**2. Check channel for merge holds:**
 ```bash
 midtown channel read | grep -i "don't merge\|do not merge\|hold\|stop.*merge\|<PR_NUMBER>"
 ```
-If the lead (`{project_name}`) or user has posted anything telling you to hold or not merge, **stop immediately** — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
+If the lead or user says not to merge, **stop** — that overrides everything else.
 
 **3. Check for late-arriving user comments:**
 ```bash
 gh pr view <number> --comments --json comments --jq '.comments[-3:][] | "\(.author.login): \(.body[:120])"'
 ```
-The user (repo owner) may leave additional requests after the reviewer posts. Merging without addressing these is a process failure.
 
-Only after all three checks are clean should you continue to merge.
-
-**Do not merge while review feedback is unresolved.** If `reviewDecision` is `CHANGES_REQUESTED`, keep working until feedback is addressed and re-reviewed.
-
-**After a completed review exists and all feedback is addressed**, use the daemon-gated merge command:
+After all checks pass, merge via the daemon-gated command:
 ```bash
 midtown pr merge --pr <PR_NUMBER>
 ```
@@ -493,44 +394,12 @@ If any gate fails, the daemon returns a clear error listing which gates failed. 
 
 **CRITICAL: Do NOT run `gh pr merge` directly.** Always use `midtown pr merge --pr <N>` — this ensures the daemon's gate checks are enforced.
 
-**Never ignore review feedback.** Every suggestion must be either:
-- Addressed in the current PR (with `<!-- addresses-review: {id} -->` tag), OR
-- Captured via `midtown task request`
-
-```bash
-# Example: requesting follow-up for out-of-scope suggestion
-midtown task request "Add input validation for edge case (from PR #42 review)"
-```
-
 ## Don't Poll GitHub — The Daemon Notifies You
 We share a GitHub API rate limit across the daemon, lead, and all coworkers. **Do not poll GitHub for status updates** — the daemon monitors PRs and will nudge you when action is needed.
 
-**The daemon monitors your PR and will nudge you when:**
-- CI checks pass or fail on your PR
-- Your PR receives review comments
-- Your PR is approved and ready to merge (you decide when to merge)
+Don't run `gh pr checks`, `gh pr list`, or `gh pr view` repeatedly to watch status. The daemon nudges you when CI passes/fails, reviews arrive, or the PR is ready to merge.
 
-**Don't poll for status:**
-- Don't run `gh pr checks` repeatedly to watch CI — wait for the daemon to notify you
-- Don't run `gh pr list` to check PR status — read the channel instead
-- **NEVER merge before addressing review feedback.** Every review comment must be either addressed in the PR (with `<!-- addresses-review: {id} -->` tag) or deferred via `midtown task request` before merging.
-- If `gh pr view <number> --json reviewDecision --jq .reviewDecision` returns `CHANGES_REQUESTED`, do not merge yet.
-- **Also check issue comments for `<!-- midtown:` reviews** — human coworker reviews are posted there, not in the formal reviews list. Treat them exactly like formal review feedback: reply immediately, fix the issues (or `midtown task request` out-of-scope items), and never merge while anything remains unresolved.
-- **If the lead or user says NOT to merge**, stop immediately — that instruction overrides CI status, review approval, and everything else. Ask in the channel for clarification before proceeding.
-- **NEVER run `gh pr merge` directly** — always use `midtown pr merge --pr <N>` so the daemon can verify gates
-- **NEVER attempt to merge until you receive a ReviewComplete nudge from the daemon** — this is the signal that the review is done and it's safe to merge
-- **NEVER attempt to merge when creating the PR** — the reviewer hasn't been assigned yet
-- After a completed review exists and all feedback is addressed/deferred, merge via: `midtown pr merge --pr <N>`
-
-**Using `gh` to investigate (after notification) is fine:**
-- `gh pr create` — creating your PR
-- `gh pr comment` — posting review comments
-- `gh pr view` — reading PR description, review comments, or discussion
-- `gh pr diff` — viewing changes
-- `gh pr checks` / `gh run view` — investigating CI failures after the daemon notifies you
-- `gh api` — fetching specific data not available in the channel
-
-The key distinction: **don't poll** (repeatedly checking status), but **do use `gh`** when you need details to act on. For example, when the daemon tells you CI failed, use `gh run view` to see failure logs.
+**Using `gh` to investigate (after notification) is fine** — e.g., `gh run view` to read CI failure logs, `gh pr view` to read review comments, `gh pr create` to open your PR. The key distinction: don't poll, but do use `gh` when you need details to act on.
 
 ## Coordination
 - The Lead coordinates overall direction
@@ -559,38 +428,3 @@ midtown channel post "@{project_name} should I handle the error case here, or le
 midtown channel post "@amsterdam you're working on the auth module - does it export a validate function?"
 ```
 
-## Visual Documentation
-
-> **You CAN capture screenshots and videos in a headless session.** Playwright launches a headless Chromium that renders offscreen — no display or GUI needed. See [Screenshots for Visual Changes](#screenshots-for-visual-changes) above for PR-specific screenshots.
-
-For web-based tasks, capture screenshots of your work and share them in the channel. This gives the team and user a clear view of what you've built.
-
-### Capturing screenshots
-
-Use `midtown coworker screenshot` — it handles Playwright, uploading, and formatting in one step:
-
-```bash
-# Start the dev server if it isn't running yet
-cd web-app && npm run dev &
-
-# Take a screenshot and post it
-SCREENSHOT=$(midtown coworker screenshot http://localhost:5173)
-midtown channel post "/me here's the result: $SCREENSHOT" --task 42
-
-# Before/after comparison
-BEFORE=$(midtown coworker screenshot http://localhost:5173 --before)
-# ... make changes ...
-AFTER=$(midtown coworker screenshot http://localhost:5173 --after)
-midtown channel post "Before: $BEFORE\nAfter: $AFTER" --task 42
-
-# Custom filename for multiple views
-midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
-```
-
-### Tips
-
-- Screenshots go stale — take a new one after each significant change
-- Use `--output` with descriptive filenames when capturing multiple views
-- Use `--github` when you need the screenshot URL for a GitHub PR description (outputs `![alt](URL)` instead of `[Attached: /path]`)
-- The dev server is usually at `http://localhost:5173` (Vite default); check `web-app/package.json` scripts if it differs
-- The command uses `npx playwright@latest` — no setup step needed, works for any project
