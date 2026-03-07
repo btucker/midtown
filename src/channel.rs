@@ -363,6 +363,50 @@ impl Channel {
         })
     }
 
+    /// Open an existing channel without creating directories.
+    ///
+    /// Returns `ChannelNotFound` if the channel directory does not exist.
+    /// Use this for read-only operations (e.g., `channel.read`) to avoid
+    /// creating spurious channel directories as a side effect.
+    pub fn open_existing(
+        base_dir: impl Into<PathBuf>,
+        channel_name: impl Into<String>,
+    ) -> Result<Self> {
+        let base_dir = base_dir.into();
+        let channel_name = channel_name.into();
+
+        if !Self::is_valid_channel_name(&channel_name) {
+            return Err(crate::Error::InvalidMessage(format!(
+                "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
+                channel_name
+            )));
+        }
+
+        // Run one-time migration (idempotent)
+        auto_migrate_channels(&base_dir);
+        cleanup_archived_channel_conflicts(&base_dir);
+
+        let channels_dir = base_dir.join("channels");
+        let channel_dir = channels_dir.join(&channel_name);
+        let archived_dir = channels_dir.join(format!("{}.archived", channel_name));
+        if archived_dir.exists() {
+            return Err(crate::Error::ChannelArchived(channel_name.clone()));
+        }
+
+        let history_dir = channel_dir.join("history");
+        let channel_file = history_dir.join("current.jsonl");
+
+        if !channel_dir.exists() {
+            return Err(crate::Error::ChannelNotFound(channel_name));
+        }
+
+        Ok(Self {
+            base_dir,
+            channel_name,
+            channel_file,
+        })
+    }
+
     /// Open the default channel for a specific repository
     ///
     /// The default channel shares the repository name (e.g., "offload" for the offload project).
@@ -378,6 +422,14 @@ impl Channel {
     pub fn for_repo_named(repo: &str, channel_name: impl Into<String>) -> Result<Self> {
         let base_dir = crate::paths::projects_dir_for_repo(repo);
         Self::new(base_dir, channel_name)
+    }
+
+    /// Open an existing named channel for a specific repository without creating directories.
+    ///
+    /// Returns `ChannelNotFound` if the channel does not exist on disk.
+    pub fn for_repo_named_existing(repo: &str, channel_name: impl Into<String>) -> Result<Self> {
+        let base_dir = crate::paths::projects_dir_for_repo(repo);
+        Self::open_existing(base_dir, channel_name)
     }
 
     /// Get the base directory path
@@ -1793,6 +1845,33 @@ impl ChannelRouter {
         }
 
         let channel = Channel::new(&self.base_dir, channel_name)?;
+        channels.insert(channel_name.to_string(), channel.clone());
+        Ok(channel)
+    }
+
+    /// Get an existing channel by name without creating it.
+    ///
+    /// Returns a cached channel if already open, otherwise opens from disk
+    /// without creating directories. Returns `ChannelNotFound` if the channel
+    /// doesn't exist on disk.
+    pub fn get_existing_channel(&self, channel_name: &str) -> Result<Channel> {
+        // Fast path: check if channel is already open (and therefore exists)
+        {
+            let channels = self.channels.lock().unwrap();
+            if let Some(channel) = channels.get(channel_name) {
+                return Ok(channel.clone());
+            }
+        }
+
+        // Slow path: try to open without creating
+        let channel = Channel::open_existing(&self.base_dir, channel_name)?;
+
+        // Cache it for future access
+        let mut channels = self.channels.lock().unwrap();
+        // Double-check after acquiring exclusive lock
+        if let Some(existing) = channels.get(channel_name) {
+            return Ok(existing.clone());
+        }
         channels.insert(channel_name.to_string(), channel.clone());
         Ok(channel)
     }

@@ -629,11 +629,18 @@ async fn api_channel_history(
         // Validate channel name to prevent path traversal (allow "midtown" for reads)
         validate_channel_name_for_history(channel_name).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-        // Load a specific channel by name
-        Channel::for_repo_named(&state.config.dir_key, channel_name).map_err(|e| {
-            error!("Failed to open channel '{}': {}", channel_name, e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
+        // Use open_existing to avoid creating spurious channel directories on read.
+        // If the channel doesn't exist yet, return an empty list.
+        match Channel::for_repo_named_existing(&state.config.dir_key, channel_name) {
+            Ok(ch) => ch,
+            Err(crate::Error::ChannelNotFound(_)) => {
+                return Ok(axum::Json(Vec::<ChannelMessageData>::new()));
+            }
+            Err(e) => {
+                error!("Failed to open channel '{}': {}", channel_name, e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
     } else {
         // Default: load the main channel (use project_name as channel name, dir_key for path)
         Channel::for_repo_named(&state.config.dir_key, &state.config.project_name).map_err(|e| {

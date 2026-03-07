@@ -860,10 +860,16 @@ pub(super) async fn handle_channel_read(
         all, last, since, channel
     );
 
-    // Read from the specified channel, or fall back to the default (main) channel
+    // Read from the specified channel, or fall back to the default (main) channel.
+    // Use get_existing_channel() for explicit channel names to avoid creating
+    // spurious channel directories as a side effect of reading.
     let target_channel = match channel {
-        Some(name) => match state.channel_router.get_channel(name) {
+        Some(name) => match state.channel_router.get_existing_channel(name) {
             Ok(ch) => ch,
+            Err(crate::Error::ChannelNotFound(_)) => {
+                // Channel doesn't exist — return empty result instead of error
+                return Response::success(id, serde_json::json!([]));
+            }
             Err(e) => {
                 error!("Failed to get channel '{}': {}", name, e);
                 return Response::error(id, RpcError::new(-32603, e.to_string()));

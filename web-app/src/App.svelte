@@ -83,7 +83,7 @@ function handleKeydown(e) {
 
 // DM channel detection for tab bar filtering
 let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null);
-let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
+let isActiveDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel?.startsWith("dm-") ?? false);
 
 // Active project status for the status dot in the project selector
 let activeStatus = $derived($projects.find((p) => p.name === $activeProject)?.status);
@@ -324,9 +324,9 @@ function selectProject(project) {
           <span class="ml-2 text-sm text-muted-foreground">{$activeProject}</span>
           <div class="mobile-channel active-channel-display ml-4">
             {#if isActiveDm}
-              <span class="channel-hash">@</span>{$activeChannel.slice(3)}
+              <span class="channel-hash">@</span>{$activeChannel?.slice(3)}
             {:else}
-              <span class="channel-hash">#</span>{$activeChannel}
+              <span class="channel-hash">#</span>{$activeChannel ?? ''}
             {/if}
           </div>
           <MiniRepoStatus />

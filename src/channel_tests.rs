@@ -2373,3 +2373,118 @@ fn test_channel_router_send_default_channel_reports_is_new() {
     let r2 = router.send(&msg2).unwrap();
     assert!(!r2.is_new);
 }
+
+#[test]
+fn test_open_existing_returns_error_for_nonexistent_channel() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let result = Channel::open_existing(temp_dir.path(), "nonexistent");
+    match result {
+        Err(crate::Error::ChannelNotFound(name)) => assert_eq!(name, "nonexistent"),
+        Ok(_) => panic!("Expected ChannelNotFound, got Ok"),
+        Err(other) => panic!("Expected ChannelNotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_open_existing_succeeds_for_existing_channel() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create the channel first via Channel::new
+    let _created = Channel::new(temp_dir.path(), "test-channel").unwrap();
+
+    // Now open_existing should succeed
+    let opened = Channel::open_existing(temp_dir.path(), "test-channel").unwrap();
+    assert_eq!(opened.channel_name(), "test-channel");
+}
+
+#[test]
+fn test_open_existing_does_not_create_directories() {
+    let temp_dir = TempDir::new().unwrap();
+    let channel_dir = temp_dir.path().join("channels").join("phantom");
+
+    assert!(!channel_dir.exists());
+    let _ = Channel::open_existing(temp_dir.path(), "phantom");
+    assert!(
+        !channel_dir.exists(),
+        "open_existing should not create channel directory"
+    );
+}
+
+#[test]
+fn test_router_get_existing_channel_returns_error_for_nonexistent() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "main");
+
+    let result = router.get_existing_channel("nonexistent");
+    match result {
+        Err(crate::Error::ChannelNotFound(name)) => assert_eq!(name, "nonexistent"),
+        Ok(_) => panic!("Expected ChannelNotFound, got Ok"),
+        Err(other) => panic!("Expected ChannelNotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_router_get_existing_channel_succeeds_for_cached() {
+    let temp_dir = TempDir::new().unwrap();
+    let router = ChannelRouter::new(temp_dir.path(), "main");
+
+    // Open channel via get_channel (creates it)
+    let _ = router.get_channel("web").unwrap();
+
+    // get_existing_channel should find it in cache
+    let ch = router.get_existing_channel("web").unwrap();
+    assert_eq!(ch.channel_name(), "web");
+}
+
+#[test]
+fn test_router_get_existing_channel_opens_from_disk() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create the channel on disk directly
+    let _ = Channel::new(temp_dir.path(), "on-disk").unwrap();
+
+    // Create a fresh router (empty cache)
+    let router = ChannelRouter::new(temp_dir.path(), "main");
+
+    // get_existing_channel should find it on disk and cache it
+    let ch = router.get_existing_channel("on-disk").unwrap();
+    assert_eq!(ch.channel_name(), "on-disk");
+    assert!(router.open_channels().contains(&"on-disk".to_string()));
+}
+
+#[test]
+fn test_for_repo_named_existing_returns_not_found() {
+    // Use a unique temp dir as a fake repo path to avoid filesystem side effects
+    let temp_dir = TempDir::new().unwrap();
+    let result = Channel::open_existing(temp_dir.path(), "nonexistent");
+    assert!(matches!(result, Err(crate::Error::ChannelNotFound(_))));
+}
+
+#[test]
+fn test_open_existing_rejects_invalid_channel_name() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let result = Channel::open_existing(temp_dir.path(), "");
+    assert!(matches!(result, Err(crate::Error::InvalidMessage(_))));
+
+    let result = Channel::open_existing(temp_dir.path(), "bad/name");
+    assert!(matches!(result, Err(crate::Error::InvalidMessage(_))));
+}
+
+#[test]
+fn test_open_existing_returns_archived_error() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create the channel first, then archive it
+    let _ = Channel::new(temp_dir.path(), "old-chan").unwrap();
+    let channels_dir = temp_dir.path().join("channels");
+    std::fs::rename(
+        channels_dir.join("old-chan"),
+        channels_dir.join("old-chan.archived"),
+    )
+    .unwrap();
+
+    let result = Channel::open_existing(temp_dir.path(), "old-chan");
+    assert!(matches!(result, Err(crate::Error::ChannelArchived(_))));
+}
