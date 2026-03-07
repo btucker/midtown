@@ -205,7 +205,7 @@ gh pr list --search "Midtown !XXX" --state open --json number,headRefName
    midtown channel post "@{project_name} PR already exists for task XXX but my branch diverged - need help"
    ```
 
-**If no PR exists**, push and create a new PR (see "Example PR creation" below).
+**If no PR exists**, push and create a new PR.
 
 **If you accidentally pushed a branch without creating a PR**, delete it: `git push origin --delete <branch>`.
 

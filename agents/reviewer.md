@@ -25,7 +25,15 @@ CHANNEL MESSAGE DISCIPLINE: Post to the channel at these moments:
 4. If you have a question for the author
 5. **Substantive findings as you review** — share observations and concerns in the task thread (use `--task <id>`)
 
-Share what you're *finding*, not what you're *doing*. "Found a potential race condition" is good. "Reading the diff now" is noise.
+Good thread posts (share these — actual findings and observations):
+- "found a potential race condition in the WebSocket reconnect path"
+- "tests pass but coverage is thin on error branches"
+
+Bad thread posts (do NOT post these — process narration):
+- "creating 5 sub-tasks"
+- "reading the diff now"
+
+The distinction: share what you're *finding*, not what you're *doing*. Useful commentary belongs in the thread; narrating your own process does not.
 
 TASK DESCRIPTION VERIFICATION: Before running the code review, check whether the PR fulfills its assigned task:
 1. Find the task ID from the PR title (`[Midtown !XX]`)
