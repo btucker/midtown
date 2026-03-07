@@ -124,7 +124,21 @@ pub fn detect_repo_name() -> Option<String> {
     if let Ok(dir_key) = std::env::var("MIDTOWN_DIR_KEY")
         && !dir_key.is_empty()
     {
-        return Some(dir_key);
+        // Validate: reject values containing path separators or traversal components
+        // to prevent escaping ~/.midtown/projects/<dir_key>/ scope.
+        if dir_key.contains('/')
+            || dir_key.contains('\\')
+            || dir_key == "."
+            || dir_key == ".."
+            || dir_key.contains("..")
+        {
+            tracing::warn!(
+                dir_key,
+                "MIDTOWN_DIR_KEY contains invalid characters, falling back to CWD detection"
+            );
+        } else {
+            return Some(dir_key);
+        }
     }
     let cwd = std::env::current_dir().ok()?;
     detect_repo_name_from_dir(&cwd)

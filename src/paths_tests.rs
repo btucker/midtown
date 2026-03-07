@@ -1277,3 +1277,24 @@ fn test_detect_repo_name_falls_back_to_cwd_without_env_var() {
     assert!(result.is_some());
     assert!(!result.unwrap().is_empty());
 }
+
+#[test]
+fn test_detect_repo_name_rejects_path_traversal_in_midtown_dir_key() {
+    // MIDTOWN_DIR_KEY values with path separators or traversal should be rejected.
+    let malicious_values = vec!["../other", "foo/bar", "foo\\bar", "..", "."];
+    for val in malicious_values {
+        unsafe {
+            std::env::set_var("MIDTOWN_DIR_KEY", val);
+        }
+        let result = detect_repo_name();
+        unsafe {
+            std::env::remove_var("MIDTOWN_DIR_KEY");
+        }
+        // Should NOT return the malicious value — falls back to CWD detection
+        assert_ne!(
+            result,
+            Some(val.to_string()),
+            "MIDTOWN_DIR_KEY={val:?} should have been rejected"
+        );
+    }
+}
