@@ -171,6 +171,7 @@ pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, S
 /// Returns a BTreeMap of env var name -> value that should be set for any Claude Code
 /// agent session. This includes:
 /// - `MIDTOWN_AGENT`: Agent name
+/// - `MIDTOWN_DIR_KEY`: Pinned project identity (prevents CWD-based detection)
 /// - `DISABLE_AUTOUPDATER`: Always set to "1"
 /// - Auth provider env vars (CLAUDE_CONFIG_DIR, ANTHROPIC_AUTH_TOKEN, etc.)
 /// - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`: Set when team_name is present
@@ -185,10 +186,12 @@ pub fn build_agent_env_vars(
     channel: &Option<String>,
     auth_provider: crate::auth::AuthProvider,
     auth_profile_dir: &std::path::Path,
+    dir_key: &str,
 ) -> std::collections::BTreeMap<String, String> {
     let mut env = std::collections::BTreeMap::new();
 
     env.insert("MIDTOWN_AGENT".to_string(), name.to_string());
+    env.insert("MIDTOWN_DIR_KEY".to_string(), dir_key.to_string());
     env.insert("DISABLE_AUTOUPDATER".to_string(), "1".to_string());
 
     // Set auth-provider-specific env vars
@@ -645,6 +648,7 @@ impl LaunchConfig {
             &self.channel,
             self.auth_provider,
             &config_dir,
+            paths.dir_key(),
         );
 
         // Inject MIDTOWN_TASK_ID so spawned sessions know their task
@@ -748,6 +752,7 @@ impl LaunchConfig {
             &self.channel,
             self.auth_provider,
             &config_dir,
+            project_name,
         );
 
         // Inject MIDTOWN_TASK_ID so spawned sessions know their task
@@ -1445,6 +1450,18 @@ mod tests {
         assert!(
             headless.system_prompt.contains("tui"),
             "System prompt should reference the channel name"
+        );
+    }
+
+    #[test]
+    fn test_dir_key_env_var_set_in_headless_config() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let headless = config.to_headless_config(&test_paths());
+
+        assert_eq!(
+            headless.env.get("MIDTOWN_DIR_KEY"),
+            Some(&"myrepo".to_string()),
+            "MIDTOWN_DIR_KEY should be set to the dir_key from ProjectPaths"
         );
     }
 }

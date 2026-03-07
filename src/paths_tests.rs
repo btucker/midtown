@@ -1234,3 +1234,67 @@ fn test_migrate_headless_transcripts_skips_existing_target() {
         "new-content\n"
     );
 }
+
+#[test]
+fn test_detect_repo_name_uses_midtown_dir_key_env_var() {
+    // When MIDTOWN_DIR_KEY is set, detect_repo_name() should return it
+    // regardless of the current working directory.
+    unsafe {
+        std::env::set_var("MIDTOWN_DIR_KEY", "pinned-project");
+    }
+    let result = detect_repo_name();
+    unsafe {
+        std::env::remove_var("MIDTOWN_DIR_KEY");
+    }
+    assert_eq!(result, Some("pinned-project".to_string()));
+}
+
+#[test]
+fn test_detect_repo_name_ignores_empty_midtown_dir_key() {
+    // An empty MIDTOWN_DIR_KEY should fall through to CWD-based detection.
+    unsafe {
+        std::env::set_var("MIDTOWN_DIR_KEY", "");
+    }
+    let result = detect_repo_name();
+    unsafe {
+        std::env::remove_var("MIDTOWN_DIR_KEY");
+    }
+    // Should fall through to CWD-based detection (we're in a git repo,
+    // so it should return something, but the key point is it didn't
+    // return an empty string).
+    assert_ne!(result, Some(String::new()));
+}
+
+#[test]
+fn test_detect_repo_name_falls_back_to_cwd_without_env_var() {
+    // Without MIDTOWN_DIR_KEY, detect_repo_name() should use CWD-based git detection.
+    // Since tests run inside this git repo, we should get a repo name.
+    unsafe {
+        std::env::remove_var("MIDTOWN_DIR_KEY");
+    }
+    let result = detect_repo_name();
+    // We're in a git repo, so this should return Some value
+    assert!(result.is_some());
+    assert!(!result.unwrap().is_empty());
+}
+
+#[test]
+fn test_detect_repo_name_rejects_path_traversal_in_midtown_dir_key() {
+    // MIDTOWN_DIR_KEY values with path separators or traversal should be rejected.
+    let malicious_values = vec!["../other", "foo/bar", "foo\\bar", "..", "."];
+    for val in malicious_values {
+        unsafe {
+            std::env::set_var("MIDTOWN_DIR_KEY", val);
+        }
+        let result = detect_repo_name();
+        unsafe {
+            std::env::remove_var("MIDTOWN_DIR_KEY");
+        }
+        // Should NOT return the malicious value — falls back to CWD detection
+        assert_ne!(
+            result,
+            Some(val.to_string()),
+            "MIDTOWN_DIR_KEY={val:?} should have been rejected"
+        );
+    }
+}

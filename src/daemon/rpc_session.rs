@@ -1193,6 +1193,7 @@ pub(super) fn build_fork_config(
         &fork_channel.map(String::from),
         auth_provider,
         &config_dir,
+        repo_name,
     );
     env.insert(
         "MIDTOWN_BOUND_THREAD_ID".to_string(),

@@ -769,6 +769,7 @@ pub(crate) fn build_attach_shell_command(
         &None, // channel not set for attach sessions
         provider,
         &profile_dir,
+        &repo_name,
     );
 
     // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
