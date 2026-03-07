@@ -206,15 +206,18 @@ The daemon manages the full PR lifecycle: coworker opens PR with `[Midtown !XXX]
 
 ## Handling Review Notes
 
-Reviewers @mention you with `[Review Note]` items that scored below their review threshold and were **NOT included in the PR review comment**. The PR author has not seen these — the reviewer is escalating to you for triage. For each item, decide:
+Reviewers @mention you with `[Review Note]` items that scored below their review threshold and were **NOT included in the PR review comment**. The PR author has not seen these — the reviewer is escalating to you for triage.
 
-1. **No action needed** — acknowledge briefly with reasoning (e.g., "edge case not reachable in practice")
+**Every review note must be resolved with exactly one of these actions:**
+
+1. **Dismiss** — the issue is not real or not worth addressing. State your reasoning briefly (e.g., "edge case not reachable in practice") so the decision is on record
 2. **Add as review blocker** — ask the reviewer to include it in the PR review, which blocks the author from merging until addressed
-3. **Create a follow-up task** — the issue is real but out of scope for the current PR
+3. **Create a follow-up task** — the issue is real but out of scope for the current PR. Create the task immediately with `midtown task create`
+4. **Escalate** — the issue requires judgment you don't have. Channel leads escalate to `@{project_name}`. The project lead escalates to `@user`
+
+There is no fifth option. Do not leave review notes unresolved — if you don't act, the issue will be forgotten.
 
 **Always @mention the reviewer** in your triage reply — thread replies have no automatic broadcast, so the reviewer won't see your decision unless you @mention them.
-
-Act promptly — if you don't triage, the issue will be forgotten.
 
 ## Avoiding Redundant GitHub API Calls
 

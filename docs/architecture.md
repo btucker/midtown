@@ -183,10 +183,10 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.
 
 **Assembly by agent type:**
-- **Project Lead**: `project-lead.md` + `lead.md` + `common.md`
+- **Project Lead**: `project-lead.md` + `lead-common.md` + `common.md`
 - **Coworker**: `coworker.md` + `common.md`
 - **Reviewer**: `coworker.md` + `common.md` + `reviewer.md`
-- **Channel lead**: `channel-lead.md` (with optional `ops-channel-lead.md` suffix for the ops channel)
+- **Channel lead**: `channel-lead.md` + `lead-common.md` + `common.md` (+ `ops-channel-lead.md` for the ops channel)
 
 **Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_name}`, `{domain_context}` (channel lead only).
 

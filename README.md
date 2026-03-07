@@ -70,7 +70,7 @@ midtown view myapp
 
 ### 4. Work with the Project Lead as you typically would work with Claude Code
 
-The Project Lead is just a Claude Code session, but it's been booted with a [special system prompt](agents/lead.md). The system prompt instructs the Project Lead how to execute in the midtown environment—mostly to not take on work itself (unless it's trivial) and to instead make Claude Code tasks.
+The Project Lead is just a Claude Code session, but it's been booted with a [special system prompt](agents/lead-common.md). The system prompt instructs the Project Lead how to execute in the midtown environment—mostly to not take on work itself (unless it's trivial) and to instead make Claude Code tasks.
 
 ## CLI Overview
 
