@@ -5,9 +5,9 @@
 Midtown provides a familiar, unified interface for collaborating with a team of coding agents, coordinated through IRC-style channels in the terminal, the web, and a mobile PWA.
 
 <p align="center">
-  <img src="docs/screenshots/desktop1.jpg" alt="Midtown web UI — desktop" width="600">
+  <img src="docs/screenshots/desktop1-web.png" alt="Midtown web UI — desktop" width="600">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/mobile1.jpg" alt="Midtown web UI — mobile PWA" width="160">
+  <img src="docs/screenshots/mobile1-web.png" alt="Midtown web UI — mobile PWA" width="160">
 </p>
 
 ## How Midtown Works
