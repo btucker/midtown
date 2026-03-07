@@ -570,14 +570,7 @@ midtown workflow assign <channel> <workflow-name>
 midtown workflow unassign <channel>
 ```
 
-**Legacy script resolution** (used when no named workflow is assigned): The daemon also checks a 4-level priority order for standalone `workflow.py` files:
-
-1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, committed to repo
-2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local only
-3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
-4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
-
-If no workflow is assigned and no script is found, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
+If no workflow is assigned, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
 
 See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
 
