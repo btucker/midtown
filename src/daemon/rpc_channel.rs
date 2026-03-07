@@ -1054,7 +1054,13 @@ async fn try_lazy_fork_respawn(
     // Check max retry limit before attempting lazy respawn
     let respawn_allowed = {
         let mut counts = state.fork_respawn_counts.lock().unwrap();
-        crate::rules::check_fork_respawn_allowed(&mut counts, thread_parent_id)
+        let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
+        if crate::rules::is_fork_respawn_allowed(*count) {
+            *count += 1;
+            true
+        } else {
+            false
+        }
     };
     if !respawn_allowed {
         warn!(

@@ -3939,13 +3939,20 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 constants::ZOMBIE_RESPAWN_COOLDOWN,
                             )
                         };
+                        if should_respawn {
                         // Check max retry limit (prevents infinite respawn loops
                         // when the underlying cause is persistent, e.g. context too large).
                         let respawn_allowed = {
                             let mut counts = state.fork_respawn_counts.lock().unwrap();
-                            crate::rules::check_fork_respawn_allowed(&mut counts, &thread_parent_id)
+                            let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
+                            if crate::rules::is_fork_respawn_allowed(*count) {
+                                *count += 1;
+                                true
+                            } else {
+                                false
+                            }
                         };
-                        if should_respawn && respawn_allowed {
+                        if respawn_allowed {
                             // Get fork metadata from persistent state (record persists after cleanup)
                             let (working_dir, auth_provider, is_channel_lead, initial_prompt) =
                                 if let Some(ref sid) = session_id_for_cleanup {
@@ -4030,7 +4037,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     tool_use_id: None,
                     parent_tool_use_id: None,
                             });
-                        } else if !respawn_allowed {
+                        } else {
                             // Max retry limit reached — stop respawning and clean up.
                             warn!(
                                 "Fork {} exceeded max respawn attempts ({}) for thread {} — giving up",
@@ -4044,13 +4051,37 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             }
                             // Clean up the respawn counter (no longer needed).
                             state.fork_respawn_counts.lock().unwrap().remove(&thread_parent_id);
-                            fork_respawn_effects.push(effects::Effect::PostToChannel {
-                                sender: "midtown".to_string(),
-                                message: format!(
+                            let giving_up_message = {
+                                let base = format!(
                                     "Fork for thread {} failed {} times and will not be retried. \
                                      Thread replies will be handled by the channel lead.",
                                     thread_parent_id, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS
-                                ),
+                                );
+                                if let Some(stderr_lines) = stderr_by_name.get(&name) {
+                                    if !stderr_lines.is_empty() {
+                                        let last_n: Vec<&str> = stderr_lines
+                                            .iter()
+                                            .rev()
+                                            .take(10)
+                                            .rev()
+                                            .map(|s| s.as_str())
+                                            .collect();
+                                        format!(
+                                            "{}\n\nLast stderr ({} lines):\n{}",
+                                            base,
+                                            stderr_lines.len(),
+                                            last_n.join("\n")
+                                        )
+                                    } else {
+                                        base
+                                    }
+                                } else {
+                                    base
+                                }
+                            };
+                            fork_respawn_effects.push(effects::Effect::PostToChannel {
+                                sender: "midtown".to_string(),
+                                message: giving_up_message,
                                 channel: Some(constants::OPS_CHANNEL.to_string()),
                                 auto_output: false,
                                 message_type: None,
@@ -4060,6 +4091,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 tool_use_id: None,
                                 parent_tool_use_id: None,
                             });
+                        }
                         } else {
                             debug!("Fork respawn cooldown active for {}", name);
                         }

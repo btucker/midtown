@@ -726,24 +726,13 @@ pub(crate) fn decide_dead_fork_respawns(
 /// topic_session entry so thread replies fall back to the channel lead.
 pub(crate) const MAX_FORK_RESPAWN_ATTEMPTS: u32 = 3;
 
-/// Check whether a fork respawn is allowed for the given thread, enforcing
-/// the maximum retry limit. Returns `true` if the respawn should proceed.
+/// Check whether a fork respawn is allowed given the current attempt count.
+/// Returns `true` if the count is below [`MAX_FORK_RESPAWN_ATTEMPTS`].
 ///
-/// Increments the count on each call. Once the count reaches
-/// [`MAX_FORK_RESPAWN_ATTEMPTS`], subsequent calls return `false`.
-///
-/// Pure function over the counts map — the caller is responsible for
-/// persisting the map in `DaemonState`.
-pub(crate) fn check_fork_respawn_allowed(
-    counts: &mut HashMap<String, u32>,
-    thread_parent_id: &str,
-) -> bool {
-    let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
-    if *count >= MAX_FORK_RESPAWN_ATTEMPTS {
-        return false;
-    }
-    *count += 1;
-    true
+/// Pure function — the caller is responsible for looking up and incrementing
+/// the count in `DaemonState::fork_respawn_counts`.
+pub(crate) fn is_fork_respawn_allowed(current_count: u32) -> bool {
+    current_count < MAX_FORK_RESPAWN_ATTEMPTS
 }
 
 // ---------------------------------------------------------------------------
