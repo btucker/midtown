@@ -8,8 +8,8 @@ let isMultiRepo = $derived($repoStatuses.length > 1);
 
 // DM channel detection: use is_dm field from store, or dm- name prefix as fallback
 let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChannel) ?? null);
-let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
-let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
+let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel?.startsWith("dm-") ?? false);
+let dmPeerName = $derived($activeChannel?.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
 
 function ciInfo(status) {
 	switch (status) {

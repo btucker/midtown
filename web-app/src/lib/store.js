@@ -61,13 +61,8 @@ if (typeof window !== "undefined") {
 }
 
 // Channel messages - now keyed by channel name
-// Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
-export const messagesByChannel = writable({ midtown: [] });
-
-// Load unread counts from localStorage if available
-function loadUnreadCounts() {
-	return loadFromLocalStorage("midtown_unread_counts", {});
-}
+// Format: { 'project-name': [...messages], 'auth-refactor': [...messages], ... }
+export const messagesByChannel = writable({});
 
 // Save unread counts to localStorage
 function saveUnreadCounts(channelList) {
@@ -81,19 +76,15 @@ function saveUnreadCounts(channelList) {
 }
 
 // List of available channels with metadata
-// Format: [{ name: 'midtown', unread: 0, has_pr: false, ci_status: null }, ...]
-const storedUnread = loadUnreadCounts();
-export const channels = writable([
-	{ name: "midtown", unread: storedUnread.midtown || 0, has_pr: false, ci_status: null },
-]);
+export const channels = writable([]);
 
 // Subscribe to channels to persist unread counts
 channels.subscribe((channelList) => {
 	saveUnreadCounts(channelList);
 });
 
-// Currently active/selected channel name
-export const activeChannel = writable("midtown");
+// Currently active/selected channel name (set by switchProject to the project name)
+export const activeChannel = writable(null);
 
 // Legacy: single message array for backward compatibility during transition
 export const messages = writable([]);
