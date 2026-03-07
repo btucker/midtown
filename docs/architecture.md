@@ -728,12 +728,12 @@ uv run workflow.py --event '{"type":"pr.opened",...}' \
 
 ### State Persistence
 
-Workflow state is owned by the daemon in-memory (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json` alongside other daemon state. This is a `HashMap<String, serde_json::Value>` keyed by channel name. Each channel's state is further namespaced by plugin key when plugins use the `plugin` parameter.
+Workflow state is owned by the daemon in-memory (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json` alongside other daemon state. This is a `HashMap<String, serde_json::Value>` keyed by channel name. State is flat per-channel — no plugin sub-namespace.
 
 Five RPC methods in `rpc_workflow.rs` manage workflow state and channel assignments:
 
-- **`workflow.get_state`** — reads from the in-memory `workflow_state` map for a channel, optionally scoped to a plugin key. Returns `null` when absent.
-- **`workflow.set_state`** — updates the in-memory state and persists to `daemon-state.json`. With a `plugin` key, merges at that key; without, replaces the entire channel state. Concurrent writes are serialized by the `persistent_state` Mutex.
+- **`workflow.get_state`** — reads from the in-memory `workflow_state` map for a channel. Returns the full channel state, or `null` when absent.
+- **`workflow.set_state`** — replaces the channel's state and persists to `daemon-state.json`. Concurrent writes are serialized by the `persistent_state` Mutex.
 - **`workflow.assign`** — maps a channel to a named workflow (stored in `DaemonPersistentState::channel_workflows`). Validates the workflow exists before saving. Multiple channels can share the same workflow.
 - **`workflow.unassign`** — removes a channel's workflow assignment, reverting to daemon defaults.
 - **`workflow.list`** — returns available workflows discovered from `~/.midtown/projects/<project>/workflows/` (directories containing `workflow.py`) and current channel→workflow assignments.
