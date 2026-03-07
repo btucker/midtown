@@ -2231,6 +2231,124 @@ fn test_extract_assistant_text_split_with_parent_tool_use_id() {
     );
 }
 
+// ── tool-label stripping tests (DM noise filtering) ─────────────────
+
+#[test]
+fn test_strip_tool_labels_removes_bare_label() {
+    assert_eq!(strip_tool_labels("[Bash]"), "");
+    assert_eq!(strip_tool_labels("[Read]"), "");
+    assert_eq!(strip_tool_labels("[Edit]"), "");
+    assert_eq!(strip_tool_labels("[Skill]"), "");
+    assert_eq!(strip_tool_labels("[Agent]"), "");
+    assert_eq!(strip_tool_labels("[ToolSearch]"), "");
+}
+
+#[test]
+fn test_strip_tool_labels_removes_multiple_labels() {
+    assert_eq!(strip_tool_labels("[Bash]\n[Read]"), "");
+    assert_eq!(strip_tool_labels("[Edit]\n\n[Grep]"), "");
+}
+
+#[test]
+fn test_strip_tool_labels_preserves_real_text() {
+    assert_eq!(strip_tool_labels("Working on it"), "Working on it");
+    assert_eq!(
+        strip_tool_labels("Let me read the file."),
+        "Let me read the file."
+    );
+}
+
+#[test]
+fn test_strip_tool_labels_preserves_text_mixed_with_labels() {
+    // Real text alongside labels — keep the text, strip the labels
+    assert_eq!(strip_tool_labels("Let me check.\n[Bash]"), "Let me check.");
+    assert_eq!(
+        strip_tool_labels("[Read]\nHere are the results."),
+        "Here are the results."
+    );
+}
+
+#[test]
+fn test_strip_tool_labels_preserves_brackets_in_prose() {
+    // Text that contains brackets but isn't a bare tool label
+    assert_eq!(
+        strip_tool_labels("See [this section] for details"),
+        "See [this section] for details"
+    );
+    assert_eq!(
+        strip_tool_labels("The [Bash] command worked great"),
+        "The [Bash] command worked great"
+    );
+}
+
+#[test]
+fn test_process_agent_output_filters_tool_label_text() {
+    // Bug scenario: assistant message has "[Bash]" text + tool_use block.
+    // The "[Bash]" text should NOT be posted as a standalone message.
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [
+                    {"type": "text", "text": "[Bash]"},
+                    {"type": "tool_use", "id": "tc_1", "name": "Bash", "input": {"command": "cargo test"}}
+                ]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_agent_output(&events, &coworker_names);
+    // Should only have the tool_data effect, NOT a text "[Bash]" effect.
+    assert_eq!(
+        effects.len(),
+        1,
+        "should only have tool_data effect, not a text label effect"
+    );
+    match &effects[0] {
+        Effect::PostToChannel { tool_data, .. } => {
+            assert!(tool_data.is_some(), "should be the tool_data effect");
+        }
+        _ => panic!("Expected PostToChannel with tool_data"),
+    }
+}
+
+#[test]
+fn test_process_agent_output_keeps_real_text_alongside_tool() {
+    // Real text alongside a tool call should still be posted.
+    let mut events = HashMap::new();
+    events.insert(
+        "park".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [
+                    {"type": "text", "text": "Let me run the tests.\n[Bash]"},
+                    {"type": "tool_use", "id": "tc_1", "name": "Bash", "input": {"command": "cargo test"}}
+                ]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let coworker_names = HashSet::from(["park".to_string()]);
+
+    let effects = process_agent_output(&events, &coworker_names);
+    // Should have 2 effects: the real text + the tool_data
+    assert_eq!(effects.len(), 2);
+    match &effects[0] {
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert_eq!(message, "Let me run the tests.");
+            assert!(tool_data.is_none());
+        }
+        _ => panic!("Expected text PostToChannel"),
+    }
+}
+
 // ── progress event extraction tests (legacy format) ──────────────────
 #[test]
 fn test_extract_tool_blocks_from_progress_events() {
