@@ -12,13 +12,12 @@ export function extractPastedFile(e) {
 	if (!items) return null;
 
 	for (const item of items) {
-		if (item.type.startsWith("image/")) {
-			e.preventDefault();
-			return item.getAsFile();
-		}
-		if (item.kind === "file") {
-			e.preventDefault();
-			return item.getAsFile();
+		if (item.type.startsWith("image/") || item.kind === "file") {
+			const file = item.getAsFile();
+			if (file) {
+				e.preventDefault();
+				return file;
+			}
 		}
 	}
 	return null;
