@@ -29,6 +29,16 @@ export function getBiggerPicture() {
 }
 
 /**
+ * Open an image in the BiggerPicture lightbox
+ * @param {string} imgUrl - The URL of the image to display
+ */
+export function openImageLightbox(imgUrl) {
+	const bp = getBiggerPicture();
+	if (!bp) return;
+	bp.open({ items: [{ img: imgUrl }], position: 0 });
+}
+
+/**
  * Calculate the initial scale to fit an SVG to viewport width
  * Matches the 95% width fit-to-width behavior from the old MermaidModal
  *
