@@ -192,15 +192,19 @@ let prevThreadId = null;
     const tid = currentThreadId
     if (prevThreadId !== null && prevThreadId !== tid) {
       const currentReply = untrack(() => replyText)
-      if (currentReply.trim()) {
-        threadDrafts.set(prevThreadId, currentReply)
+      const currentFile = untrack(() => pendingFile)
+      if (currentReply.trim() || currentFile) {
+        threadDrafts.set(prevThreadId, { text: currentReply, file: currentFile })
       } else {
         threadDrafts.delete(prevThreadId)
       }
     }
     if (prevThreadId !== tid) {
-      const draft = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
-      untrack(() => { replyText = draft })
+      const draft = tid !== null ? threadDrafts.get(tid) : null
+      untrack(() => {
+        replyText = draft?.text ?? ''
+        pendingFile = draft?.file ?? null
+      })
       // resizeTextarea must run after the DOM reflects the new draft content
       tick().then(() => resizeTextarea())
     }
@@ -232,8 +236,8 @@ let prevThreadId = null;
 
   onDestroy(() => {
     // Save current draft before component unmounts (thread panel closes)
-    if (prevThreadId !== null && replyText.trim()) {
-      threadDrafts.set(prevThreadId, replyText)
+    if (prevThreadId !== null && (replyText.trim() || pendingFile)) {
+      threadDrafts.set(prevThreadId, { text: replyText, file: pendingFile })
     }
     prevThreadId = null  // Reset so the next mount triggers a restore
     if (thinkingTimeout) {
@@ -789,7 +793,7 @@ let prevThreadId = null;
         ></textarea>
         <button
           type="submit"
-          disabled={!replyText.trim() && !pendingFile || uploading}
+          disabled={(!replyText.trim() && !pendingFile) || uploading}
           data-testid="thread-send-button"
           class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         ><SendHorizontal size={18} /></button>
@@ -1043,7 +1047,7 @@ let prevThreadId = null;
         ></textarea>
         <button
           type="submit"
-          disabled={!replyText.trim() && !pendingFile || uploading}
+          disabled={(!replyText.trim() && !pendingFile) || uploading}
           data-testid="thread-send-button"
           class="absolute right-[12px] bottom-[6px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         ><SendHorizontal size={18} /></button>
