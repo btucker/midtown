@@ -55,6 +55,11 @@ export function flushDebouncedSaves() {
 	pendingValues.clear();
 }
 
+// Flush any pending debounced writes when the user closes/navigates away from the tab.
+if (typeof window !== "undefined") {
+	window.addEventListener("beforeunload", flushDebouncedSaves);
+}
+
 // Channel messages - now keyed by channel name
 // Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
 export const messagesByChannel = writable({ midtown: [] });

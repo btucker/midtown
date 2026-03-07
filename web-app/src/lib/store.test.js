@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { debouncedSaveToLocalStorage, flushDebouncedSaves } from "./store.js";
 
-// Mock localStorage for Node test environment
+// Mock localStorage and window.addEventListener for Node test environment
 const localStorageMap = new Map();
 globalThis.localStorage = {
 	getItem: (key) => localStorageMap.get(key) ?? null,
@@ -9,6 +8,18 @@ globalThis.localStorage = {
 	removeItem: (key) => localStorageMap.delete(key),
 	clear: () => localStorageMap.clear(),
 };
+
+// Capture beforeunload handlers registered during module import
+const beforeUnloadHandlers = [];
+globalThis.window = globalThis.window || {};
+const origAddEventListener = globalThis.window.addEventListener;
+globalThis.window.addEventListener = (event, handler) => {
+	if (event === "beforeunload") beforeUnloadHandlers.push(handler);
+	if (origAddEventListener) origAddEventListener.call(globalThis.window, event, handler);
+};
+
+// Import after mocks are in place
+const { debouncedSaveToLocalStorage, flushDebouncedSaves } = await import("./store.js");
 
 describe("debouncedSaveToLocalStorage", () => {
 	beforeEach(() => {
@@ -56,5 +67,16 @@ describe("debouncedSaveToLocalStorage", () => {
 		flushDebouncedSaves();
 
 		expect(JSON.parse(localStorage.getItem("flush_key"))).toEqual({ flushed: true });
+	});
+
+	it("registers a beforeunload handler that flushes pending writes", () => {
+		expect(beforeUnloadHandlers.length).toBeGreaterThan(0);
+
+		debouncedSaveToLocalStorage("unload_key", { saved: true });
+
+		// Simulate tab close by calling the registered beforeunload handler
+		beforeUnloadHandlers.forEach((handler) => handler());
+
+		expect(JSON.parse(localStorage.getItem("unload_key"))).toEqual({ saved: true });
 	});
 });
