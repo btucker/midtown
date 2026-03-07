@@ -1264,6 +1264,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: std::collections::HashMap::new(),
     }
 }
 
@@ -1275,6 +1276,7 @@ fn make_pr_context_empty() -> PrContext {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: std::collections::HashMap::new(),
     }
 }
 
@@ -1569,6 +1571,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1624,6 +1627,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     let effects = comment_action_to_effects(
@@ -1675,6 +1679,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1729,6 +1734,7 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     let effects = review_complete_action_to_effects(
@@ -3322,19 +3328,15 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     }
 }
 
-/// Helper: install a minimal workflow.py in the test state's project root.
-///
-/// Creates `.midtown/workflow.py` so that `workflow_script_for_channel()` returns
-/// `Some(...)` and `pr_action_to_effects` takes the script-authoritative path
-/// (RecordPrNudge + EmitWorkflowEvent only) instead of the inline-effects fallback.
-fn install_workflow_script(state: &DaemonState) {
-    let project_root = state.all_repo_paths.first().expect("need a repo path");
-    let script_dir = project_root.join(".midtown");
-    std::fs::create_dir_all(&script_dir).expect("create .midtown dir");
-    std::fs::write(script_dir.join("workflow.py"), "# test stub\n").expect("write workflow.py");
+/// Helper: set a workflow assignment on a PrContext so that the workflow-authoritative
+/// path (RecordPrNudge + EmitWorkflowEvent only) is taken instead of the inline-effects fallback.
+fn assign_workflow_to_context(ctx: &mut PrContext, channel: &str, workflow: &str) {
+    ctx.channel_workflows
+        .insert(channel.to_string(), workflow.to_string());
 }
 
 /// Helper: extract EmitWorkflowEvent effects from an effect list.
@@ -3396,9 +3398,9 @@ fn pr_approved_suppressed_while_reviewer_active() {
 #[test]
 fn pr_approved_emitted_when_no_reviewer_active() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    install_workflow_script(&state);
 
-    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     // has_active_reviewer defaults to false
 
     let effects = pr_action_to_effects(
@@ -3443,9 +3445,9 @@ fn pr_approved_emitted_when_no_reviewer_active() {
 #[test]
 fn non_approved_events_unaffected_by_reviewer_gate() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    install_workflow_script(&state);
 
     let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
+    assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     ctx.has_active_reviewer = true;
 
     let effects = pr_action_to_effects(
@@ -3495,11 +3497,11 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
     use crate::daemon::trackers::PrIssueTracker;
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    install_workflow_script(&state);
     let pr_number = 42;
 
     // Step 1: Reviewer is active → PrApproved fully suppressed (no effects at all)
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     ctx.has_active_reviewer = true;
 
     let effects = pr_action_to_effects(
@@ -3534,8 +3536,9 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
         "Nudge should be unblocked after clearing cooldown"
     );
 
-    // Step 4: Next tick — reviewer cleared, PrApproved fires via script-authoritative path
+    // Step 4: Next tick — reviewer cleared, PrApproved fires via workflow-authoritative path
     let mut ctx_cleared = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    assign_workflow_to_context(&mut ctx_cleared, "daemon-core", "tdw");
     ctx_cleared.has_active_reviewer = false;
 
     let effects = pr_action_to_effects(
@@ -3757,11 +3760,11 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
 /// When no `workflow.py` exists, `pr_action_to_effects` falls through to the
 /// inline-effects path (NudgeSession + RecordPrNudge) and appends the workflow
 /// event. This preserves backward compatibility for projects that haven't
-/// adopted workflow scripts.
+/// adopted workflows.
 #[test]
-fn fallback_inline_effects_without_workflow_script() {
+fn fallback_inline_effects_without_workflow() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    // No install_workflow_script() — deliberately testing the no-script fallback
+    // No workflow assignment — deliberately testing the no-workflow fallback
 
     let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
 
@@ -4406,8 +4409,9 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
         );
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
+        ps.channel_workflows
+            .insert(channel.to_string(), "tdw".to_string());
     }
-    install_workflow_script(&state);
 
     let pr_json = json!({
         "number": pr_number,
@@ -4483,7 +4487,7 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
     }
-    // Note: NO install_workflow_script() call
+    // Note: NO workflow assignment — testing the no-workflow fallback
 
     let pr_json = json!({
         "number": pr_number,
@@ -5060,6 +5064,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     let effects = vec![
@@ -5130,6 +5135,7 @@ fn log_pr_decision_appends_multiple_entries() {
         session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
     };
 
     // Write two entries

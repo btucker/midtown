@@ -608,7 +608,6 @@ fn fork_channel_lead_model(
         channel_name: fork_channel.unwrap_or_default().to_string(),
         domain_context: String::new(),
         agents_md: None,
-        skill_bodies: vec![],
     };
 
     super::helpers::resolve_model_for_role(repo_name, auth_provider, &fork_role)
@@ -1004,7 +1003,6 @@ pub(super) async fn handle_session_clear(
                         channel_name: session_info.channel.clone().unwrap_or_default(),
                         domain_context: String::new(),
                         agents_md: None,
-                        skill_bodies: vec![],
                     }
                 }
                 _ => {}
@@ -1187,7 +1185,6 @@ pub(super) fn build_fork_config(
             channel_name: fork_channel.unwrap_or_default().to_string(),
             domain_context: String::new(),
             agents_md: None,
-            skill_bodies: vec![],
         },
         &Some(team.clone()),
         &fork_channel.map(String::from),

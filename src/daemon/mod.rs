@@ -917,7 +917,6 @@ impl DaemonState {
                 session_mode,
                 "",
                 None,
-                vec![],
             );
 
             match self.spawn_coworker(&config).await {

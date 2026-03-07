@@ -36,7 +36,6 @@ fn normalize_model_for_provider_role_rewrites_claude_alias_for_codex() {
             channel_name: "ops".to_string(),
             domain_context: String::new(),
             agents_md: None,
-            skill_bodies: vec![],
         },
     );
     assert_eq!(normalized, "gpt-5-codex");
