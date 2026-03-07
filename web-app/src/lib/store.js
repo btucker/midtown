@@ -21,6 +21,40 @@ export function saveToLocalStorage(key, value) {
 	}
 }
 
+// ── Debounced localStorage writes ────────────────────────────────────────────
+// Store subscriptions fire on every mutation. During WS message bursts this
+// can trigger dozens of synchronous localStorage.setItem() calls per second.
+// Debouncing coalesces them into a single write after activity settles.
+const DEBOUNCE_DELAY_MS = 500;
+const debouncedTimers = new Map();
+const pendingValues = new Map();
+
+export function debouncedSaveToLocalStorage(key, value) {
+	pendingValues.set(key, value);
+	if (debouncedTimers.has(key)) {
+		clearTimeout(debouncedTimers.get(key));
+	}
+	debouncedTimers.set(
+		key,
+		setTimeout(() => {
+			debouncedTimers.delete(key);
+			pendingValues.delete(key);
+			saveToLocalStorage(key, value);
+		}, DEBOUNCE_DELAY_MS),
+	);
+}
+
+export function flushDebouncedSaves() {
+	for (const [key, timer] of debouncedTimers) {
+		clearTimeout(timer);
+	}
+	debouncedTimers.clear();
+	for (const [key, value] of pendingValues) {
+		saveToLocalStorage(key, value);
+	}
+	pendingValues.clear();
+}
+
 // Channel messages - now keyed by channel name
 // Format: { 'midtown': [...messages], 'auth-refactor': [...messages], ... }
 export const messagesByChannel = writable({ midtown: [] });
@@ -38,7 +72,7 @@ function saveUnreadCounts(channelList) {
 			counts[ch.name] = ch.unread;
 		}
 	});
-	saveToLocalStorage("midtown_unread_counts", counts);
+	debouncedSaveToLocalStorage("midtown_unread_counts", counts);
 }
 
 // List of available channels with metadata
@@ -176,13 +210,13 @@ export const pendingQuestions = writable([]);
 // ── Tracked threads (sidebar display) ─────────────────────────────────────────
 // Format: { [threadParentId]: { channelName, subject, lastActivity, replyCount } }
 export const trackedThreads = writable(loadFromLocalStorage("midtown_tracked_threads", {}));
-trackedThreads.subscribe((v) => saveToLocalStorage("midtown_tracked_threads", v));
+trackedThreads.subscribe((v) => debouncedSaveToLocalStorage("midtown_tracked_threads", v));
 
 // Per-thread unread counts: { [threadParentId]: number }
 export const threadUnreadCounts = writable(loadFromLocalStorage("midtown_thread_unread", {}));
-threadUnreadCounts.subscribe((v) => saveToLocalStorage("midtown_thread_unread", v));
+threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_unread", v));
 
 // Dismissed threads: user clicked X — prevents re-tracking. Stored as array, used as Set.
 const _dismissedArr = loadFromLocalStorage("midtown_dismissed_threads", []);
 export const dismissedThreads = writable(new Set(_dismissedArr));
-dismissedThreads.subscribe((s) => saveToLocalStorage("midtown_dismissed_threads", [...s]));
+dismissedThreads.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_threads", [...s]));

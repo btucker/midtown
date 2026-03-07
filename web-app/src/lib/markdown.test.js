@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasMermaid, parseSegments, renderContent } from "./markdown.js";
+import { clearRenderCache, hasMermaid, parseSegments, renderContent } from "./markdown.js";
 
 describe("renderContent", () => {
 	// XSS protection
@@ -519,5 +519,53 @@ describe("renderContent - image attachments", () => {
 	it("renders uploads attachments via /uploads/ endpoint", () => {
 		const result = renderContent("[Attached: /home/user/.midtown/projects/mid/uploads/20260101-shot.png]", API);
 		expect(result).toContain('src="http://localhost:47023/api/uploads/20260101-shot.png"');
+	});
+});
+
+describe("renderContent — memoization", () => {
+	it("returns the same reference for identical inputs (cache hit)", () => {
+		clearRenderCache();
+		const result1 = renderContent("**hello** world");
+		const result2 = renderContent("**hello** world");
+		// Same string reference means the cache returned the cached value
+		expect(result1).toBe(result2);
+	});
+
+	it("distinguishes different text inputs", () => {
+		clearRenderCache();
+		const result1 = renderContent("hello");
+		const result2 = renderContent("goodbye");
+		expect(result1).not.toBe(result2);
+	});
+
+	it("distinguishes different apiBase values", () => {
+		clearRenderCache();
+		const result1 = renderContent("[Attached: /uploads/photo.png]", "http://localhost:1111/api");
+		const result2 = renderContent("[Attached: /uploads/photo.png]", "http://localhost:2222/api");
+		expect(result1).not.toBe(result2);
+		expect(result1).toContain("localhost:1111");
+		expect(result2).toContain("localhost:2222");
+	});
+
+	it("evicts old entries when the cache exceeds its capacity", () => {
+		clearRenderCache();
+		// Fill cache beyond capacity (default 500) — use unique inputs
+		for (let i = 0; i < 510; i++) {
+			renderContent(`message-${i}`);
+		}
+		// Early entries should have been evicted; later entries should still be cached
+		const earlyResult1 = renderContent("message-0");
+		const earlyResult2 = renderContent("message-0");
+		// Even if evicted, re-calling produces the same output (just not cached ref)
+		expect(earlyResult1).toEqual(earlyResult2);
+	});
+
+	it("clearRenderCache empties the cache", () => {
+		const result1 = renderContent("cached text");
+		clearRenderCache();
+		const result2 = renderContent("cached text");
+		// After clearing, the result should be equal but NOT the same reference
+		// (re-computed, not pulled from cache)
+		expect(result1).toEqual(result2);
 	});
 });

@@ -4,6 +4,7 @@ import {
 	closeThread,
 	fetchChannels,
 	fetchHistory,
+	flushToolItemBatch,
 	handleUpdate,
 	pushNavState,
 	selectDm,
@@ -705,6 +706,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 	it("does not immediately clear tool items when a channel lead posts a message", () => {
 		// Simulate tool activity arriving for the 'web' channel lead
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 		expect(get(agentToolItems).web).toHaveLength(1);
 
 		// Channel lead posts a message — items should still be visible immediately after
@@ -717,6 +719,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 
 	it("clears tool items after the persistence delay expires", () => {
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 		handleUpdate({
 			type: "channel_message",
 			data: { id: "msg-1", from: "web", content: "done!", channel: "web", timestamp: "2026-01-01T00:00:00Z" },
@@ -733,6 +736,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 
 	it("cancels the clear timeout when new tool activity arrives before the delay", () => {
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 		handleUpdate({
 			type: "channel_message",
 			data: { id: "msg-1", from: "web", content: "status update", channel: "web", timestamp: "2026-01-01T00:00:00Z" },
@@ -745,6 +749,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 			content: [{ ToolCall: { call_id: "def", name: "Write", semantic_header: "Write file.txt" } }],
 		};
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [newItem] } });
+		flushToolItemBatch();
 
 		// Advance past the original delay — items should still be present because timeout was cancelled
 		vi.advanceTimersByTime(3000);
@@ -756,6 +761,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 		// agentToolItems is channel-keyed: a coworker posting to 'midtown' schedules
 		// a delayed clear for the 'midtown' key, not a no-op on their sender name.
 		handleUpdate({ type: "universal_items", data: { channel: null, agent_name: "lead", items: [sampleItem] } });
+		flushToolItemBatch();
 		expect(get(agentToolItems).midtown).toHaveLength(1);
 
 		handleUpdate({
@@ -777,6 +783,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 		// 'midtown', regardless of which channel the message was posted to. A lead
 		// posting to 'web' should still schedule a clear for 'web' tool items.
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 		expect(get(agentToolItems).web).toHaveLength(1);
 
 		handleUpdate({
@@ -797,6 +804,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 		// Channel isolation: clearing 'web' must not affect 'staging'.
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
 		handleUpdate({ type: "universal_items", data: { channel: "staging", agent_name: "staging", items: [sampleItem] } });
+		flushToolItemBatch();
 
 		// Message arrives only on 'web'
 		handleUpdate({
@@ -817,6 +825,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 		// cancelled on switchProject(), so a delayed clear could fire against the
 		// new project's agentToolItems store after the switch.
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 		handleUpdate({
 			type: "channel_message",
 			data: { id: "msg-5", from: "web", content: "done", channel: "web", timestamp: "2026-01-01T00:00:00Z" },
@@ -828,6 +837,7 @@ describe("handleUpdate — agentToolItems persistence after channel lead message
 
 		// Simulate new tool items arriving in the new project
 		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		flushToolItemBatch();
 
 		// Advance past the original delay — the stale timeout must NOT fire
 		vi.advanceTimersByTime(5000);
@@ -935,6 +945,7 @@ describe("handleUpdate universal_items — null channel uses activeProject, not 
 			type: "universal_items",
 			data: { channel: null, agent_name: "lead", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		const items = get(agentToolItems);
 		expect(items["my-project"]).toHaveLength(1);
@@ -966,6 +977,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		// Should be in threadToolItems, NOT agentToolItems
 		expect(get(threadToolItems)["msg-9999"]).toHaveLength(1);
@@ -977,6 +989,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "web", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		expect(get(agentToolItems).web).toHaveLength(1);
 		expect(get(threadToolItems)).toEqual({});
@@ -987,6 +1000,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 		expect(get(threadToolItems)["msg-9999"]).toHaveLength(1);
 
 		// Fork posts a reply in the thread
@@ -1015,6 +1029,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		// Fork posts a reply — schedules delayed clear
 		handleUpdate({
@@ -1039,6 +1054,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [newItem] },
 		});
+		flushToolItemBatch();
 
 		// Advance past original delay — items should still be present
 		vi.advanceTimersByTime(3000);
@@ -1054,6 +1070,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 		expect(get(threadToolItems)["msg-9999"]).toHaveLength(1);
 
 		// A coworker (not the fork) posts a reply in the same thread
@@ -1079,6 +1096,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		// The lead posts in the thread (not the fork)
 		handleUpdate({
@@ -1103,6 +1121,7 @@ describe("handleUpdate universal_items — thread_parent_id routes to threadTool
 			type: "universal_items",
 			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
 		});
+		flushToolItemBatch();
 
 		// Non-fork reply — should NOT trigger clear
 		handleUpdate({
@@ -1365,5 +1384,64 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		const tracked = get(trackedThreads);
 		expect(tracked["ben-msg"]).toBeTruthy();
 		expect(tracked["ben-msg"].subject).toContain("custom name question");
+	});
+});
+
+describe("handleUpdate universal_items — rAF batching", () => {
+	const sampleItem = {
+		status: "InProgress",
+		content: [{ ToolCall: { call_id: "tc-1", name: "Read", semantic_header: "Read file.txt" } }],
+	};
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		agentToolItems.set({});
+		threadToolItems.set({});
+		activeProject.set("midtown");
+		messagesByChannel.set({ midtown: [], web: [] });
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		activeProject.set(null);
+	});
+
+	it("batches multiple universal_items updates into a single store write via flushToolItemBatch", () => {
+		// Send 3 rapid updates for the same channel
+		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+		handleUpdate({ type: "universal_items", data: { channel: "web", agent_name: "web", items: [sampleItem] } });
+
+		// Before flush, store should not yet have the items (they're batched)
+		expect(get(agentToolItems).web || []).toHaveLength(0);
+
+		// Flush the batch (simulating rAF callback)
+		flushToolItemBatch();
+
+		// After flush, all 3 items should appear in a single store update
+		expect(get(agentToolItems).web).toHaveLength(3);
+	});
+
+	it("batches thread-scoped universal_items separately from channel-scoped", () => {
+		handleUpdate({
+			type: "universal_items",
+			data: { channel: "web", agent_name: "web", items: [sampleItem] },
+		});
+		handleUpdate({
+			type: "universal_items",
+			data: { channel: "web", agent_name: "fork-abcd", thread_parent_id: "msg-9999", items: [sampleItem] },
+		});
+
+		flushToolItemBatch();
+
+		expect(get(agentToolItems).web).toHaveLength(1);
+		expect(get(threadToolItems)["msg-9999"]).toHaveLength(1);
+	});
+
+	it("flush is a no-op when no items are pending", () => {
+		agentToolItems.set({ web: [sampleItem] });
+		flushToolItemBatch();
+		// Existing items should not be affected
+		expect(get(agentToolItems).web).toHaveLength(1);
 	});
 });

@@ -63,6 +63,16 @@ export function hasMermaid(text) {
 	return /```mermaid\s*\n/.test(text);
 }
 
+// ── LRU cache for renderContent ──────────────────────────────────────────────
+// Message content is immutable after arrival, so caching the HTML output
+// avoids redundant marked.parse() calls on every Svelte re-render.
+const RENDER_CACHE_CAPACITY = 500;
+const renderCache = new Map();
+
+export function clearRenderCache() {
+	renderCache.clear();
+}
+
 const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp)$/i;
 
 /**
@@ -95,6 +105,15 @@ function renderAttachmentHtml(path, apiBase) {
  * @param {string} [apiBase] - Base URL for the project daemon API (e.g. http://host:47023/api)
  */
 export function renderContent(text, apiBase = "") {
+	const cacheKey = `${text}\0${apiBase}`;
+	const cached = renderCache.get(cacheKey);
+	if (cached !== undefined) {
+		// Move to end (most-recently-used) for LRU eviction
+		renderCache.delete(cacheKey);
+		renderCache.set(cacheKey, cached);
+		return cached;
+	}
+
 	// Trim leading/trailing whitespace so messages don't render with blank lines at the top.
 	text = text.trim();
 
@@ -228,5 +247,14 @@ export function renderContent(text, apiBase = "") {
 		html = html.replace(/\x01ATTACH(\d+)\x01/g, (_, i) => renderAttachmentHtml(attachments[parseInt(i, 10)], apiBase));
 	}
 
-	return html.trim();
+	const result = html.trim();
+
+	// Store in LRU cache, evicting oldest entry if at capacity
+	if (renderCache.size >= RENDER_CACHE_CAPACITY) {
+		const oldest = renderCache.keys().next().value;
+		renderCache.delete(oldest);
+	}
+	renderCache.set(cacheKey, result);
+
+	return result;
 }
