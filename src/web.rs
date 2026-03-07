@@ -2215,6 +2215,9 @@ struct SetWorkflowRequest {
 /// Path: `PUT /api/channels/{channel}/workflow`
 ///
 /// Body: `{"workflow": "tdw"}` to assign, `{"workflow": null}` to unassign.
+///
+/// Routes through the daemon's RPC to ensure the in-memory persistent state
+/// mutex is used (avoids race conditions with direct file I/O).
 async fn api_set_channel_workflow(
     State(state): State<Arc<WebState>>,
     Path(channel): Path<String>,
@@ -2229,36 +2232,76 @@ async fn api_set_channel_workflow(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let dir_key = &state.config.dir_key;
+    let dir_key = state.config.dir_key.clone();
+    let workflow = body.workflow.clone();
+    let ch = channel.clone();
 
-    // Load persistent state
-    let mut persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
+    // Route through daemon RPC to use the in-memory persistent state mutex
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
 
-    match body.workflow {
-        Some(workflow_name) => {
-            // Validate workflow exists
-            let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
-            let discovered = crate::paths::discover_workflows(&workflows_dir);
-            if !discovered.iter().any(|w| w.name == workflow_name) {
-                return Err(StatusCode::NOT_FOUND);
-            }
-            persistent_state
-                .channel_workflows
-                .insert(channel, workflow_name);
+        let socket = crate::paths::daemon_socket_for_repo(&dir_key);
+        let mut stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let request = match workflow {
+            Some(ref wf) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "workflow.assign",
+                "params": { "channel": ch, "workflow": wf },
+                "id": 1
+            }),
+            None => serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "workflow.unassign",
+                "params": { "channel": ch },
+                "id": 1
+            }),
+        };
+
+        writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+        stream.flush().ok();
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+        if let Some(err) = response.get("error") {
+            return Err(format!(
+                "RPC error: {}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
         }
-        None => {
-            persistent_state.channel_workflows.remove(&channel);
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
+        warn!("spawn_blocking panic in set_channel_workflow: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(()) => Ok(Json(serde_json::json!({ "ok": true }))),
+        Err(e) => {
+            warn!("Failed to set channel workflow: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-
-    // Save persistent state
-    if let Err(e) = persistent_state.save_for_repo(dir_key) {
-        warn!("Failed to save persistent state: {e}");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// WebSocket upgrade handler

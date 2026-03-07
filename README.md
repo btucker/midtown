@@ -563,24 +563,23 @@ Coworkers use `@{channel-name}` for domain questions (e.g., `@auth-refactor can 
 
 Each channel can have a `workflow.py` script that customizes how the daemon responds to events — PR lifecycle, coworker status changes, task transitions, CI results, and more. Scripts are invoked by the daemon via `uv run` using the [Midtown Python SDK](sdk/python/).
 
-**Script resolution order** (first file found wins):
+**Workflow discovery and assignment**: Named workflows live in `~/.midtown/projects/<repo>/workflows/<name>/`, each containing a `workflow.py` and an optional `AGENTS.md` with YAML frontmatter describing states and transitions. Assign a workflow to a channel via the CLI or the web UI's Workflow tab:
+
+```bash
+midtown workflow assign <channel> <workflow-name>
+midtown workflow unassign <channel>
+```
+
+**Legacy script resolution** (used when no named workflow is assigned): The daemon also checks a 4-level priority order for standalone `workflow.py` files:
 
 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-specific, committed to repo
 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-specific, local only
 3. `<project_root>/.midtown/workflow.py` — project default, committed to repo
 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
 
-If no script is found, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
+If no workflow is assigned and no script is found, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
 
-To bootstrap a channel-specific script from the reference implementation:
-
-```bash
-mkdir -p .midtown/channels/<channel>
-cp $(python -c "import midtown, os; print(os.path.dirname(midtown.__file__))")/default_workflow.py \
-   .midtown/channels/<channel>/workflow.py
-```
-
-The reference implementation (`sdk/python/midtown/default_workflow.py`) replicates the built-in PR lifecycle using a state machine. Customize it to add channel-specific automation. See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
+See [Writing Custom Workflow Scripts](docs/workflow-customization.md) for the full guide — event reference, RPC methods, state management, and examples.
 
 #### Workflow Hooks
 

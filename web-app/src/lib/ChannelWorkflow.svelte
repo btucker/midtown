@@ -115,7 +115,20 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
               <span class="assigning-hint">Saving...</span>
             {/if}
           </div>
-        {:else if !data.assigned_workflow}
+        {:else if data.assigned_workflow}
+          <div class="selector-row">
+            <span class="stale-hint">
+              Assigned workflow <strong>{data.assigned_workflow}</strong> is no longer available.
+            </span>
+            <button
+              class="unassign-btn"
+              onclick={() => handleWorkflowChange({ target: { value: "" } })}
+              disabled={assigning}
+            >
+              {assigning ? "Removing..." : "Remove assignment"}
+            </button>
+          </div>
+        {:else}
           <p class="empty-hint">
             No workflows available. Create a workflow directory in
             <code class="mono">~/.midtown/projects/&lt;project&gt;/workflows/</code>
@@ -269,6 +282,31 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
   .task-phase {
     color: hsl(var(--foreground));
     font-weight: 500;
+  }
+
+  .stale-hint {
+    font-size: 0.82rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .unassign-btn {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .unassign-btn:hover {
+    border-color: hsl(var(--primary));
+  }
+
+  .unassign-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .empty-hint {

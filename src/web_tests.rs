@@ -1342,74 +1342,8 @@ async fn test_workflow_generates_mermaid_for_assigned() {
     assert!(mermaid.contains("[*] --> study"));
 }
 
-#[tokio::test]
-async fn test_set_workflow_assigns_and_unassigns() {
-    use crate::paths::set_test_midtown_base_dir;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
-
-    let project_dir = tmp.path().join("projects").join("test-proj");
-    let workflows_dir = project_dir.join("workflows");
-
-    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
-    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
-
-    let state = make_workflow_state("test-proj", Vec::new());
-
-    // Assign
-    let result = api_set_channel_workflow(
-        State(Arc::clone(&state)),
-        Path("web".to_string()),
-        Json(SetWorkflowRequest {
-            workflow: Some("tdw".to_string()),
-        }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.0["ok"], true);
-
-    // Verify assignment persisted
-    let persistent =
-        crate::daemon::state::DaemonPersistentState::load_for_repo("test-proj").unwrap_or_default();
-    assert_eq!(persistent.channel_workflows.get("web").unwrap(), "tdw");
-
-    // Unassign
-    let result = api_set_channel_workflow(
-        State(Arc::clone(&state)),
-        Path("web".to_string()),
-        Json(SetWorkflowRequest { workflow: None }),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.0["ok"], true);
-
-    let persistent =
-        crate::daemon::state::DaemonPersistentState::load_for_repo("test-proj").unwrap_or_default();
-    assert!(!persistent.channel_workflows.contains_key("web"));
-}
-
-#[tokio::test]
-async fn test_set_workflow_rejects_nonexistent_workflow() {
-    use crate::paths::set_test_midtown_base_dir;
-
-    let tmp = tempfile::tempdir().unwrap();
-    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
-
-    let project_dir = tmp.path().join("projects").join("test-proj");
-    std::fs::create_dir_all(&project_dir).unwrap();
-
-    let state = make_workflow_state("test-proj", Vec::new());
-    let result = api_set_channel_workflow(
-        State(state),
-        Path("web".to_string()),
-        Json(SetWorkflowRequest {
-            workflow: Some("nonexistent".to_string()),
-        }),
-    )
-    .await;
-    assert_eq!(result.unwrap_err(), StatusCode::NOT_FOUND);
-}
+// Note: assign/unassign tests live in rpc_workflow tests since the web endpoint
+// now routes through daemon RPC. Only validation logic (path traversal) is tested here.
 
 #[tokio::test]
 async fn test_set_workflow_rejects_path_traversal() {

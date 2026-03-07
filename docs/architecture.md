@@ -689,15 +689,16 @@ Each channel can have a `workflow.py` script that controls how the daemon respon
 
 If no script is found, or if a PR has no channel/task association, the daemon falls back to its compiled-in inline effects. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
 
-### Web API Endpoint
+### Web API Endpoints
 
-`GET /api/workflow?channel=<name>` (in `web.rs`) exposes the resolved workflow for a channel to the web UI. It uses `resolve_workflow_script()` — a local function that reimplements the same 4-level resolution as `workflow_script_for_channel()` in `paths.rs`, but lives in `web.rs` because it needs `project_root` from `WebState` (which the standalone webserver lacked). The response includes:
+**`GET /api/workflow?channel=<name>`** — Returns the workflow configuration for a channel. Uses `discover_workflows()` from `paths.rs` to find named workflow directories under `~/.midtown/projects/<repo>/workflows/`, and reads the channel's assignment from `DaemonPersistentState`. The response includes:
 
-- `script_source` — which level matched (`default`, `channel-repo`, `channel-local`, `project-repo`, `project-local`)
-- `script_path` — filesystem path (null for default)
-- `script_content` — the script source code
-- `mermaid` — state machine diagram from `python3 <script> --diagram`, or `null` if the custom script doesn't support it (the UI hides the diagram section rather than showing a misleading default)
-- `plugins` — discovered plugins across all 4 resolution levels via `discover_workflow_plugins()`
+- `assigned_workflow` — name of the assigned workflow (null if none)
+- `available_workflows` — array of discovered workflows with metadata (name, description, states, transitions) parsed from each workflow's `AGENTS.md` frontmatter via `parse_agents_md_frontmatter()`
+- `state` — current workflow state for this channel (task phases, etc.)
+- `mermaid` — state machine diagram generated from the assigned workflow's transition metadata, or `null` if no workflow is assigned or transitions aren't defined
+
+**`PUT /api/channels/{channel}/workflow`** — Assigns or unassigns a workflow for a channel. Routes through the daemon's RPC (`workflow.assign` / `workflow.unassign`) to ensure the in-memory `persistent_state` mutex is used, avoiding race conditions with direct file I/O on `daemon-state.json`.
 
 ### Invocation
 
