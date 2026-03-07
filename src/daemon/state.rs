@@ -258,13 +258,6 @@ pub struct DaemonPersistentState {
     /// semantics and atomic updates.
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
-
-    /// Channel-to-workflow assignments.
-    ///
-    /// Maps channel name → workflow name (e.g., "proj-auth" → "tdw").
-    /// Set via `workflow.assign` RPC, cleared via `workflow.unassign`.
-    #[serde(default)]
-    pub channel_workflows: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -445,7 +438,6 @@ impl DaemonPersistentState {
             profile_pool_state: HashMap::new(),
             channel_workflows: HashMap::new(),
             workflow_state,
-            channel_workflows: HashMap::new(),
         };
 
         // Save the unified file

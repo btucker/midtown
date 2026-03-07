@@ -110,6 +110,11 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown pr merge --pr <N>` | Merge a PR after passing 3-gate checks (review exists, CI passes, feedback addressed) |
 | `midtown update` | Update to the latest release from GitHub |
 | `midtown update --check` | Check for updates without installing |
+| `midtown workflow list` | List available workflows and current channel assignments |
+| `midtown workflow assign <channel> <workflow>` | Assign a workflow to a channel |
+| `midtown workflow unassign <channel>` | Remove workflow assignment from a channel |
+| `midtown workflow exclude <task-id>` | Exclude a task from its channel's workflow |
+| `midtown workflow include <task-id>` | Re-include a previously excluded task |
 | `midtown config get/set/list` | Manage [configuration](docs/configuration.md) |
 | `midtown auth` | Manage [auth profiles](docs/authentication.md) (multiple accounts supported) |
 

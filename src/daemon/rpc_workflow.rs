@@ -7,7 +7,7 @@
 //! and persisted to `daemon-state.json` alongside other daemon state. The
 //! `plugin` parameter provides namespacing within a channel's state object.
 
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::rpc::{RequestId, Response, RpcError};
 
