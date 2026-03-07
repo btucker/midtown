@@ -1,10 +1,13 @@
 <script>
 import { onDestroy, onMount, untrack } from "svelte";
 import { SvelteMap } from "svelte/reactivity";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 import { openTaskThread, selectDm } from "./api.js";
 import { getSenderColor } from "./messageUtils.js";
 import { coworkers, kanbanData, maxCoworkers, repoStatus } from "./store.js";
+
+const sidebar = useSidebar();
 
 const OFFLINE_GRACE_MS = 10 * 60 * 1000;
 
@@ -130,7 +133,7 @@ function openPrDetail(prNumber) {
             </Tooltip.Root>
             <button
               class="bg-transparent border-none p-0 m-0 cursor-pointer text-inherit text-[0.75rem] font-mono hover:underline leading-none"
-              onclick={() => selectDm(cw.name)}
+              onclick={() => { sidebar.setOpenMobile(false); selectDm(cw.name); }}
               title="Open DM with {cw.name}"
             >{cw.name}</button>
             {#if cw.phase}

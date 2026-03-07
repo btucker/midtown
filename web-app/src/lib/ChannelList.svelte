@@ -1,6 +1,7 @@
 <script>
 import ArchiveIcon from "@lucide/svelte/icons/archive";
 import { SvelteSet } from "svelte/reactivity";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 import { closeThread, fetchChannels, fetchHistory, getApiBase, pushNavState } from "./api.js";
 import {
 	computeExpandedAfterChannelNameClick,
@@ -30,6 +31,8 @@ import {
 } from "./store.js";
 import TaskList from "./TaskList.svelte";
 import ThreadList from "./ThreadList.svelte";
+
+const sidebar = useSidebar();
 
 // Build a map of coworker name → coworker object for quick lookup
 $: coworkerMap = new Map($coworkers.map((cw) => [cw.name, cw]));
@@ -106,6 +109,9 @@ function selectChannel(channelName) {
 	// until the network request completed (~100-500ms), making channel switching
 	// feel sluggish on desktop. Now the channel switches instantly and messages
 	// appear when the fetch completes.
+
+	// Close mobile sidebar overlay when navigating to a channel
+	sidebar.setOpenMobile(false);
 
 	// Close thread panel when switching channels — thread context is
 	// channel-scoped and should not carry over to a different channel.
