@@ -3626,10 +3626,10 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     );
 
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::RecordPrNudge { pr_number, .. } if *pr_number == 2042)),
-        "Expected RecordPrNudge for PR #2042 to prevent duplicate nudges, got: {:#?}",
+        effects.iter().any(
+            |e| matches!(e, Effect::RecordPermanentPrNudge { pr_number, .. } if *pr_number == 2042)
+        ),
+        "Expected RecordPermanentPrNudge for PR #2042 to prevent duplicate nudges, got: {:#?}",
         effects
     );
 
@@ -5386,6 +5386,81 @@ async fn test_review_complete_lead_branch_survives_cleanup() {
         )),
         "Permanent nudge should survive cleanup(). After eviction of the regular entry, \
          the permanent set should still prevent re-notification. Got: {:#?}",
+        effects
+    );
+}
+
+/// Bug !2151: Non-lead (coworker) PRs used cooldown-based should_nudge() for
+/// review-complete notifications. After each 10-min cooldown expired, the
+/// notification re-fired indefinitely. The fix applies the same permanent
+/// one-shot nudge pattern used for lead-branch PRs.
+#[tokio::test]
+async fn test_review_complete_coworker_pr_no_repeat_after_cooldown() {
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+    let pr_number = 2151u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "amsterdam/task-2151-fix-bug",
+        "title": "fix: Some coworker fix [Midtown !2151]",
+        "body": "<!-- midtown: amsterdam -->",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Simulate that we already permanently nudged for this PR's ReviewComplete,
+    // but the cooldown has expired (11 minutes ago). With the bug, should_nudge()
+    // returns true and the notification re-fires. With the fix, has_nudge()
+    // checks the permanent set which survives cooldown expiry.
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_permanent_nudge(pr_number, PrIssueType::ReviewComplete);
+        tracker.record_nudge_at(
+            pr_number,
+            PrIssueType::ReviewComplete,
+            Instant::now()
+                - Duration::from_secs(crate::daemon::constants::PR_NUDGE_COOLDOWN_SECS + 60),
+        );
+    }
+
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Should NOT re-post the notification — it already fired once
+    let has_review_complete_effects = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { message, .. } if message.contains("completed review")
+        ) || matches!(
+            e,
+            Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
+        )
+    });
+    assert!(
+        !has_review_complete_effects,
+        "Bug !2151: Should not re-post review-complete notification for coworker PRs after \
+         cooldown expires. The notification should be one-shot, matching lead-branch behavior. \
+         Got: {:#?}",
         effects
     );
 }

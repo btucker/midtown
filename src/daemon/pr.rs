@@ -3024,12 +3024,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 continue;
             }
 
-            // Coworker PRs: use cooldown-based nudging (re-nudge after 10 min)
-            let should_nudge = {
+            // Coworker PRs: one-shot nudging (same as lead-branch PRs)
+            let already_nudged = {
                 let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
+                tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
             };
-            if !should_nudge {
+            if already_nudged {
                 continue;
             }
             let review_suffix = pre_fetched_review_content
@@ -3088,6 +3088,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 effects.extend(review_complete_action_to_effects(
                     action, pr_number, title, state, &pr_ctx,
                 ));
+                effects.push(Effect::RecordPermanentPrNudge {
+                    pr_number,
+                    issue_type: PrIssueType::ReviewComplete,
+                });
                 continue;
             }
 
@@ -3106,7 +3110,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 tool_use_id: None,
                 parent_tool_use_id: None,
             });
-            effects.push(Effect::RecordPrNudge {
+            effects.push(Effect::RecordPermanentPrNudge {
                 pr_number,
                 issue_type: PrIssueType::ReviewComplete,
             });
