@@ -49,6 +49,54 @@ const agentClearTimeouts = new Map();
 // preventing coworkers or the lead from prematurely clearing a fork's tool display.
 const threadOwners = new Map();
 
+// ── rAF batching for universal_items ────────────────────────────────────────
+// Accumulate tool call items during a frame, then flush them in a single
+// store update via requestAnimationFrame. This prevents cascading re-renders
+// when the daemon bursts many tool items within one frame.
+const pendingChannelItems = new Map(); // channelKey → items[]
+const pendingThreadItems = new Map(); // threadId → items[]
+let batchRafId = null;
+
+export function flushToolItemBatch() {
+	batchRafId = null;
+
+	if (pendingChannelItems.size > 0) {
+		agentToolItems.update((byChannel) => {
+			const updated = { ...byChannel };
+			for (const [key, items] of pendingChannelItems) {
+				const existing = updated[key] || [];
+				updated[key] = [...existing, ...items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
+			}
+			return updated;
+		});
+		pendingChannelItems.clear();
+	}
+
+	if (pendingThreadItems.size > 0) {
+		threadToolItems.update((byThread) => {
+			const updated = { ...byThread };
+			for (const [key, items] of pendingThreadItems) {
+				const existing = updated[key] || [];
+				updated[key] = [...existing, ...items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
+			}
+			return updated;
+		});
+		pendingThreadItems.clear();
+	}
+}
+
+function scheduleBatchFlush() {
+	if (batchRafId === null) {
+		if (typeof requestAnimationFrame !== "undefined") {
+			batchRafId = requestAnimationFrame(flushToolItemBatch);
+		} else {
+			// Node/test environment: flush synchronously on next microtask
+			batchRafId = -1;
+			queueMicrotask(flushToolItemBatch);
+		}
+	}
+}
+
 // Strip markdown from the first non-empty line of message content.
 function extractPlainText(content) {
 	if (!content) return "";
@@ -823,6 +871,9 @@ export function handleUpdate(update) {
 			// When thread_parent_id is present, the items belong to a forked lead working
 			// in a thread — route them to threadToolItems so they appear in the thread panel
 			// instead of the main channel activity strip.
+			//
+			// Items are batched via requestAnimationFrame to coalesce rapid bursts
+			// (common during active coding) into a single store update per frame.
 			const threadId = update.data.thread_parent_id;
 			if (threadId) {
 				// Track which fork session owns this thread's tool items
@@ -834,11 +885,10 @@ export function handleUpdate(update) {
 					clearTimeout(agentClearTimeouts.get(`thread:${threadId}`));
 					agentClearTimeouts.delete(`thread:${threadId}`);
 				}
-				threadToolItems.update((byThread) => {
-					const existing = byThread[threadId] || [];
-					const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
-					return { ...byThread, [threadId]: merged };
-				});
+				const pending = pendingThreadItems.get(threadId) || [];
+				pending.push(...update.data.items);
+				pendingThreadItems.set(threadId, pending);
+				scheduleBatchFlush();
 			} else {
 				// Channel-scoped: main lead or channel lead tool calls.
 				const channelKey = update.data.channel ?? get(activeProject);
@@ -846,11 +896,10 @@ export function handleUpdate(update) {
 					clearTimeout(agentClearTimeouts.get(channelKey));
 					agentClearTimeouts.delete(channelKey);
 				}
-				agentToolItems.update((byChannel) => {
-					const existing = byChannel[channelKey] || [];
-					const merged = [...existing, ...update.data.items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
-					return { ...byChannel, [channelKey]: merged };
-				});
+				const pending = pendingChannelItems.get(channelKey) || [];
+				pending.push(...update.data.items);
+				pendingChannelItems.set(channelKey, pending);
+				scheduleBatchFlush();
 			}
 			break;
 		}
