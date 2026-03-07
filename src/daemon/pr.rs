@@ -2988,32 +2988,35 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 }
             }
 
-            // Nudge the PR author — review is complete but PR is still open
-            let should_nudge = {
-                let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
-            };
-            let review_suffix = pre_fetched_review_content
-                .get(&pr_number)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let nudge_msg = format!(
-                "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-                pr_number,
-                truncate_str(title, 40),
-                review_suffix
-            );
-
-            if !should_nudge {
-                continue;
-            }
-
             // Bug !2124: For user-authored PRs (lead/* branches), skip coworker
             // owner resolution entirely. The owner resolution chain can resolve
             // to a coworker via task metadata, causing the daemon to spawn a
             // coworker who sees a clean review, goes idle, and loops every
             // cooldown period. Only the user can act on their own PRs.
+            //
+            // Bug !2137: For lead branches, use has_nudge() (one-shot) instead
+            // of should_nudge() (cooldown-based). The user can't act on the PR
+            // from within a Claude session, so re-nudging every 10 minutes is
+            // spam. Notify exactly once.
             if is_lead_branch(pf.head_ref) {
+                let already_nudged = {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
+                };
+                if already_nudged {
+                    continue;
+                }
+
+                let review_suffix = pre_fetched_review_content
+                    .get(&pr_number)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let nudge_msg = format!(
+                    "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+                    pr_number,
+                    truncate_str(title, 40),
+                    review_suffix
+                );
                 let channel = pr_ctx.get_channel(pr_number);
                 let user_msg = format!("@user {}", nudge_msg);
                 effects.push(Effect::PostToChannel {
@@ -3034,6 +3037,25 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 });
                 continue;
             }
+
+            // Coworker PRs: use cooldown-based nudging (re-nudge after 10 min)
+            let should_nudge = {
+                let tracker = state.pr_issue_tracker.lock().await;
+                tracker.should_nudge(pr_number, PrIssueType::ReviewComplete)
+            };
+            if !should_nudge {
+                continue;
+            }
+            let review_suffix = pre_fetched_review_content
+                .get(&pr_number)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let nudge_msg = format!(
+                "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+                pr_number,
+                truncate_str(title, 40),
+                review_suffix
+            );
 
             let owner = resolve_pr_owner_from_session(
                 pr_number,

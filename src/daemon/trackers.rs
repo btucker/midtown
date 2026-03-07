@@ -104,6 +104,12 @@ impl PrIssueTracker {
         self.nudged.contains_key(&(pr_number, issue_type))
     }
 
+    /// Record a nudge with a backdated timestamp (test helper).
+    #[cfg(test)]
+    pub fn record_nudge_at(&mut self, pr_number: u64, issue_type: PrIssueType, at: Instant) {
+        self.nudged.insert((pr_number, issue_type), at);
+    }
+
     /// Clean up old entries (older than the longest cooldown period).
     /// Uses ORPHANED_PR_NUDGE_COOLDOWN_SECS since orphaned PR alerts use a
     /// longer suppression window than the standard PR_NUDGE_COOLDOWN_SECS.

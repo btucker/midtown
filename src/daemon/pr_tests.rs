@@ -5243,3 +5243,72 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
         effects
     );
 }
+
+/// Bug !2137: After the initial @user notification for a user-authored PR's
+/// completed review, the daemon re-posts the same notification every 10 minutes
+/// (PR_NUDGE_COOLDOWN_SECS). The cooldown expires but the PR state hasn't changed,
+/// so `should_nudge()` returns true and the cycle repeats.
+///
+/// Fix: For lead/* branches, use `has_nudge()` (permanent, one-shot) instead of
+/// `should_nudge()` (cooldown-based). The notification should fire exactly once.
+#[tokio::test]
+async fn test_review_complete_lead_branch_no_repeat_after_cooldown() {
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+    let pr_number = 1838u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "lead/release-v0.7.0",
+        "title": "Release v0.7.0 [Midtown !1838]",
+        "body": "",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Simulate that we already nudged for this PR's ReviewComplete, but the
+    // cooldown has expired (11 minutes ago). With the bug, should_nudge()
+    // returns true and the notification re-fires.
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge_at(
+            pr_number,
+            PrIssueType::ReviewComplete,
+            Instant::now()
+                - Duration::from_secs(crate::daemon::constants::PR_NUDGE_COOLDOWN_SECS + 60),
+        );
+    }
+
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Should NOT re-post the notification — it already fired once
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel { message, .. } if message.contains("@user")
+        )),
+        "Bug !2137: Should not re-post @user review-complete notification after cooldown expires. \
+         The notification should be one-shot for user-authored PRs. Got: {:#?}",
+        effects
+    );
+}
