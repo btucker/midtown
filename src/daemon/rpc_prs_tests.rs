@@ -411,6 +411,17 @@ fi
             "Placeholder cache should be cleared after posting the final review"
         );
     }
+
+    // The PR should be marked as reviewed so the stuck-reviewer check
+    // doesn't kill the reviewer and overwrite the real review.
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.github.has_cached_review(pr_number),
+            "PR should be marked as reviewed after successful review post \
+             (prevents stuck-reviewer check from overwriting the real review)"
+        );
+    }
 }
 
 /// Verify the final body format: frontmatter tag + user body + Midtown footer.
