@@ -576,6 +576,16 @@ pub(crate) struct DaemonState {
     /// fresh for each review session — a restart mid-review would re-spawn the
     /// reviewer, who would post new notes from scratch.
     review_note_tracker: std::sync::Mutex<HashMap<(String, u64), std::time::Instant>>,
+    /// Fork respawn attempt counts, keyed by `thread_parent_id`.
+    ///
+    /// Tracks how many times a fork session has been respawned for a given thread.
+    /// After [`crate::rules::MAX_FORK_RESPAWN_ATTEMPTS`] attempts, the daemon stops
+    /// respawning and cleans up the topic_session entry so thread replies fall back
+    /// to the channel lead.
+    ///
+    /// Ephemeral — resets on daemon restart, which is acceptable because a restart
+    /// gives forks a fresh chance (the transient error may have resolved).
+    fork_respawn_counts: std::sync::Mutex<HashMap<String, u32>>,
     /// Process health state for headless coworkers, keyed by coworker name.
     ///
     /// Populated by the session management layer from `HeadlessSession` stream events
@@ -1442,6 +1452,7 @@ impl DaemonState {
             orphaned_pr_lead_nudges_sent: std::sync::Mutex::new(HashSet::new()),
             stuck_task_restart_history: std::sync::Mutex::new(HashMap::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
+            fork_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
@@ -3928,7 +3939,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 constants::ZOMBIE_RESPAWN_COOLDOWN,
                             )
                         };
-                        if should_respawn {
+                        // Check max retry limit (prevents infinite respawn loops
+                        // when the underlying cause is persistent, e.g. context too large).
+                        let respawn_allowed = {
+                            let mut counts = state.fork_respawn_counts.lock().unwrap();
+                            crate::rules::check_fork_respawn_allowed(&mut counts, &thread_parent_id)
+                        };
+                        if should_respawn && respawn_allowed {
                             // Get fork metadata from persistent state (record persists after cleanup)
                             let (working_dir, auth_provider, is_channel_lead, initial_prompt) =
                                 if let Some(ref sid) = session_id_for_cleanup {
@@ -4012,6 +4029,36 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     provider: None,
                     tool_use_id: None,
                     parent_tool_use_id: None,
+                            });
+                        } else if !respawn_allowed {
+                            // Max retry limit reached — stop respawning and clean up.
+                            warn!(
+                                "Fork {} exceeded max respawn attempts ({}) for thread {} — giving up",
+                                name, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS, thread_parent_id
+                            );
+                            // Clean up the topic_sessions entry so thread replies
+                            // fall back to the channel lead instead of routing to a
+                            // dead fork session.
+                            if let Some(ref sid) = session_id_for_cleanup {
+                                state.topic_sessions.lock().unwrap().retain(|_, v| v != sid);
+                            }
+                            // Clean up the respawn counter (no longer needed).
+                            state.fork_respawn_counts.lock().unwrap().remove(&thread_parent_id);
+                            fork_respawn_effects.push(effects::Effect::PostToChannel {
+                                sender: "midtown".to_string(),
+                                message: format!(
+                                    "Fork for thread {} failed {} times and will not be retried. \
+                                     Thread replies will be handled by the channel lead.",
+                                    thread_parent_id, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS
+                                ),
+                                channel: Some(constants::OPS_CHANNEL.to_string()),
+                                auto_output: false,
+                                message_type: None,
+                                nudge_type: None,
+                                tool_data: None,
+                                provider: None,
+                                tool_use_id: None,
+                                parent_tool_use_id: None,
                             });
                         } else {
                             debug!("Fork respawn cooldown active for {}", name);

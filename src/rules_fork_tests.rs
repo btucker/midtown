@@ -228,3 +228,50 @@ fn fork_with_empty_working_dir_returns_none() {
     assert_eq!(respawns.len(), 1);
     assert_eq!(respawns[0].working_dir, None);
 }
+
+// ---------------------------------------------------------------------------
+// Fork respawn retry limit tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fork_respawn_allowed_under_limit() {
+    use super::check_fork_respawn_allowed;
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    // First attempt should be allowed
+    assert!(check_fork_respawn_allowed(&mut counts, "thread-1"));
+    assert_eq!(counts["thread-1"], 1);
+    // Second attempt should be allowed
+    assert!(check_fork_respawn_allowed(&mut counts, "thread-1"));
+    assert_eq!(counts["thread-1"], 2);
+    // Third attempt should be allowed
+    assert!(check_fork_respawn_allowed(&mut counts, "thread-1"));
+    assert_eq!(counts["thread-1"], 3);
+}
+
+#[test]
+fn fork_respawn_blocked_at_limit() {
+    use super::check_fork_respawn_allowed;
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    // Exhaust all attempts
+    for _ in 0..super::MAX_FORK_RESPAWN_ATTEMPTS {
+        assert!(check_fork_respawn_allowed(&mut counts, "thread-1"));
+    }
+    // Next attempt should be blocked
+    assert!(
+        !check_fork_respawn_allowed(&mut counts, "thread-1"),
+        "should block after max attempts"
+    );
+}
+
+#[test]
+fn fork_respawn_counts_are_per_thread() {
+    use super::check_fork_respawn_allowed;
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    // Exhaust attempts for thread-1
+    for _ in 0..super::MAX_FORK_RESPAWN_ATTEMPTS {
+        check_fork_respawn_allowed(&mut counts, "thread-1");
+    }
+    assert!(!check_fork_respawn_allowed(&mut counts, "thread-1"));
+    // thread-2 should still be allowed
+    assert!(check_fork_respawn_allowed(&mut counts, "thread-2"));
+}
