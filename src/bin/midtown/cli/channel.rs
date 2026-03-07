@@ -60,7 +60,7 @@ pub enum ChannelCommand {
 
 #[path = "channel_post_tests.rs"]
 #[cfg(test)]
-mod channel_post_tests;
+mod tests;
 
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
