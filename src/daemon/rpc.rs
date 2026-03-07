@@ -13,7 +13,7 @@
 //! - `rpc_session` — session resolve/attach/detach/list
 //! - `rpc_status` — daemon status overview
 //! - `rpc_task` — task CRUD operations
-//! - `rpc_workflow` — workflow state get/set
+//! - `rpc_workflow` — workflow state get/set, workflow assign/unassign/list
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
@@ -598,6 +598,20 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let reminder_id = require_str!(params, "id", request.id);
             super::rpc_reminder::handle_reminder_cancel(request.id, reminder_id, state).await
         }
+
+        // ---- Workflow management ----
+        "workflow.assign" => {
+            let channel = require_str!(params, "channel", request.id);
+            let workflow = require_str!(params, "workflow", request.id);
+            super::rpc_workflow::handle_workflow_assign(request.id, channel, workflow, state).await
+        }
+
+        "workflow.unassign" => {
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_workflow::handle_workflow_unassign(request.id, channel, state).await
+        }
+
+        "workflow.list" => super::rpc_workflow::handle_workflow_list(request.id, state).await,
 
         // ---- Workflow state ----
         "workflow.get_state" => {

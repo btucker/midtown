@@ -238,6 +238,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub profile_pool_state: HashMap<String, ProfileState>,
 
+    /// Channel-to-workflow assignment mapping.
+    ///
+    /// Maps channel name → workflow name (e.g., "proj-auth" → "tdw").
+    /// Workflows are named entities in `~/.midtown/projects/<project>/workflows/<name>/`.
+    /// Multiple channels can share the same workflow. Channels without an entry
+    /// use the daemon's default behavior (no workflow).
+    #[serde(default)]
+    pub channel_workflows: HashMap<String, String>,
+
     /// Workflow plugin state, owned by the daemon.
     ///
     /// Maps channel name → per-channel state (JSON object). Each channel's
@@ -294,7 +303,7 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -307,6 +316,7 @@ impl DaemonPersistentState {
                     state.task_message_id.len(),
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
+                    state.channel_workflows.len(),
                     state.workflow_state.len()
                 );
                 Ok(state)
@@ -330,7 +340,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} workflow-state channels",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -341,6 +351,7 @@ impl DaemonPersistentState {
             self.task_execution_skill.len(),
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
+            self.channel_workflows.len(),
             self.workflow_state.len()
         );
         Ok(())
@@ -425,6 +436,7 @@ impl DaemonPersistentState {
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
+            channel_workflows: HashMap::new(),
             workflow_state,
         };
 

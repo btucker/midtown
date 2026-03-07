@@ -29,6 +29,10 @@
 //!         │       ├── cursors/               # Per-agent read cursors
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
+//!         ├── workflows/             # Named workflow definitions
+//!         │   └── <name>/            # e.g., "tdw", "spec-review"
+//!         │       ├── workflow.py    # Workflow hooks (required)
+//!         │       └── AGENTS.md     # Workflow docs for channel lead (optional)
 //!         ├── sessions/              # Headless session transcripts (headless-<name>.jsonl)
 //!         ├── logs/                  # Daemon logs
 //!         ├── daemon.pid             # Daemon PID file
@@ -309,6 +313,11 @@ impl ProjectPaths {
     /// Lead worktree path: `~/.midtown/projects/<dir_key>/worktrees/lead/`.
     pub fn lead_worktree(&self) -> PathBuf {
         self.worktrees_dir().join("lead")
+    }
+
+    /// Workflows directory: `~/.midtown/projects/<dir_key>/workflows/`.
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.base.join("workflows")
     }
 
     /// Daemon state file: `~/.midtown/projects/<dir_key>/daemon-state.json`.
@@ -1039,6 +1048,65 @@ fn parse_skill_md_name_and_body(content: &str, plugin_dir: &Path) -> (String, St
         .unwrap_or(dir_name);
 
     (name, body)
+}
+
+/// Information about a discovered named workflow.
+///
+/// Workflows live in `~/.midtown/projects/<project>/workflows/<name>/`
+/// and must contain a `workflow.py` file. An optional `AGENTS.md` provides
+/// documentation that gets injected into the channel lead's system prompt.
+#[derive(Debug, Clone)]
+pub struct WorkflowInfo {
+    /// Workflow name (directory name, e.g., "tdw").
+    pub name: String,
+    /// Full path to the workflow directory.
+    pub dir: PathBuf,
+    /// Full path to `workflow.py`.
+    pub workflow_py: PathBuf,
+    /// Full path to `AGENTS.md` (if present).
+    pub agents_md: Option<PathBuf>,
+}
+
+/// Discover named workflows in a workflows directory.
+///
+/// Scans `workflows_dir` for subdirectories containing a `workflow.py` file.
+/// Each valid subdirectory becomes a [`WorkflowInfo`] entry. Directories
+/// without `workflow.py` are silently skipped.
+///
+/// Returns results sorted by name for deterministic ordering.
+pub fn discover_workflows(workflows_dir: &Path) -> Vec<WorkflowInfo> {
+    let mut workflows = Vec::new();
+    if !workflows_dir.is_dir() {
+        return workflows;
+    }
+    let Ok(entries) = fs::read_dir(workflows_dir) else {
+        return workflows;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let workflow_py = path.join("workflow.py");
+        if !workflow_py.exists() {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let agents_md_path = path.join("AGENTS.md");
+        let agents_md = if agents_md_path.exists() {
+            Some(agents_md_path)
+        } else {
+            None
+        };
+        workflows.push(WorkflowInfo {
+            name,
+            dir: path,
+            workflow_py,
+            agents_md,
+        });
+    }
+    workflows.sort_by(|a, b| a.name.cmp(&b.name));
+    workflows
 }
 
 /// Get the workflow state file path for a channel (legacy).
