@@ -5273,11 +5273,14 @@ async fn test_review_complete_lead_branch_no_repeat_after_cooldown() {
         ps.github.mark_reviewed_pr(pr_number);
     }
 
-    // Simulate that we already nudged for this PR's ReviewComplete, but the
-    // cooldown has expired (11 minutes ago). With the bug, should_nudge()
-    // returns true and the notification re-fires.
+    // Simulate that we already permanently nudged for this PR's ReviewComplete,
+    // but the cooldown has expired (11 minutes ago). With the bug, should_nudge()
+    // returns true and the notification re-fires. With the fix, has_nudge()
+    // checks the permanent set which survives cooldown expiry.
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_permanent_nudge(pr_number, PrIssueType::ReviewComplete);
+        // Backdate the regular entry so cooldown has expired
         tracker.record_nudge_at(
             pr_number,
             PrIssueType::ReviewComplete,
@@ -5309,6 +5312,74 @@ async fn test_review_complete_lead_branch_no_repeat_after_cooldown() {
         )),
         "Bug !2137: Should not re-post @user review-complete notification after cooldown expires. \
          The notification should be one-shot for user-authored PRs. Got: {:#?}",
+        effects
+    );
+}
+
+/// Regression test for the cleanup eviction path: after cleanup() runs and
+/// evicts the regular nudge entry (older than ORPHANED_PR_NUDGE_COOLDOWN_SECS),
+/// the permanent set still prevents re-notification.
+#[tokio::test]
+async fn test_review_complete_lead_branch_survives_cleanup() {
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+    let pr_number = 1838u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "lead/release-v0.7.0",
+        "title": "Release v0.7.0 [Midtown !1838]",
+        "body": "",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Record a permanent nudge, backdate past ORPHANED_PR_NUDGE_COOLDOWN_SECS,
+    // then run cleanup. The permanent entry should survive.
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_permanent_nudge(pr_number, PrIssueType::ReviewComplete);
+        tracker.record_nudge_at(
+            pr_number,
+            PrIssueType::ReviewComplete,
+            Instant::now()
+                - Duration::from_secs(
+                    crate::daemon::constants::ORPHANED_PR_NUDGE_COOLDOWN_SECS + 60,
+                ),
+        );
+        tracker.cleanup();
+    }
+
+    let branch_owners: HashMap<String, String> = HashMap::new();
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &HashMap::new(),
+    )
+    .await;
+
+    // Should NOT re-post — permanent nudge survives cleanup
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::PostToChannel { message, .. } if message.contains("@user")
+        )),
+        "Permanent nudge should survive cleanup(). After eviction of the regular entry, \
+         the permanent set should still prevent re-notification. Got: {:#?}",
         effects
     );
 }

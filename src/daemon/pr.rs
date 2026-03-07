@@ -3031,7 +3031,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     tool_use_id: None,
                     parent_tool_use_id: None,
                 });
-                effects.push(Effect::RecordPrNudge {
+                effects.push(Effect::RecordPermanentPrNudge {
                     pr_number,
                     issue_type: PrIssueType::ReviewComplete,
                 });
@@ -5025,6 +5025,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
         Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
+        Effect::RecordPermanentPrNudge { .. } => "RecordPermanentPrNudge",
         Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
         Effect::ClearPrBreakSession { .. } => "ClearPrBreakSession",
         Effect::AssignReviewer { .. } => "AssignReviewer",
