@@ -3,17 +3,20 @@ import { getApiBase } from "./api.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import { activeChannel, activeProject } from "./store.js";
 
-/** @type {{ script_source: string, script_path: string|null, script_content: string, mermaid: string|null, plugins: Array<{source: string, path: string, files: string[]}> } | null} */
 let data = $state(null);
 let loading = $state(false);
 let error = $state("");
+let assigning = $state(false);
 
-$effect(() => {
+let fetchVersion = 0;
+
+function fetchWorkflow() {
 	const project = $activeProject;
 	const channel = $activeChannel;
 	if (!project || !channel) return;
 
 	const controller = new AbortController();
+	const version = ++fetchVersion;
 
 	loading = true;
 	data = null;
@@ -27,28 +30,57 @@ $effect(() => {
 			return res.json();
 		})
 		.then((d) => {
-			if (!controller.signal.aborted) data = d;
+			if (version === fetchVersion) data = d;
 		})
 		.catch((e) => {
-			if (!controller.signal.aborted && e.name !== "AbortError") {
+			if (version === fetchVersion && e.name !== "AbortError") {
 				console.error("Failed to fetch workflow:", e);
 				error = e.message;
 			}
 		})
 		.finally(() => {
-			if (!controller.signal.aborted) loading = false;
+			if (version === fetchVersion) loading = false;
 		});
 
 	return () => controller.abort();
+}
+
+$effect(() => {
+	// Track reactive dependencies
+	void $activeProject;
+	void $activeChannel;
+	return fetchWorkflow();
 });
 
-const SOURCE_LABELS = {
-	default: "Default (built-in)",
-	"channel-local": "Channel-specific (local)",
-	"channel-repo": "Channel-specific (repo)",
-	"project-local": "Project default (local)",
-	"project-repo": "Project default (repo)",
-};
+async function handleWorkflowChange(event) {
+	const channel = $activeChannel;
+	if (!channel) return;
+
+	const value = event.target.value;
+	const workflow = value === "" ? null : value;
+
+	assigning = true;
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/workflow`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ workflow }),
+		});
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			throw new Error(body.error || `HTTP ${res.status}`);
+		}
+		// Refetch to update diagram and state
+		fetchWorkflow();
+	} catch (e) {
+		console.error("Failed to assign workflow:", e);
+		error = e.message;
+	} finally {
+		assigning = false;
+	}
+}
+
+let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks) : []);
 </script>
 
 <div class="workflow-layout">
@@ -61,8 +93,38 @@ const SOURCE_LABELS = {
     </div>
   {:else if data}
     <div class="workflow-content">
-      <!-- Workflow diagram (hidden when custom script doesn't support --diagram) -->
-      {#if data.mermaid}
+      <!-- Workflow selector -->
+      <section class="workflow-section">
+        <h2 class="section-title">Workflow</h2>
+        {#if data.available_workflows && data.available_workflows.length > 0}
+          <div class="selector-row">
+            <select
+              class="workflow-select"
+              value={data.assigned_workflow ?? ""}
+              onchange={handleWorkflowChange}
+              disabled={assigning}
+            >
+              <option value="">None &mdash; daemon defaults</option>
+              {#each data.available_workflows as wf}
+                <option value={wf.name}>
+                  {wf.name}{wf.description ? ` — ${wf.description}` : ""}
+                </option>
+              {/each}
+            </select>
+            {#if assigning}
+              <span class="assigning-hint">Saving...</span>
+            {/if}
+          </div>
+        {:else if !data.assigned_workflow}
+          <p class="empty-hint">
+            No workflows available. Create a workflow directory in
+            <code class="mono">~/.midtown/projects/&lt;project&gt;/workflows/</code>
+          </p>
+        {/if}
+      </section>
+
+      <!-- Mermaid diagram -->
+      {#if data.assigned_workflow && data.mermaid}
         <section class="workflow-section">
           <h2 class="section-title">State Machine</h2>
           <div class="diagram-container">
@@ -71,55 +133,21 @@ const SOURCE_LABELS = {
         </section>
       {/if}
 
-      <!-- Workflow source info -->
-      <section class="workflow-section">
-        <h2 class="section-title">Workflow Script</h2>
-        <div class="info-card">
-          <div class="info-row">
-            <span class="info-label">Source</span>
-            <span class="info-value"
-              >{SOURCE_LABELS[data.script_source] || data.script_source}</span
-            >
+      <!-- Task positions -->
+      {#if data.assigned_workflow && taskEntries.length > 0}
+        <section class="workflow-section">
+          <h2 class="section-title">Task Positions</h2>
+          <div class="info-card">
+            {#each taskEntries as [taskId, taskState]}
+              <div class="task-row">
+                <span class="task-id">!{taskId}</span>
+                <span class="task-arrow">&rarr;</span>
+                <span class="task-phase">{taskState.phase}</span>
+              </div>
+            {/each}
           </div>
-          {#if data.script_path}
-            <div class="info-row">
-              <span class="info-label">Path</span>
-              <span class="info-value mono">{data.script_path}</span>
-            </div>
-          {/if}
-        </div>
-        <details class="script-details">
-          <summary>View source</summary>
-          <pre class="script-source"><code>{data.script_content}</code></pre>
-        </details>
-      </section>
-
-      <!-- Plugins -->
-      <section class="workflow-section">
-        <h2 class="section-title">Plugins</h2>
-        {#if data.plugins.length === 0}
-          <p class="empty-hint">No plugins configured for this channel.</p>
-        {:else}
-          {#each data.plugins as plugin}
-            <div class="info-card">
-              <div class="info-row">
-                <span class="info-label">Source</span>
-                <span class="info-value"
-                  >{SOURCE_LABELS[plugin.source] || plugin.source}</span
-                >
-              </div>
-              <div class="info-row">
-                <span class="info-label">Path</span>
-                <span class="info-value mono">{plugin.path}</span>
-              </div>
-              <div class="info-row">
-                <span class="info-label">Files</span>
-                <span class="info-value">{plugin.files.join(', ')}</span>
-              </div>
-            </div>
-          {/each}
-        {/if}
-      </section>
+        </section>
+      {/if}
     </div>
   {/if}
 </div>
@@ -174,6 +202,40 @@ const SOURCE_LABELS = {
     border-bottom: 1px solid hsl(var(--border));
   }
 
+  .selector-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .workflow-select {
+    flex: 1;
+    max-width: 400px;
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.84rem;
+    color: hsl(var(--foreground));
+    cursor: pointer;
+    outline: none;
+  }
+
+  .workflow-select:focus {
+    border-color: hsl(var(--primary));
+  }
+
+  .workflow-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .assigning-hint {
+    font-size: 0.78rem;
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+  }
+
   .diagram-container {
     margin-bottom: 8px;
   }
@@ -183,32 +245,30 @@ const SOURCE_LABELS = {
     border: 1px solid hsl(var(--border));
     border-radius: 6px;
     padding: 10px 14px;
-    margin-bottom: 8px;
   }
 
-  .info-row {
+  .task-row {
     display: flex;
-    gap: 12px;
-    padding: 4px 0;
-    font-size: 0.82rem;
     align-items: baseline;
+    gap: 8px;
+    padding: 4px 0;
+    font-size: 0.84rem;
   }
 
-  .info-label {
-    color: hsl(var(--muted-foreground));
-    flex-shrink: 0;
-    min-width: 60px;
-    font-weight: 500;
-  }
-
-  .info-value {
-    color: hsl(var(--foreground) / 0.85);
-    word-break: break-all;
-  }
-
-  .info-value.mono {
+  .task-id {
     font-family: 'SF Mono', Menlo, Consolas, Monaco, 'Courier New', monospace;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: hsl(var(--primary));
+  }
+
+  .task-arrow {
+    color: hsl(var(--muted-foreground));
+  }
+
+  .task-phase {
+    color: hsl(var(--foreground));
+    font-weight: 500;
   }
 
   .empty-hint {
@@ -218,36 +278,9 @@ const SOURCE_LABELS = {
     margin: 0;
   }
 
-  .script-details {
-    margin-top: 8px;
-  }
-
-  .script-details summary {
-    font-size: 0.82rem;
-    color: hsl(var(--primary));
-    cursor: pointer;
-    padding: 4px 0;
-    user-select: none;
-  }
-
-  .script-details summary:hover {
-    text-decoration: underline;
-  }
-
-  .script-source {
-    background: hsl(var(--accent));
-    border: 1px solid hsl(var(--border));
-    border-radius: 6px;
-    padding: 14px 16px;
-    overflow-x: auto;
-    margin: 8px 0 0;
-  }
-
-  .script-source code {
+  .mono {
     font-family: 'SF Mono', Menlo, Consolas, Monaco, 'Courier New', monospace;
     font-size: 0.78rem;
-    line-height: 1.55;
-    color: hsl(var(--foreground) / 0.85);
   }
 
   @media (max-width: 767px) {
