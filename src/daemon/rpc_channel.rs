@@ -1057,6 +1057,35 @@ async fn try_lazy_fork_respawn(
         return Some(fork_sid.to_string());
     }
 
+    // Check max retry limit before attempting lazy respawn
+    let respawn_allowed = {
+        let mut counts = state.fork_respawn_counts.lock().unwrap();
+        let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
+        if crate::rules::is_fork_respawn_allowed(*count) {
+            *count += 1;
+            true
+        } else {
+            false
+        }
+    };
+    if !respawn_allowed {
+        warn!(
+            "channel.post: fork respawn limit reached for thread {} — falling back to channel lead",
+            thread_parent_id
+        );
+        state
+            .topic_sessions
+            .lock()
+            .unwrap()
+            .remove(thread_parent_id);
+        state
+            .fork_respawn_counts
+            .lock()
+            .unwrap()
+            .remove(thread_parent_id);
+        return None;
+    }
+
     info!(
         "channel.post: fork session {} ({}) is dead — attempting lazy respawn for thread {}",
         fork_sid, name, thread_parent_id

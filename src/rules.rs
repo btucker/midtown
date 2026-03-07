@@ -721,6 +721,20 @@ pub(crate) fn decide_dead_fork_respawns(
     respawns
 }
 
+/// Maximum number of times a fork session will be respawned for the same thread.
+/// After this many attempts, the daemon stops respawning and cleans up the
+/// topic_session entry so thread replies fall back to the channel lead.
+pub(crate) const MAX_FORK_RESPAWN_ATTEMPTS: u32 = 3;
+
+/// Check whether a fork respawn is allowed given the current attempt count.
+/// Returns `true` if the count is below [`MAX_FORK_RESPAWN_ATTEMPTS`].
+///
+/// Pure function — the caller is responsible for looking up and incrementing
+/// the count in `DaemonState::fork_respawn_counts`.
+pub(crate) fn is_fork_respawn_allowed(current_count: u32) -> bool {
+    current_count < MAX_FORK_RESPAWN_ATTEMPTS
+}
+
 // ---------------------------------------------------------------------------
 // Dead reviewer detection
 // ---------------------------------------------------------------------------

@@ -228,3 +228,31 @@ fn fork_with_empty_working_dir_returns_none() {
     assert_eq!(respawns.len(), 1);
     assert_eq!(respawns[0].working_dir, None);
 }
+
+// ---------------------------------------------------------------------------
+// Fork respawn retry limit tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fork_respawn_allowed_under_limit() {
+    use super::is_fork_respawn_allowed;
+    // Each count below the limit should be allowed
+    assert!(is_fork_respawn_allowed(0));
+    assert!(is_fork_respawn_allowed(1));
+    assert!(is_fork_respawn_allowed(2));
+}
+
+#[test]
+fn fork_respawn_blocked_at_limit() {
+    use super::is_fork_respawn_allowed;
+    // At the limit, should be blocked
+    assert!(
+        !is_fork_respawn_allowed(super::MAX_FORK_RESPAWN_ATTEMPTS),
+        "should block at max attempts"
+    );
+    // Above the limit, still blocked
+    assert!(
+        !is_fork_respawn_allowed(super::MAX_FORK_RESPAWN_ATTEMPTS + 1),
+        "should block above max attempts"
+    );
+}
