@@ -16,6 +16,9 @@ async fn load_channel_lead_context(
     channel_name: &str,
     project_root: PathBuf,
     dir_key: &str,
+    workflow_name: Option<String>,
+    workflows_dir: PathBuf,
+    workflow_state_summary: Option<String>,
 ) -> (String, Option<String>, Vec<(String, String)>) {
     let channel = channel_name.to_string();
     let channel_for_warn = channel.clone();
@@ -25,7 +28,18 @@ async fn load_channel_lead_context(
         let agents = crate::paths::agents_md_for_channel(&channel, &project_root, &dk);
         let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, &dk, Some(&channel));
         let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
-        (notes, agents, skills)
+
+        // Merge workflow AGENTS.md and state summary into agents_md
+        let workflow_agents = workflow_name
+            .as_deref()
+            .and_then(|name| crate::paths::workflow_agents_md_content(&workflows_dir, name));
+        let merged_agents = crate::paths::merge_workflow_agents_md(
+            agents,
+            workflow_agents.as_deref(),
+            workflow_state_summary.as_deref(),
+        );
+
+        (notes, merged_agents, skills)
     })
     .await
     .unwrap_or_else(|e| {
@@ -35,6 +49,47 @@ async fn load_channel_lead_context(
         );
         (String::new(), None, vec![])
     })
+}
+
+/// Format a brief human-readable summary of workflow state for a channel.
+///
+/// The `workflow_state` JSON typically contains task phase information like:
+/// ```json
+/// {"tasks": {"42": {"phase": "observe"}, "43": {"phase": "study"}}}
+/// ```
+///
+/// Produces a line-per-task summary. Falls back to raw JSON for unexpected shapes.
+pub(super) fn format_workflow_state_summary(state: &serde_json::Value) -> String {
+    if state.is_null() {
+        return "No active workflow state.".to_string();
+    }
+
+    if let Some(tasks) = state.get("tasks").and_then(|t| t.as_object()) {
+        if tasks.is_empty() {
+            return "No active workflow state.".to_string();
+        }
+        let mut lines = Vec::new();
+        let mut task_ids: Vec<&String> = tasks.keys().collect();
+        task_ids.sort();
+        for id in task_ids {
+            if let Some(task_obj) = tasks.get(id).and_then(|v| v.as_object()) {
+                let phase = task_obj
+                    .get("phase")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("unknown");
+                lines.push(format!("- Task !{id}: phase = {phase}"));
+            } else {
+                lines.push(format!("- Task !{id}: {}", tasks[id]));
+            }
+        }
+        lines.join("\n")
+    } else {
+        // Unknown shape — dump compact JSON so the LLM can still make sense of it
+        format!(
+            "Raw state: {}",
+            serde_json::to_string(state).unwrap_or_else(|_| "{}".to_string())
+        )
+    }
 }
 
 fn build_resume_handoff_prompt(
@@ -2184,11 +2239,23 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                     }
+                    let (wf_name, wf_state_summary) = {
+                        let ps = state.persistent_state.lock().await;
+                        let wf = ps.channel_workflows.get(&name).cloned();
+                        let wfs = ps
+                            .workflow_state
+                            .get(&name)
+                            .map(format_workflow_state_summary);
+                        (wf, wfs)
+                    };
                     let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
                         base_dir.clone(),
                         &name,
                         state.all_repo_paths.first().cloned().unwrap_or_default(),
                         state.paths.dir_key(),
+                        wf_name,
+                        state.paths.workflows_dir(),
+                        wf_state_summary,
                     )
                     .await;
                     let config = crate::launch::LaunchConfig::channel_lead(
@@ -2556,9 +2623,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let base_dir = state.paths.base_dir().to_path_buf();
                 let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
                 let dir_key = state.paths.dir_key().to_string();
-                let (domain_context, agents_md, skill_bodies) =
-                    load_channel_lead_context(base_dir, &channel_name, project_root, &dir_key)
-                        .await;
+                let (wf_name, wf_state_summary) = {
+                    let ps = state.persistent_state.lock().await;
+                    let wf = ps.channel_workflows.get(&channel_name).cloned();
+                    let wfs = ps
+                        .workflow_state
+                        .get(&channel_name)
+                        .map(format_workflow_state_summary);
+                    (wf, wfs)
+                };
+                let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
+                    base_dir,
+                    &channel_name,
+                    project_root,
+                    &dir_key,
+                    wf_name,
+                    state.paths.workflows_dir(),
+                    wf_state_summary,
+                )
+                .await;
 
                 let mut config = crate::launch::LaunchConfig::channel_lead(
                     &channel_name,
@@ -3054,11 +3137,23 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         _ => false,
                     };
 
+                    let (wf_name, wf_state_summary) = {
+                        let ps = state.persistent_state.lock().await;
+                        let wf = ps.channel_workflows.get(&channel_name).cloned();
+                        let wfs = ps
+                            .workflow_state
+                            .get(&channel_name)
+                            .map(format_workflow_state_summary);
+                        (wf, wfs)
+                    };
                     let (domain_context, agents_md, skill_bodies) = load_channel_lead_context(
                         state.paths.base_dir().to_path_buf(),
                         &channel_name,
                         state.all_repo_paths.first().cloned().unwrap_or_default(),
                         state.paths.dir_key(),
+                        wf_name,
+                        state.paths.workflows_dir(),
+                        wf_state_summary,
                     )
                     .await;
 

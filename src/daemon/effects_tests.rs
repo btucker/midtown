@@ -2638,3 +2638,42 @@ async fn test_nudge_channel_lead_dm_fork_no_respawn() {
         "dead fork should not be nudged or respawned"
     );
 }
+
+// ── format_workflow_state_summary tests ──────────────────────────────
+
+#[test]
+fn format_workflow_state_summary_with_tasks() {
+    let state: serde_json::Value = serde_json::json!({
+        "tasks": {
+            "42": {"phase": "observe"},
+            "43": {"phase": "study"}
+        }
+    });
+    let result = super::format_workflow_state_summary(&state);
+    assert!(result.contains("Task !42"));
+    assert!(result.contains("Task !43"));
+    assert!(result.contains("observe"));
+    assert!(result.contains("study"));
+}
+
+#[test]
+fn format_workflow_state_summary_empty_tasks() {
+    let state: serde_json::Value = serde_json::json!({"tasks": {}});
+    let result = super::format_workflow_state_summary(&state);
+    assert!(result.contains("No active workflow state"));
+}
+
+#[test]
+fn format_workflow_state_summary_no_tasks_key() {
+    let state: serde_json::Value = serde_json::json!({"something": "else"});
+    let result = super::format_workflow_state_summary(&state);
+    // Should still produce something meaningful — dump the JSON
+    assert!(!result.is_empty());
+}
+
+#[test]
+fn format_workflow_state_summary_null() {
+    let state: serde_json::Value = serde_json::Value::Null;
+    let result = super::format_workflow_state_summary(&state);
+    assert!(result.contains("No active workflow state"));
+}

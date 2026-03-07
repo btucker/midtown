@@ -434,6 +434,16 @@ pub(super) async fn handle_auth_switch(
                 let dir_key = state.paths.dir_key().to_string();
                 let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
                 let discover_channel = channel_name.clone();
+                let (wf_name, wf_state_summary) = {
+                    let ps = state.persistent_state.lock().await;
+                    let wf = ps.channel_workflows.get(&channel_name).cloned();
+                    let wfs = ps
+                        .workflow_state
+                        .get(&channel_name)
+                        .map(super::effects::format_workflow_state_summary);
+                    (wf, wfs)
+                };
+                let workflows_dir = state.paths.workflows_dir();
                 let (domain_context, agents_md, skill_bodies) =
                     tokio::task::spawn_blocking(move || {
                         let notes = crate::channel::load_channel_notes(&notes_base, &notes_channel);
@@ -448,7 +458,18 @@ pub(super) async fn handle_auth_switch(
                             Some(&discover_channel),
                         );
                         let skills = crate::paths::collect_skill_md_bodies(&plugin_dirs);
-                        (notes, agents, skills)
+
+                        // Merge workflow AGENTS.md and state summary
+                        let workflow_agents = wf_name.as_deref().and_then(|name| {
+                            crate::paths::workflow_agents_md_content(&workflows_dir, name)
+                        });
+                        let merged_agents = crate::paths::merge_workflow_agents_md(
+                            agents,
+                            workflow_agents.as_deref(),
+                            wf_state_summary.as_deref(),
+                        );
+
+                        (notes, merged_agents, skills)
                     })
                     .await
                     .unwrap_or_else(|e| {
