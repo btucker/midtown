@@ -1,3 +1,4 @@
 {
-  "autoUpdates": false
+  "autoUpdates": false,
+  "autoCompact": true
 }
