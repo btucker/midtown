@@ -8,7 +8,7 @@ import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploa
 import { openImageLightbox } from "./biggerPicture.js";
 import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from "./channelUtils.js";
 import DayDivider from "./DayDivider.svelte";
-import { extractPastedFile, uploadAndSend } from "./filePaste.js";
+import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import MessageRow from "./MessageRow.svelte";
 import { hasMermaid, parseSegments, renderContent } from "./markdown.js";
@@ -49,6 +49,7 @@ let inputText = $state("");
 let scrollAreaViewport = $state(null);
 let autoScroll = $state(true);
 let pendingFile = $state(null);
+let pendingFileUrl = $state(null);
 let uploading = $state(false);
 let textareaElement = $state(null);
 let formWrapperElement = $state(null);
@@ -170,6 +171,18 @@ $effect(() => {
 		});
 	}
 	prevChannel = ch;
+});
+
+// Manage blob preview URL: create on file change, revoke old URL to prevent memory leaks.
+$effect(() => {
+	const file = pendingFile;
+	pendingFileUrl = updatePreviewUrl(pendingFileUrl, file);
+	return () => {
+		if (pendingFileUrl) {
+			URL.revokeObjectURL(pendingFileUrl);
+			pendingFileUrl = null;
+		}
+	};
 });
 
 function isNewMessage(channelName, index) {
@@ -942,7 +955,7 @@ function getToolCallStatusIcon(entry) {
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="file-preview">
           {#if pendingFile.type.startsWith('image/')}
-            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
             <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>

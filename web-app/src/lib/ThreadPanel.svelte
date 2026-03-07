@@ -9,7 +9,7 @@ let prevThreadId = null;
 <script>
   import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
-  import { extractPastedFile, uploadAndSend } from './filePaste.js'
+  import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -96,6 +96,7 @@ let prevThreadId = null;
 
   let replyText = $state('')
   let pendingFile = $state(null)
+  let pendingFileUrl = $state(null)
   let uploading = $state(false)
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
@@ -438,6 +439,18 @@ let prevThreadId = null;
     pendingFile = null
   }
 
+  // Manage blob preview URL: create on file change, revoke old URL to prevent memory leaks.
+  $effect(() => {
+    const file = pendingFile
+    pendingFileUrl = updatePreviewUrl(pendingFileUrl, file)
+    return () => {
+      if (pendingFileUrl) {
+        URL.revokeObjectURL(pendingFileUrl)
+        pendingFileUrl = null
+      }
+    }
+  })
+
   // Auto-scroll when new messages or edit diffs arrive (only if user is near bottom)
   $effect(() => {
     if ((mergedTimeline.length > 0) && scrollArea && untrack(() => autoScroll)) {
@@ -765,7 +778,7 @@ let prevThreadId = null;
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
           {#if pendingFile.type.startsWith('image/')}
-            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
             <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>
@@ -1019,7 +1032,7 @@ let prevThreadId = null;
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
           {#if pendingFile.type.startsWith('image/')}
-            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
           {:else}
             <div class="flex items-center gap-2 text-foreground">
               <span class="text-[1.5rem]">&#128196;</span>

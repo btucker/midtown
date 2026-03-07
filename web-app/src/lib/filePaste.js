@@ -33,6 +33,15 @@ export function extractPastedFile(e) {
  * @param {string|null} threadParentId - Thread parent message ID (null for top-level)
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
+/**
+ * Create a blob preview URL for a file, revoking any previous URL to prevent leaks.
+ * Returns the new URL, or null if file is null/undefined.
+ */
+export function updatePreviewUrl(previousUrl, file) {
+	if (previousUrl) URL.revokeObjectURL(previousUrl);
+	return file ? URL.createObjectURL(file) : null;
+}
+
 export async function uploadAndSend(file, text, channel, threadParentId = null) {
 	const result = await uploadFile(file);
 
