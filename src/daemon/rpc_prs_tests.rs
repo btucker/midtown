@@ -186,6 +186,40 @@ async fn test_merge_not_blocked_after_reviewer_assignment_removed() {
     }
 }
 
+/// Merged PR JSON must use camelCase `mergedAt` key to match the frontend
+/// expectation in `web-app/src/lib/api.js` and `ChannelPrList.svelte`.
+/// Regression test for !2136: snake_case `merged_at` caused the column to
+/// always show '—'.
+#[test]
+fn test_merged_pr_json_uses_camel_case_merged_at() {
+    let repository = serde_json::json!({
+        "mergedPrs": {
+            "nodes": [
+                {
+                    "number": 100,
+                    "title": "feat: Add feature",
+                    "mergedAt": "2026-03-01T12:00:00Z"
+                }
+            ]
+        }
+    });
+
+    let result = parse_merged_prs(&repository, Some("midtown"));
+    assert_eq!(result.len(), 1);
+
+    let pr = &result[0];
+    // The frontend reads `pr.mergedAt` — this key MUST be camelCase
+    assert!(
+        pr.get("mergedAt").is_some(),
+        "Merged PR JSON must use camelCase 'mergedAt' key, but found keys: {:?}",
+        pr.as_object().unwrap().keys().collect::<Vec<_>>()
+    );
+    assert_eq!(pr["mergedAt"], "2026-03-01T12:00:00Z");
+    assert_eq!(pr["number"], 100);
+    assert_eq!(pr["title"], "feat: Add feature");
+    assert_eq!(pr["repo"], "midtown");
+}
+
 #[test]
 fn test_extract_coworker_from_pr_body() {
     assert_eq!(

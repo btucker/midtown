@@ -348,7 +348,18 @@ fn fetch_prs_all(
         .unwrap_or_default();
 
     // Process merged PRs
-    let merged_prs = repository
+    let merged_prs = parse_merged_prs(repository, repo_label);
+
+    (open_prs, merged_prs)
+}
+
+/// Parse merged PRs from the GraphQL repository response into JSON objects
+/// with keys matching the frontend's camelCase convention.
+fn parse_merged_prs(
+    repository: &serde_json::Value,
+    repo_label: Option<&str>,
+) -> Vec<serde_json::Value> {
+    repository
         .pointer("/mergedPrs/nodes")
         .and_then(|v| v.as_array())
         .map(|nodes| {
@@ -369,15 +380,13 @@ fn fetch_prs_all(
                     Some(serde_json::json!({
                         "number": number,
                         "title": title,
-                        "merged_at": merged_at,
+                        "mergedAt": merged_at,
                         "repo": repo_label,
                     }))
                 })
                 .collect()
         })
-        .unwrap_or_default();
-
-    (open_prs, merged_prs)
+        .unwrap_or_default()
 }
 
 /// Extract coworker name from PR body frontmatter (<!-- midtown: name -->).
