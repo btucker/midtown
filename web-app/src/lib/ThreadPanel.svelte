@@ -299,7 +299,7 @@ let prevThreadId = null;
   // instead of using indexOf (which would be O(N) per call, O(N^2) total).
   let mergedTimeline = $derived.by(() => {
     if (!$threadData) return []
-    const msgs = $threadData.messages.map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
+    const msgs = ($threadData.messages ?? []).map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
     if (!isDmChannel || editDiffs.length === 0) return msgs
     const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp, msgIndex: -1 }))
     const sorted = [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
@@ -623,7 +623,7 @@ let prevThreadId = null;
         <!-- Separator with reply count -->
         <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
-          <span>{$threadData.messages.length === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+          <span>{($threadData.messages?.length ?? 0) === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
         </div>
       {/if}
@@ -858,7 +858,7 @@ let prevThreadId = null;
         <!-- Separator with reply count -->
         <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
-          <span>{$threadData.messages.length === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+          <span>{($threadData.messages?.length ?? 0) === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
         </div>
       {/if}
