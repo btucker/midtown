@@ -1,8 +1,7 @@
-//! Workflow state RPC handlers.
+//! Workflow RPC handlers.
 //!
-//! Handles `workflow.get_state` and `workflow.set_state` methods. These let
-//! the Python workflow daemon read/write per-channel persistent state through
-//! the daemon's Unix socket instead of directly accessing the filesystem.
+//! Handles `workflow.get_state`, `workflow.set_state`, `workflow.list`,
+//! `workflow.assign`, and `workflow.unassign` methods.
 //!
 //! State is owned by the daemon in `DaemonPersistentState::workflow_state`
 //! and persisted to `daemon-state.json` alongside other daemon state. The
@@ -114,13 +113,24 @@ pub(super) async fn handle_workflow_set_state(
 /// - `channel` (required): channel name
 /// - `workflow` (required): workflow name to assign
 ///
-/// Stores the channel→workflow mapping in `DaemonPersistentState::channel_workflows`.
+/// Validates that the workflow exists, then stores the channel→workflow mapping
+/// in `DaemonPersistentState::channel_workflows`.
 pub(super) async fn handle_workflow_assign(
     id: RequestId,
     channel: &str,
     workflow: &str,
     daemon_state: &DaemonState,
 ) -> Response {
+    // Validate workflow exists
+    let workflows_dir = daemon_state.paths.workflows_dir();
+    let workflows = crate::paths::discover_workflows(&workflows_dir);
+    if !workflows.iter().any(|w| w.name == workflow) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Workflow '{}' not found", workflow)),
+        );
+    }
+
     let mut ps = daemon_state.persistent_state.lock().await;
     ps.channel_workflows
         .insert(channel.to_string(), workflow.to_string());
