@@ -1278,6 +1278,99 @@ fn test_detect_repo_name_falls_back_to_cwd_without_env_var() {
     assert!(!result.unwrap().is_empty());
 }
 
+// ── Workflow directory discovery ──────────────────────────────────────────
+
+#[test]
+fn test_discover_workflows_finds_valid_workflows() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+
+    // Create two workflow directories
+    fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    fs::write(workflows_dir.join("tdw/workflow.py"), "# tdw hooks").unwrap();
+    fs::write(workflows_dir.join("tdw/AGENTS.md"), "# TDW").unwrap();
+
+    fs::create_dir_all(workflows_dir.join("spec-review")).unwrap();
+    fs::write(
+        workflows_dir.join("spec-review/workflow.py"),
+        "# spec hooks",
+    )
+    .unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert_eq!(result.len(), 2);
+    assert!(result.iter().any(|w| w.name == "tdw"));
+    assert!(result.iter().any(|w| w.name == "spec-review"));
+
+    // tdw has AGENTS.md, spec-review does not
+    let tdw = result.iter().find(|w| w.name == "tdw").unwrap();
+    assert!(tdw.agents_md.is_some());
+    let spec = result.iter().find(|w| w.name == "spec-review").unwrap();
+    assert!(spec.agents_md.is_none());
+}
+
+#[test]
+fn test_discover_workflows_empty_when_dir_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let nonexistent = tmp.path().join("nonexistent");
+    let result = discover_workflows(&nonexistent);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_discover_workflows_skips_dirs_without_workflow_py() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+
+    // Directory exists but has no workflow.py
+    fs::create_dir_all(workflows_dir.join("incomplete")).unwrap();
+    fs::write(workflows_dir.join("incomplete/AGENTS.md"), "# Incomplete").unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_discover_workflows_skips_files_not_dirs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+    fs::create_dir_all(&workflows_dir).unwrap();
+
+    // Create a file (not a directory) in workflows/
+    fs::write(workflows_dir.join("not-a-workflow.txt"), "text").unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_discover_workflows_sorted_by_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+
+    for name in &["zebra", "alpha", "middle"] {
+        fs::create_dir_all(workflows_dir.join(name)).unwrap();
+        fs::write(workflows_dir.join(name).join("workflow.py"), "# hooks").unwrap();
+    }
+
+    let result = discover_workflows(&workflows_dir);
+    let names: Vec<&str> = result.iter().map(|w| w.name.as_str()).collect();
+    assert_eq!(names, vec!["alpha", "middle", "zebra"]);
+}
+
+#[test]
+fn test_project_paths_workflows_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+    let paths = ProjectPaths::with_project_name("myproject", "myproject");
+    let wf_dir = paths.workflows_dir();
+    let s = wf_dir.to_string_lossy();
+    assert!(
+        s.ends_with("projects/myproject/workflows"),
+        "expected projects/<repo>/workflows, got: {s}"
+    );
+}
+
 #[test]
 fn test_detect_repo_name_rejects_path_traversal_in_midtown_dir_key() {
     // MIDTOWN_DIR_KEY values with path separators or traversal should be rejected.
