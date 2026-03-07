@@ -1430,6 +1430,35 @@ fn workflow_agents_md_content_returns_none_for_empty_file() {
     assert_eq!(result, None);
 }
 
+#[test]
+fn workflow_agents_md_content_rejects_path_traversal() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Create a directory outside workflows_dir that would be reachable via traversal
+    let secret_dir = tmp.path().join("secret");
+    std::fs::create_dir_all(&secret_dir).unwrap();
+    std::fs::write(secret_dir.join("AGENTS.md"), "SECRET CONTENT").unwrap();
+
+    let workflows_dir = tmp.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+
+    // Attempt path traversal
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "../secret"),
+        None,
+        "path traversal with ../ should be rejected"
+    );
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "foo/../../secret"),
+        None,
+        "nested path traversal should be rejected"
+    );
+    assert_eq!(
+        super::workflow_agents_md_content(&workflows_dir, "/tmp/x"),
+        None,
+        "absolute path should be rejected"
+    );
+}
+
 // ── merge_workflow_agents_md tests ──────────────────────────────────
 
 #[test]

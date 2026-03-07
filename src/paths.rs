@@ -978,6 +978,16 @@ pub fn agents_md_for_channel(channel: &str, project_root: &Path, repo: &str) -> 
 /// Looks for `<workflows_dir>/<workflow_name>/AGENTS.md` and returns its content
 /// if the file exists and is non-empty.
 pub fn workflow_agents_md_content(workflows_dir: &Path, workflow_name: &str) -> Option<String> {
+    // Reject workflow names that could escape the workflows directory
+    if workflow_name.is_empty()
+        || workflow_name.contains('/')
+        || workflow_name.contains('\\')
+        || workflow_name.contains("..")
+        || workflow_name.starts_with('.')
+    {
+        return None;
+    }
+
     let path = workflows_dir.join(workflow_name).join("AGENTS.md");
     match std::fs::read_to_string(&path) {
         Ok(content) if !content.trim().is_empty() => Some(content),
