@@ -222,7 +222,7 @@ pub struct ProjectPaths { dir_key, project_name, base, state_base }
 The main lead session name equals the project name (e.g. `"midtown"`), not the hardcoded string `"lead"`. This applies everywhere:
 
 - **Spawn**: `LaunchConfig::lead()` sets `name` from the `dir_key` param (`src/launch.rs`)
-- **Health**: `ensure_lead_alive()`, `ensure_channel_leads_alive()`, and `maybe_refresh_lead_session()` compare against `snap.project_name` (`src/daemon/health.rs`)
+- **Health**: `ensure_lead_alive()` and `maybe_refresh_lead_session()` compare against `snap.project_name` (`src/daemon/health.rs`)
 - **Dispatch**: coworker-limit checks use `is_project_lead()` (`src/daemon/dispatch.rs`)
 - **Effects**: auto-detach suffix check uses `state.project_name` (`src/daemon/effects.rs`)
 - **Stop-time key**: `coworker_stop_times` entries for the lead are keyed by `project_name.to_lowercase()`
@@ -261,8 +261,6 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 - **Insight posted** to the channel (via `post_insight` in `effects.rs`)
 - **Explicit nudge** (@mention routing, task feedback)
 
-**Auto-respawn:** Once a channel lead has been registered in `channel_lead_sessions`, it is kept alive by `ensure_channel_leads_alive()` in `health.rs` — the channel lead counterpart of `ensure_lead_alive()` for the project lead. On each `SessionMonitorTick`, if a registered channel lead is not found in `active_coworkers`, the function emits `Effect::RespawnChannelLead { channel_name }`. The effect executor loads domain context (notes, `AGENTS.md`, skill bodies) via `load_channel_lead_context()` and spawns a fresh session. Respawn is suppressed when the channel lead is attached interactively (`attached_coworkers`) or was recently stopped (`coworker_stop_times`, using `LEAD_RESPAWN_COOLDOWN`). This is a pure decision function — all I/O is deferred to the effect executor.
-
 **Archived-channel redirect:** When a task is created with `--channel <name>` pointing to an archived channel (e.g., `daemon`), `handle_task_create` redirects the task to the ops channel via `resolve_effective_task_channel()`. The effective channel is stored in both the task JSON and `ps.task_channel`, ensuring all downstream routing (announcement posting, `NudgeChannelLead`, `MIDTOWN_CHANNEL` injection, insight posting, `handle_task_metadata`) uses the routable channel. If the ops channel is itself archived, the redirect falls back to the main channel.
 
 All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The execution layer in `effects.rs` routes with session-id-first behavior to avoid name collisions: it tries `send_message_to_session_id()` using the stored channel mapping; if stale/missing, it refreshes from the active named session; if resume is possible, it uses `spawn_with_resume_fallback(...)` and then sends to the resumed/fresh session; otherwise it spawns fresh and persists the new session ID.
@@ -275,9 +273,9 @@ Channel leads participate in normal idle shutdown (same timeout as coworkers). T
 
 Note: `route_mentions()` is intentionally disabled for topic channels — user `@coworker` and `@all` mentions in topic channels are silently dropped; only the channel lead nudge path is active.
 
-**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`. The system prompt is assembled in two phases: (1) the base template is built and template variables are substituted, then (2) optional `AGENTS.md` workflow facilitation content is appended *after* substitution to preserve any literal placeholder-like text in workflow content. The `CoworkerRole::ChannelLead` variant carries `agents_md: Option<String>` alongside the existing `channel_name` and `domain_context` fields.
+**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`. The system prompt is assembled in two phases: (1) the base template is built and template variables are substituted, then (2) optional `AGENTS.md` workflow facilitation content and `SKILL.md` plugin bodies are appended *after* substitution to preserve any literal placeholder-like text in plugin content. The `CoworkerRole::ChannelLead` variant carries `agents_md: Option<String>` and `skill_bodies: Vec<(String, String)>` alongside the existing `channel_name` and `domain_context` fields.
 
-**Context loading for channel leads:** At spawn time (in `effects.rs` and `rpc_auth.rs`), two items are loaded via `spawn_blocking`: (1) channel notes via `load_channel_notes()`, and (2) `AGENTS.md` content via `agents_md_for_channel()` in `src/paths.rs` (searches channel-specific then project-wide paths, both in-repo and local), merged with workflow-specific `AGENTS.md` and state summary via `merge_workflow_agents_md()`. Both are also loaded in the `handle_auth_switch` path to ensure channel leads retain context across auth profile rotations.
+**Plugin discovery for channel leads:** At spawn time (in `effects.rs` and `rpc_auth.rs`), three items are loaded via `spawn_blocking`: (1) channel notes via `load_channel_notes()`, (2) `AGENTS.md` content via `agents_md_for_channel()` in `src/paths.rs` (searches channel-specific then project-wide paths, both in-repo and local), and (3) `SKILL.md` bodies via `collect_skill_md_bodies()` in `src/paths.rs` (strips YAML frontmatter, extracts name and markdown body from each plugin's `SKILL.md`). All three discovery functions are also called in the `handle_auth_switch` path to ensure channel leads retain plugin context across auth profile rotations.
 
 **Domain context from notes:** The `{domain_context}` variable is populated by `load_channel_notes()` in `src/channel.rs`, which reads all `.md` files from `channels/<name>/notes/`, concatenates them with filename-derived headers, and caps total size at 100 KB. This is called at all 4 channel lead spawn sites (3 in `effects.rs`, 1 in `cli/lead.rs`) so that channel leads always start with their accumulated domain knowledge. Insight nudges include a reminder to save important knowledge to notes, completing the feedback loop.
 
@@ -299,7 +297,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 
 **Initial nudge on fork:** Both the CLI and web-UI fork paths send a `NudgeSession` to fresh forks so they have an initial message to act on (without a nudge, forks sit idle forever). The CLI path (`handle_session_fork`) follows a 3-priority fallback chain: (1) an explicit `initial_message` parameter is always used when provided; (2) otherwise, the daemon looks up the parent message by `thread_parent_id` from the channel history and includes its content — for channel leads this is combined with `fork_initial_framing`, for non-channel-lead callers (e.g. the project lead) the message is wrapped as investigative context; (3) if no parent message is found, channel leads get bare `fork_initial_framing` while non-channel-lead callers get no nudge (the framing text assumes a channel-lead role which would be misleading).
 
-**Lead self-fork for deep work:** The project lead (main channel) uses `midtown session fork --thread-id <id>` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. The project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead.md`), not daemon automation.
+**Lead self-fork for deep work:** The project lead (main channel) uses `midtown session fork --thread-id <id>` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. The project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead-common.md`), not daemon automation.
 
 **Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. "pending" entries are filtered out (a concurrent fork is in progress but not yet ready) — the reply falls back to `NudgeChannelLead` rather than producing a nudge with an invalid session ID. Once the fork completes, subsequent replies route to the real fork session. New top-level messages always go to the channel lead. **Important:** routing a reply to the fork does **not** automatically notify other thread participants — if the fork wants a coworker or reviewer to see a thread reply, it **must @mention them** explicitly.
 
@@ -323,8 +321,6 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 - `fork_bound_threads` is rebuilt on startup from persisted `SessionRecord.bound_thread_id` entries, which keeps thread-bound coworkers routed correctly across restarts (including auto-binding spawned tasks via `task_thread_id`). Entries created directly by `create_fork_session` remain ephemeral.
 
 **Crash recovery:** When a fork process dies (API error, rate limit, etc.), the daemon detects it in the `session_drain_interval` handler and respawns a fresh fork bound to the same thread. Detection happens **before** `cleanup_coworker_state` runs — the fork bindings (`fork_bound_threads`, `fork_bound_channels`) are captured first, then cleanup proceeds, then `Effect::RespawnFork` is executed. This ordering is critical: `cleanup_coworker_state` removes `topic_sessions` entries, so any detection path that reads `topic_sessions` after cleanup (e.g., snapshot-based) would never see dead forks. The `respawn_fork` function in `effects.rs` builds a fresh `HeadlessConfig` via `build_fork_config()` (no `--resume`, fresh session), re-establishes `topic_sessions` and reverse maps, sends a `NudgeSession` so the fork has an initial message, and broadcasts `ThreadOwnership(true)` to restore the web UI indicator. Per-fork cooldown (`process_respawn` category, `ZOMBIE_RESPAWN_COOLDOWN`) prevents respawn loops.
-
-**Session exit alert routing:** When a session dies unexpectedly, the daemon posts an alert. Routing depends on session type: **Lead** exits go to the main channel (user needs visibility). **Coworker** and **channel lead** exits go to `#ops` (operational noise, not user-facing). **Fork** exits that trigger respawn suppress the generic exit message entirely — the `RespawnFork` effect posts a "💀 Fork died — respawning" message to `#ops` that includes stderr from the original crash, preserving crash context even if the respawn itself fails.
 
 ## Channel Storage Layout
 
@@ -659,13 +655,13 @@ Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>
 StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
                            → extract_tool_blocks()    → Vec<ToolBlock> (structured)
                            → detect_provider()        → Option<String> ("claude" | "codex")
-    → process_agent_output() → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
+    → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
     → channel JSONL file + WebSocket broadcast
 ```
 
-- **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_agent_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
+- **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_coworker_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
 
-- **`process_agent_output()`** (`daemon/stream.rs`): Takes the set of all active agent session names (coworkers, channel leads, forks, and the project lead) and posts each agent's aggregated output to `dm-<name>`. This includes reviewer sessions — their output streams to DM channels alongside regular coworkers. Output is split into top-level and sub-agent content using `parentToolUseID` from stream events. For messages containing tool calls, the effect carries a lightweight text summary in `content` (e.g., `"[Bash, Read]"`) for CLI TUI visibility, plus structured `tool_data: Vec<ToolBlock>` and `provider: String` for client-side tool-specific rendering in the web UI. Sub-agent tool calls and text are posted with `parent_tool_use_id` set, which the effect executor resolves to `thread_parent_id` via the `dm_tool_threads` lookup — creating threaded sub-agent activity under the parent tool call message.
+- **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`. This includes reviewer sessions — their output streams to DM channels alongside regular coworkers. For messages containing tool calls, the effect carries a lightweight text summary in `content` (e.g., `"[Bash, Read]"`) for CLI TUI visibility, plus structured `tool_data: Vec<ToolBlock>` and `provider: String` for client-side tool-specific rendering in the web UI.
 - **Structured tool data** (`ToolBlock` in `message.rs`): Preserves raw tool call JSON (`tool_name`, `input`, `output`, `error`) extracted from stream events. `extract_tool_blocks()` pairs `tool_use` blocks from Assistant events with `tool_result` blocks from User events by `call_id`. `detect_provider()` identifies the AI provider (`"claude"` or `"codex"`) from stream event metadata. Both fields are `Option` with `serde(default)` for backward compatibility with legacy messages.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
 - **Task separator**: A `PostSystemMessage` separator is posted to `dm-<name>` to visually delineate task boundaries. For regular coworkers this uses the format "─── Task !42: Fix auth bug ───" and happens in three paths: (1) `SpawnSession` when a session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions receive a PR-based separator (e.g., "─── Reviewing PR #42 ───") in their `SpawnCoworkerWithCallbacks` `on_success` effects.
@@ -688,17 +684,6 @@ Each channel can have a `workflow.py` script that controls how the daemon respon
 4. `~/.midtown/projects/<repo>/workflow.py` — project default, local only
 
 If no script is found, or if a PR has no channel/task association, the daemon falls back to its compiled-in inline effects. This layered resolution allows teams to commit shared workflows to the repo while maintaining machine-specific local overrides.
-
-### Web API Endpoints
-
-**`GET /api/workflow?channel=<name>`** — Returns the workflow configuration for a channel. Uses `discover_workflows()` from `paths.rs` to find named workflow directories under `~/.midtown/projects/<repo>/workflows/`, and reads the channel's assignment from `DaemonPersistentState`. The response includes:
-
-- `assigned_workflow` — name of the assigned workflow (null if none)
-- `available_workflows` — array of discovered workflows with metadata (name, description, states, transitions) parsed from each workflow's `AGENTS.md` frontmatter via `parse_agents_md_frontmatter()`
-- `state` — current workflow state for this channel (task phases, etc.)
-- `mermaid` — state machine diagram generated from the assigned workflow's transition metadata, or `null` if no workflow is assigned or transitions aren't defined
-
-**`PUT /api/channels/{channel}/workflow`** — Assigns or unassigns a workflow for a channel. Routes through the daemon's RPC (`workflow.assign` / `workflow.unassign`) to ensure the in-memory `persistent_state` mutex is used, avoiding race conditions with direct file I/O on `daemon-state.json`.
 
 ### Invocation
 
@@ -729,27 +714,24 @@ uv run workflow.py --event '{"type":"pr.opened",...}' \
 
 ### State Persistence
 
-Workflow state is owned by the daemon in-memory (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json` alongside other daemon state. This is a `HashMap<String, serde_json::Value>` keyed by channel name. State is flat per-channel — no plugin sub-namespace.
+Workflow state is owned by the daemon in-memory (`DaemonPersistentState::workflow_state`) and persisted to `daemon-state.json` alongside other daemon state. This is a `HashMap<String, serde_json::Value>` keyed by channel name. Each channel's state is further namespaced by plugin key when plugins use the `plugin` parameter.
 
-Five RPC methods in `rpc_workflow.rs` manage workflow state and channel assignments:
+Two RPC methods in `rpc_workflow.rs` provide access:
 
-- **`workflow.get_state`** — reads from the in-memory `workflow_state` map for a channel. Returns the full channel state, or `null` when absent.
-- **`workflow.set_state`** — replaces the channel's state and persists to `daemon-state.json`. Concurrent writes are serialized by the `persistent_state` Mutex.
-- **`workflow.assign`** — maps a channel to a named workflow (stored in `DaemonPersistentState::channel_workflows`). Validates the workflow exists before saving. Multiple channels can share the same workflow.
-- **`workflow.unassign`** — removes a channel's workflow assignment, reverting to daemon defaults.
-- **`workflow.list`** — returns available workflows discovered from `~/.midtown/projects/<project>/workflows/` (directories containing `workflow.py`) and current channel→workflow assignments.
+- **`workflow.get_state`** — reads from the in-memory `workflow_state` map for a channel, optionally scoped to a plugin key. Returns `null` when absent.
+- **`workflow.set_state`** — updates the in-memory state and persists to `daemon-state.json`. With a `plugin` key, merges at that key; without, replaces the entire channel state. Concurrent writes are serialized by the `persistent_state` Mutex.
 
 **Legacy migration:** On first startup after upgrade, per-channel `workflow-state.json` files are automatically migrated into `daemon-state.json` and the old files are removed. The `--state` CLI flag is still passed to legacy `workflow.py` scripts for backward compatibility, but new plugin-based workflows should use RPC exclusively.
 
 ### Plugin Daemon (Unix Socket IPC)
 
-`WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves workflow hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based workflow plugins. Each workflow gets its own isolated `PluginManager` instance — there is no multi-plugin composition across workflows.
+`WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves plugin hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based plugins.
 
 **Protocol:** Newline-delimited JSON, one request per connection. Each connection sends one request and receives one response, then closes.
 
 Request format (event dispatch):
 ```json
-{"type": "pr.opened", "event": {...}, "task_id": "7", "channel_workflow": "my-workflow"}
+{"type": "pr.opened", "event": {...}, "task_id": "7", "task_state": "in_review"}
 ```
 
 Response format (event dispatch):
@@ -757,23 +739,33 @@ Response format (event dispatch):
 {"ok": true, "actions": [...], "default_prevented": false}
 ```
 
-The `channel_workflow` field tells the Python daemon which workflow module to load/use for this event. The Rust side resolves this from `DaemonPersistentState::channel_workflows` (set via `workflow.assign`).
+Request format (reload command):
+```json
+{"type": "reload"}
+```
 
-The Rust side uses `PluginDispatchResult` for event responses, keeping the deserialization types aligned with their semantics.
+Response format (reload):
+```json
+{"ok": true, "reloaded": true, "loaded_plugins": ["/path/to/plugin.py", ...]}
+```
+
+The Rust side uses `PluginDispatchResult` for event responses and `PluginReloadResult` for reload responses, keeping the deserialization types aligned with their semantics.
 
 **Startup handshake:** On startup, the daemon writes `{"ready":true}\n` to stdout so the Rust parent process knows the socket is accepting connections.
 
-**Lazy loading + hot-reload:** Workflows are loaded lazily on first dispatch via `_ensure_loaded()`. Before each dispatch, the daemon checks whether the workflow file's mtime has changed and reloads if so — zero startup cost with live editing support.
+**Hot-reload (two-tier approach):**
+- **Per-event mtime check:** Before processing each event dispatch, `_process_request()` calls `reload_changed()` to detect mtime changes in already-tracked plugin files and re-register modified modules. This does NOT scan for new plugins to avoid unnecessary `iterdir()` overhead on every event.
+- **Periodic full scan:** The Rust event loop runs a `plugin_scan_interval` timer every 5 seconds that: (1) calls `update_plugin_dirs()` to detect new/removed plugin directories (restarting the daemon if dirs changed), and (2) sends a `"reload"` IPC command which triggers both `reload_changed()` AND `scan_for_new_plugins()` to discover newly added plugin files within existing directories.
 
 **Stale socket cleanup:** On startup, any existing socket file at the configured path is unlinked before binding, preventing "address already in use" errors from prior crashes.
 
-**CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--workflows-dir` arguments.
+**CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--plugin-dirs` arguments.
 
 ### Plugin Daemon Lifecycle Manager (Rust)
 
-`PluginDaemonManager` (`src/daemon/plugin_daemon.rs`) manages the lifecycle of the Python plugin daemon process from the Rust side.
+`PluginDaemonManager` (`src/daemon/plugin_daemon.rs`) manages the lifecycle of the Python plugin daemon process from the Rust side. It follows a similar pattern to `WorkflowSidecarManager` but manages a single process (not per-script).
 
-**Spawning:** Runs `uv run --project <sdk_path> python -m midtown --socket-path <path> --workflows-dir <dir>`. The SDK path is resolved via `paths::resolve_python_sdk_dir()` which checks: next to executable → `CARGO_MANIFEST_DIR/sdk/python` → `~/.local/share/midtown/sdk/python`.
+**Spawning:** Runs `uv run --project <sdk_path> python -m midtown --socket-path <path> --plugin-dirs <dirs>`. The SDK path is resolved via `paths::resolve_python_sdk_dir()` which checks: next to executable → `CARGO_MANIFEST_DIR/sdk/python` → `~/.local/share/midtown/sdk/python`.
 
 **Ready handshake:** After spawning, waits up to 30s for `{"ready":true}` on stdout, confirming the Unix socket is accepting connections.
 
@@ -781,15 +773,15 @@ The Rust side uses `PluginDispatchResult` for event responses, keeping the deser
 
 **Restart with backoff:** Exponential backoff starting at 500ms, doubling per consecutive crash, capped at 60s. Backoff resets on successful ready handshake. `ensure_running()` on each drain tick attempts restart when the backoff period has elapsed.
 
-**Workflow discovery:** `has_plugins()` checks the `workflows_dir` for workflow subdirectories (each containing a `workflow.py`). The daemon starts lazily — `ensure_running()` is called when a workflow event needs to be dispatched for a channel with an assigned workflow.
+**Plugin discovery:** `paths::discover_plugin_dirs()` scans for plugins in up to four directories (priority order): channel-specific in-repo, channel-specific local, project-wide in-repo, project-wide local. A directory is considered to contain plugins if it has at least one `.py` file (not `_`-prefixed) or a subdirectory with a `SKILL.md` file (AgentSkills format). At startup, only project-wide paths are scanned. At runtime, when dispatching workflow events, channel-specific plugin directories are discovered and merged into the running daemon via `merge_plugin_dirs()`. The manager only starts when at least one directory has plugin files.
 
-**Per-channel workflow assignment:** `DaemonPersistentState::channel_workflows` maps channel names to workflow names. Set via `workflow.assign` RPC, persisted in `daemon-state.json`. When dispatching an event, `dispatch_workflow_event()` looks up the channel's assigned workflow name and includes it as `channel_workflow` in the IPC request so the Python daemon loads the correct module.
+**AgentSkills format:** Plugin directories can contain AgentSkills — subdirectories with a `SKILL.md` frontmatter file specifying `midtown_hooks` (path to hooks module, default `scripts/hooks.py`) and `midtown_order` (execution priority). The `skill.py` module (`sdk/python/midtown/skill.py`) parses this frontmatter using a minimal YAML subset parser (no PyYAML dependency). `WorkflowDaemon` registers each AgentSkills plugin with a unique name (`agentskills_{name}`) to prevent pluggy conflicts when multiple skills share the same hooks filename.
 
-**Periodic plugin scan:** The main event loop runs a `plugin_scan_interval` (5s) that calls `refresh_has_plugins()` to re-scan the workflows directory.
+**Periodic plugin scan:** The main event loop runs a `plugin_scan_interval` (5s) that calls `update_plugin_dirs()` to re-discover plugin directories. If directories changed, the Python daemon is killed and `ensure_running()` spawns a fresh one (which loads all plugins on startup, so no reload is needed). If directories are unchanged, `send_reload()` sends a `"reload"` IPC command so the Python side checks for file-level changes and new plugins. `update_plugin_dirs()` returns a boolean indicating whether dirs changed, preventing a redundant (and potentially racy) reload immediately after a daemon restart.
 
 **Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for graceful exit, then escalates to SIGKILL if needed, then cleans up the socket file.
 
-**State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()`, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
+**State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()` with discovered plugin dirs, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
 
 ### Python SDK
 

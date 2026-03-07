@@ -760,7 +760,7 @@ pub fn lead_dir_for_repo(repo: &str) -> PathBuf {
 ///
 /// Returns `~/.midtown/projects/<repo>/lead-system-prompt.txt`.
 ///
-/// This file stores the lead's system prompt (lead.md + common.md)
+/// This file stores the lead's system prompt (lead-common.md + common.md)
 /// so it can be re-applied when attaching to a headless lead session.
 pub fn lead_system_prompt_file(repo: &str) -> PathBuf {
     lead_dir_for_repo(repo).join("lead-system-prompt.txt")

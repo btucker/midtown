@@ -27,7 +27,7 @@ pub enum CoworkerRole {
     Coworker,
     /// PR reviewer — uses coworker.md + common.md + reviewer.md
     Reviewer,
-    /// Lead — uses lead.md + common.md, unrestricted settings
+    /// Lead — uses lead-common.md + common.md, unrestricted settings
     Lead,
     /// Channel lead — uses channel-lead.md with channel name injected.
     /// Read-only: brainstorming and domain expertise for a topic channel.

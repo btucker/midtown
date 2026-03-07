@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 /// Embedded default for the shared lead coordination prompt.
-const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead.md");
+const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead-common.md");
 
 /// Embedded default for the Project Lead overlay prompt.
 const DEFAULT_PROJECT_LEAD_PROMPT: &str = include_str!("../agents/project-lead.md");
@@ -111,12 +111,13 @@ fn common_prompt() -> String {
 
 /// Load the main Lead agent's system prompt.
 ///
-/// Assembly: project-lead.md + lead.md + common.md
+/// Assembly: project-lead.md + lead-common.md + common.md
 /// For the Project Lead, `{name}` = project_name (e.g., "midtown").
 pub fn main_lead_system_prompt(project_name: &str) -> String {
     let project_lead = load_prompt_file("project-lead.md")
         .unwrap_or_else(|| DEFAULT_PROJECT_LEAD_PROMPT.to_string());
-    let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
+    let lead =
+        load_prompt_file("lead-common.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt();
     format!("{project_lead}\n\n{lead}\n\n{common}")
         .replace("{name}", project_name)
@@ -329,7 +330,7 @@ pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
 
 /// Load the channel lead system prompt with channel name and domain context substitution.
 ///
-/// Assembly: channel-lead.md + lead.md + common.md (+ ops-channel-lead.md for "ops" channel)
+/// Assembly: channel-lead.md + lead-common.md + common.md (+ ops-channel-lead.md for "ops" channel)
 ///           + AGENTS.md (workflow facilitation)
 ///
 /// For channel leads, `{name}` = channel_name.
@@ -343,7 +344,8 @@ pub fn channel_lead_system_prompt(
 ) -> String {
     let template = load_prompt_file("channel-lead.md")
         .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
-    let lead = load_prompt_file("lead.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
+    let lead =
+        load_prompt_file("lead-common.md").unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
     let common = common_prompt();
 
     let mut prompt = format!("{template}\n\n{lead}\n\n{common}");
