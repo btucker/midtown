@@ -25,15 +25,6 @@ export function extractPastedFile(e) {
 }
 
 /**
- * Upload a pending file and send it as a message.
- *
- * @param {File} file - The file to upload
- * @param {string} text - Optional message text to accompany the file
- * @param {string} channel - Channel name
- * @param {string|null} threadParentId - Thread parent message ID (null for top-level)
- * @returns {Promise<{ok: boolean, error?: string}>}
- */
-/**
  * Create a blob preview URL for a file, revoking any previous URL to prevent leaks.
  * Returns the new URL, or null if file is null/undefined.
  */
@@ -42,6 +33,15 @@ export function updatePreviewUrl(previousUrl, file) {
 	return file ? URL.createObjectURL(file) : null;
 }
 
+/**
+ * Upload a pending file and send it as a message.
+ *
+ * @param {File} file - The file to upload
+ * @param {string} text - Optional message text to accompany the file
+ * @param {string} channel - Channel name
+ * @param {string|null} threadParentId - Thread parent message ID (null for top-level)
+ * @returns {Promise<{ok: boolean, error?: string}>}
+ */
 export async function uploadAndSend(file, text, channel, threadParentId = null) {
 	const result = await uploadFile(file);
 

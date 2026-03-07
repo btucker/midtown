@@ -442,7 +442,7 @@ let prevThreadId = null;
   // Manage blob preview URL: create on file change, revoke old URL to prevent memory leaks.
   $effect(() => {
     const file = pendingFile
-    pendingFileUrl = updatePreviewUrl(pendingFileUrl, file)
+    pendingFileUrl = updatePreviewUrl(untrack(() => pendingFileUrl), file)
     return () => {
       if (pendingFileUrl) {
         URL.revokeObjectURL(pendingFileUrl)
