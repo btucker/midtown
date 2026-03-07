@@ -95,6 +95,7 @@ let prevThreadId = null;
   let replyText = $state('')
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
+  let autoScroll = $state(true)
   let desktopTextareaEl = $state(null)
   let mobileTextareaEl = $state(null)
   let isDesktop = $state(typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
@@ -169,10 +170,13 @@ let prevThreadId = null;
       ?? ($threadData?.tasks?.[0]?.id != null ? `task-${$threadData.tasks[0].id}` : null)
   )
 
-  // Clear thinking when the thread is closed or switched to a different thread.
+  // Clear thinking and reset autoScroll when thread is closed or switched.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
-    untrack(() => { thinking = false })
+    untrack(() => {
+      thinking = false
+      autoScroll = true
+    })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
@@ -395,9 +399,9 @@ let prevThreadId = null;
     }
   }
 
-  // Auto-scroll when new messages or edit diffs arrive
+  // Auto-scroll when new messages or edit diffs arrive (only if user is near bottom)
   $effect(() => {
-    if ((mergedTimeline.length > 0) && scrollArea) {
+    if ((mergedTimeline.length > 0) && scrollArea && untrack(() => autoScroll)) {
       // Skip auto-scroll-to-bottom when a deep-link target is pending —
       // the deep-link effect below will handle scrolling to the right message.
       // Read via untrack() so clearing the deep-link store doesn't re-trigger this effect.
@@ -437,6 +441,19 @@ let prevThreadId = null;
     }
     if (!threadId) lastFocusedThreadId = null
   })
+
+  function handleScroll() {
+    if (!scrollArea) return
+    const { scrollTop, scrollHeight, clientHeight } = scrollArea
+    autoScroll = scrollHeight - scrollTop - clientHeight < 50
+  }
+
+  function scrollToBottom() {
+    if (scrollArea) {
+      scrollArea.scrollTop = scrollArea.scrollHeight
+      autoScroll = true
+    }
+  }
 
   function resizeTextarea() {
     if (!textareaEl) return
@@ -530,6 +547,7 @@ let prevThreadId = null;
     <div
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[18px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
+      onscroll={handleScroll}
     >
       <!-- Task cards at top (above parent message) -->
       {#if $threadData.tasks?.length > 0}
@@ -692,6 +710,14 @@ let prevThreadId = null;
       {/each}
     </div>
 
+    {#if !autoScroll}
+      <button
+        class="absolute bottom-[90px] right-[18px] w-[36px] h-[36px] rounded-full border-2 border-border bg-card text-foreground text-[1.1rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-primary hover:text-primary z-10"
+        onclick={scrollToBottom}
+        aria-label="Scroll to bottom"
+      >↓</button>
+    {/if}
+
     <!-- Activity drawer: slides up from the input when lead is working -->
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
@@ -756,6 +782,7 @@ let prevThreadId = null;
     <div
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[18px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
+      onscroll={handleScroll}
     >
       <!-- Task cards at top -->
       {#if $threadData.tasks?.length > 0}
@@ -917,6 +944,14 @@ let prevThreadId = null;
         {/if}
       {/each}
     </div>
+
+    {#if !autoScroll}
+      <button
+        class="absolute bottom-[90px] right-[18px] w-[36px] h-[36px] rounded-full border-2 border-border bg-card text-foreground text-[1.1rem] cursor-pointer flex items-center justify-center transition-all duration-200 opacity-85 hover:opacity-100 hover:border-primary hover:text-primary z-10"
+        onclick={scrollToBottom}
+        aria-label="Scroll to bottom"
+      >↓</button>
+    {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
