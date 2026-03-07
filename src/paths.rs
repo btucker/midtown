@@ -407,6 +407,117 @@ impl ProjectPaths {
     }
 }
 
+/// Parsed YAML frontmatter from an AGENTS.md file.
+#[derive(Debug, Clone, Default)]
+pub struct WorkflowMetadata {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub states: Vec<String>,
+    pub transitions: std::collections::HashMap<String, Vec<String>>,
+}
+
+/// Parse YAML frontmatter from an AGENTS.md file content.
+///
+/// Expects content starting with `---`, followed by YAML key-value lines,
+/// and ending with `---`. Supports simple `key: value`, inline arrays
+/// `key: [a, b, c]`, and multi-line mappings with indented `key: [values]`.
+pub fn parse_agents_md_frontmatter(content: &str) -> Option<WorkflowMetadata> {
+    let mut lines = content.lines();
+
+    // First line must be `---`
+    let first = lines.next()?.trim();
+    if first != "---" {
+        return None;
+    }
+
+    let mut frontmatter_lines = Vec::new();
+    let mut found_end = false;
+    for line in lines {
+        if line.trim() == "---" {
+            found_end = true;
+            break;
+        }
+        frontmatter_lines.push(line);
+    }
+    if !found_end {
+        return None;
+    }
+
+    let mut meta = WorkflowMetadata::default();
+
+    // Parse lines — detect top-level keys vs indented (mapping) lines
+    let mut current_map_key: Option<String> = None;
+
+    for line in &frontmatter_lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Check if this is an indented line (part of a mapping)
+        let is_indented = line.starts_with(' ') || line.starts_with('\t');
+
+        if is_indented {
+            // Indented line belongs to current_map_key (transitions mapping)
+            if let Some(ref map_key) = current_map_key
+                && map_key == "transitions"
+                && let Some((k, v)) = parse_key_value(trimmed)
+            {
+                meta.transitions.insert(k, parse_inline_array(&v));
+            }
+            continue;
+        }
+
+        // Top-level key: value
+        current_map_key = None;
+        if let Some((key, value)) = parse_key_value(trimmed) {
+            match key.as_str() {
+                "name" => meta.name = Some(value),
+                "description" => meta.description = Some(value),
+                "states" => meta.states = parse_inline_array(&value),
+                "transitions" => {
+                    if value.is_empty() {
+                        // Multi-line mapping follows
+                        current_map_key = Some("transitions".to_string());
+                    } else {
+                        // Unlikely but handle inline
+                        current_map_key = Some("transitions".to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Some(meta)
+}
+
+/// Parse a `key: value` line. Returns (key, value) with value trimmed.
+fn parse_key_value(line: &str) -> Option<(String, String)> {
+    let colon_pos = line.find(':')?;
+    let key = line[..colon_pos].trim().to_string();
+    let value = line[colon_pos + 1..].trim().to_string();
+    Some((key, value))
+}
+
+/// Parse an inline array like `[a, b, c]` into a Vec<String>.
+fn parse_inline_array(s: &str) -> Vec<String> {
+    let trimmed = s.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        // Single value or empty
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+        return vec![trimmed.to_string()];
+    }
+    let inner = &trimmed[1..trimmed.len() - 1];
+    inner
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 /// A discovered workflow directory.
 #[derive(Debug, Clone)]
 pub struct WorkflowInfo {
@@ -414,6 +525,7 @@ pub struct WorkflowInfo {
     pub dir: PathBuf,
     pub workflow_py: PathBuf,
     pub agents_md: Option<PathBuf>,
+    pub metadata: Option<WorkflowMetadata>,
 }
 
 /// Discover named workflows in a workflows directory.
@@ -439,16 +551,19 @@ pub fn discover_workflows(workflows_dir: &Path) -> Vec<WorkflowInfo> {
         }
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let agents_md_path = path.join("AGENTS.md");
-        let agents_md = if agents_md_path.exists() {
-            Some(agents_md_path)
+        let (agents_md, metadata) = if agents_md_path.exists() {
+            let content = fs::read_to_string(&agents_md_path).unwrap_or_default();
+            let meta = parse_agents_md_frontmatter(&content);
+            (Some(agents_md_path), meta)
         } else {
-            None
+            (None, None)
         };
         workflows.push(WorkflowInfo {
             name,
             dir: path,
             workflow_py,
             agents_md,
+            metadata,
         });
     }
     workflows.sort_by(|a, b| a.name.cmp(&b.name));

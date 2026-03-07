@@ -12,7 +12,7 @@ use axum::{
     },
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -442,6 +442,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/questions", get(api_pending_questions))
         .route("/api/search", get(api_search))
         .route("/api/workflow", get(api_channel_workflow))
+        .route(
+            "/api/channels/{channel}/workflow",
+            put(api_set_channel_workflow),
+        )
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
         .route("/api/screenshots/{filename}", get(api_get_screenshot))
@@ -2090,30 +2094,6 @@ async fn api_get_screenshot(
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], content))
 }
 
-/// Embedded default workflow script content and mermaid diagram.
-///
-/// These are compiled into the binary so the daemon can serve the default
-/// workflow even when the SDK isn't installed locally.
-const DEFAULT_WORKFLOW_CONTENT: &str = include_str!("../sdk/python/midtown/default_workflow.py");
-
-const DEFAULT_WORKFLOW_MERMAID: &str = "\
-stateDiagram-v2
-    [*] --> pending
-    pending --> in_progress : task_assigned
-    in_progress --> in_review : pr_opened
-    in_review --> approved : pr_approved
-    in_progress --> approved : pr_approved
-    in_review --> in_progress : pr_changes_requested
-    approved --> in_progress : pr_changes_requested
-    in_progress --> merged : pr_merged
-    in_review --> merged : pr_merged
-    approved --> merged : pr_merged
-    pending --> merged : task_completed
-    in_progress --> merged : task_completed
-    in_review --> merged : task_completed
-    approved --> merged : task_completed
-    merged --> [*]";
-
 /// Query parameters for the workflow endpoint.
 #[derive(Debug, Deserialize)]
 struct WorkflowQuery {
@@ -2125,17 +2105,8 @@ struct WorkflowQuery {
 ///
 /// Path: `/api/workflow?channel=<name>`
 ///
-/// Uses the full 4-level resolution order to find the active workflow script,
-/// including repo-committed paths (which require `project_root` from `WebState`):
-///
-/// 1. `<project_root>/.midtown/channels/<channel>/workflow.py` — channel-repo
-/// 2. `~/.midtown/projects/<repo>/channels/<channel>/workflow.py` — channel-local
-/// 3. `<project_root>/.midtown/workflow.py` — project-repo
-/// 4. `~/.midtown/projects/<repo>/workflow.py` — project-local
-/// 5. Compiled-in default
-///
-/// For custom workflows, attempts to generate the mermaid diagram by running
-/// `python <script> --diagram`. Falls back to the default diagram on failure.
+/// Returns the assigned workflow, available workflows with metadata,
+/// current workflow state, and a mermaid state diagram.
 async fn api_channel_workflow(
     State(state): State<Arc<WebState>>,
     Query(params): Query<WorkflowQuery>,
@@ -2146,175 +2117,148 @@ async fn api_channel_workflow(
     }
 
     let dir_key = &state.config.dir_key;
-    let project_root = state.all_repo_paths.first().map(|p| p.as_path());
 
-    // Resolve workflow script with full 4-level priority
-    let (script_source, script_path, script_content) =
-        resolve_workflow_script(channel, project_root, dir_key);
+    // Load persistent state for assigned workflow and workflow state
+    let persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
 
-    // Generate mermaid diagram — use Python for custom scripts, default for built-in.
-    // For custom scripts that don't support --diagram, mermaid is null so the UI
-    // can hide the diagram rather than showing a misleading default.
-    let mermaid: Option<String> = if script_source == "default" {
-        Some(DEFAULT_WORKFLOW_MERMAID.to_string())
-    } else if let Some(ref path) = script_path {
-        generate_workflow_diagram(path).await
-    } else {
-        None
-    };
+    let assigned_workflow = persistent_state.channel_workflows.get(channel).cloned();
 
-    // Discover plugins at all 4 levels
-    let plugins = discover_workflow_plugins(channel, project_root, dir_key);
+    // Discover available workflows
+    let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
+    let discovered = crate::paths::discover_workflows(&workflows_dir);
+
+    let available_workflows: Vec<serde_json::Value> = discovered
+        .iter()
+        .map(|w| {
+            let mut obj = serde_json::json!({ "name": w.name });
+            if let Some(ref meta) = w.metadata {
+                if let Some(ref desc) = meta.description {
+                    obj["description"] = serde_json::json!(desc);
+                }
+                if !meta.states.is_empty() {
+                    obj["states"] = serde_json::json!(meta.states);
+                }
+                if !meta.transitions.is_empty() {
+                    obj["transitions"] = serde_json::json!(meta.transitions);
+                }
+            }
+            obj
+        })
+        .collect();
+
+    // Get workflow state for this channel
+    let workflow_state = persistent_state.workflow_state.get(channel).cloned();
+
+    // Generate mermaid diagram from assigned workflow's transitions metadata
+    let mermaid = assigned_workflow.as_ref().and_then(|assigned_name| {
+        discovered
+            .iter()
+            .find(|w| &w.name == assigned_name)
+            .and_then(|w| w.metadata.as_ref())
+            .and_then(|meta| {
+                if meta.transitions.is_empty() {
+                    return None;
+                }
+                Some(generate_mermaid_from_transitions(
+                    &meta.states,
+                    &meta.transitions,
+                ))
+            })
+    });
 
     Ok(Json(serde_json::json!({
-        "script_source": script_source,
-        "script_path": script_path,
-        "script_content": script_content,
+        "assigned_workflow": assigned_workflow,
+        "available_workflows": available_workflows,
+        "state": workflow_state,
         "mermaid": mermaid,
-        "plugins": plugins,
     })))
 }
 
-/// Resolve workflow script using 4-level priority (+ default fallback).
-///
-/// Returns `(source_label, Option<path_string>, script_content)`.
-fn resolve_workflow_script(
-    channel: &str,
-    project_root: Option<&std::path::Path>,
-    dir_key: &str,
-) -> (&'static str, Option<String>, String) {
-    let local_base = crate::paths::projects_dir_for_repo(dir_key);
+/// Generate a mermaid stateDiagram-v2 string from workflow states and transitions.
+fn generate_mermaid_from_transitions(
+    states: &[String],
+    transitions: &std::collections::HashMap<String, Vec<String>>,
+) -> String {
+    let mut lines = vec!["stateDiagram-v2".to_string()];
 
-    // Candidates: (source_label, path)
-    let mut candidates: Vec<(&str, std::path::PathBuf)> = Vec::with_capacity(4);
-
-    // 1. Channel-specific, in repo
-    if let Some(root) = project_root {
-        candidates.push((
-            "channel-repo",
-            root.join(".midtown")
-                .join("channels")
-                .join(channel)
-                .join("workflow.py"),
-        ));
+    // Add initial state transition to first state
+    if let Some(first) = states.first() {
+        lines.push(format!("    [*] --> {first}"));
     }
 
-    // 2. Channel-specific, local
-    candidates.push((
-        "channel-local",
-        local_base
-            .join("channels")
-            .join(channel)
-            .join("workflow.py"),
-    ));
-
-    // 3. Project default, in repo
-    if let Some(root) = project_root {
-        candidates.push(("project-repo", root.join(".midtown").join("workflow.py")));
-    }
-
-    // 4. Project default, local
-    candidates.push(("project-local", local_base.join("workflow.py")));
-
-    for (source, path) in candidates {
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).unwrap_or_default();
-            return (source, Some(path.to_string_lossy().to_string()), content);
-        }
-    }
-
-    // 5. Compiled-in default
-    ("default", None, DEFAULT_WORKFLOW_CONTENT.to_string())
-}
-
-/// Generate a mermaid diagram from a custom workflow script.
-///
-/// Runs `python <path> --diagram` and captures stdout. Returns `None` if the
-/// command fails or returns empty output — callers should handle the absence
-/// gracefully (e.g., hide the diagram section) rather than showing the default
-/// state machine, which would be misleading for custom workflows.
-async fn generate_workflow_diagram(script_path: &str) -> Option<String> {
-    let path = script_path.to_string();
-    let result = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("python3")
-            .arg(&path)
-            .arg("--diagram")
-            .output()
-    })
-    .await;
-
-    match result {
-        Ok(Ok(output)) if output.status.success() => {
-            let diagram = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if diagram.is_empty() {
-                None
-            } else {
-                Some(diagram)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Discover plugins across all 4 resolution levels.
-fn discover_workflow_plugins(
-    channel: &str,
-    project_root: Option<&std::path::Path>,
-    dir_key: &str,
-) -> Vec<serde_json::Value> {
-    let local_base = crate::paths::projects_dir_for_repo(dir_key);
-    let mut plugin_dirs: Vec<(&str, std::path::PathBuf)> = Vec::with_capacity(4);
-
-    // 1. Channel-specific, in repo
-    if let Some(root) = project_root {
-        plugin_dirs.push((
-            "channel-repo",
-            root.join(".midtown")
-                .join("channels")
-                .join(channel)
-                .join("plugins"),
-        ));
-    }
-
-    // 2. Channel-specific, local
-    plugin_dirs.push((
-        "channel-local",
-        local_base.join("channels").join(channel).join("plugins"),
-    ));
-
-    // 3. Project-wide, in repo
-    if let Some(root) = project_root {
-        plugin_dirs.push(("project-repo", root.join(".midtown").join("plugins")));
-    }
-
-    // 4. Project-wide, local
-    plugin_dirs.push(("project-local", local_base.join("plugins")));
-
-    let mut plugins = Vec::new();
-    for (source, dir) in &plugin_dirs {
-        if dir.is_dir()
-            && let Ok(entries) = std::fs::read_dir(dir)
-        {
-            let files: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    let name = e.file_name();
-                    let name = name.to_string_lossy();
-                    (name.ends_with(".py") && !name.starts_with('_'))
-                        || (e.path().is_dir() && e.path().join("SKILL.md").exists())
-                })
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
-            if !files.is_empty() {
-                plugins.push(serde_json::json!({
-                    "source": source,
-                    "path": dir.to_string_lossy(),
-                    "files": files,
-                }));
+    // Add transitions in state order for deterministic output
+    for from_state in states {
+        if let Some(targets) = transitions.get(from_state) {
+            for to_state in targets {
+                lines.push(format!("    {from_state} --> {to_state}"));
             }
         }
     }
-    plugins
+
+    // Add terminal transition from last state
+    if let Some(last) = states.last() {
+        lines.push(format!("    {last} --> [*]"));
+    }
+
+    lines.join("\n")
+}
+
+/// Request body for assigning/unassigning a workflow to a channel.
+#[derive(Debug, Deserialize)]
+struct SetWorkflowRequest {
+    workflow: Option<String>,
+}
+
+/// Assign or unassign a workflow for a channel.
+///
+/// Path: `PUT /api/channels/{channel}/workflow`
+///
+/// Body: `{"workflow": "tdw"}` to assign, `{"workflow": null}` to unassign.
+async fn api_set_channel_workflow(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Json(body): Json<SetWorkflowRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Validate channel name
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let dir_key = &state.config.dir_key;
+
+    // Load persistent state
+    let mut persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
+
+    match body.workflow {
+        Some(workflow_name) => {
+            // Validate workflow exists
+            let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
+            let discovered = crate::paths::discover_workflows(&workflows_dir);
+            if !discovered.iter().any(|w| w.name == workflow_name) {
+                return Err(StatusCode::NOT_FOUND);
+            }
+            persistent_state
+                .channel_workflows
+                .insert(channel, workflow_name);
+        }
+        None => {
+            persistent_state.channel_workflows.remove(&channel);
+        }
+    }
+
+    // Save persistent state
+    if let Err(e) = persistent_state.save_for_repo(dir_key) {
+        warn!("Failed to save persistent state: {e}");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// WebSocket upgrade handler

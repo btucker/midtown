@@ -1509,3 +1509,151 @@ fn merge_workflow_agents_md_state_without_workflow() {
     assert!(result.contains("## Current Workflow State"));
     assert!(result.contains("Task !1: phase = study"));
 }
+
+// ── AGENTS.md frontmatter parsing ─────────────────────────────────────────
+
+#[test]
+fn test_parse_frontmatter_full() {
+    let content = "\
+---
+name: tdw
+description: Test-Driven Writing
+states: [study, do, observe, hone]
+transitions:
+  study: [do]
+  do: [observe]
+  observe: [hone, do]
+  hone: [study]
+---
+# Body content here
+";
+    let meta = parse_agents_md_frontmatter(content).unwrap();
+    assert_eq!(meta.name.as_deref(), Some("tdw"));
+    assert_eq!(meta.description.as_deref(), Some("Test-Driven Writing"));
+    assert_eq!(meta.states, vec!["study", "do", "observe", "hone"]);
+    assert_eq!(meta.transitions.get("study").unwrap(), &vec!["do"]);
+    assert_eq!(meta.transitions.get("do").unwrap(), &vec!["observe"]);
+    assert_eq!(
+        meta.transitions.get("observe").unwrap(),
+        &vec!["hone", "do"]
+    );
+    assert_eq!(meta.transitions.get("hone").unwrap(), &vec!["study"]);
+}
+
+#[test]
+fn test_parse_frontmatter_no_transitions() {
+    let content = "\
+---
+name: simple
+description: A simple workflow
+states: [a, b, c]
+---
+";
+    let meta = parse_agents_md_frontmatter(content).unwrap();
+    assert_eq!(meta.name.as_deref(), Some("simple"));
+    assert_eq!(meta.states, vec!["a", "b", "c"]);
+    assert!(meta.transitions.is_empty());
+}
+
+#[test]
+fn test_parse_frontmatter_no_frontmatter() {
+    let content = "# Just a regular markdown file\nNo frontmatter here.";
+    assert!(parse_agents_md_frontmatter(content).is_none());
+}
+
+#[test]
+fn test_parse_frontmatter_unclosed() {
+    let content = "\
+---
+name: broken
+description: Missing closing marker
+";
+    assert!(parse_agents_md_frontmatter(content).is_none());
+}
+
+#[test]
+fn test_parse_frontmatter_empty() {
+    let content = "\
+---
+---
+";
+    let meta = parse_agents_md_frontmatter(content).unwrap();
+    assert!(meta.name.is_none());
+    assert!(meta.description.is_none());
+    assert!(meta.states.is_empty());
+    assert!(meta.transitions.is_empty());
+}
+
+#[test]
+fn test_parse_frontmatter_name_and_description_only() {
+    let content = "\
+---
+name: spec-review
+description: Spec-driven review
+---
+";
+    let meta = parse_agents_md_frontmatter(content).unwrap();
+    assert_eq!(meta.name.as_deref(), Some("spec-review"));
+    assert_eq!(meta.description.as_deref(), Some("Spec-driven review"));
+    assert!(meta.states.is_empty());
+}
+
+#[test]
+fn test_discover_workflows_populates_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+
+    // Workflow with frontmatter
+    fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
+    fs::write(
+        workflows_dir.join("tdw/AGENTS.md"),
+        "\
+---
+name: tdw
+description: Test-Driven Writing
+states: [study, do]
+transitions:
+  study: [do]
+  do: [study]
+---
+# Body
+",
+    )
+    .unwrap();
+
+    // Workflow without AGENTS.md
+    fs::create_dir_all(workflows_dir.join("plain")).unwrap();
+    fs::write(workflows_dir.join("plain/workflow.py"), "# hooks").unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert_eq!(result.len(), 2);
+
+    let tdw = result.iter().find(|w| w.name == "tdw").unwrap();
+    let meta = tdw.metadata.as_ref().unwrap();
+    assert_eq!(meta.name.as_deref(), Some("tdw"));
+    assert_eq!(meta.states, vec!["study", "do"]);
+    assert_eq!(meta.transitions.len(), 2);
+
+    let plain = result.iter().find(|w| w.name == "plain").unwrap();
+    assert!(plain.metadata.is_none());
+}
+
+#[test]
+fn test_discover_workflows_bad_frontmatter_gives_none_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let workflows_dir = tmp.path().join("workflows");
+
+    fs::create_dir_all(workflows_dir.join("bad")).unwrap();
+    fs::write(workflows_dir.join("bad/workflow.py"), "# hooks").unwrap();
+    // AGENTS.md without valid frontmatter
+    fs::write(
+        workflows_dir.join("bad/AGENTS.md"),
+        "# No frontmatter here\nJust regular markdown.",
+    )
+    .unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert_eq!(result.len(), 1);
+    assert!(result[0].metadata.is_none());
+}
