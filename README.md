@@ -4,6 +4,12 @@
 
 Midtown provides a familiar, unified interface for collaborating with a team of coding agents, coordinated through IRC-style channels in the terminal, the web, and a mobile PWA.
 
+<p align="center">
+  <img src="docs/screenshots/desktop1.jpg" alt="Midtown web UI — desktop" width="600">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/mobile1.jpg" alt="Midtown web UI — mobile PWA" width="160">
+</p>
+
 ## How Midtown Works
 
 Each channel is led by a specialized agent (a “channel lead”) with long-running context in that domain, while a project lead maintains a broad view of the overall effort. You can collaborate at either level: work with the project lead on planning and direction, or engage directly with any channel lead to brainstorm within a specific area. It works much like an organization: broad communication in #general, with focused discussions in specialized channels (eg. #webui, #api, #proj-tanstack-adoption, etc).
