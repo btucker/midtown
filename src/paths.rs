@@ -29,6 +29,10 @@
 //!         │       ├── cursors/               # Per-agent read cursors
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
+//!         ├── workflows/             # Named workflow definitions
+//!         │   └── <name>/            # e.g., "tdw", "spec-review"
+//!         │       ├── workflow.py    # Workflow hooks (required)
+//!         │       └── AGENTS.md     # Workflow docs for channel lead (optional)
 //!         ├── sessions/              # Headless session transcripts (headless-<name>.jsonl)
 //!         ├── logs/                  # Daemon logs
 //!         ├── daemon.pid             # Daemon PID file
