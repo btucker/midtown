@@ -453,6 +453,32 @@ fn extract_assistant_text_split(events: &[StreamEvent]) -> (String, HashMap<Stri
     (top_level, sub_agent)
 }
 
+/// Strip tool-call label lines from text destined for DM channels.
+///
+/// Claude Code emits `[ToolName]` text blocks alongside `tool_use` blocks in
+/// assistant messages. In DM channels, the tool calls are rendered separately
+/// via `extract_tool_blocks()`, so these labels are noise. This function removes
+/// lines that consist solely of a bracketed PascalCase/camelCase word (e.g.,
+/// `[Bash]`, `[ToolSearch]`) while preserving all other text.
+fn strip_tool_labels(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Keep non-empty lines that aren't bare tool labels like [Bash], [ToolSearch]
+            if trimmed.is_empty() {
+                return false;
+            }
+            !(trimmed.starts_with('[')
+                && trimmed.ends_with(']')
+                && trimmed.len() > 2
+                && trimmed[1..trimmed.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Process agent output and generate DM channel posting effects.
 ///
 /// DM channels are a complete stream of the agent — text AND tool calls.
@@ -485,7 +511,8 @@ pub fn process_agent_output(
             let (top_text, sub_agent_texts) = extract_assistant_text_split(coworker_events);
 
             // Post top-level text output (assistant prose).
-            let trimmed = top_text.trim().to_string();
+            // Strip tool-call labels (e.g. "[Bash]") that duplicate rendered tool blocks.
+            let trimmed = strip_tool_labels(&top_text).trim().to_string();
             if !trimmed.is_empty() {
                 // Extract insights from the text before posting to DM.
                 for insight in extract_insights(&trimmed) {
@@ -568,7 +595,7 @@ pub fn process_agent_output(
 
             // Post sub-agent text as thread replies (grouped by parent_tool_use_id).
             for (parent_id, text) in &sub_agent_texts {
-                let trimmed = text.trim().to_string();
+                let trimmed = strip_tool_labels(text).trim().to_string();
                 if !trimmed.is_empty() {
                     effects.push(Effect::PostToChannel {
                         sender: name.clone(),
