@@ -8,6 +8,7 @@ import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploa
 import { openImageLightbox } from "./biggerPicture.js";
 import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from "./channelUtils.js";
 import DayDivider from "./DayDivider.svelte";
+import { extractPastedFile, uploadAndSend } from "./filePaste.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import MessageRow from "./MessageRow.svelte";
 import { hasMermaid, parseSegments, renderContent } from "./markdown.js";
@@ -599,16 +600,10 @@ async function handleSubmit(e) {
 	// If there's a pending file, upload it first
 	if (pendingFile && !uploading) {
 		uploading = true;
-		const result = await uploadFile(pendingFile);
+		const result = await uploadAndSend(pendingFile, inputText, $activeChannel);
 		uploading = false;
 
 		if (result.ok) {
-			// Send message to lead with file path
-			const message = inputText.trim()
-				? `${inputText.trim()}\n\n[Attached: ${result.path}]`
-				: `[Attached file: ${result.filename}]\nPlease read: ${result.path}`;
-
-			sendMessage(message, $activeChannel);
 			inputText = "";
 			if (textareaElement) textareaElement.value = "";
 			pendingFile = null;
@@ -628,29 +623,8 @@ async function handleSubmit(e) {
 }
 
 function handlePaste(e) {
-	const items = e.clipboardData?.items;
-	if (!items) return;
-
-	for (const item of items) {
-		// Check for image types
-		if (item.type.startsWith("image/")) {
-			e.preventDefault();
-			const file = item.getAsFile();
-			if (file) {
-				pendingFile = file;
-			}
-			return;
-		}
-		// Check for files (PDFs, etc.)
-		if (item.kind === "file") {
-			e.preventDefault();
-			const file = item.getAsFile();
-			if (file) {
-				pendingFile = file;
-			}
-			return;
-		}
-	}
+	const file = extractPastedFile(e);
+	if (file) pendingFile = file;
 }
 
 function clearPendingFile() {
@@ -999,7 +973,7 @@ function getToolCallStatusIcon(entry) {
         ></textarea>
         <button
           type="submit"
-          disabled={!inputText.trim() && !pendingFile || uploading}
+          disabled={(!inputText.trim() && !pendingFile) || uploading}
           data-testid="send-button"
           class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         >

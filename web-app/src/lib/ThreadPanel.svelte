@@ -9,6 +9,7 @@ let prevThreadId = null;
 <script>
   import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
+  import { extractPastedFile, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -94,6 +95,8 @@ let prevThreadId = null;
   }
 
   let replyText = $state('')
+  let pendingFile = $state(null)
+  let uploading = $state(false)
   let desktopScrollArea = $state(null)
   let mobileScrollArea = $state(null)
   let autoScroll = $state(true)
@@ -189,15 +192,19 @@ let prevThreadId = null;
     const tid = currentThreadId
     if (prevThreadId !== null && prevThreadId !== tid) {
       const currentReply = untrack(() => replyText)
-      if (currentReply.trim()) {
-        threadDrafts.set(prevThreadId, currentReply)
+      const currentFile = untrack(() => pendingFile)
+      if (currentReply.trim() || currentFile) {
+        threadDrafts.set(prevThreadId, { text: currentReply, file: currentFile })
       } else {
         threadDrafts.delete(prevThreadId)
       }
     }
     if (prevThreadId !== tid) {
-      const draft = tid !== null ? (threadDrafts.get(tid) ?? '') : ''
-      untrack(() => { replyText = draft })
+      const draft = tid !== null ? threadDrafts.get(tid) : null
+      untrack(() => {
+        replyText = draft?.text ?? ''
+        pendingFile = draft?.file ?? null
+      })
       // resizeTextarea must run after the DOM reflects the new draft content
       tick().then(() => resizeTextarea())
     }
@@ -229,8 +236,8 @@ let prevThreadId = null;
 
   onDestroy(() => {
     // Save current draft before component unmounts (thread panel closes)
-    if (prevThreadId !== null && replyText.trim()) {
-      threadDrafts.set(prevThreadId, replyText)
+    if (prevThreadId !== null && (replyText.trim() || pendingFile)) {
+      threadDrafts.set(prevThreadId, { text: replyText, file: pendingFile })
     }
     prevThreadId = null  // Reset so the next mount triggers a restore
     if (thinkingTimeout) {
@@ -378,15 +385,34 @@ let prevThreadId = null;
     if (event.key === 'Escape' && !event.defaultPrevented) handleClose()
   }
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
-    if (!replyText.trim() || !$threadData) return
-    // If no parentMessage (task without message_id), send as top-level channel message
+    if (!$threadData) return
     const parentId = $threadData.parentMessage?.id ?? null
-    sendMessage(replyText.trim(), $threadData.channelName, parentId)
-    replyText = ''
-    if (currentThreadId) threadDrafts.delete(currentThreadId)
-    clearMobileTextarea(textareaEl, () => { replyText = '' })
+
+    if (pendingFile && !uploading) {
+      uploading = true
+      const submittingThreadId = currentThreadId
+      const result = await uploadAndSend(pendingFile, replyText, $threadData.channelName, parentId)
+      uploading = false
+      if (result.ok) {
+        replyText = ''
+        pendingFile = null
+        if (submittingThreadId) threadDrafts.delete(submittingThreadId)
+        clearMobileTextarea(textareaEl, () => { replyText = '' })
+      } else {
+        alert(`Upload failed: ${result.error}`)
+        return
+      }
+    } else if (replyText.trim()) {
+      sendMessage(replyText.trim(), $threadData.channelName, parentId)
+      replyText = ''
+      if (currentThreadId) threadDrafts.delete(currentThreadId)
+      clearMobileTextarea(textareaEl, () => { replyText = '' })
+    } else {
+      return
+    }
+
     // Optimistic: show the drawer immediately while waiting for tool calls to arrive
     thinking = true
     if (thinkingTimeout) clearTimeout(thinkingTimeout)
@@ -401,6 +427,15 @@ let prevThreadId = null;
       e.preventDefault()
       handleSubmit(e)
     }
+  }
+
+  function handlePaste(e) {
+    const file = extractPastedFile(e)
+    if (file) pendingFile = file
+  }
+
+  function clearPendingFile() {
+    pendingFile = null
   }
 
   // Auto-scroll when new messages or edit diffs arrive (only if user is near bottom)
@@ -726,7 +761,25 @@ let prevThreadId = null;
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Input -->
-    <form class="px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+    <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+      {#if pendingFile}
+        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
+          {#if pendingFile.type.startsWith('image/')}
+            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+          {:else}
+            <div class="flex items-center gap-2 text-foreground">
+              <span class="text-[1.5rem]">&#128196;</span>
+              <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
+            </div>
+          {/if}
+          <button
+            type="button"
+            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
+            onclick={clearPendingFile}
+            aria-label="Remove file"
+          >&times;</button>
+        </div>
+      {/if}
       <div class="relative">
         <textarea
           data-testid="thread-input"
@@ -736,11 +789,12 @@ let prevThreadId = null;
           rows="1"
           class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleTextareaKeyDown}
+          onpaste={handlePaste}
           oninput={resizeTextarea}
         ></textarea>
         <button
           type="submit"
-          disabled={!replyText.trim()}
+          disabled={(!replyText.trim() && !pendingFile) || uploading}
           data-testid="thread-send-button"
           class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         ><SendHorizontal size={18} /></button>
@@ -961,7 +1015,25 @@ let prevThreadId = null;
     <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Mobile input -->
-    <form class="px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+    <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
+      {#if pendingFile}
+        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
+          {#if pendingFile.type.startsWith('image/')}
+            <img src={URL.createObjectURL(pendingFile)} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+          {:else}
+            <div class="flex items-center gap-2 text-foreground">
+              <span class="text-[1.5rem]">&#128196;</span>
+              <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
+            </div>
+          {/if}
+          <button
+            type="button"
+            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
+            onclick={clearPendingFile}
+            aria-label="Remove file"
+          >&times;</button>
+        </div>
+      {/if}
       <div class="relative">
         <textarea
           data-testid="thread-input"
@@ -971,11 +1043,12 @@ let prevThreadId = null;
           rows="1"
           class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
           onkeydown={handleTextareaKeyDown}
+          onpaste={handlePaste}
           oninput={resizeTextarea}
         ></textarea>
         <button
           type="submit"
-          disabled={!replyText.trim()}
+          disabled={(!replyText.trim() && !pendingFile) || uploading}
           data-testid="thread-send-button"
           class="absolute right-[12px] bottom-[6px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
         ><SendHorizontal size={18} /></button>
