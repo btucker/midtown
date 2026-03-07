@@ -85,7 +85,7 @@ function renderAttachmentHtml(path, apiBase) {
 		const subdir = path.includes("/screenshots/") ? "screenshots" : "uploads";
 		const url = `${apiBase}/${subdir}/${encodeURIComponent(filename)}`;
 		const safeAlt = filename.replace(/"/g, "&quot;");
-		return `<a href="${url}" target="_blank" rel="noopener" class="attachment-link"><img src="${url}" alt="${safeAlt}" class="message-image" loading="lazy" /></a>`;
+		return `<img src="${url}" alt="${safeAlt}" class="message-image" data-full-src="${url}" loading="lazy" />`;
 	}
 	const safeName = filename.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 	return `<span class="attachment-ref">📎 ${safeName}</span>`;

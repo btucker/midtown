@@ -5,6 +5,7 @@ import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
 import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
+import { openImageLightbox } from "./biggerPicture.js";
 import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from "./channelUtils.js";
 import DayDivider from "./DayDivider.svelte";
 import MermaidDiagram from "./MermaidDiagram.svelte";
@@ -461,6 +462,9 @@ onMount(() => {
 		} else if (target.classList.contains("coworker-link")) {
 			// Prevent the browser from following the '#' href; no detail panel action.
 			e.preventDefault();
+		} else if (target.classList.contains("message-image")) {
+			e.preventDefault();
+			openImageLightbox(target.dataset.fullSrc || target.src);
 		}
 	}
 
@@ -485,6 +489,15 @@ function getActionContent(msg) {
 // redundant; they are two separate entry points for the same click on different platforms.
 function handleMessageTap(event, msg) {
 	const target = event.target instanceof Element ? event.target : null;
+
+	// Image taps open the lightbox on all platforms (before mobile thread logic)
+	if (target?.classList.contains("message-image")) {
+		event.stopPropagation();
+		event.preventDefault();
+		openImageLightbox(target.dataset.fullSrc || target.src);
+		return;
+	}
+
 	const isInteractiveControl = !!target?.closest("button, input, textarea, select, label");
 	const anchor = target?.closest("a");
 	const link = anchor
@@ -998,18 +1011,19 @@ function getToolCallStatusIcon(entry) {
 </div>
 
 <style>
-  /* Inline image attachments */
+  /* Inline image attachments — thumbnail with lightbox on click */
   :global(.message-image) {
-    max-width: 320px;
-    max-height: 320px;
+    max-width: 200px;
+    max-height: 200px;
     border-radius: 6px;
     display: block;
     margin-top: 4px;
+    cursor: pointer;
+    transition: opacity 0.15s;
   }
 
-  :global(.attachment-link) {
-    display: inline-block;
-    line-height: 0;
+  :global(.message-image:hover) {
+    opacity: 0.85;
   }
 
   :global(.attachment-ref) {

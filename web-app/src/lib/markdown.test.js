@@ -461,11 +461,11 @@ describe("renderContent - image attachments", () => {
 		expect(result).toContain('class="message-image"');
 	});
 
-	it("wraps the image in a clickable link", () => {
+	it("renders image with data-full-src for lightbox (no <a> wrapper)", () => {
 		const result = renderContent("[Attached: /uploads/photo.png]", API);
-		expect(result).toContain("<a");
-		expect(result).toContain('target="_blank"');
-		expect(result).toContain('class="attachment-link"');
+		expect(result).toContain('data-full-src="http://localhost:47023/api/uploads/photo.png"');
+		expect(result).not.toContain('target="_blank"');
+		expect(result).not.toContain('class="attachment-link"');
 	});
 
 	it("renders [Attached file:]\\nPlease read: /path/file.png as an image", () => {

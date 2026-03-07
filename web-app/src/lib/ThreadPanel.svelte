@@ -13,6 +13,7 @@ let prevThreadId = null;
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
   import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
+  import { openImageLightbox } from './biggerPicture.js'
   import MermaidDiagram from './MermaidDiagram.svelte'
   import { parseSegments, hasMermaid, renderContent } from './markdown.js'
   import MessageRow from './MessageRow.svelte'
@@ -346,6 +347,9 @@ let prevThreadId = null;
       e.preventDefault()
       const name = target.dataset.coworker
       if (name) selectDm(name)
+    } else if (target.classList.contains('message-image')) {
+      e.preventDefault()
+      openImageLightbox(target.dataset.fullSrc || target.src)
     }
   }
 
