@@ -405,6 +405,59 @@ impl ProjectPaths {
     pub fn team_name(&self) -> String {
         format!("midtown-{}", self.project_name)
     }
+
+    /// Workflows directory: `~/.midtown/projects/<dir_key>/workflows/`.
+    pub fn workflows_dir(&self) -> PathBuf {
+        self.base.join("workflows")
+    }
+}
+
+/// A discovered workflow directory.
+#[derive(Debug, Clone)]
+pub struct WorkflowInfo {
+    pub name: String,
+    pub dir: PathBuf,
+    pub workflow_py: PathBuf,
+    pub agents_md: Option<PathBuf>,
+}
+
+/// Discover named workflows in a workflows directory.
+///
+/// A valid workflow is a subdirectory containing `workflow.py`.
+/// Optionally includes `AGENTS.md` path if present.
+pub fn discover_workflows(workflows_dir: &Path) -> Vec<WorkflowInfo> {
+    let mut workflows = Vec::new();
+    if !workflows_dir.is_dir() {
+        return workflows;
+    }
+    let Ok(entries) = fs::read_dir(workflows_dir) else {
+        return workflows;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let workflow_py = path.join("workflow.py");
+        if !workflow_py.exists() {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let agents_md_path = path.join("AGENTS.md");
+        let agents_md = if agents_md_path.exists() {
+            Some(agents_md_path)
+        } else {
+            None
+        };
+        workflows.push(WorkflowInfo {
+            name,
+            dir: path,
+            workflow_py,
+            agents_md,
+        });
+    }
+    workflows.sort_by(|a, b| a.name.cmp(&b.name));
+    workflows
 }
 
 /// Get the state directory for midtown.

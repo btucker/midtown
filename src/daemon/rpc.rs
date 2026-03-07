@@ -633,6 +633,19 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             .await
         }
 
+        "workflow.list" => super::rpc_workflow::handle_workflow_list(request.id, state).await,
+
+        "workflow.assign" => {
+            let channel = require_str!(params, "channel", request.id);
+            let workflow = require_str!(params, "workflow", request.id);
+            super::rpc_workflow::handle_workflow_assign(request.id, channel, workflow, state).await
+        }
+
+        "workflow.unassign" => {
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_workflow::handle_workflow_unassign(request.id, channel, state).await
+        }
+
         // ---- Auth ----
         "auth.switch" => {
             let profile = params.str_param("profile");

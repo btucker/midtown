@@ -11,6 +11,7 @@ mod client;
 use cli::{
     AuthCommand, ChannelCommand, ConfigCommand, CoworkerCommand, DiagramCommand, E2eCommand,
     HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, SessionCommand, TaskCommand,
+    WorkflowCommand,
 };
 use client::DaemonClient;
 
@@ -144,6 +145,11 @@ enum Commands {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
+    },
+    /// Workflow management commands (list, assign, exclude)
+    Workflow {
+        #[command(subcommand)]
+        command: WorkflowCommand,
     },
     /// Show system status
     Status,
@@ -1044,6 +1050,7 @@ fn main() {
         } => cli::handle_coworker(cmd, &client),
         Commands::Session { command } => cli::handle_session(command, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
+        Commands::Workflow { command } => cli::handle_workflow(command, &client),
         Commands::Status => cli::handle_status(&client),
         Commands::HeadedWrapper { command } => cli::handle_headed_wrapper(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),

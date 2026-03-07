@@ -16,6 +16,7 @@ mod session;
 mod session_render;
 mod task;
 pub mod update;
+mod workflow;
 
 /// Convert a ratatui color to a crossterm color.
 ///
@@ -62,6 +63,7 @@ pub use pr::PrCommand;
 pub use response::Response;
 pub use session::SessionCommand;
 pub use task::TaskCommand;
+pub use workflow::WorkflowCommand;
 
 use crate::client::DaemonClient;
 
@@ -100,6 +102,10 @@ pub fn handle_headed_wrapper(
 
 pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {
     pr::handle(cmd, client)
+}
+
+pub fn handle_workflow(cmd: &WorkflowCommand, client: &DaemonClient) -> Result<Response, String> {
+    workflow::handle(cmd, client)
 }
 
 /// Handle start command (no daemon required - it starts daemon/webserver services)

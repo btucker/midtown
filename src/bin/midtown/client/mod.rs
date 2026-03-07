@@ -669,6 +669,39 @@ impl DaemonClient {
         self.send("pr.merge", Some(serde_json::json!({ "pr": pr_number })))
     }
 
+    // Workflow commands
+
+    pub fn workflow_list_raw(&self) -> Result<serde_json::Value, String> {
+        self.send_raw("workflow.list", None)
+    }
+
+    pub fn workflow_assign(&self, channel: &str, workflow: &str) -> Result<Response, String> {
+        self.send(
+            "workflow.assign",
+            Some(serde_json::json!({ "channel": channel, "workflow": workflow })),
+        )
+    }
+
+    pub fn workflow_unassign(&self, channel: &str) -> Result<Response, String> {
+        self.send(
+            "workflow.unassign",
+            Some(serde_json::json!({ "channel": channel })),
+        )
+    }
+
+    pub fn workflow_set_state(
+        &self,
+        channel: &str,
+        plugin: Option<&str>,
+        state: serde_json::Value,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({ "channel": channel, "state": state });
+        if let Some(p) = plugin {
+            params["plugin"] = serde_json::json!(p);
+        }
+        self.send("workflow.set_state", Some(params))
+    }
+
     // Daemon commands
 
     pub fn check_pending(&self) -> Result<Response, String> {

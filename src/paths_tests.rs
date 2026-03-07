@@ -1391,3 +1391,66 @@ fn test_detect_repo_name_rejects_path_traversal_in_midtown_dir_key() {
         );
     }
 }
+
+#[test]
+fn test_discover_workflows() {
+    let temp = tempfile::tempdir().unwrap();
+    let workflows_dir = temp.path().join("workflows");
+
+    // Create two workflow directories
+    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# tdw hooks").unwrap();
+    std::fs::write(workflows_dir.join("tdw/AGENTS.md"), "# TDW").unwrap();
+
+    std::fs::create_dir_all(workflows_dir.join("spec-review")).unwrap();
+    std::fs::write(
+        workflows_dir.join("spec-review/workflow.py"),
+        "# spec hooks",
+    )
+    .unwrap();
+
+    // Create a non-workflow directory (no workflow.py)
+    std::fs::create_dir_all(workflows_dir.join("not-a-workflow")).unwrap();
+    std::fs::write(workflows_dir.join("not-a-workflow/README.md"), "nope").unwrap();
+
+    // Create a file (not a directory) — should be skipped
+    std::fs::write(workflows_dir.join("stray-file.txt"), "ignored").unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert_eq!(result.len(), 2);
+    assert!(result.iter().any(|w| w.name == "tdw"));
+    assert!(result.iter().any(|w| w.name == "spec-review"));
+
+    // tdw has AGENTS.md, spec-review does not
+    let tdw = result.iter().find(|w| w.name == "tdw").unwrap();
+    assert!(tdw.agents_md.is_some());
+    let spec = result.iter().find(|w| w.name == "spec-review").unwrap();
+    assert!(spec.agents_md.is_none());
+}
+
+#[test]
+fn test_discover_workflows_empty_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let workflows_dir = temp.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+
+    let result = discover_workflows(&workflows_dir);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_discover_workflows_nonexistent_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let workflows_dir = temp.path().join("nope");
+
+    let result = discover_workflows(&workflows_dir);
+    assert!(result.is_empty());
+}
+
+#[test]
+fn test_project_paths_workflows_dir() {
+    let paths = ProjectPaths::with_project_name("test-proj", "test-proj");
+    let wf_dir = paths.workflows_dir();
+    assert!(wf_dir.to_string_lossy().contains("test-proj"));
+    assert!(wf_dir.to_string_lossy().ends_with("workflows"));
+}
