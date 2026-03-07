@@ -45,7 +45,7 @@ export function debouncedSaveToLocalStorage(key, value) {
 }
 
 export function flushDebouncedSaves() {
-	for (const [key, timer] of debouncedTimers) {
+	for (const [_key, timer] of debouncedTimers) {
 		clearTimeout(timer);
 	}
 	debouncedTimers.clear();
