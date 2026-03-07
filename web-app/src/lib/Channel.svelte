@@ -184,7 +184,7 @@ let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || []);
 // Activity strip computed values (always-rendered single line above input)
 // Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
 let isLeadWorking = $derived(
-	$activeChannel === "midtown" || $activeChannel === $activeProject
+	$activeChannel === $activeProject
 		? !!$daemonStatus?.lead_working
 		: !!$daemonStatus?.channel_leads_working?.[$activeChannel],
 );
