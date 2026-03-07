@@ -2460,3 +2460,31 @@ fn test_for_repo_named_existing_returns_not_found() {
     let result = Channel::open_existing(temp_dir.path(), "nonexistent");
     assert!(matches!(result, Err(crate::Error::ChannelNotFound(_))));
 }
+
+#[test]
+fn test_open_existing_rejects_invalid_channel_name() {
+    let temp_dir = TempDir::new().unwrap();
+
+    let result = Channel::open_existing(temp_dir.path(), "");
+    assert!(matches!(result, Err(crate::Error::InvalidMessage(_))));
+
+    let result = Channel::open_existing(temp_dir.path(), "bad/name");
+    assert!(matches!(result, Err(crate::Error::InvalidMessage(_))));
+}
+
+#[test]
+fn test_open_existing_returns_archived_error() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Create the channel first, then archive it
+    let _ = Channel::new(temp_dir.path(), "old-chan").unwrap();
+    let channels_dir = temp_dir.path().join("channels");
+    std::fs::rename(
+        channels_dir.join("old-chan"),
+        channels_dir.join("old-chan.archived"),
+    )
+    .unwrap();
+
+    let result = Channel::open_existing(temp_dir.path(), "old-chan");
+    assert!(matches!(result, Err(crate::Error::ChannelArchived(_))));
+}
