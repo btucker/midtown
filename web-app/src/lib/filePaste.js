@@ -24,6 +24,15 @@ export function extractPastedFile(e) {
 }
 
 /**
+ * Create a blob preview URL for a file, revoking any previous URL to prevent leaks.
+ * Returns the new URL, or null if file is null/undefined.
+ */
+export function updatePreviewUrl(previousUrl, file) {
+	if (previousUrl) URL.revokeObjectURL(previousUrl);
+	return file ? URL.createObjectURL(file) : null;
+}
+
+/**
  * Upload a pending file and send it as a message.
  *
  * @param {File} file - The file to upload

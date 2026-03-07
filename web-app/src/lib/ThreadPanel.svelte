@@ -9,7 +9,7 @@ let prevThreadId = null;
 <script>
   import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
-  import { extractPastedFile, uploadAndSend } from './filePaste.js'
+  import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
   import { getSenderColor, isDimSender, parseInsightSegments, dateChanged } from './messageUtils.js'
@@ -451,6 +451,18 @@ let prevThreadId = null;
   function clearPendingFile() {
     pendingFile = null
   }
+
+  // Manage blob preview URL: create on file change, revoke old URL to prevent memory leaks.
+  $effect(() => {
+    const file = pendingFile
+    pendingFileUrl = updatePreviewUrl(untrack(() => pendingFileUrl), file)
+    return () => {
+      if (pendingFileUrl) {
+        URL.revokeObjectURL(pendingFileUrl)
+        pendingFileUrl = null
+      }
+    }
+  })
 
   // Auto-scroll when new messages or edit diffs arrive (only if user is near bottom)
   $effect(() => {
