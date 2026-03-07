@@ -259,6 +259,12 @@ pub enum Effect {
         pr_number: u64,
         issue_type: PrIssueType,
     },
+    /// Record a permanent one-shot PR nudge that survives cleanup.
+    /// Used for user-authored PR notifications that should fire exactly once.
+    RecordPermanentPrNudge {
+        pr_number: u64,
+        issue_type: PrIssueType,
+    },
     /// Record an in-memory task assignment for busy tracking.
     ///
     /// Defers the mutation from the decision phase to the effect executor,
@@ -1592,6 +1598,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 tracker.record_nudge(pr_number, issue_type);
+            }
+            Effect::RecordPermanentPrNudge {
+                pr_number,
+                issue_type,
+            } => {
+                let mut tracker = state.pr_issue_tracker.lock().await;
+                tracker.record_permanent_nudge(pr_number, issue_type);
             }
             Effect::RecordReviewerEscalation { pr_number } => {
                 let mut posted = state.reviewer_escalations_posted.lock().unwrap();

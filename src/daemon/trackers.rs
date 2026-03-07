@@ -3,7 +3,7 @@
 //! These trackers prevent the daemon from spamming the same PR issues
 //! or assigning duplicate reviews.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use super::constants::{
@@ -59,6 +59,10 @@ impl std::fmt::Display for PrIssueType {
 pub struct PrIssueTracker {
     /// Map of (pr_number, issue_type) -> last_nudge_time
     nudged: HashMap<(u64, PrIssueType), Instant>,
+    /// Permanent one-shot nudge entries that survive cleanup.
+    /// Used for notifications that should fire exactly once (e.g., user-authored
+    /// PR review-complete), regardless of how long the PR stays open.
+    permanent: HashSet<(u64, PrIssueType)>,
 }
 
 impl PrIssueTracker {
@@ -97,20 +101,37 @@ impl PrIssueTracker {
     /// Clear a specific nudge entry (e.g., when retrying after coworker death)
     pub fn clear_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
         self.nudged.remove(&(pr_number, issue_type));
+        self.permanent.remove(&(pr_number, issue_type));
     }
 
-    /// Check if a nudge has been recorded for this issue
+    /// Check if a nudge has been recorded for this issue (including permanent entries)
     pub fn has_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
         self.nudged.contains_key(&(pr_number, issue_type))
+            || self.permanent.contains(&(pr_number, issue_type))
+    }
+
+    /// Record a permanent one-shot nudge that survives cleanup.
+    /// Also records in the regular nudged map so should_nudge() works consistently.
+    pub fn record_permanent_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
+        self.permanent.insert((pr_number, issue_type));
+        self.nudged.insert((pr_number, issue_type), Instant::now());
+    }
+
+    /// Record a nudge with a backdated timestamp (test helper).
+    #[cfg(test)]
+    pub fn record_nudge_at(&mut self, pr_number: u64, issue_type: PrIssueType, at: Instant) {
+        self.nudged.insert((pr_number, issue_type), at);
     }
 
     /// Clean up old entries (older than the longest cooldown period).
     /// Uses ORPHANED_PR_NUDGE_COOLDOWN_SECS since orphaned PR alerts use a
     /// longer suppression window than the standard PR_NUDGE_COOLDOWN_SECS.
+    /// Skips entries in the permanent set — those survive indefinitely.
     pub fn cleanup(&mut self) {
         let cutoff = Duration::from_secs(ORPHANED_PR_NUDGE_COOLDOWN_SECS);
-        self.nudged
-            .retain(|_, last_nudge| last_nudge.elapsed() < cutoff);
+        self.nudged.retain(|key, last_nudge| {
+            self.permanent.contains(key) || last_nudge.elapsed() < cutoff
+        });
     }
 }
 
