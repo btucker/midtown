@@ -3613,20 +3613,33 @@ async fn dispatch_workflow_event(
 ) -> bool {
     let channel = event.channel().to_string();
 
-    // Discover channel-specific plugin directories and merge with existing dirs.
-    // merge_plugin_dirs is a no-op if the merged set hasn't changed.
-    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-    let channel_dirs =
-        crate::paths::discover_plugin_dirs(&project_root, state.paths.dir_key(), Some(&channel));
-    if !channel_dirs.is_empty() {
-        state.plugin_daemon.merge_plugin_dirs(channel_dirs).await;
-        // merge_plugin_dirs kills the running daemon when new dirs are added.
-        // Restart it before dispatching so the event isn't dropped.
-        state.plugin_daemon.ensure_running().await;
-    }
+    // Look up assigned workflow for this channel from persistent state.
+    let workflow_name = {
+        let ps = state.persistent_state.lock().await;
+        ps.channel_workflows.get(&channel).cloned()
+    };
 
-    if !state.plugin_daemon.has_plugins() {
-        // No plugins configured — silent no-op.
+    let Some(workflow_name) = workflow_name else {
+        // No workflow assigned — daemon defaults run.
+        return false;
+    };
+
+    // Ensure Python daemon is running.
+    if !state.plugin_daemon.ensure_running().await {
+        warn!(
+            channel = %channel,
+            workflow = %workflow_name,
+            "dispatch_workflow_event: plugin daemon could not be started"
+        );
+        post_plugin_error(
+            state,
+            &channel,
+            &format!(
+                "Plugin daemon could not be started for workflow `{}` — event was not processed.",
+                workflow_name
+            ),
+        )
+        .await;
         return false;
     }
 
@@ -3653,6 +3666,7 @@ async fn dispatch_workflow_event(
         "type": event_type,
         "event": event_json,
         "task_id": event.task_id(),
+        "channel_workflow": workflow_name,
     });
     let request_str = match serde_json::to_string(&request) {
         Ok(s) => s,
@@ -3665,21 +3679,20 @@ async fn dispatch_workflow_event(
     let result = state.plugin_daemon.send_event(&request_str).await;
 
     let Some(dispatch_result) = result else {
-        // Plugin daemon not running or connection failed. When has_plugins()
-        // returned true, pr.rs took the script-authoritative path and skipped
-        // compiled-in inline effects. Post an error so the failure is visible.
+        // Plugin daemon connection failed after ensure_running succeeded.
+        // Post an error so the failure is visible.
         warn!(
             channel = %channel,
             event_type = %event_type,
+            workflow = %workflow_name,
             "dispatch_workflow_event: plugin daemon unavailable, event dropped"
         );
         post_plugin_error(
             state,
             &channel,
             &format!(
-                "Plugin daemon unavailable for event `{}` — event was not processed. \
-                 Compiled-in behavior was skipped because plugins are configured.",
-                event_type
+                "Plugin daemon unavailable for event `{}` (workflow `{}`) — event was not processed.",
+                event_type, workflow_name
             ),
         )
         .await;

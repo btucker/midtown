@@ -18,7 +18,7 @@ fn backoff_duration_caps_at_max() {
 async fn manager_no_plugins_returns_false() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon.sock".into(),
-        vec![], // no plugin dirs
+        PathBuf::new(), // empty workflows dir
         "/tmp/sdk".into(),
     );
     assert!(!manager.ensure_running().await);
@@ -30,7 +30,7 @@ async fn manager_no_plugins_returns_false() {
 async fn manager_shutdown_noop_when_not_running() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon.sock".into(),
-        vec![],
+        PathBuf::new(),
         "/tmp/sdk".into(),
     );
     manager.shutdown().await; // Should not panic.
@@ -40,19 +40,70 @@ async fn manager_shutdown_noop_when_not_running() {
 async fn manager_check_health_noop_when_not_running() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon.sock".into(),
-        vec![],
+        PathBuf::new(),
         "/tmp/sdk".into(),
     );
     manager.check_health().await; // Should not panic.
 }
 
 #[tokio::test]
-async fn manager_has_plugins_reflects_dirs() {
+async fn manager_has_plugins_reflects_workflows_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(workflows_dir.join("my-workflow")).unwrap();
+    std::fs::write(workflows_dir.join("my-workflow/workflow.py"), "# hooks").unwrap();
+
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon.sock".into(),
-        vec!["/tmp/plugins".into()],
+        workflows_dir,
         "/tmp/sdk".into(),
     );
+    assert!(manager.has_plugins());
+}
+
+#[tokio::test]
+async fn manager_has_plugins_false_for_empty_dir() {
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-plugin-daemon.sock".into(),
+        PathBuf::new(),
+        "/tmp/sdk".into(),
+    );
+    assert!(!manager.has_plugins());
+}
+
+#[tokio::test]
+async fn manager_has_plugins_false_when_no_workflows_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+    // Empty workflows dir — no subdirectories with workflow.py
+
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-plugin-daemon.sock".into(),
+        workflows_dir,
+        "/tmp/sdk".into(),
+    );
+    assert!(!manager.has_plugins());
+}
+
+#[tokio::test]
+async fn manager_refresh_has_plugins_detects_new_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
+
+    let manager = PluginDaemonManager::new(
+        "/tmp/test-plugin-daemon.sock".into(),
+        workflows_dir.clone(),
+        "/tmp/sdk".into(),
+    );
+    assert!(!manager.has_plugins());
+
+    // Add a workflow on disk.
+    std::fs::create_dir_all(workflows_dir.join("new-wf")).unwrap();
+    std::fs::write(workflows_dir.join("new-wf/workflow.py"), "# hooks").unwrap();
+
+    manager.refresh_has_plugins().await;
     assert!(manager.has_plugins());
 }
 
@@ -60,7 +111,7 @@ async fn manager_has_plugins_reflects_dirs() {
 async fn manager_socket_path_accessible() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon-sp.sock".into(),
-        vec![],
+        PathBuf::new(),
         "/tmp/sdk".into(),
     );
     assert_eq!(
@@ -70,112 +121,10 @@ async fn manager_socket_path_accessible() {
 }
 
 #[tokio::test]
-async fn manager_update_plugin_dirs_resets_backoff() {
-    let manager = PluginDaemonManager::new(
-        "/tmp/test-plugin-daemon.sock".into(),
-        vec!["/tmp/old-plugins".into()],
-        "/tmp/sdk".into(),
-    );
-
-    // Simulate a crash to create backoff state.
-    {
-        let mut inner = manager.inner.lock().await;
-        inner.crash_count = 5;
-        inner.last_crash = Some(Instant::now());
-    }
-
-    // Update dirs should reset backoff and return true (dirs changed).
-    let changed = manager
-        .update_plugin_dirs(vec!["/tmp/new-plugins".into()])
-        .await;
-    assert!(
-        changed,
-        "update_plugin_dirs should return true when dirs changed"
-    );
-
-    let inner = manager.inner.lock().await;
-    assert_eq!(inner.crash_count, 0);
-    assert!(inner.last_crash.is_none());
-    assert_eq!(inner.plugin_dirs, vec![PathBuf::from("/tmp/new-plugins")]);
-}
-
-#[tokio::test]
-async fn manager_merge_plugin_dirs_adds_new() {
-    let manager = PluginDaemonManager::new(
-        "/tmp/test-plugin-daemon.sock".into(),
-        vec!["/tmp/project-plugins".into()],
-        "/tmp/sdk".into(),
-    );
-
-    // Merge in a channel-specific dir.
-    manager
-        .merge_plugin_dirs(vec![
-            "/tmp/channel-plugins".into(),
-            "/tmp/project-plugins".into(), // already present — should not duplicate
-        ])
-        .await;
-
-    let inner = manager.inner.lock().await;
-    assert_eq!(inner.plugin_dirs.len(), 2);
-    assert_eq!(inner.plugin_dirs[0], PathBuf::from("/tmp/project-plugins"));
-    assert_eq!(inner.plugin_dirs[1], PathBuf::from("/tmp/channel-plugins"));
-}
-
-#[tokio::test]
-async fn manager_merge_plugin_dirs_noop_when_all_present() {
-    let manager = PluginDaemonManager::new(
-        "/tmp/test-plugin-daemon.sock".into(),
-        vec!["/tmp/plugins".into()],
-        "/tmp/sdk".into(),
-    );
-
-    // Set crash state — should NOT be reset if nothing changed.
-    {
-        let mut inner = manager.inner.lock().await;
-        inner.crash_count = 3;
-        inner.last_crash = Some(Instant::now());
-    }
-
-    // All dirs already present — should be a no-op.
-    manager.merge_plugin_dirs(vec!["/tmp/plugins".into()]).await;
-
-    let inner = manager.inner.lock().await;
-    assert_eq!(inner.crash_count, 3);
-    assert_eq!(inner.plugin_dirs.len(), 1);
-}
-
-#[tokio::test]
-async fn manager_update_plugin_dirs_noop_when_same() {
-    let dirs = vec![PathBuf::from("/tmp/plugins")];
-    let manager = PluginDaemonManager::new(
-        "/tmp/test-plugin-daemon.sock".into(),
-        dirs.clone(),
-        "/tmp/sdk".into(),
-    );
-
-    // Set crash state.
-    {
-        let mut inner = manager.inner.lock().await;
-        inner.crash_count = 3;
-        inner.last_crash = Some(Instant::now());
-    }
-
-    // Same dirs — should not reset backoff, return false.
-    let changed = manager.update_plugin_dirs(dirs).await;
-    assert!(
-        !changed,
-        "update_plugin_dirs should return false when dirs unchanged"
-    );
-
-    let inner = manager.inner.lock().await;
-    assert_eq!(inner.crash_count, 3);
-}
-
-#[tokio::test]
 async fn manager_backoff_prevents_immediate_respawn() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-plugin-daemon-backoff.sock".into(),
-        vec!["/tmp/plugins".into()],
+        "/tmp/workflows".into(),
         "/tmp/nonexistent-sdk".into(),
     );
 
@@ -218,9 +167,8 @@ sleep 60
     std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let socket_path = dir.path().join("test-daemon.sock");
-    let plugin_dir = dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).unwrap();
-    std::fs::write(plugin_dir.join("test.py"), "# test plugin").unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
 
     let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -228,7 +176,7 @@ sleep 60
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
     }
 
-    let manager = PluginDaemonManager::new(socket_path.clone(), vec![plugin_dir], sdk_dir);
+    let manager = PluginDaemonManager::new(socket_path.clone(), workflows_dir, sdk_dir);
 
     let result = manager.ensure_running().await;
 
@@ -265,9 +213,8 @@ async fn manager_detects_crash_and_records_backoff() {
     std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let socket_path = dir.path().join("test-crash.sock");
-    let plugin_dir = dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).unwrap();
-    std::fs::write(plugin_dir.join("test.py"), "# plugin").unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
 
     let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -275,7 +222,7 @@ async fn manager_detects_crash_and_records_backoff() {
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
     }
 
-    let manager = PluginDaemonManager::new(socket_path, vec![plugin_dir], sdk_dir);
+    let manager = PluginDaemonManager::new(socket_path, workflows_dir, sdk_dir);
 
     // Spawn — the process will exit right after ready.
     assert!(manager.ensure_running().await);
@@ -315,9 +262,8 @@ async fn manager_spawn_fails_without_ready() {
     std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let socket_path = dir.path().join("test-no-ready.sock");
-    let plugin_dir = dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).unwrap();
-    std::fs::write(plugin_dir.join("test.py"), "# plugin").unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
 
     let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -325,7 +271,7 @@ async fn manager_spawn_fails_without_ready() {
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
     }
 
-    let manager = PluginDaemonManager::new(socket_path, vec![plugin_dir], sdk_dir);
+    let manager = PluginDaemonManager::new(socket_path, workflows_dir, sdk_dir);
 
     let result = manager.ensure_running().await;
 
@@ -377,9 +323,8 @@ while true; do sleep 1; done
     std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let socket_path = dir.path().join("test-sigterm.sock");
-    let plugin_dir = dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).unwrap();
-    std::fs::write(plugin_dir.join("test.py"), "# plugin").unwrap();
+    let workflows_dir = dir.path().join("workflows");
+    std::fs::create_dir_all(&workflows_dir).unwrap();
 
     let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -387,7 +332,7 @@ while true; do sleep 1; done
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
     }
 
-    let manager = PluginDaemonManager::new(socket_path, vec![plugin_dir], sdk_dir);
+    let manager = PluginDaemonManager::new(socket_path, workflows_dir, sdk_dir);
 
     assert!(manager.ensure_running().await);
     assert!(manager.is_running().await);
@@ -408,79 +353,11 @@ while true; do sleep 1; done
     assert_eq!(content.trim(), "sigterm");
 }
 
-#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
-#[tokio::test]
-async fn manager_merge_plugin_dirs_sends_sigterm() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = tempfile::tempdir().unwrap();
-    let sdk_dir = dir.path().join("sdk");
-    std::fs::create_dir_all(&sdk_dir).unwrap();
-
-    let marker_path = dir.path().join("sigterm-received-merge");
-    let marker_str = marker_path.to_str().unwrap();
-
-    // Create a fake uv that traps SIGTERM and writes a marker file.
-    let bin_dir = dir.path().join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let fake_uv = bin_dir.join("uv");
-    std::fs::write(
-        &fake_uv,
-        format!(
-            r#"#!/bin/sh
-cleanup() {{
-    echo "sigterm" > "{marker_str}"
-    exit 0
-}}
-trap cleanup TERM
-echo '{{"ready":true}}'
-while true; do sleep 1; done
-"#
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake_uv, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let socket_path = dir.path().join("test-merge-sigterm.sock");
-    let plugin_dir = dir.path().join("plugins");
-    std::fs::create_dir_all(&plugin_dir).unwrap();
-    std::fs::write(plugin_dir.join("test.py"), "# plugin").unwrap();
-
-    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
-    }
-
-    let manager = PluginDaemonManager::new(socket_path, vec![plugin_dir], sdk_dir);
-
-    assert!(manager.ensure_running().await);
-    assert!(manager.is_running().await);
-
-    // Merge in a new directory — should trigger graceful SIGTERM restart.
-    manager
-        .merge_plugin_dirs(vec!["/tmp/new-channel-plugins".into()])
-        .await;
-
-    unsafe {
-        std::env::set_var("PATH", &original_path);
-    }
-
-    // Daemon should be stopped after merge (awaiting restart via ensure_running).
-    assert!(!manager.is_running().await);
-    assert!(
-        marker_path.exists(),
-        "merge_plugin_dirs should send SIGTERM, not SIGKILL"
-    );
-    let content = std::fs::read_to_string(&marker_path).unwrap();
-    assert_eq!(content.trim(), "sigterm");
-}
-
 #[tokio::test]
 async fn send_event_returns_none_when_not_running() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-send-event-norun.sock".into(),
-        vec!["/tmp/plugins".into()],
+        "/tmp/workflows".into(),
         "/tmp/sdk".into(),
     );
 
@@ -497,7 +374,7 @@ async fn send_event_returns_none_when_not_running() {
 async fn send_reload_returns_false_when_not_running() {
     let manager = PluginDaemonManager::new(
         "/tmp/test-send-reload-norun.sock".into(),
-        vec!["/tmp/plugins".into()],
+        "/tmp/workflows".into(),
         "/tmp/sdk".into(),
     );
 
@@ -541,7 +418,7 @@ async fn send_reload_round_trip_via_socket() {
 
     let manager = PluginDaemonManager::new(
         socket_path.clone(),
-        vec!["/tmp/plugins".into()],
+        "/tmp/workflows".into(),
         "/tmp/sdk".into(),
     );
     // Inject a fake "running" state.
@@ -607,7 +484,7 @@ async fn send_event_round_trip_via_socket() {
     // Create a manager that thinks it's running (we fake the process state).
     let manager = PluginDaemonManager::new(
         socket_path.clone(),
-        vec!["/tmp/plugins".into()],
+        "/tmp/workflows".into(),
         "/tmp/sdk".into(),
     );
     // Inject a fake "running" state so send_event doesn't bail early.

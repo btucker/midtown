@@ -1398,14 +1398,13 @@ impl DaemonState {
             }
         }
 
-        // Discover plugin directories and set up the plugin daemon manager.
-        let project_root = all_repo_paths.first().cloned().unwrap_or_default();
-        let plugin_dirs = crate::paths::discover_plugin_dirs(&project_root, paths.dir_key(), None);
+        // Set up the plugin daemon manager with the workflows directory.
+        let workflows_dir = paths.workflows_dir();
         let plugin_daemon_socket = paths.plugin_daemon_socket();
         let python_sdk_dir = crate::paths::resolve_python_sdk_dir();
         let plugin_daemon = plugin_daemon::PluginDaemonManager::new(
             plugin_daemon_socket,
-            plugin_dirs,
+            workflows_dir,
             python_sdk_dir,
         );
 
@@ -4203,26 +4202,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
             }
 
-            // Periodic plugin directory re-scan: detect new/removed plugin dirs
-            // and tell the Python daemon to reload changed files.
+            // Periodic plugin daemon health check and reload: ensure the daemon
+            // is running and tell it to reload changed workflow files.
             _ = plugin_scan_interval.tick() => {
-                let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
-                let new_dirs = crate::paths::discover_plugin_dirs(
-                    &project_root,
-                    state.paths.dir_key(),
-                    None,
-                );
-                // If plugin directories changed (new dirs appeared or old ones removed),
-                // restart the Python daemon with the updated list. The new daemon
-                // loads all plugins on startup, so skip the reload in that case.
-                let dirs_changed = state.plugin_daemon.update_plugin_dirs(new_dirs).await;
+                // Re-scan workflows_dir for workflow subdirectories so has_plugins()
+                // stays current as workflows are added/removed on disk.
+                state.plugin_daemon.refresh_has_plugins().await;
                 if state.plugin_daemon.has_plugins() {
                     state.plugin_daemon.ensure_running().await;
-                    // Only send reload when dirs didn't change — the daemon
-                    // was already running and just needs to check for file changes.
-                    if !dirs_changed {
-                        state.plugin_daemon.send_reload().await;
-                    }
+                    state.plugin_daemon.send_reload().await;
                 }
             }
 

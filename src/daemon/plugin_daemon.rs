@@ -109,8 +109,8 @@ pub(crate) struct PluginDaemonManager {
 struct PluginDaemonInner {
     /// Running daemon process, if any.
     process: Option<DaemonProcess>,
-    /// Plugin directories passed to `--plugin-dirs`.
-    plugin_dirs: Vec<PathBuf>,
+    /// Workflows directory passed to `--workflows-dir`.
+    workflows_dir: PathBuf,
     /// Path to the Python SDK (for `uv run`).
     sdk_path: PathBuf,
     /// Consecutive crash count (reset on successful ready handshake).
@@ -121,15 +121,23 @@ struct PluginDaemonInner {
 
 impl PluginDaemonManager {
     /// Create a new manager. Does not spawn the daemon yet — call
-    /// [`ensure_running`] to start it when plugins are detected.
-    pub fn new(socket_path: PathBuf, plugin_dirs: Vec<PathBuf>, sdk_path: PathBuf) -> Self {
-        let has_plugins = !plugin_dirs.is_empty();
+    /// [`ensure_running`] to start it when workflows are detected.
+    pub fn new(socket_path: PathBuf, workflows_dir: PathBuf, sdk_path: PathBuf) -> Self {
+        let has_plugins = !workflows_dir.as_os_str().is_empty()
+            && workflows_dir.is_dir()
+            && std::fs::read_dir(&workflows_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().is_dir() && e.path().join("workflow.py").exists())
+                })
+                .unwrap_or(false);
         Self {
             socket_path: socket_path.clone(),
             has_plugins_flag: AtomicBool::new(has_plugins),
             inner: Mutex::new(PluginDaemonInner {
                 process: None,
-                plugin_dirs,
+                workflows_dir,
                 sdk_path,
                 crash_count: 0,
                 last_crash: None,
@@ -143,20 +151,38 @@ impl PluginDaemonManager {
         self.socket_path.clone()
     }
 
-    /// Returns true if plugin directories are configured (non-empty).
-    /// Sync-safe: reads an atomic flag, no mutex needed.
+    /// Returns true if workflows are present on disk (at least one subdirectory
+    /// of `workflows_dir` contains a `workflow.py`).
+    /// Sync-safe: reads an atomic flag set at construction time, no mutex needed.
+    /// Used by `pr.rs` to decide whether to take the script-authoritative path.
     pub fn has_plugins(&self) -> bool {
         self.has_plugins_flag.load(Ordering::Relaxed)
     }
 
+    /// Update the `has_plugins` flag by re-scanning the workflows directory.
+    /// Called periodically from the event loop.
+    pub async fn refresh_has_plugins(&self) {
+        let inner = self.inner.lock().await;
+        let has = !inner.workflows_dir.as_os_str().is_empty()
+            && inner.workflows_dir.is_dir()
+            && std::fs::read_dir(&inner.workflows_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.path().is_dir() && e.path().join("workflow.py").exists())
+                })
+                .unwrap_or(false);
+        self.has_plugins_flag.store(has, Ordering::Relaxed);
+    }
+
     /// Ensure the daemon is running. If it's not running and we're past
-    /// the backoff period, spawn a new one. No-op if no plugin dirs.
+    /// the backoff period, spawn a new one. No-op if workflows_dir is not set.
     ///
     /// Returns `true` if the daemon is now running, `false` otherwise.
     pub async fn ensure_running(&self) -> bool {
         let mut inner = self.inner.lock().await;
 
-        if inner.plugin_dirs.is_empty() {
+        if inner.workflows_dir.as_os_str().is_empty() {
             return false;
         }
 
@@ -177,7 +203,7 @@ impl PluginDaemonManager {
             }
         }
 
-        match spawn_plugin_daemon(&self.socket_path, &inner.plugin_dirs, &inner.sdk_path).await {
+        match spawn_plugin_daemon(&self.socket_path, &inner.workflows_dir, &inner.sdk_path).await {
             Ok(proc) => {
                 inner.process = Some(proc);
                 inner.crash_count = 0;
@@ -243,81 +269,6 @@ impl PluginDaemonManager {
         }
         // Clean up the socket file.
         let _ = std::fs::remove_file(&self.socket_path);
-    }
-
-    /// Update the plugin directories. If they changed, restart the daemon.
-    ///
-    /// Called periodically by the event loop when `.midtown/` directory
-    /// changes are detected (new plugin dirs appearing or old ones removed).
-    ///
-    /// Returns `true` if the directories changed (and the daemon was
-    /// killed so it restarts with the new list on the next `ensure_running`).
-    pub async fn update_plugin_dirs(&self, new_dirs: Vec<PathBuf>) -> bool {
-        let mut inner = self.inner.lock().await;
-        if inner.plugin_dirs == new_dirs {
-            return false;
-        }
-        info!(
-            old = ?inner.plugin_dirs,
-            new = ?new_dirs,
-            "Plugin directories changed"
-        );
-        self.has_plugins_flag
-            .store(!new_dirs.is_empty(), Ordering::Relaxed);
-        inner.plugin_dirs = new_dirs;
-        // Kill the current daemon so it restarts with new dirs.
-        if let Some(mut proc) = inner.process.take() {
-            let _ = proc.child.kill().await;
-        }
-        inner.crash_count = 0;
-        inner.last_crash = None;
-        true
-    }
-
-    /// Merge new plugin directories into the existing set. Only restarts the
-    /// daemon if previously-unseen directories are added. This is used at runtime
-    /// to accumulate channel-specific plugin directories without losing dirs
-    /// from other channels.
-    pub async fn merge_plugin_dirs(&self, new_dirs: Vec<PathBuf>) {
-        let mut inner = self.inner.lock().await;
-        let mut merged = inner.plugin_dirs.clone();
-        let mut changed = false;
-        for dir in new_dirs {
-            if !merged.contains(&dir) {
-                merged.push(dir);
-                changed = true;
-            }
-        }
-        if !changed {
-            return;
-        }
-        info!(
-            old = ?inner.plugin_dirs,
-            merged = ?merged,
-            "Merging new plugin directories"
-        );
-        self.has_plugins_flag.store(true, Ordering::Relaxed);
-        inner.plugin_dirs = merged;
-        // Gracefully stop the current daemon so it restarts with new dirs.
-        // Use SIGTERM with timeout, consistent with shutdown().
-        if let Some(mut proc) = inner.process.take() {
-            if let Some(pid) = proc.child.id() {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .stderr(std::process::Stdio::null())
-                    .status();
-                if tokio::time::timeout(Duration::from_secs(3), proc.child.wait())
-                    .await
-                    .is_err()
-                {
-                    let _ = proc.child.kill().await;
-                }
-            } else {
-                let _ = proc.child.kill().await;
-            }
-        }
-        inner.crash_count = 0;
-        inner.last_crash = None;
     }
 
     /// Check whether the daemon is currently running.
@@ -473,21 +424,15 @@ async fn send_reload_to_socket(
 
 /// Spawn the Python plugin daemon process.
 ///
-/// Runs `uv run python -m midtown --socket-path <path> --plugin-dirs <dirs>`
+/// Runs `uv run python -m midtown --socket-path <path> --workflows-dir <dir>`
 /// and waits for `{"ready":true}` on stdout.
 async fn spawn_plugin_daemon(
     socket_path: &Path,
-    plugin_dirs: &[PathBuf],
+    workflows_dir: &Path,
     sdk_path: &Path,
 ) -> Result<DaemonProcess, io::Error> {
     // Clean up stale socket before spawning.
     let _ = std::fs::remove_file(socket_path);
-
-    let dirs_arg = plugin_dirs
-        .iter()
-        .map(|d| d.to_string_lossy().to_string())
-        .collect::<Vec<_>>()
-        .join(",");
 
     let mut child = Command::new("uv")
         .args([
@@ -500,8 +445,8 @@ async fn spawn_plugin_daemon(
             "midtown",
             "--socket-path",
             socket_path.to_str().unwrap_or_default(),
-            "--plugin-dirs",
-            &dirs_arg,
+            "--workflows-dir",
+            workflows_dir.to_str().unwrap_or_default(),
         ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
