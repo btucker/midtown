@@ -392,12 +392,13 @@ let prevThreadId = null;
 
     if (pendingFile && !uploading) {
       uploading = true
+      const submittingThreadId = currentThreadId
       const result = await uploadAndSend(pendingFile, replyText, $threadData.channelName, parentId)
       uploading = false
       if (result.ok) {
         replyText = ''
         pendingFile = null
-        if (currentThreadId) threadDrafts.delete(currentThreadId)
+        if (submittingThreadId) threadDrafts.delete(submittingThreadId)
         clearMobileTextarea(textareaEl, () => { replyText = '' })
       } else {
         alert(`Upload failed: ${result.error}`)
