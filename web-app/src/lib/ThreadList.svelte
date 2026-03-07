@@ -1,8 +1,8 @@
 <script>
 import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";
-import { dismissThread, openThread } from "./api.js";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
+import { dismissThread, openThread } from "./api.js";
 import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.js";
 import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.js";
 

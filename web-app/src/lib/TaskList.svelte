@@ -1,6 +1,6 @@
 <script>
-import { openTaskThread } from "./api.js";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
+import { openTaskThread } from "./api.js";
 import { coworkers, kanbanData } from "./store.js";
 import TaskRow from "./TaskRow.svelte";
 
