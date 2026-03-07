@@ -433,7 +433,7 @@ let prevThreadId = null;
     const lastId = lastFocusedThreadId
     if (threadId && threadId !== lastId && textareaEl) {
       lastFocusedThreadId = threadId
-      tick().then(() => textareaEl.focus())
+      tick().then(() => { if (isDesktop) textareaEl.focus() })
     }
     if (!threadId) lastFocusedThreadId = null
   })
