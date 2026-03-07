@@ -81,9 +81,14 @@ async fn test_set_then_get_roundtrip() {
     let (state, _temp_dir, _guard) = make_test_state("wf-roundtrip");
 
     let value = serde_json::json!({"counter": 42, "active": true});
-    let set_resp =
-        handle_workflow_set_state(RequestId::Number(1), "test-channel", value.clone(), &state)
-            .await;
+    let set_resp = handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        value.clone(),
+        &state,
+    )
+    .await;
     assert!(set_resp.result.is_some(), "set_state should succeed");
 
     let get_resp = handle_workflow_get_state(RequestId::Number(2), "test-channel", &state).await;
@@ -99,6 +104,7 @@ async fn test_channels_have_isolated_state() {
     handle_workflow_set_state(
         RequestId::Number(1),
         "channel-a",
+        None,
         serde_json::json!({"ch": "a"}),
         &state,
     )
@@ -107,6 +113,7 @@ async fn test_channels_have_isolated_state() {
     handle_workflow_set_state(
         RequestId::Number(2),
         "channel-b",
+        None,
         serde_json::json!({"ch": "b"}),
         &state,
     )
@@ -132,6 +139,7 @@ async fn test_concurrent_set_state_last_write_wins() {
             handle_workflow_set_state(
                 RequestId::Number(i as i64),
                 "test-channel",
+                None,
                 serde_json::json!({"index": i}),
                 &s,
             )
@@ -160,6 +168,7 @@ async fn test_set_state_replaces_entire_state() {
     handle_workflow_set_state(
         RequestId::Number(1),
         "test-channel",
+        None,
         serde_json::json!({"old_key": "old_value"}),
         &state,
     )
@@ -167,7 +176,14 @@ async fn test_set_state_replaces_entire_state() {
 
     // Replace with new state
     let new = serde_json::json!({"new_key": "new_value"});
-    handle_workflow_set_state(RequestId::Number(2), "test-channel", new.clone(), &state).await;
+    handle_workflow_set_state(
+        RequestId::Number(2),
+        "test-channel",
+        None,
+        new.clone(),
+        &state,
+    )
+    .await;
 
     let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
     let result = resp.result.unwrap();
@@ -181,7 +197,14 @@ async fn test_state_persists_to_daemon_state_json() {
     let (state, _temp_dir, _guard) = make_test_state("wf-persist");
 
     let value = serde_json::json!({"persistent": true, "count": 7});
-    handle_workflow_set_state(RequestId::Number(1), "test-channel", value.clone(), &state).await;
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        value.clone(),
+        &state,
+    )
+    .await;
 
     // Reload from disk and verify the workflow state was persisted.
     let reloaded = crate::daemon::state::DaemonPersistentState::load_for_repo("wf-persist")
@@ -260,4 +283,95 @@ async fn test_workflow_list_empty() {
     assert!(workflows.is_empty());
     let assignments = result["assignments"].as_object().expect("should be object");
     assert!(assignments.is_empty());
+}
+
+// ── Nested key path tests ────────────────────────────────────────────────
+
+/// set_state with a key sets a nested value without overwriting other keys.
+#[tokio::test]
+async fn test_set_state_with_key_preserves_existing() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-key");
+
+    // Set initial state with some data
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        serde_json::json!({"existing": "data", "tasks": {"100": {"status": "open"}}}),
+        &state,
+    )
+    .await;
+
+    // Set a nested key — should NOT wipe existing state
+    handle_workflow_set_state(
+        RequestId::Number(2),
+        "test-channel",
+        Some("tasks.42.excluded"),
+        serde_json::json!(true),
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    // Original data preserved
+    assert_eq!(result["state"]["existing"], "data");
+    assert_eq!(result["state"]["tasks"]["100"]["status"], "open");
+    // New nested key set
+    assert_eq!(result["state"]["tasks"]["42"]["excluded"], true);
+}
+
+/// set_state with a key and null value removes the nested key.
+#[tokio::test]
+async fn test_set_state_with_key_null_removes() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-remove");
+
+    // Set initial state
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        None,
+        serde_json::json!({"tasks": {"42": {"excluded": true, "note": "test"}}}),
+        &state,
+    )
+    .await;
+
+    // Remove the "excluded" key
+    handle_workflow_set_state(
+        RequestId::Number(2),
+        "test-channel",
+        Some("tasks.42.excluded"),
+        serde_json::Value::Null,
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(3), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    // "excluded" removed, "note" preserved
+    assert!(result["state"]["tasks"]["42"]["excluded"].is_null());
+    assert_eq!(result["state"]["tasks"]["42"]["note"], "test");
+}
+
+/// set_state with a key creates intermediate objects as needed.
+#[tokio::test]
+async fn test_set_state_with_key_creates_intermediates() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-nested-create");
+
+    // No state exists yet — set a deeply nested key
+    handle_workflow_set_state(
+        RequestId::Number(1),
+        "test-channel",
+        Some("tasks.99.excluded"),
+        serde_json::json!(true),
+        &state,
+    )
+    .await;
+
+    let resp = handle_workflow_get_state(RequestId::Number(2), "test-channel", &state).await;
+    let result = resp.result.unwrap();
+
+    assert_eq!(result["state"]["tasks"]["99"]["excluded"], true);
 }

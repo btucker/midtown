@@ -43,18 +43,58 @@ pub(super) async fn handle_workflow_get_state(
 ///
 /// Params:
 /// - `channel` (required): channel name
+/// - `key` (optional): dot-separated path for nested access (e.g. "tasks.42.excluded")
 /// - `state` (required): JSON value to store
 ///
-/// Replaces the entire channel state with the provided value.
+/// When `key` is provided, sets/removes the value at the nested path within the
+/// channel's state object. A `null` value removes the key. When `key` is absent,
+/// replaces the entire channel state.
 pub(super) async fn handle_workflow_set_state(
     id: RequestId,
     channel: &str,
+    key: Option<&str>,
     new_state: serde_json::Value,
     daemon_state: &DaemonState,
 ) -> Response {
     let mut ps = daemon_state.persistent_state.lock().await;
 
-    ps.workflow_state.insert(channel.to_string(), new_state);
+    if let Some(key) = key {
+        // Nested key path: navigate/create intermediate objects, set leaf value.
+        let root = ps
+            .workflow_state
+            .entry(channel.to_string())
+            .or_insert_with(|| serde_json::json!({}));
+
+        let parts: Vec<&str> = key.split('.').collect();
+        let mut current = root;
+        for part in &parts[..parts.len() - 1] {
+            if !current.is_object() {
+                *current = serde_json::json!({});
+            }
+            current = current
+                .as_object_mut()
+                .unwrap()
+                .entry(*part)
+                .or_insert_with(|| serde_json::json!({}));
+        }
+
+        let leaf = parts[parts.len() - 1];
+        if new_state.is_null() {
+            if let Some(obj) = current.as_object_mut() {
+                obj.remove(leaf);
+            }
+        } else {
+            if !current.is_object() {
+                *current = serde_json::json!({});
+            }
+            current
+                .as_object_mut()
+                .unwrap()
+                .insert(leaf.to_string(), new_state);
+        }
+    } else {
+        ps.workflow_state.insert(channel.to_string(), new_state);
+    };
 
     // Persist to daemon-state.json.
     if let Err(e) = ps.save_for_repo(daemon_state.paths.dir_key()) {

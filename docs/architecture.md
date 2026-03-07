@@ -742,13 +742,13 @@ Five RPC methods in `rpc_workflow.rs` manage workflow state and channel assignme
 
 ### Plugin Daemon (Unix Socket IPC)
 
-`WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves plugin hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based plugins.
+`WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves workflow hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based workflow plugins. Each workflow gets its own isolated `PluginManager` instance — there is no multi-plugin composition across workflows.
 
 **Protocol:** Newline-delimited JSON, one request per connection. Each connection sends one request and receives one response, then closes.
 
 Request format (event dispatch):
 ```json
-{"type": "pr.opened", "event": {...}, "task_id": "7", "task_state": "in_review"}
+{"type": "pr.opened", "event": {...}, "task_id": "7", "channel_workflow": "my-workflow"}
 ```
 
 Response format (event dispatch):
@@ -756,33 +756,23 @@ Response format (event dispatch):
 {"ok": true, "actions": [...], "default_prevented": false}
 ```
 
-Request format (reload command):
-```json
-{"type": "reload"}
-```
+The `channel_workflow` field tells the Python daemon which workflow module to load/use for this event. The Rust side resolves this from `DaemonPersistentState::channel_workflows` (set via `workflow.assign`).
 
-Response format (reload):
-```json
-{"ok": true, "reloaded": true, "loaded_plugins": ["/path/to/plugin.py", ...]}
-```
-
-The Rust side uses `PluginDispatchResult` for event responses and `PluginReloadResult` for reload responses, keeping the deserialization types aligned with their semantics.
+The Rust side uses `PluginDispatchResult` for event responses, keeping the deserialization types aligned with their semantics.
 
 **Startup handshake:** On startup, the daemon writes `{"ready":true}\n` to stdout so the Rust parent process knows the socket is accepting connections.
 
-**Hot-reload (two-tier approach):**
-- **Per-event mtime check:** Before processing each event dispatch, `_process_request()` calls `reload_changed()` to detect mtime changes in already-tracked plugin files and re-register modified modules. This does NOT scan for new plugins to avoid unnecessary `iterdir()` overhead on every event.
-- **Periodic full scan:** The Rust event loop runs a `plugin_scan_interval` timer every 5 seconds that: (1) calls `update_plugin_dirs()` to detect new/removed plugin directories (restarting the daemon if dirs changed), and (2) sends a `"reload"` IPC command which triggers both `reload_changed()` AND `scan_for_new_plugins()` to discover newly added plugin files within existing directories.
+**Lazy loading + hot-reload:** Workflows are loaded lazily on first dispatch via `_ensure_loaded()`. Before each dispatch, the daemon checks whether the workflow file's mtime has changed and reloads if so — zero startup cost with live editing support.
 
 **Stale socket cleanup:** On startup, any existing socket file at the configured path is unlinked before binding, preventing "address already in use" errors from prior crashes.
 
-**CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--plugin-dirs` arguments.
+**CLI entry points:** `python -m midtown` (via `__main__.py`) or `python -m midtown.daemon` (via `if __name__ == "__main__"` guard in `daemon.py`). Both accept `--socket-path` and `--workflows-dir` arguments.
 
 ### Plugin Daemon Lifecycle Manager (Rust)
 
-`PluginDaemonManager` (`src/daemon/plugin_daemon.rs`) manages the lifecycle of the Python plugin daemon process from the Rust side. It follows a similar pattern to `WorkflowSidecarManager` but manages a single process (not per-script).
+`PluginDaemonManager` (`src/daemon/plugin_daemon.rs`) manages the lifecycle of the Python plugin daemon process from the Rust side.
 
-**Spawning:** Runs `uv run --project <sdk_path> python -m midtown --socket-path <path> --plugin-dirs <dirs>`. The SDK path is resolved via `paths::resolve_python_sdk_dir()` which checks: next to executable → `CARGO_MANIFEST_DIR/sdk/python` → `~/.local/share/midtown/sdk/python`.
+**Spawning:** Runs `uv run --project <sdk_path> python -m midtown --socket-path <path> --workflows-dir <dir>`. The SDK path is resolved via `paths::resolve_python_sdk_dir()` which checks: next to executable → `CARGO_MANIFEST_DIR/sdk/python` → `~/.local/share/midtown/sdk/python`.
 
 **Ready handshake:** After spawning, waits up to 30s for `{"ready":true}` on stdout, confirming the Unix socket is accepting connections.
 
@@ -790,15 +780,15 @@ The Rust side uses `PluginDispatchResult` for event responses and `PluginReloadR
 
 **Restart with backoff:** Exponential backoff starting at 500ms, doubling per consecutive crash, capped at 60s. Backoff resets on successful ready handshake. `ensure_running()` on each drain tick attempts restart when the backoff period has elapsed.
 
-**Plugin discovery:** `paths::discover_plugin_dirs()` scans for plugins in up to four directories (priority order): channel-specific in-repo, channel-specific local, project-wide in-repo, project-wide local. A directory is considered to contain plugins if it has at least one `.py` file (not `_`-prefixed) or a subdirectory with a `SKILL.md` file (AgentSkills format). At startup, only project-wide paths are scanned. At runtime, when dispatching workflow events, channel-specific plugin directories are discovered and merged into the running daemon via `merge_plugin_dirs()`. The manager only starts when at least one directory has plugin files.
+**Workflow discovery:** `has_plugins()` checks the `workflows_dir` for workflow subdirectories (each containing a `workflow.py`). The daemon starts lazily — `ensure_running()` is called when a workflow event needs to be dispatched for a channel with an assigned workflow.
 
-**AgentSkills format:** Plugin directories can contain AgentSkills — subdirectories with a `SKILL.md` frontmatter file specifying `midtown_hooks` (path to hooks module, default `scripts/hooks.py`) and `midtown_order` (execution priority). The `skill.py` module (`sdk/python/midtown/skill.py`) parses this frontmatter using a minimal YAML subset parser (no PyYAML dependency). `WorkflowDaemon` registers each AgentSkills plugin with a unique name (`agentskills_{name}`) to prevent pluggy conflicts when multiple skills share the same hooks filename.
+**Per-channel workflow assignment:** `DaemonPersistentState::channel_workflows` maps channel names to workflow names. Set via `workflow.assign` RPC, persisted in `daemon-state.json`. When dispatching an event, `dispatch_workflow_event()` looks up the channel's assigned workflow name and includes it as `channel_workflow` in the IPC request so the Python daemon loads the correct module.
 
-**Periodic plugin scan:** The main event loop runs a `plugin_scan_interval` (5s) that calls `update_plugin_dirs()` to re-discover plugin directories. If directories changed, the Python daemon is killed and `ensure_running()` spawns a fresh one (which loads all plugins on startup, so no reload is needed). If directories are unchanged, `send_reload()` sends a `"reload"` IPC command so the Python side checks for file-level changes and new plugins. `update_plugin_dirs()` returns a boolean indicating whether dirs changed, preventing a redundant (and potentially racy) reload immediately after a daemon restart.
+**Periodic plugin scan:** The main event loop runs a `plugin_scan_interval` (5s) that calls `refresh_has_plugins()` to re-scan the workflows directory.
 
 **Shutdown:** On daemon exit, sends SIGTERM to the child process and waits up to 3s for graceful exit, then escalates to SIGKILL if needed, then cleans up the socket file.
 
-**State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()` with discovered plugin dirs, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
+**State field:** `DaemonState.plugin_daemon: PluginDaemonManager` — initialized during `DaemonState::new()`, health-checked on the session drain interval alongside the sidecar manager, shut down during daemon cleanup.
 
 ### Python SDK
 

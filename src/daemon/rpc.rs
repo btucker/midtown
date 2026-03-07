@@ -625,8 +625,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 Some(v) => v.clone(),
                 None => return Response::error(request.id, RpcError::invalid_params()),
             };
-            super::rpc_workflow::handle_workflow_set_state(request.id, channel, new_state, state)
-                .await
+            let key = params.str_param("key");
+            super::rpc_workflow::handle_workflow_set_state(
+                request.id, channel, key, new_state, state,
+            )
+            .await
         }
 
         // ---- Auth ----
