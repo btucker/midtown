@@ -9,9 +9,9 @@ import {
 	CommandItem,
 	CommandList,
 } from "$lib/components/ui/command";
-import { fetchHistory, searchMessages, selectDm } from "./api.js";
+import { fetchHistory, openThread, searchMessages, selectDm } from "./api.js";
 import { getSenderColor } from "./messageUtils.js";
-import { activeChannel, channels, messagesByChannel } from "./store.js";
+import { activeChannel, channels, channelTargetMsgId, deepLinkMsgId, messagesByChannel } from "./store.js";
 
 let { open = $bindable(false) } = $props();
 
@@ -80,6 +80,20 @@ function selectResult(result) {
 			fetchHistory(result.channel);
 		}
 	}
+
+	if (result.thread_parent_id) {
+		// Thread reply: open the thread panel and deep-link to the specific reply.
+		// Use the actual parent message from loaded history if available, otherwise
+		// construct a minimal one — openThread will fetch the full thread from the API.
+		const channelMsgs = $messagesByChannel[result.channel] || [];
+		const parentMsg = channelMsgs.find((m) => m.id === result.thread_parent_id);
+		openThread(parentMsg || { id: result.thread_parent_id, content: "", from: "", reply_count: 0 }, result.channel);
+		deepLinkMsgId.set(result.id);
+	} else {
+		// Top-level message: tell Channel.svelte to scroll to and highlight it
+		channelTargetMsgId.set(result.id);
+	}
+
 	open = false;
 }
 

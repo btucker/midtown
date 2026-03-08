@@ -35,6 +35,9 @@ pub struct SearchResult {
     #[serde(rename = "type")]
     pub message_type: String,
     pub snippet: String,
+    /// Thread parent message ID, if this result is a thread reply.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_parent_id: Option<String>,
 }
 
 /// Response from a search query.
@@ -272,6 +275,7 @@ fn search_with_rg(channels_dir: &Path, query: &str) -> Result<Vec<SearchResult>,
             channel,
             message_type: format!("{:?}", msg.message_type).to_lowercase(),
             snippet,
+            thread_parent_id: msg.thread_parent_id,
         });
     }
 
@@ -309,6 +313,7 @@ fn search_with_regex(project_dir: &Path, query: &str) -> Result<Vec<SearchResult
                     channel: info.name.clone(),
                     message_type: format!("{:?}", msg.message_type).to_lowercase(),
                     snippet,
+                    thread_parent_id: msg.thread_parent_id,
                 });
             }
         }

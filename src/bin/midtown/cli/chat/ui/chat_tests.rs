@@ -624,6 +624,7 @@ fn test_search_overlay_height_with_one_result() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
 
     // popup_width=60, popup_x=(80-60)/2=10. Expected height=4+1=5, popup_y=(40-5)/2=17.

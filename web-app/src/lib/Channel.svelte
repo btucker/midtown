@@ -27,6 +27,7 @@ import {
 	activeProject,
 	agentToolItems,
 	channels as channelsStore,
+	channelTargetMsgId,
 	coworkers,
 	daemonStatus,
 	isWideScreen,
@@ -556,10 +557,53 @@ function getCurrentTasks(coworkerList) {
 // Auto-scroll to bottom when new messages arrive
 $effect(() => {
 	if (channelMessages.length > 0 && autoScroll && scrollAreaViewport) {
+		// Skip auto-scroll when a search target is pending — the scroll-to-message
+		// effect below will handle positioning to the right message.
+		if (untrack(() => $channelTargetMsgId)) return;
 		tick().then(() => {
 			scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight;
 		});
 	}
+});
+
+// Scroll-to-message: when channelTargetMsgId is set (e.g. from search), find the
+// target message, expand the render window if needed, scroll to it, and highlight.
+$effect(() => {
+	const targetId = $channelTargetMsgId;
+	if (!targetId || !scrollAreaViewport || channelMessages.length === 0) return;
+
+	// Find the target message's index in channelMessages
+	const targetIndex = channelMessages.findIndex((m) => m.id === targetId);
+	if (targetIndex === -1) {
+		// Message not found in loaded history — clear and bail
+		untrack(() => channelTargetMsgId.set(null));
+		return;
+	}
+
+	// Ensure the target is within the render window
+	if (targetIndex < renderStartIndex) {
+		// Expand window to include the target message (with some padding above)
+		const newStart = Math.max(0, targetIndex - 10);
+		queueMicrotask(() => {
+			renderStartIndex = newStart;
+		});
+	}
+
+	// Disable auto-scroll so the auto-scroll effect doesn't fight us
+	untrack(() => {
+		autoScroll = false;
+	});
+
+	// Wait for DOM to update, then scroll to and highlight the element
+	tick().then(() => {
+		const el = scrollAreaViewport?.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`);
+		if (el) {
+			el.scrollIntoView({ behavior: "smooth", block: "center" });
+			el.classList.add("deep-link-highlight");
+			setTimeout(() => el.classList.remove("deep-link-highlight"), 2000);
+		}
+		untrack(() => channelTargetMsgId.set(null));
+	});
 });
 
 // Reset textarea height when input is cleared (after send)
@@ -1235,6 +1279,17 @@ function getToolCallStatusIcon(entry) {
 
   .thread-avatar-chip:last-child {
     margin-right: 0;
+  }
+
+  /* Search result scroll-to-message highlight animation */
+  :global(.deep-link-highlight) {
+    animation: deep-link-flash 2s ease-out;
+  }
+
+  @keyframes deep-link-flash {
+    0% { background-color: hsl(var(--primary) / 0.2); }
+    70% { background-color: hsl(var(--primary) / 0.2); }
+    100% { background-color: transparent; }
   }
 
 </style>
