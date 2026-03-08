@@ -1,4 +1,5 @@
 <script>
+import { fetchChannelAgentsMd, saveChannelAgentsMd } from "./api.js";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.js";
 
@@ -13,6 +14,72 @@ function toggleInlineToolCalls() {
 		},
 	}));
 }
+
+// AGENTS.md editor state
+let agentsContent = $state("");
+let agentsSource = $state("none");
+let agentsOriginal = $state("");
+let agentsLoading = $state(false);
+let agentsSaving = $state(false);
+let agentsError = $state("");
+let agentsSuccess = $state("");
+
+let agentsDirty = $derived(agentsContent !== agentsOriginal);
+
+async function loadAgentsMd() {
+	agentsLoading = true;
+	agentsError = "";
+	agentsSuccess = "";
+	const data = await fetchChannelAgentsMd($activeChannel);
+	agentsContent = data.content;
+	agentsOriginal = data.content;
+	agentsSource = data.source;
+	agentsLoading = false;
+}
+
+async function saveAgentsMd() {
+	agentsSaving = true;
+	agentsError = "";
+	agentsSuccess = "";
+	const result = await saveChannelAgentsMd($activeChannel, agentsContent);
+	if (result.ok) {
+		agentsOriginal = agentsContent;
+		agentsSuccess = "Saved";
+		// Update source since we just wrote to channel-local
+		if (agentsContent.trim()) {
+			agentsSource = "channel-local";
+		} else {
+			agentsSource = "none";
+		}
+		setTimeout(() => (agentsSuccess = ""), 2000);
+	} else {
+		agentsError = result.error || "Failed to save";
+	}
+	agentsSaving = false;
+}
+
+function discardAgentsMd() {
+	agentsContent = agentsOriginal;
+	agentsError = "";
+	agentsSuccess = "";
+}
+
+const sourceLabels = {
+	"channel-repo": "Channel (in repo)",
+	"channel-local": "Channel (local)",
+	"project-repo": "Project (in repo)",
+	"project-local": "Project (local)",
+	none: "Not set",
+};
+
+// Load when channel changes
+let lastChannel = $state("");
+$effect(() => {
+	if ($activeChannel && $activeChannel !== lastChannel) {
+		lastChannel = $activeChannel;
+		loadAgentsMd();
+	}
+});
 </script>
 
 <div class="settings-layout">
@@ -38,6 +105,49 @@ function toggleInlineToolCalls() {
           <span class="toggle-knob"></span>
         </button>
       </div>
+    </section>
+
+    <!-- AGENTS.md editor -->
+    <section class="settings-section">
+      <h2 class="section-title">AGENTS.md</h2>
+      <div class="agents-header">
+        <span class="setting-description">
+          Custom instructions for Claude Code sessions in this channel.
+        </span>
+        {#if agentsSource !== "none" && !agentsLoading}
+          <span class="agents-source">Source: {sourceLabels[agentsSource] || agentsSource}</span>
+        {/if}
+      </div>
+      {#if agentsLoading}
+        <div class="agents-loading">Loading...</div>
+      {:else}
+        <textarea
+          class="agents-editor"
+          bind:value={agentsContent}
+          placeholder="# Channel Instructions&#10;&#10;Add custom instructions for coworkers in this channel..."
+          spellcheck="false"
+        ></textarea>
+        <div class="agents-actions">
+          {#if agentsError}
+            <span class="agents-status error">{agentsError}</span>
+          {/if}
+          {#if agentsSuccess}
+            <span class="agents-status success">{agentsSuccess}</span>
+          {/if}
+          <div class="agents-buttons">
+            {#if agentsDirty}
+              <button class="agents-btn discard" onclick={discardAgentsMd}>Discard</button>
+            {/if}
+            <button
+              class="agents-btn save"
+              onclick={saveAgentsMd}
+              disabled={!agentsDirty || agentsSaving}
+            >
+              {agentsSaving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      {/if}
     </section>
 
     <!-- Workflow section (embedded) -->
@@ -132,6 +242,110 @@ function toggleInlineToolCalls() {
 
   .toggle-switch.active .toggle-knob {
     transform: translateX(18px);
+  }
+
+  /* AGENTS.md editor styles */
+  .agents-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+
+  .agents-source {
+    font-size: 0.72rem;
+    color: hsl(var(--muted-foreground));
+    white-space: nowrap;
+  }
+
+  .agents-loading {
+    font-size: 0.82rem;
+    color: hsl(var(--muted-foreground));
+    padding: 16px 0;
+  }
+
+  .agents-editor {
+    width: 100%;
+    min-height: 200px;
+    padding: 12px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+
+  .agents-editor:focus {
+    outline: none;
+    border-color: hsl(var(--primary));
+  }
+
+  .agents-editor::placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  .agents-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    min-height: 32px;
+  }
+
+  .agents-status {
+    font-size: 0.78rem;
+  }
+
+  .agents-status.error {
+    color: hsl(var(--destructive));
+  }
+
+  .agents-status.success {
+    color: hsl(142 71% 45%);
+  }
+
+  .agents-buttons {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .agents-btn {
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    border: 1px solid hsl(var(--border));
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .agents-btn.discard {
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .agents-btn.discard:hover {
+    background: hsl(var(--accent));
+  }
+
+  .agents-btn.save {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary));
+  }
+
+  .agents-btn.save:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .agents-btn.save:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* The embedded workflow already has its own padding — remove duplicate */
