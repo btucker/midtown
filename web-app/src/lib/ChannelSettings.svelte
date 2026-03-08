@@ -62,6 +62,7 @@ function discardAgentsMd() {
 
 function switchScope(newScope) {
 	if (newScope === agentsScope) return;
+	if (agentsDirty && !confirm("You have unsaved changes. Switch scope and discard them?")) return;
 	agentsScope = newScope;
 	loadAgentsMd();
 }
@@ -139,6 +140,7 @@ $effect(() => {
             ? "# Channel Instructions\n\nAdd custom instructions for coworkers in this channel..."
             : "# Project Instructions\n\nAdd instructions shared across all channels..."}
           spellcheck="false"
+          aria-label="AGENTS.md editor"
         ></textarea>
         <div class="agents-actions">
           <div class="agents-status-area">
