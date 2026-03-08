@@ -119,9 +119,12 @@ impl PrIssueTracker {
     }
 
     /// Create a tracker pre-loaded with permanent nudges restored from persistent state.
+    /// Populates `nudged` from `permanent` so `should_nudge()` returns false for
+    /// restored entries (matching `record_permanent_nudge()` which inserts into both).
     pub fn with_permanent_nudges(nudges: HashSet<(u64, PrIssueType)>) -> Self {
+        let nudged = nudges.iter().map(|key| (*key, Instant::now())).collect();
         Self {
-            nudged: HashMap::new(),
+            nudged,
             permanent: nudges,
         }
     }

@@ -653,6 +653,23 @@ fn permanent_nudge_clear_removes_from_set() {
     assert!(tracker.permanent_nudges().is_empty());
 }
 
+#[test]
+fn with_permanent_nudges_blocks_should_nudge() {
+    // Regression: with_permanent_nudges() must populate the nudged map so that
+    // should_nudge() returns false for restored permanent entries. Without this,
+    // permanent nudges would re-fire after daemon restart because should_nudge()
+    // only checks the nudged map.
+    let mut nudges = HashSet::new();
+    nudges.insert((1838, PrIssueType::ReviewComplete));
+
+    let tracker = PrIssueTracker::with_permanent_nudges(nudges);
+
+    assert!(
+        !tracker.should_nudge(1838, PrIssueType::ReviewComplete),
+        "should_nudge() must return false for restored permanent nudges"
+    );
+}
+
 // -------------------------------------------------------------------------
 // StuckConditionType::AutoMerge — deduplication for auto-merge attempts
 // -------------------------------------------------------------------------
