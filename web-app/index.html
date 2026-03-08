@@ -8,6 +8,18 @@
     <link rel="icon" type="image/png" id="favicon" href="/favicon-dark.png" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <!-- iOS PWA splash screens (portrait, common modern devices) -->
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1320x2868.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1206x2622.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1290x2796.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1179x2556.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1170x2532.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)" href="/apple-splash-portrait-1284x2778.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-750x1334.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-2048x2732.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-1668x2388.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-1640x2360.png" />
+    <link rel="apple-touch-startup-image" media="screen and (device-width: 744px) and (device-height: 1133px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)" href="/apple-splash-portrait-1488x2266.png" />
     <script>
       // FOUC prevention: apply theme class and set theme-aware assets before first paint.
       // All theme-dependent DOM setup lives in this single block to avoid fragile
@@ -21,7 +33,7 @@
       statusBarMeta.name = 'apple-mobile-web-app-status-bar-style'
       statusBarMeta.content = isLight ? 'default' : 'black-translucent'
       document.head.appendChild(statusBarMeta)
-      // Theme-aware favicon: override the default dark PNG when in light mode
+      // Theme-aware favicon and loader background
       if (isLight) {
         document.getElementById('favicon').href = '/favicon-light.png'
       }
@@ -29,7 +41,26 @@
     <title>Midtown Mobile</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- Loading indicator shown while JS bundles load; replaced when Svelte mounts -->
+      <div id="app-loader">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4096 4096" width="80" height="80" style="border-radius:16px">
+          <rect width="4096" height="4096" rx="720" fill="#F2EBDA"/>
+          <path d="M2253,3300 L2333,1530 Q2333,1330 2533,1330 L2993,1330 Q3193,1330 3193,1530 L3273,3300 Z" fill="#3D5A72" stroke="#F2EBDA" stroke-width="50"/>
+          <line x1="2063" y1="730" x2="2063" y2="350" stroke="#6A9CAE" stroke-width="32" stroke-linecap="round"/>
+          <path d="M1553,3300 L1633,930 Q1633,730 1833,730 L2293,730 Q2493,730 2493,930 L2573,3300 Z" fill="#6A9CAE" stroke="#F2EBDA" stroke-width="50"/>
+          <path d="M823,3300 L903,1840 Q903,1640 1103,1640 L1563,1640 Q1763,1640 1763,1840 L1843,3300 Z" fill="#8EC0C8" stroke="#F2EBDA" stroke-width="50"/>
+        </svg>
+        <div class="loader-spinner"></div>
+      </div>
+      <style>
+        #app-loader{display:flex;align-items:center;justify-content:center;height:100vh;height:100dvh;flex-direction:column;gap:24px;background:#fafaf9}
+        .dark #app-loader{background:#0a0a0a}
+        .loader-spinner{width:32px;height:32px;border:3px solid rgba(0,0,0,0.1);border-top-color:rgba(0,0,0,0.4);border-radius:50%;animation:spin .8s linear infinite}
+        .dark .loader-spinner{border-color:rgba(255,255,255,0.15);border-top-color:rgba(255,255,255,0.6)}
+        @keyframes spin{to{transform:rotate(360deg)}}
+      </style>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -1,1 +1,3 @@
 node_modules/
+# Landscape splash screens are generated but unused (portrait-only in index.html)
+public/apple-splash-landscape-*.png
