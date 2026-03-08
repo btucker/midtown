@@ -163,6 +163,10 @@ export const threadData = writable(null);
 // Cleared after the scroll/highlight completes.
 export const deepLinkMsgId = writable(null);
 
+// Channel-level target message ID: when set, Channel.svelte scrolls to and highlights this message.
+// Set by SearchPalette when selecting a search result. Cleared after scroll/highlight completes.
+export const channelTargetMsgId = writable(null);
+
 // Thread ownership: { [threadParentId]: boolean }
 // true = dedicated session (fork active), false/missing = channel lead handles
 export const threadOwnership = writable({});

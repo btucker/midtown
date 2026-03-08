@@ -115,6 +115,7 @@ fn test_search_arrow_navigation() {
             channel: "general".to_string(),
             message_type: "text".to_string(),
             snippet: "hello world".to_string(),
+            thread_parent_id: None,
         },
         midtown::search::SearchResult {
             id: "2".to_string(),
@@ -124,6 +125,7 @@ fn test_search_arrow_navigation() {
             channel: "general".to_string(),
             message_type: "text".to_string(),
             snippet: "goodbye world".to_string(),
+            thread_parent_id: None,
         },
         midtown::search::SearchResult {
             id: "3".to_string(),
@@ -133,6 +135,7 @@ fn test_search_arrow_navigation() {
             channel: "dev".to_string(),
             message_type: "text".to_string(),
             snippet: "search test".to_string(),
+            thread_parent_id: None,
         },
     ];
     app.search.selected_index = 0;
@@ -169,6 +172,7 @@ fn test_enter_with_results_selects_and_closes() {
         channel: "auth".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
     app.selected_channel = "midtown".to_string();
@@ -269,6 +273,7 @@ fn test_search_select_clears_last_query() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
 
@@ -295,6 +300,7 @@ fn test_execute_search_empty_query_clears_results() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "old result".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
 
@@ -382,6 +388,7 @@ fn test_search_select_calls_load_channel_messages() {
         channel: "frontend".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
 
@@ -512,6 +519,7 @@ fn test_enter_re_executes_when_query_changed() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
     app.selected_channel = "midtown".to_string();
@@ -543,6 +551,7 @@ fn test_results_are_stale_detects_changed_query() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
 
     assert!(
@@ -565,6 +574,7 @@ fn test_results_are_not_stale_when_query_matches() {
         channel: "general".to_string(),
         message_type: "text".to_string(),
         snippet: "hello".to_string(),
+        thread_parent_id: None,
     }];
 
     assert!(
@@ -587,6 +597,7 @@ fn test_search_select_strips_archived_suffix() {
         channel: "auth.archived".to_string(), // Archived channel from rg
         message_type: "text".to_string(),
         snippet: "old message".to_string(),
+        thread_parent_id: None,
     }];
     app.search.selected_index = 0;
 
