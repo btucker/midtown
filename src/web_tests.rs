@@ -1242,7 +1242,14 @@ async fn test_workflow_returns_no_assignment_when_empty() {
     assert!(data["assigned_workflow"].is_null());
     assert!(data["available_workflows"].as_array().unwrap().is_empty());
     assert!(data["state"].is_null());
-    assert!(data["mermaid"].is_null());
+    // When no workflow is assigned, the default workflow diagram is returned
+    assert!(data["mermaid"].is_string());
+    assert!(
+        data["mermaid"]
+            .as_str()
+            .unwrap()
+            .contains("stateDiagram-v2")
+    );
 }
 
 #[tokio::test]

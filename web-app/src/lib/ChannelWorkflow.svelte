@@ -137,9 +137,9 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
       </section>
 
       <!-- Mermaid diagram -->
-      {#if data.assigned_workflow && data.mermaid}
+      {#if data.mermaid}
         <section class="workflow-section">
-          <h2 class="section-title">State Machine</h2>
+          <h2 class="section-title">{data.assigned_workflow ? 'State Machine' : 'Default State Machine'}</h2>
           <div class="diagram-container">
             <MermaidDiagram code={data.mermaid} />
           </div>
@@ -147,7 +147,7 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
       {/if}
 
       <!-- Task positions -->
-      {#if data.assigned_workflow && taskEntries.length > 0}
+      {#if taskEntries.length > 0}
         <section class="workflow-section">
           <h2 class="section-title">Task Positions</h2>
           <div class="info-card">
