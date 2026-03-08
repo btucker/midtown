@@ -7,7 +7,7 @@ let prevThreadId = null;
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses } from './store.js'
+  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
@@ -259,15 +259,25 @@ let prevThreadId = null;
     }
   })
 
-  // Extract Edit/Write tool calls for DM channels to render as inline diffs.
-  // Tool items are keyed by channel name in the store; for DM threads we pull
-  // the items for that DM channel and filter for Edit/Write calls.
+  // Extract Edit/Write tool calls to render as inline diffs.
+  // Enabled for DM channels (always) or any channel with inlineToolCalls setting.
+  // Tool items are keyed by channel name in the store; we pull the items for
+  // that channel and filter for Edit/Write calls.
   let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
+  let showInlineDiffs = $derived(
+    isDmChannel || ($channelSettings[$threadData?.channelName]?.inlineToolCalls ?? false)
+  )
 
   let editDiffs = $derived.by(() => {
-    if (!isDmChannel || !$threadData) return []
+    if (!showInlineDiffs || !$threadData) return []
     const channelName = $threadData.channelName
-    const items = $agentToolItems[channelName] || []
+    const parentId = $threadData.parentMessage?.id
+    // DM channels use channel-keyed tool items; non-DM channels with inline
+    // enabled prefer thread-scoped items (from fork sessions) and fall back
+    // to channel-level items.
+    const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
+    const channelItems = $agentToolItems[channelName] || []
+    const items = isDmChannel ? channelItems : (threadItems.length > 0 ? threadItems : channelItems)
     // Build result status map: call_id → 'error' | 'ok'
     // so we can skip diffs for failed Edit/Write calls.
     const resultStatus = {}
@@ -321,7 +331,7 @@ let prevThreadId = null;
   let mergedTimeline = $derived.by(() => {
     if (!$threadData) return []
     const msgs = ($threadData.messages ?? []).map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
-    if (!isDmChannel || editDiffs.length === 0) return msgs
+    if (!showInlineDiffs || editDiffs.length === 0) return msgs
     const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp, msgIndex: -1 }))
     const sorted = [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
     // Recompute message indices after sort — interleaved edits shift positions

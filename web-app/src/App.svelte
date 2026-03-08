@@ -21,7 +21,7 @@ import ChannelHeader from "$lib/ChannelHeader.svelte";
 import ChannelList from "$lib/ChannelList.svelte";
 import ChannelNotes from "$lib/ChannelNotes.svelte";
 import ChannelPrList from "$lib/ChannelPrList.svelte";
-import ChannelWorkflow from "$lib/ChannelWorkflow.svelte";
+import ChannelSettings from "$lib/ChannelSettings.svelte";
 import {
 	Sidebar,
 	SidebarContent,
@@ -365,7 +365,7 @@ function selectProject(project) {
               <ChannelHeader />
               {#if !isActiveDm}
                 <div class="channel-tab-bar">
-                  {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes'], ['workflow', 'Workflow']] as [tab, label]}
+                  {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes'], ['settings', 'Settings']] as [tab, label]}
                     {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
                     <button
                       class="channel-tab"
@@ -382,8 +382,8 @@ function selectProject(project) {
                 <ChannelPrList />
               {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'notes'}
                 <ChannelNotes />
-              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'workflow'}
-                <ChannelWorkflow />
+              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'settings'}
+                <ChannelSettings />
               {/if}
             </div>
 

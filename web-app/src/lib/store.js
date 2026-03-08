@@ -184,9 +184,16 @@ export const isWideScreen = writable(false);
 // Whether to show archived channels in the channel list (default: false)
 export const showArchivedChannels = writable(false);
 
-// Active tab per channel: { [channelName]: 'messages' | 'prs' | 'notes' }
+// Active tab per channel: { [channelName]: 'messages' | 'prs' | 'notes' | 'settings' }
 // Keyed by channel name so switching channels preserves tab position.
 export const activeChannelTab = writable({});
+
+// Per-channel settings persisted to localStorage.
+// Format: { [channelName]: { inlineToolCalls: boolean } }
+// inlineToolCalls: when true, Edit/Write tool calls are shown inline in the message
+// stream (like DM threads) instead of grouped in the ThreadActivityDrawer.
+export const channelSettings = writable(loadFromLocalStorage("midtown_channel_settings", {}));
+channelSettings.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_settings", v));
 
 // Recent tool call activity keyed by channel name.
 // 'midtown' holds the main lead's tool calls; topic channel names hold their channel lead's tool calls.
