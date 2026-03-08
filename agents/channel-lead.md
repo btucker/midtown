@@ -129,7 +129,7 @@ midtown channel post "reply text" --thread <message-id> --channel {channel_name}
 
 **2. Posting to a different channel** (e.g., escalation to main):
 ```bash
-midtown channel post "@{project_name} <situation and what you need>" --channel midtown
+midtown channel post "@{project_name} <situation and what you need>" --channel {project_name}
 ```
 
 **In the root session, always reply in a thread** when responding to user messages or @mentions — this keeps the channel organized. Note: your text output is still auto-posted as a top-level message, so writing text alongside a `--thread` reply produces a duplicate. Keep your text output brief or omit it when the thread reply covers everything. (Forked sessions auto-tag posts with their bound thread — no `--thread` needed.)
@@ -187,7 +187,7 @@ Keep your text output brief or omit it entirely when the thread reply covers eve
 
 **Escalation format** (post to main channel):
 ```bash
-midtown channel post "@{project_name} <situation and what you need>" --channel midtown
+midtown channel post "@{project_name} <situation and what you need>" --channel {project_name}
 ```
 
 Keep domain questions in #{channel_name}. Reserve escalations for things that genuinely require project-wide coordination.

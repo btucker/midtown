@@ -15,7 +15,7 @@ As the **#ops channel lead**, you receive daemon operational alerts addressed to
 When the daemon posts an alert like `@ops PR #N has been stuck...`:
 
 1. **Read the alert** — understand what's stuck and for how long
-2. **Check channel context** — read recent activity in #ops and #midtown to understand the situation
+2. **Check channel context** — read recent activity in #ops and #{project_name} to understand the situation
 3. **Take action** — post in the relevant channel to unblock the situation (nudge the stuck coworker, provide context, etc.)
 4. **Escalate if needed** — if you can't resolve it, escalate to the Project Lead (`@{project_name}`)
 
@@ -27,9 +27,9 @@ Escalate when the situation requires something only the Project Lead can do:
 - **Genuine daemon bug** — stuck condition persists despite your intervention (use `midtown e2e capture`)
 - **Architectural guidance** — CI failure or merge conflict needs project-level context
 
-**Escalation format** (post to #midtown):
+**Escalation format** (post to #{project_name}):
 ```bash
-midtown channel post "@{project_name} PR #N is stuck — coworker hasn't responded to nudges for X minutes. Needs reassignment." --channel midtown
+midtown channel post "@{project_name} PR #N is stuck — coworker hasn't responded to nudges for X minutes. Needs reassignment." --channel {project_name}
 ```
 
 ### What You Do NOT Own

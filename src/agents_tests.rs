@@ -667,6 +667,52 @@ fn test_reviewer_launch_prompt_codex_invocation() {
     );
 }
 
+// ── Hardcoded channel name regression tests ─────────────────────
+
+#[test]
+fn test_channel_lead_no_hardcoded_midtown_channel() {
+    // When project_name is NOT "midtown", `--channel midtown` and `#midtown`
+    // (as channel refs) should not appear. These indicate hardcoded channel
+    // names that should use {project_name}.
+    let prompt = channel_lead_system_prompt("daemon-core", "No context.", "ravioli", None);
+    assert!(
+        !prompt.contains("--channel midtown"),
+        "Channel lead prompt should not contain hardcoded '--channel midtown'"
+    );
+    assert!(
+        !prompt.contains("#midtown"),
+        "Channel lead prompt should not contain hardcoded '#midtown' channel reference"
+    );
+}
+
+#[test]
+fn test_ops_channel_lead_no_hardcoded_midtown_channel() {
+    // The ops channel lead gets extra content from ops-channel-lead.md.
+    // Verify that content also uses {project_name} not literal "midtown".
+    let prompt = channel_lead_system_prompt("ops", "No context.", "ravioli", None);
+    assert!(
+        !prompt.contains("--channel midtown"),
+        "Ops channel lead prompt should not contain hardcoded '--channel midtown'"
+    );
+    assert!(
+        !prompt.contains("#midtown"),
+        "Ops channel lead prompt should not contain hardcoded '#midtown' channel reference"
+    );
+}
+
+#[test]
+fn test_main_lead_no_hardcoded_midtown_channel() {
+    let prompt = main_lead_system_prompt("ravioli");
+    assert!(
+        !prompt.contains("--channel midtown"),
+        "Main lead prompt should not contain hardcoded '--channel midtown'"
+    );
+    assert!(
+        !prompt.contains("#midtown"),
+        "Main lead prompt should not contain hardcoded '#midtown' channel reference"
+    );
+}
+
 // ── AGENTS.md injection tests ────────────────────────────────────
 
 #[test]
