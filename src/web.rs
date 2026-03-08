@@ -2839,35 +2839,20 @@ async fn api_channel_agents_md(
 
     let repo = &state.config.dir_key;
     let project_root = state.all_repo_paths.first();
-    let local_dir = crate::paths::projects_dir_for_repo(repo);
 
-    // Build candidate list based on scope filter: (path, source_label)
-    let mut candidates: Vec<(std::path::PathBuf, &str)> = Vec::new();
-    let scope = params.scope.as_deref();
+    let scope_filter = match params.scope.as_deref() {
+        Some("channel") => Some(crate::paths::AgentsMdScope::Channel),
+        Some("project") => Some(crate::paths::AgentsMdScope::Project),
+        _ => None,
+    };
 
-    if scope.is_none() || scope == Some("channel") {
-        if let Some(root) = project_root {
-            candidates.push((
-                root.join(".midtown")
-                    .join("channels")
-                    .join(&channel)
-                    .join("AGENTS.md"),
-                "channel-repo",
-            ));
+    let candidates =
+        crate::paths::agents_md_candidates(&channel, project_root.map(|p| p.as_path()), repo);
+
+    for (path, scope, source) in &candidates {
+        if scope_filter.is_some() && scope_filter.as_ref() != Some(scope) {
+            continue;
         }
-        candidates.push((
-            local_dir.join("channels").join(&channel).join("AGENTS.md"),
-            "channel-local",
-        ));
-    }
-    if scope.is_none() || scope == Some("project") {
-        if let Some(root) = project_root {
-            candidates.push((root.join(".midtown").join("AGENTS.md"), "project-repo"));
-        }
-        candidates.push((local_dir.join("AGENTS.md"), "project-local"));
-    }
-
-    for (path, source) in &candidates {
         if let Ok(content) = std::fs::read_to_string(path)
             && !content.trim().is_empty()
         {
