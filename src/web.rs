@@ -441,6 +441,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/usage", get(api_usage))
         .route("/api/questions", get(api_pending_questions))
         .route("/api/search", get(api_search))
+        .route("/api/workflows", get(api_list_workflows))
         .route("/api/workflow", get(api_channel_workflow))
         .route(
             "/api/channels/{channel}/workflow",
@@ -2108,6 +2109,23 @@ struct WorkflowQuery {
     channel: String,
 }
 
+/// Serialize a `WorkflowInfo` into a JSON value with name, description, states, and transitions.
+fn serialize_workflow_info(w: &crate::paths::WorkflowInfo) -> serde_json::Value {
+    let mut obj = serde_json::json!({ "name": w.name });
+    if let Some(ref meta) = w.metadata {
+        if let Some(ref desc) = meta.description {
+            obj["description"] = serde_json::json!(desc);
+        }
+        if !meta.states.is_empty() {
+            obj["states"] = serde_json::json!(meta.states);
+        }
+        if !meta.transitions.is_empty() {
+            obj["transitions"] = serde_json::json!(meta.transitions);
+        }
+    }
+    obj
+}
+
 /// Return workflow information for a channel.
 ///
 /// Path: `/api/workflow?channel=<name>`
@@ -2135,24 +2153,8 @@ async fn api_channel_workflow(
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
     let discovered = crate::paths::discover_workflows(&workflows_dir);
 
-    let available_workflows: Vec<serde_json::Value> = discovered
-        .iter()
-        .map(|w| {
-            let mut obj = serde_json::json!({ "name": w.name });
-            if let Some(ref meta) = w.metadata {
-                if let Some(ref desc) = meta.description {
-                    obj["description"] = serde_json::json!(desc);
-                }
-                if !meta.states.is_empty() {
-                    obj["states"] = serde_json::json!(meta.states);
-                }
-                if !meta.transitions.is_empty() {
-                    obj["transitions"] = serde_json::json!(meta.transitions);
-                }
-            }
-            obj
-        })
-        .collect();
+    let available_workflows: Vec<serde_json::Value> =
+        discovered.iter().map(serialize_workflow_info).collect();
 
     // Get workflow state for this channel
     let workflow_state = persistent_state.workflow_state.get(channel).cloned();
@@ -2179,6 +2181,44 @@ async fn api_channel_workflow(
         "available_workflows": available_workflows,
         "state": workflow_state,
         "mermaid": mermaid,
+    })))
+}
+
+/// List all available workflows across the project.
+///
+/// Path: `GET /api/workflows`
+///
+/// Returns a list of discovered workflows with name, description, states,
+/// and transitions metadata from AGENTS.md frontmatter.
+async fn api_list_workflows(
+    State(state): State<Arc<WebState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let dir_key = &state.config.dir_key;
+
+    // Load persistent state for current channel assignments
+    let persistent_state =
+        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
+
+    // Discover available workflows
+    let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
+    let discovered = crate::paths::discover_workflows(&workflows_dir);
+
+    let workflows: Vec<serde_json::Value> =
+        discovered.iter().map(serialize_workflow_info).collect();
+
+    // Build a reverse map: workflow name → list of channels using it
+    let mut assignments: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for (channel, workflow) in &persistent_state.channel_workflows {
+        assignments
+            .entry(workflow.as_str())
+            .or_default()
+            .push(channel.as_str());
+    }
+
+    Ok(Json(serde_json::json!({
+        "workflows": workflows,
+        "assignments": assignments,
     })))
 }
 

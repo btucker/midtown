@@ -1342,6 +1342,110 @@ async fn test_workflow_generates_mermaid_for_assigned() {
     assert!(mermaid.contains("[*] --> study"));
 }
 
+// --- api_list_workflows tests ---
+
+#[tokio::test]
+async fn test_list_workflows_empty_when_no_workflows() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_dir = tmp.path().join("projects").join("test-proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let state = make_workflow_state("test-proj", Vec::new());
+    let result = api_list_workflows(State(state)).await.unwrap();
+
+    let data = &result.0;
+    assert!(data["workflows"].as_array().unwrap().is_empty());
+    assert!(data["assignments"].as_object().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_list_workflows_discovers_workflows_with_metadata() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_dir = tmp.path().join("projects").join("test-proj");
+    let workflows_dir = project_dir.join("workflows");
+
+    // Create workflow with full metadata
+    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
+    std::fs::write(
+        workflows_dir.join("tdw/AGENTS.md"),
+        "---\nname: tdw\ndescription: Test-Driven Writing\nstates: [study, do, observe]\ntransitions:\n  study: [do]\n  do: [observe]\n  observe: [study]\n---\n",
+    )
+    .unwrap();
+
+    // Create workflow without metadata
+    std::fs::create_dir_all(workflows_dir.join("basic")).unwrap();
+    std::fs::write(workflows_dir.join("basic/workflow.py"), "# hooks").unwrap();
+
+    let state = make_workflow_state("test-proj", Vec::new());
+    let result = api_list_workflows(State(state)).await.unwrap();
+
+    let data = &result.0;
+    let workflows = data["workflows"].as_array().unwrap();
+    assert_eq!(workflows.len(), 2);
+
+    let tdw = workflows.iter().find(|w| w["name"] == "tdw").unwrap();
+    assert_eq!(tdw["description"], "Test-Driven Writing");
+    assert_eq!(
+        tdw["states"].as_array().unwrap(),
+        &[
+            serde_json::json!("study"),
+            serde_json::json!("do"),
+            serde_json::json!("observe")
+        ]
+    );
+    assert!(tdw["transitions"]["study"].as_array().is_some());
+
+    let basic = workflows.iter().find(|w| w["name"] == "basic").unwrap();
+    assert!(basic.get("description").is_none() || basic["description"].is_null());
+}
+
+#[tokio::test]
+async fn test_list_workflows_includes_channel_assignments() {
+    use crate::paths::set_test_midtown_base_dir;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_dir = tmp.path().join("projects").join("test-proj");
+    let workflows_dir = project_dir.join("workflows");
+
+    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
+
+    // Write persistent state with assignments
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let persistent = serde_json::json!({
+        "channel_workflows": {
+            "proj-auth": "tdw",
+            "proj-infra": "tdw"
+        }
+    });
+    std::fs::write(
+        project_dir.join("daemon-state.json"),
+        serde_json::to_string(&persistent).unwrap(),
+    )
+    .unwrap();
+
+    let state = make_workflow_state("test-proj", Vec::new());
+    let result = api_list_workflows(State(state)).await.unwrap();
+
+    let data = &result.0;
+    let assignments = data["assignments"].as_object().unwrap();
+    let tdw_channels = assignments["tdw"].as_array().unwrap();
+    assert_eq!(tdw_channels.len(), 2);
+    assert!(tdw_channels.contains(&serde_json::json!("proj-auth")));
+    assert!(tdw_channels.contains(&serde_json::json!("proj-infra")));
+}
+
 // Note: assign/unassign tests live in rpc_workflow tests since the web endpoint
 // now routes through daemon RPC. Only validation logic (path traversal) is tested here.
 
