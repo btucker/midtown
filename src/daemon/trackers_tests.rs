@@ -589,6 +589,71 @@ fn ci_buffer_oldest_entry_only_set_on_actual_add() {
 }
 
 // -------------------------------------------------------------------------
+// PrIssueTracker — permanent nudge persistence across restarts
+// -------------------------------------------------------------------------
+
+#[test]
+fn permanent_nudge_survives_simulated_restart() {
+    // Step 1: Record a permanent nudge (simulates daemon session)
+    let mut tracker = PrIssueTracker::new();
+    tracker.record_permanent_nudge(1838, PrIssueType::ReviewComplete);
+
+    assert!(
+        tracker.has_nudge(1838, PrIssueType::ReviewComplete),
+        "permanent nudge should be recorded"
+    );
+
+    // Step 2: Persist to DaemonPersistentState (simulates save_for_repo)
+    let persisted: Vec<(u64, PrIssueType)> = tracker.permanent_nudges().iter().cloned().collect();
+    assert_eq!(
+        persisted.len(),
+        1,
+        "should have 1 permanent nudge to persist"
+    );
+
+    // Step 3: Simulate restart — create new tracker from persisted data
+    let restored_tracker = PrIssueTracker::with_permanent_nudges(persisted.into_iter().collect());
+
+    assert!(
+        restored_tracker.has_nudge(1838, PrIssueType::ReviewComplete),
+        "permanent nudge should survive restart via persistence"
+    );
+
+    // The restored tracker should NOT allow re-nudging (has_nudge blocks it)
+    // This is the key invariant: the daemon won't re-send the notification
+}
+
+#[test]
+fn permanent_nudge_serialization_roundtrip() {
+    // Verify PrIssueType serializes/deserializes correctly for persistence
+    let nudges = vec![
+        (42u64, PrIssueType::ReviewComplete),
+        (99u64, PrIssueType::ReviewComplete),
+    ];
+
+    let json = serde_json::to_string(&nudges).expect("serialize");
+    let deserialized: Vec<(u64, PrIssueType)> = serde_json::from_str(&json).expect("deserialize");
+
+    assert_eq!(deserialized.len(), 2);
+    assert_eq!(deserialized[0], (42, PrIssueType::ReviewComplete));
+    assert_eq!(deserialized[1], (99, PrIssueType::ReviewComplete));
+}
+
+#[test]
+fn permanent_nudge_clear_removes_from_set() {
+    let mut tracker = PrIssueTracker::new();
+    tracker.record_permanent_nudge(42, PrIssueType::ReviewComplete);
+
+    assert!(tracker.has_nudge(42, PrIssueType::ReviewComplete));
+    assert_eq!(tracker.permanent_nudges().len(), 1);
+
+    tracker.clear_nudge(42, PrIssueType::ReviewComplete);
+
+    assert!(!tracker.has_nudge(42, PrIssueType::ReviewComplete));
+    assert!(tracker.permanent_nudges().is_empty());
+}
+
+// -------------------------------------------------------------------------
 // StuckConditionType::AutoMerge — deduplication for auto-merge attempts
 // -------------------------------------------------------------------------
 

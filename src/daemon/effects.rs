@@ -1627,6 +1627,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 let mut tracker = state.pr_issue_tracker.lock().await;
                 tracker.record_permanent_nudge(pr_number, issue_type);
+                // Sync to persistent state so it survives daemon restarts
+                let mut ps = state.persistent_state.lock().await;
+                ps.permanent_pr_nudges = tracker.permanent_nudges().iter().cloned().collect();
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save persistent state after recording permanent PR nudge: {}",
+                        e
+                    );
+                }
             }
             Effect::RecordReviewerEscalation { pr_number } => {
                 let mut posted = state.reviewer_escalations_posted.lock().unwrap();

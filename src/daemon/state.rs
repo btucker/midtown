@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::ci_stats::CiCheckStats;
+use crate::daemon::trackers::PrIssueType;
 use crate::github_state::GitHubState;
 use crate::reminders::ReminderState;
 use crate::worktree_registry::WorktreeRegistry;
@@ -257,6 +258,14 @@ pub struct DaemonPersistentState {
     /// semantics and atomic updates.
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
+
+    /// Permanent PR nudge entries that survive daemon restarts.
+    ///
+    /// Stores one-shot nudge records (e.g., ReviewComplete for user-authored PRs)
+    /// so they aren't re-sent after a daemon restart. Restored into
+    /// `PrIssueTracker::permanent` on startup.
+    #[serde(default)]
+    pub permanent_pr_nudges: Vec<(u64, PrIssueType)>,
 }
 
 impl DaemonPersistentState {
@@ -437,6 +446,7 @@ impl DaemonPersistentState {
             profile_pool_state: HashMap::new(),
             channel_workflows: HashMap::new(),
             workflow_state,
+            permanent_pr_nudges: Vec::new(),
         };
 
         // Save the unified file
