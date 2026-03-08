@@ -2109,6 +2109,23 @@ struct WorkflowQuery {
     channel: String,
 }
 
+/// Serialize a `WorkflowInfo` into a JSON value with name, description, states, and transitions.
+fn serialize_workflow_info(w: &crate::paths::WorkflowInfo) -> serde_json::Value {
+    let mut obj = serde_json::json!({ "name": w.name });
+    if let Some(ref meta) = w.metadata {
+        if let Some(ref desc) = meta.description {
+            obj["description"] = serde_json::json!(desc);
+        }
+        if !meta.states.is_empty() {
+            obj["states"] = serde_json::json!(meta.states);
+        }
+        if !meta.transitions.is_empty() {
+            obj["transitions"] = serde_json::json!(meta.transitions);
+        }
+    }
+    obj
+}
+
 /// Return workflow information for a channel.
 ///
 /// Path: `/api/workflow?channel=<name>`
@@ -2136,24 +2153,8 @@ async fn api_channel_workflow(
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
     let discovered = crate::paths::discover_workflows(&workflows_dir);
 
-    let available_workflows: Vec<serde_json::Value> = discovered
-        .iter()
-        .map(|w| {
-            let mut obj = serde_json::json!({ "name": w.name });
-            if let Some(ref meta) = w.metadata {
-                if let Some(ref desc) = meta.description {
-                    obj["description"] = serde_json::json!(desc);
-                }
-                if !meta.states.is_empty() {
-                    obj["states"] = serde_json::json!(meta.states);
-                }
-                if !meta.transitions.is_empty() {
-                    obj["transitions"] = serde_json::json!(meta.transitions);
-                }
-            }
-            obj
-        })
-        .collect();
+    let available_workflows: Vec<serde_json::Value> =
+        discovered.iter().map(serialize_workflow_info).collect();
 
     // Get workflow state for this channel
     let workflow_state = persistent_state.workflow_state.get(channel).cloned();
@@ -2202,24 +2203,8 @@ async fn api_list_workflows(
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
     let discovered = crate::paths::discover_workflows(&workflows_dir);
 
-    let workflows: Vec<serde_json::Value> = discovered
-        .iter()
-        .map(|w| {
-            let mut obj = serde_json::json!({ "name": w.name });
-            if let Some(ref meta) = w.metadata {
-                if let Some(ref desc) = meta.description {
-                    obj["description"] = serde_json::json!(desc);
-                }
-                if !meta.states.is_empty() {
-                    obj["states"] = serde_json::json!(meta.states);
-                }
-                if !meta.transitions.is_empty() {
-                    obj["transitions"] = serde_json::json!(meta.transitions);
-                }
-            }
-            obj
-        })
-        .collect();
+    let workflows: Vec<serde_json::Value> =
+        discovered.iter().map(serialize_workflow_info).collect();
 
     // Build a reverse map: workflow name → list of channels using it
     let mut assignments: std::collections::HashMap<&str, Vec<&str>> =
