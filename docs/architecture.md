@@ -148,7 +148,7 @@ This mirrors the Codex session pattern (`read_stdout_loop` / `read_stderr_loop` 
 
 The daemon uses a **session-centric model** where Claude Code sessions (keyed by session ID) are the primary coordination entity. Names are ephemeral labels drawn from an LRU pool.
 
-**NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity. Name allocation and release both clear the agent's mailbox inbox to prevent message bleed between sessions (see Mailbox Messaging).
+**NamePool** (`src/name_pool.rs`): Manhattan avenue names (lexington, park, madison, broadway, amsterdam, columbus, riverside, york, pleasant, vernon) are managed in an LRU queue. When a session spawns, it allocates a name from the front of the queue. When it shuts down, the name returns to the back. Preferred name hints allow a resumed session to get its previous name when available, preserving branch and worktree continuity.
 
 **SessionRecord** (`src/daemon/state.rs`): Each session is tracked by a `SessionRecord` containing session ID, task ID, current and preferred names, worktree path, branch, PR number, and running state. Records persist across daemon restarts in `persistent_state.json`.
 
@@ -405,20 +405,6 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 **Review content embedding**: PR feedback nudges (GreenWithFeedback, ReviewComplete, ChangesRequested, Approved, ReviewComment) embed the full review body inline via `format_review_content()` in `helpers.rs`. This fetches both formal GitHub reviews and Midtown coworker issue-comment reviews (detected by `text_contains_review_signature()`), so the nudged coworker sees all feedback without running extra `gh` commands. On the polling path (`poll_prs_for_issues`), review content is pre-fetched in bulk before decision functions to keep I/O out of the decision phase. Webhook handlers call `fetch_review_content()` directly since they're already event-driven I/O paths.
-
-## Mailbox Messaging
-
-In addition to the shared channel, the daemon can deliver targeted messages to individual coworkers via the Claude Code agent teams mailbox protocol. Messages are written as JSON to `~/.claude/teams/{team-name}/inboxes/{agent-name}.json` using atomic file operations with mkdir-based locking for safe concurrent access.
-
-**Inbox lifecycle**: Inboxes are cleared at two points to prevent message bleed across sessions: (1) when a name is allocated from the `NamePool` during `SpawnSession` (before the new session starts), and (2) when a session releases its name on shutdown. This ensures a newly-allocated name never inherits stale unread messages from a previous session that held the same name. All inbox operations — writes, reads, and clears — acquire the same mkdir-based lock (`{agent-name}.json.lock`) to prevent races.
-
-**PR review gate warnings**: Two mailbox messages are sent to PR authors to prevent premature auto-merge:
-
-1. **PR-opened warning**: Sent by the workflow script's `pr.opened` handler via `rpc.nudge_coworker()`. This is policy — teams using auto-merge can remove or customize this nudge in their `workflow.py`. Delivered before the reviewer is spawned, ensuring the author is warned even when the spawn is delayed.
-
-2. **Reviewer-spawned notification** (`reviewer_spawned_author_warning`): Delivered via `SpawnCoworkerWithCallbacks.on_success` in `collect_reviewer_effects_with_source` when the reviewer actually spawns. Identifies the reviewer by name and reinforces the hold on auto-merge. This fires only on successful spawn, while the PR-opened warning covers the gap when spawn is delayed.
-
-Together these create a layered defence: the early warning reaches the author at PR creation time, and the spawn notification confirms who is reviewing.
 
 ## PR Merge Gating
 
