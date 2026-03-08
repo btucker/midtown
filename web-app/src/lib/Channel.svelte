@@ -572,13 +572,11 @@ $effect(() => {
 	const targetId = $channelTargetMsgId;
 	if (!targetId || !scrollAreaViewport || channelMessages.length === 0) return;
 
-	// Find the target message's index in channelMessages
+	// Find the target message's index in channelMessages.
+	// If not found yet, leave the target set — this effect re-fires reactively
+	// when channelMessages changes (e.g. after fetchHistory completes).
 	const targetIndex = channelMessages.findIndex((m) => m.id === targetId);
-	if (targetIndex === -1) {
-		// Message not found in loaded history — clear and bail
-		untrack(() => channelTargetMsgId.set(null));
-		return;
-	}
+	if (targetIndex === -1) return;
 
 	// Ensure the target is within the render window
 	if (targetIndex < renderStartIndex) {

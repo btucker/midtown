@@ -74,11 +74,11 @@ function selectResult(result) {
 		activeChannel.set(result.channel);
 		// Clear unread count for the navigated channel
 		channels.update((list) => list.map((ch) => (ch.name === result.channel ? { ...ch, unread: 0 } : ch)));
-		// Ensure channel messages are loaded
-		const existing = $messagesByChannel[result.channel];
-		if (!existing || existing.length === 0) {
-			fetchHistory(result.channel);
-		}
+		// Always fetch full history so older search results are available.
+		// fetchHistory replaces cached messages with the complete history from
+		// the backend, which the scroll-to-message effect in Channel.svelte
+		// needs in order to find the target.
+		fetchHistory(result.channel);
 	}
 
 	if (result.thread_parent_id) {
@@ -90,8 +90,15 @@ function selectResult(result) {
 		openThread(parentMsg || { id: result.thread_parent_id, content: "", from: "", reply_count: 0 }, result.channel);
 		deepLinkMsgId.set(result.id);
 	} else {
-		// Top-level message: tell Channel.svelte to scroll to and highlight it
+		// Top-level message: tell Channel.svelte to scroll to and highlight it.
 		channelTargetMsgId.set(result.id);
+		// Safety timeout: clear the target if the message is never found
+		// (e.g. deleted since the search was performed).
+		setTimeout(() => {
+			if ($channelTargetMsgId === result.id) {
+				channelTargetMsgId.set(null);
+			}
+		}, 5000);
 	}
 
 	open = false;
