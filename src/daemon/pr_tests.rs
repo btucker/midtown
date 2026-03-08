@@ -2951,10 +2951,10 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
 /// The coworker system prompt says not to enable auto-merge before review completes,
 /// but without an explicit notification the warning can be missed.
 ///
-/// Fix: Add a `DeliverMailboxMessage` to `on_success` warning the PR author not to
+/// Fix: Add a `NudgeCoworkerByName` to `on_success` warning the PR author not to
 /// enable auto-merge until the review is complete.
 #[tokio::test]
-async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
+async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
     // PR authored by "madison" (branch: madison/fix-polling)
     let pr_number = 99994u64;
     let pr_json = serde_json::json!({
@@ -3009,10 +3009,10 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
 
     let on_success = spawn_effect.unwrap();
 
-    // The on_success effects must include a DeliverMailboxMessage to "madison" warning
+    // The on_success effects must include a NudgeCoworkerByName to "madison" warning
     // them not to enable auto-merge while the review is in progress.
     let has_author_warning = on_success.iter().any(|e| {
-        if let Effect::DeliverMailboxMessage { name, message, .. } = e {
+        if let Effect::NudgeCoworkerByName { name, message, .. } = e {
             name == "madison" && message.contains(&pr_number.to_string())
         } else {
             false
@@ -3021,7 +3021,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_mailbox() {
 
     assert!(
         has_author_warning,
-        "on_success effects must include a DeliverMailboxMessage to 'madison' warning \
+        "on_success effects must include a NudgeCoworkerByName to 'madison' warning \
          them not to enable auto-merge while review is in progress. \
          Before fix: no such warning was sent, allowing the author to merge while \
          the reviewer was still working (as happened with PR #1523). \

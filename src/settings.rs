@@ -170,10 +170,6 @@ mod tests {
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
 
-        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
-        // it's now exported as a real shell env var in to_shell_command() instead.
-        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
-
         // Verify coworker-specific settings
         assert_eq!(settings["editorMode"], "normal");
 
@@ -229,10 +225,6 @@ mod tests {
 
         // Verify common settings are merged in
         assert_eq!(settings["autoUpdates"], false);
-
-        // CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is blocklisted from settings.json by Claude Code;
-        // it's now exported as a real shell env var in to_shell_command() instead.
-        assert!(settings["env"]["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"].is_null());
 
         // Verify lead-specific hooks
         let stop_hooks = &settings["hooks"]["Stop"];

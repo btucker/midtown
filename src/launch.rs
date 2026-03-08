@@ -72,10 +72,6 @@ pub struct LaunchConfig {
     pub additional_dirs: Vec<PathBuf>,
     /// PR number for reviewer coworkers.
     pub pr_number: Option<u64>,
-    /// Agent teams team name. When set, adds `--agent-id`, `--agent-name`,
-    /// and `--team-name` CLI flags to enable the Claude Code agent teams
-    /// mailbox system for message delivery.
-    pub team_name: Option<String>,
     /// Optional working directory override for task-based worktrees.
     /// When set, the spawn path will use this directory instead of creating
     /// a coworker-named worktree. Used by the WorktreeRegistry system for
@@ -172,15 +168,11 @@ pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, S
 /// - `MIDTOWN_DIR_KEY`: Pinned project identity (prevents CWD-based detection)
 /// - `DISABLE_AUTOUPDATER`: Always set to "1"
 /// - Auth provider env vars (CLAUDE_CONFIG_DIR, ANTHROPIC_AUTH_TOKEN, etc.)
-/// - `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`: Set when team_name is present
-/// - `CLAUDE_CODE_TASK_LIST_ID`: Set for Lead sessions to share task list
 /// - `MIDTOWN_CHANNEL`: Set when channel is specified
 ///
 /// Callers should add mode-specific env vars on top of these as needed.
 pub fn build_agent_env_vars(
     name: &str,
-    role: &CoworkerRole,
-    team_name: &Option<String>,
     channel: &Option<String>,
     auth_provider: crate::auth::AuthProvider,
     auth_profile_dir: &std::path::Path,
@@ -234,21 +226,6 @@ pub fn build_agent_env_vars(
     // Set default channel for routing coworker messages
     if let Some(ch) = channel {
         env.insert("MIDTOWN_CHANNEL".to_string(), ch.clone());
-    }
-
-    // Must be a real shell env var — Claude Code blocklists this from settings.json
-    if team_name.is_some() {
-        env.insert(
-            "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS".to_string(),
-            "1".to_string(),
-        );
-    }
-
-    // Lead shares the project task list with coworkers via this env var
-    if *role == CoworkerRole::Lead
-        && let Some(team) = team_name
-    {
-        env.insert("CLAUDE_CODE_TASK_LIST_ID".to_string(), team.clone());
     }
 
     env
@@ -323,8 +300,6 @@ impl LaunchConfig {
         task_id: Option<String>,
     ) -> Self {
         let repo = dir_key.into();
-        let project_name = crate::paths::project_name_for_dir_key(&repo);
-        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -340,7 +315,6 @@ impl LaunchConfig {
             initial_prompt,
             additional_dirs: vec![],
             pr_number: None,
-            team_name: Some(team),
             working_dir: None,
             model,
             channel: None,
@@ -384,7 +358,6 @@ impl LaunchConfig {
             )),
             additional_dirs: vec![],
             pr_number: Some(pr_number),
-            team_name: None, // Reviewers don't need mailbox (short-lived)
             working_dir: None,
             model,
             channel: None,
@@ -407,7 +380,6 @@ impl LaunchConfig {
     pub fn lead(dir_key: impl Into<String>, channel: Option<&str>) -> Self {
         let repo = dir_key.into();
         let project_name = crate::paths::project_name_for_dir_key(&repo);
-        let team = crate::mailbox::team_name_for_repo(&project_name);
 
         if let Some(channel_name) = channel {
             // Channel lead — delegate to channel_lead factory
@@ -435,7 +407,6 @@ impl LaunchConfig {
                 )),
                 additional_dirs: vec![],
                 pr_number: None,
-                team_name: Some(team),
                 working_dir: None,
                 model,
                 channel: None,
@@ -462,8 +433,6 @@ impl LaunchConfig {
         original_author: &str,
     ) -> Self {
         let repo = dir_key.into();
-        let project_name = crate::paths::project_name_for_dir_key(&repo);
-        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::Coworker,
@@ -495,7 +464,6 @@ impl LaunchConfig {
             initial_prompt: Some(initial_prompt),
             additional_dirs: vec![],
             pr_number: None,
-            team_name: Some(team),
             working_dir: None,
             model,
             channel: None,
@@ -532,8 +500,6 @@ impl LaunchConfig {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
         let repo = dir_key.into();
-        let project_name = crate::paths::project_name_for_dir_key(&repo);
-        let team = crate::mailbox::team_name_for_repo(&project_name);
         let auth_provider = crate::config::get_execution_provider_for_role(
             &repo,
             crate::config::ExecutionRole::ChannelLead,
@@ -553,7 +519,6 @@ impl LaunchConfig {
             )),
             additional_dirs: vec![],
             pr_number: None,
-            team_name: Some(team),
             working_dir: None,
             model: crate::config::get_channel_leads_config(&repo)
                 .model_for_channel_with_fallback(&channel_name_str, execution_fallback),
@@ -618,16 +583,6 @@ impl LaunchConfig {
             SessionMode::ResumeSession(id) => (true, Some(id.clone())),
         };
 
-        // Generate agent teams IDs from name + team
-        let (agent_id, agent_name) = if let Some(ref team) = self.team_name {
-            (
-                Some(crate::mailbox::agent_id(&self.name, team)),
-                Some(self.name.clone()),
-            )
-        } else {
-            (None, None)
-        };
-
         // Build env vars for the coworker process using the shared function
         let config_dir = self
             .auth_profile_dir
@@ -636,8 +591,6 @@ impl LaunchConfig {
 
         let mut env = build_agent_env_vars(
             &self.name,
-            &self.role,
-            &self.team_name,
             &self.channel,
             self.auth_provider,
             &config_dir,
@@ -676,9 +629,6 @@ impl LaunchConfig {
             resume_session_id,
             session_id: None, // Set by spawn_coworker for fresh sessions
             inactivity_timeout: None,
-            team_name: self.team_name.clone(),
-            agent_id,
-            agent_name,
             settings_path: None,   // Set by caller
             setting_sources: None, // Handled by platform arg builder (always project,local)
             auth_provider: self.auth_provider,
@@ -740,8 +690,6 @@ impl LaunchConfig {
 
         let mut env_map = build_agent_env_vars(
             &self.name,
-            &self.role,
-            &self.team_name,
             &self.channel,
             self.auth_provider,
             &config_dir,
@@ -871,9 +819,6 @@ mod tests {
         assert!(headless.persist_session);
         assert!(headless.resume_session_id.is_none());
         assert!(headless.allow_tools);
-        assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_id, Some("park@midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_name, Some("park".to_string()));
         assert!(!headless.system_prompt.is_empty());
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
@@ -895,13 +840,10 @@ mod tests {
     }
 
     #[test]
-    fn test_to_headless_config_reviewer_has_no_teams() {
+    fn test_to_headless_config_reviewer_model() {
         let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config(&test_paths());
 
-        assert!(headless.team_name.is_none());
-        assert!(headless.agent_id.is_none());
-        assert!(headless.agent_name.is_none());
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
                 .map(|s| s.as_model_str().to_string())
@@ -956,7 +898,6 @@ mod tests {
         assert_eq!(config.role, CoworkerRole::Coworker);
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
         assert!(config.pr_number.is_none());
-        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
                 .map(|s| s.as_model_str().to_string())
@@ -971,7 +912,6 @@ mod tests {
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.role, CoworkerRole::Reviewer);
-        assert!(config.team_name.is_none());
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
                 .map(|s| s.as_model_str().to_string())
@@ -995,7 +935,6 @@ mod tests {
             SessionMode::ResumeSession("session-123".to_string())
         );
         assert!(config.initial_prompt.is_some());
-        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.pr_number.is_none()); // Handoff is not a reviewer
         // pr_handoff reads coworker config with "opus" as fallback
         let expected =
@@ -1053,53 +992,6 @@ mod tests {
         );
         assert!(result.shell_command.contains("--resume abc-123"));
         assert!(result.session_id.is_none());
-    }
-
-    #[test]
-    fn test_shell_command_agent_teams_flags() {
-        let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None, None);
-        let result = config.to_shell_command(
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.md"),
-            None,
-            std::path::Path::new("/tmp/test-repo"),
-            "midtown",
-        );
-        assert!(
-            result
-                .shell_command
-                .contains("--agent-id lexington@midtown-myrepo")
-        );
-        assert!(result.shell_command.contains("--agent-name lexington"));
-        assert!(result.shell_command.contains("--team-name midtown-myrepo"));
-        assert!(
-            result
-                .shell_command
-                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS='1'"),
-            "Shell command should contain CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS='1', got: {}",
-            result.shell_command
-        );
-    }
-
-    #[test]
-    fn test_shell_command_no_agent_teams_without_team() {
-        let config = LaunchConfig {
-            team_name: None,
-            ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
-        };
-        let result = config.to_shell_command(
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.md"),
-            None,
-            std::path::Path::new("/tmp/test-repo"),
-            "midtown",
-        );
-        assert!(!result.shell_command.contains("--agent-id"));
-        assert!(
-            !result
-                .shell_command
-                .contains("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
-        );
     }
 
     #[test]
@@ -1377,22 +1269,11 @@ mod tests {
             "Lead should have an initial prompt for session_id init"
         );
         assert!(config.pr_number.is_none());
-        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Lead)
                 .map(|s| s.as_model_str().to_string())
                 .unwrap_or_else(|| "opus".to_string());
         assert_eq!(config.model, expected, "Lead model should respect config");
-    }
-
-    #[test]
-    fn test_lead_config_has_team_name() {
-        let config = LaunchConfig::lead("myrepo", None);
-        let headless = config.to_headless_config(&test_paths());
-
-        assert_eq!(headless.team_name, Some("midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_id, Some("myrepo@midtown-myrepo".to_string()));
-        assert_eq!(headless.agent_name, Some("myrepo".to_string()));
     }
 
     #[test]
@@ -1420,7 +1301,6 @@ mod tests {
                 .unwrap_or_else(|| "sonnet".to_string());
         assert_eq!(config.model, expected);
         assert_eq!(config.channel, Some("daemon-architecture".to_string()));
-        assert_eq!(config.team_name, Some("midtown-myrepo".to_string()));
         assert!(config.initial_prompt.is_some());
         assert!(config.pr_number.is_none());
     }

@@ -84,8 +84,7 @@ pub(crate) fn fork_initial_framing(channel_name: &str) -> String {
          You do NOT write code — use Read, Glob, Grep to understand the codebase, \
          then create a well-described task for a coworker via `midtown task create`.\n\n\
          IMPORTANT: To communicate with the channel lead who forked you, @mention them \
-         as @{channel_name} in your thread replies. Do NOT use the SendMessage tool — \
-         it is not supported in this environment. All coordination happens through \
+         as @{channel_name} in your thread replies. All coordination happens through \
          @mentions in the channel thread you are bound to."
     )
 }

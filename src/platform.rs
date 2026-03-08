@@ -60,15 +60,8 @@ impl Platform {
 /// - `--setting-sources project,local`
 ///
 /// Conditionally adds:
-/// - `--agent-id`, `--agent-name`, `--team-name` (when team is set)
 /// - `--add-dir` (for each additional directory)
-fn build_claude_common_args(
-    model: &str,
-    team_name: Option<&str>,
-    agent_id: Option<&str>,
-    agent_name: Option<&str>,
-    additional_dirs: &[PathBuf],
-) -> Vec<String> {
+fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<String> {
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
 
     // Additional directories (multi-repo)
@@ -86,20 +79,6 @@ fn build_claude_common_args(
     // Model selection
     args.push("--model".to_string());
     args.push(model.to_string());
-
-    // Agent teams flags (enables mailbox-based message delivery)
-    if let Some(team) = team_name {
-        if let Some(id) = agent_id {
-            args.push("--agent-id".to_string());
-            args.push(id.to_string());
-        }
-        if let Some(name) = agent_name {
-            args.push("--agent-name".to_string());
-            args.push(name.to_string());
-        }
-        args.push("--team-name".to_string());
-        args.push(team.to_string());
-    }
 
     args
 }
@@ -133,9 +112,6 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         persist_session,
         resume_session_id,
         inactivity_timeout: _inactivity_timeout,
-        team_name,
-        agent_id,
-        agent_name,
         settings_path,
         setting_sources: _setting_sources,
         auth_provider: _auth_provider,
@@ -149,9 +125,6 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
 
     let mut args = build_claude_common_args(
         model,
-        team_name.as_deref(),
-        agent_id.as_deref(),
-        agent_name.as_deref(),
         &[], // headless sessions don't use additional_dirs
     );
 
@@ -248,23 +221,10 @@ pub fn build_claude_headed_args(
     prompt_file: &Path,
     initial_prompt_file: Option<&Path>,
 ) -> (Vec<String>, Option<String>) {
-    // Generate agent teams IDs from name + team
-    let (agent_id, agent_name) = if let Some(ref team) = config.team_name {
-        (
-            Some(crate::mailbox::agent_id(&config.name, team)),
-            Some(config.name.clone()),
-        )
-    } else {
-        (None, None)
-    };
-
     let mut args = vec!["claude".to_string()];
 
     args.extend(build_claude_common_args(
         &config.model,
-        config.team_name.as_deref(),
-        agent_id.as_deref(),
-        agent_name.as_deref(),
         &config.additional_dirs,
     ));
 

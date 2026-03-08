@@ -44,7 +44,7 @@ fn test_binary_name_codex() {
 
 #[test]
 fn test_claude_common_args_always_has_skip_permissions() {
-    let args = build_claude_common_args("sonnet", None, None, None, &[]);
+    let args = build_claude_common_args("sonnet", &[]);
     assert!(
         args.contains(&"--dangerously-skip-permissions".to_string()),
         "Common args must always include --dangerously-skip-permissions"
@@ -53,14 +53,14 @@ fn test_claude_common_args_always_has_skip_permissions() {
 
 #[test]
 fn test_claude_common_args_always_has_model() {
-    let args = build_claude_common_args("opus", None, None, None, &[]);
+    let args = build_claude_common_args("opus", &[]);
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"opus".to_string()));
 }
 
 #[test]
 fn test_claude_common_args_always_has_setting_sources() {
-    let args = build_claude_common_args("sonnet", None, None, None, &[]);
+    let args = build_claude_common_args("sonnet", &[]);
     assert!(
         args.contains(&"--setting-sources".to_string()),
         "Common args must always include --setting-sources"
@@ -72,34 +72,9 @@ fn test_claude_common_args_always_has_setting_sources() {
 }
 
 #[test]
-fn test_claude_common_args_includes_agent_teams_when_set() {
-    let args = build_claude_common_args(
-        "sonnet",
-        Some("midtown-myrepo"),
-        Some("park@midtown-myrepo"),
-        Some("park"),
-        &[],
-    );
-    assert!(args.contains(&"--agent-id".to_string()));
-    assert!(args.contains(&"park@midtown-myrepo".to_string()));
-    assert!(args.contains(&"--agent-name".to_string()));
-    assert!(args.contains(&"park".to_string()));
-    assert!(args.contains(&"--team-name".to_string()));
-    assert!(args.contains(&"midtown-myrepo".to_string()));
-}
-
-#[test]
-fn test_claude_common_args_omits_agent_teams_when_no_team() {
-    let args = build_claude_common_args("sonnet", None, None, None, &[]);
-    assert!(!args.contains(&"--agent-id".to_string()));
-    assert!(!args.contains(&"--agent-name".to_string()));
-    assert!(!args.contains(&"--team-name".to_string()));
-}
-
-#[test]
 fn test_claude_common_args_includes_add_dir() {
     let dirs = vec![PathBuf::from("/tmp/repo1"), PathBuf::from("/tmp/repo2")];
-    let args = build_claude_common_args("sonnet", None, None, None, &dirs);
+    let args = build_claude_common_args("sonnet", &dirs);
     let add_dir_count = args.iter().filter(|a| *a == "--add-dir").count();
     assert_eq!(add_dir_count, 2, "Should have --add-dir for each directory");
     assert!(args.contains(&"/tmp/repo1".to_string()));
@@ -121,9 +96,6 @@ fn test_headless_config() -> HeadlessConfig {
         resume_session_id: None,
         session_id: None,
         inactivity_timeout: None,
-        team_name: None,
-        agent_id: None,
-        agent_name: None,
         settings_path: None,
         setting_sources: None, // Will be removed from HeadlessConfig in a later step
         auth_provider: AuthProvider::Claude,
@@ -320,20 +292,13 @@ fn test_claude_headless_args_fresh_includes_json_schema() {
 
 #[test]
 fn test_claude_headless_args_has_common_flags() {
-    let config = HeadlessConfig {
-        team_name: Some("midtown-myrepo".to_string()),
-        agent_id: Some("park@midtown-myrepo".to_string()),
-        agent_name: Some("park".to_string()),
-        ..test_headless_config()
-    };
+    let config = test_headless_config();
     let args = build_claude_headless_args(&config);
 
     // Common flags should be present
     assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"--setting-sources".to_string()));
-    assert!(args.contains(&"--agent-id".to_string()));
-    assert!(args.contains(&"--team-name".to_string()));
 }
 
 #[test]
@@ -464,22 +429,6 @@ fn test_claude_headed_args_has_common_flags() {
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"--setting-sources".to_string()));
     assert!(args.contains(&"project,local".to_string()));
-}
-
-#[test]
-fn test_claude_headed_args_with_agent_teams() {
-    let config = LaunchConfig::coworker("lexington", "myrepo", SessionMode::Fresh, None, None);
-    let settings = std::path::Path::new("/tmp/settings.json");
-    let prompt = std::path::Path::new("/tmp/prompt.md");
-
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, None);
-
-    assert!(args.contains(&"--agent-id".to_string()));
-    assert!(args.contains(&"lexington@midtown-myrepo".to_string()));
-    assert!(args.contains(&"--agent-name".to_string()));
-    assert!(args.contains(&"lexington".to_string()));
-    assert!(args.contains(&"--team-name".to_string()));
-    assert!(args.contains(&"midtown-myrepo".to_string()));
 }
 
 // ── Codex args ────────────────────────────────────────────────────────

@@ -757,14 +757,9 @@ pub(crate) fn build_attach_shell_command(
         midtown::launch::CoworkerRole::Coworker
     };
 
-    // Get team name for this repo
-    let team_name = Some(midtown::mailbox::team_name_for_repo(&repo_name));
-
     // Build common env vars using the shared function
     let env_map = midtown::launch::build_agent_env_vars(
         name,
-        &role,
-        &team_name,
         &None, // channel not set for attach sessions
         provider,
         &profile_dir,
@@ -800,7 +795,6 @@ pub(crate) fn build_attach_shell_command(
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: team_name.clone(),
         working_dir: None,
         model: match &role {
             midtown::launch::CoworkerRole::Lead | midtown::launch::CoworkerRole::Reviewer => {
