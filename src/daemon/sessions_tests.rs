@@ -55,6 +55,27 @@ fn test_is_stale_codex_session_error_ignores_generic_errors() {
     assert!(!is_stale_codex_session_error(msg));
 }
 
+#[test]
+fn test_is_context_exhausted_error_detects_prompt_too_long() {
+    assert!(is_context_exhausted_error("Prompt is too long"));
+    assert!(is_context_exhausted_error(
+        "Error: prompt is too long (250000 tokens > 200000 max)"
+    ));
+}
+
+#[test]
+fn test_is_context_exhausted_error_case_insensitive() {
+    assert!(is_context_exhausted_error("PROMPT IS TOO LONG"));
+    assert!(is_context_exhausted_error("Prompt Is Too Long"));
+}
+
+#[test]
+fn test_is_context_exhausted_error_ignores_generic_errors() {
+    assert!(!is_context_exhausted_error("rate limit exceeded"));
+    assert!(!is_context_exhausted_error("network error"));
+    assert!(!is_context_exhausted_error("too long ago"));
+}
+
 /// Insert a fake session entry for testing (no real process).
 async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
     let mut sessions = sm.sessions.write().await;

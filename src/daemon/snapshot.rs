@@ -77,8 +77,8 @@ pub struct ProcessHealth {
     /// When true, the session is waiting for a tool to complete (e.g., long-running Bash command)
     /// and shouldn't be considered stuck even if no events are emitted during execution.
     pub has_pending_tool: bool,
-    /// Whether the coworker has a tool name conflict (e.g., duplicate MCP tool names).
-    /// When true, the session may fail tool calls and needs a restart.
+    /// Whether the coworker has an unrecoverable session error (e.g., duplicate MCP tool names,
+    /// stale Codex session IDs, or context exhaustion). When true, the session needs a restart.
     #[serde(default)]
     pub has_tool_name_conflict: bool,
     /// Whether the coworker is waiting for the next API response after a tool result.
