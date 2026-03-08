@@ -16,6 +16,7 @@ function toggleInlineToolCalls() {
 }
 
 // AGENTS.md editor state
+let agentsScope = $state("channel");
 let agentsContent = $state("");
 let agentsSource = $state("none");
 let agentsOriginal = $state("");
@@ -30,7 +31,7 @@ async function loadAgentsMd() {
 	agentsLoading = true;
 	agentsError = "";
 	agentsSuccess = "";
-	const data = await fetchChannelAgentsMd($activeChannel);
+	const data = await fetchChannelAgentsMd($activeChannel, agentsScope);
 	agentsContent = data.content;
 	agentsOriginal = data.content;
 	agentsSource = data.source;
@@ -41,16 +42,11 @@ async function saveAgentsMd() {
 	agentsSaving = true;
 	agentsError = "";
 	agentsSuccess = "";
-	const result = await saveChannelAgentsMd($activeChannel, agentsContent);
+	const result = await saveChannelAgentsMd($activeChannel, agentsContent, agentsScope);
 	if (result.ok) {
 		agentsOriginal = agentsContent;
 		agentsSuccess = "Saved";
-		// Update source since we just wrote to channel-local
-		if (agentsContent.trim()) {
-			agentsSource = "channel-local";
-		} else {
-			agentsSource = "none";
-		}
+		agentsSource = agentsContent.trim() ? (agentsScope === "project" ? "project-local" : "channel-local") : "none";
 		setTimeout(() => (agentsSuccess = ""), 2000);
 	} else {
 		agentsError = result.error || "Failed to save";
@@ -64,11 +60,17 @@ function discardAgentsMd() {
 	agentsSuccess = "";
 }
 
+function switchScope(newScope) {
+	if (newScope === agentsScope) return;
+	agentsScope = newScope;
+	loadAgentsMd();
+}
+
 const sourceLabels = {
-	"channel-repo": "Channel (in repo)",
-	"channel-local": "Channel (local)",
-	"project-repo": "Project (in repo)",
-	"project-local": "Project (local)",
+	"channel-repo": "In repo",
+	"channel-local": "Local",
+	"project-repo": "In repo",
+	"project-local": "Local",
 	none: "Not set",
 };
 
@@ -112,11 +114,20 @@ $effect(() => {
       <h2 class="section-title">AGENTS.md</h2>
       <div class="agents-header">
         <span class="setting-description">
-          Custom instructions for Claude Code sessions in this channel.
+          Custom instructions for Claude Code sessions.
         </span>
-        {#if agentsSource !== "none" && !agentsLoading}
-          <span class="agents-source">Source: {sourceLabels[agentsSource] || agentsSource}</span>
-        {/if}
+        <div class="scope-selector">
+          <button
+            class="scope-btn"
+            class:active={agentsScope === "channel"}
+            onclick={() => switchScope("channel")}
+          >Channel</button>
+          <button
+            class="scope-btn"
+            class:active={agentsScope === "project"}
+            onclick={() => switchScope("project")}
+          >Project</button>
+        </div>
       </div>
       {#if agentsLoading}
         <div class="agents-loading">Loading...</div>
@@ -124,16 +135,23 @@ $effect(() => {
         <textarea
           class="agents-editor"
           bind:value={agentsContent}
-          placeholder="# Channel Instructions&#10;&#10;Add custom instructions for coworkers in this channel..."
+          placeholder={agentsScope === "channel"
+            ? "# Channel Instructions\n\nAdd custom instructions for coworkers in this channel..."
+            : "# Project Instructions\n\nAdd instructions shared across all channels..."}
           spellcheck="false"
         ></textarea>
         <div class="agents-actions">
-          {#if agentsError}
-            <span class="agents-status error">{agentsError}</span>
-          {/if}
-          {#if agentsSuccess}
-            <span class="agents-status success">{agentsSuccess}</span>
-          {/if}
+          <div class="agents-status-area">
+            {#if agentsError}
+              <span class="agents-status error">{agentsError}</span>
+            {/if}
+            {#if agentsSuccess}
+              <span class="agents-status success">{agentsSuccess}</span>
+            {/if}
+            {#if agentsSource !== "none" && !agentsError && !agentsSuccess}
+              <span class="agents-source">Source: {sourceLabels[agentsSource] || agentsSource}</span>
+            {/if}
+          </div>
           <div class="agents-buttons">
             {#if agentsDirty}
               <button class="agents-btn discard" onclick={discardAgentsMd}>Discard</button>
@@ -247,10 +265,42 @@ $effect(() => {
   /* AGENTS.md editor styles */
   .agents-header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     margin-bottom: 10px;
+  }
+
+  .scope-selector {
+    display: flex;
+    border: 1px solid hsl(var(--border));
+    border-radius: 5px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+
+  .scope-btn {
+    padding: 4px 12px;
+    font-size: 0.78rem;
+    border: none;
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .scope-btn:not(:last-child) {
+    border-right: 1px solid hsl(var(--border));
+  }
+
+  .scope-btn.active {
+    background: hsl(var(--accent));
+    color: hsl(var(--foreground));
+    font-weight: 500;
+  }
+
+  .scope-btn:hover:not(.active) {
+    background: hsl(var(--accent) / 0.5);
   }
 
   .agents-source {
@@ -295,6 +345,12 @@ $effect(() => {
     justify-content: space-between;
     margin-top: 8px;
     min-height: 32px;
+  }
+
+  .agents-status-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .agents-status {

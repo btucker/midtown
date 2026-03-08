@@ -2810,14 +2810,24 @@ pub fn channel_list_changed(action: &str, channel: &str) -> WebUpdate {
     })
 }
 
+/// Query parameters for the AGENTS.md endpoint.
+#[derive(Debug, Deserialize)]
+struct AgentsMdQuery {
+    /// Optional scope filter: "channel" or "project". If omitted, resolves
+    /// using the standard priority chain (channel-repo → channel-local →
+    /// project-repo → project-local).
+    scope: Option<String>,
+}
+
 /// Read the AGENTS.md content for a channel, with source information.
 ///
-/// Path: `/api/channels/{channel}/agents-md`
+/// Path: `/api/channels/{channel}/agents-md[?scope=channel|project]`
 ///
 /// Returns JSON with the content and which source it came from.
 async fn api_channel_agents_md(
     State(state): State<Arc<WebState>>,
     Path(channel): Path<String>,
+    Query(params): Query<AgentsMdQuery>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     if channel.contains("..")
         || channel.contains('/')
@@ -2831,26 +2841,31 @@ async fn api_channel_agents_md(
     let project_root = state.all_repo_paths.first();
     let local_dir = crate::paths::projects_dir_for_repo(repo);
 
-    // Build candidate list: (path, source_label)
+    // Build candidate list based on scope filter: (path, source_label)
     let mut candidates: Vec<(std::path::PathBuf, &str)> = Vec::new();
+    let scope = params.scope.as_deref();
 
-    if let Some(root) = project_root {
+    if scope.is_none() || scope == Some("channel") {
+        if let Some(root) = project_root {
+            candidates.push((
+                root.join(".midtown")
+                    .join("channels")
+                    .join(&channel)
+                    .join("AGENTS.md"),
+                "channel-repo",
+            ));
+        }
         candidates.push((
-            root.join(".midtown")
-                .join("channels")
-                .join(&channel)
-                .join("AGENTS.md"),
-            "channel-repo",
+            local_dir.join("channels").join(&channel).join("AGENTS.md"),
+            "channel-local",
         ));
     }
-    candidates.push((
-        local_dir.join("channels").join(&channel).join("AGENTS.md"),
-        "channel-local",
-    ));
-    if let Some(root) = project_root {
-        candidates.push((root.join(".midtown").join("AGENTS.md"), "project-repo"));
+    if scope.is_none() || scope == Some("project") {
+        if let Some(root) = project_root {
+            candidates.push((root.join(".midtown").join("AGENTS.md"), "project-repo"));
+        }
+        candidates.push((local_dir.join("AGENTS.md"), "project-local"));
     }
-    candidates.push((local_dir.join("AGENTS.md"), "project-local"));
 
     for (path, source) in &candidates {
         if let Ok(content) = std::fs::read_to_string(path)
@@ -2873,15 +2888,15 @@ async fn api_channel_agents_md(
 #[derive(Debug, Deserialize)]
 struct UpdateAgentsMdRequest {
     content: String,
-    #[allow(dead_code)]
+    /// Scope: "channel" (default) or "project".
     scope: Option<String>,
 }
 
-/// Write or delete the channel-specific local AGENTS.md.
+/// Write or delete the AGENTS.md for a channel or project scope.
 ///
 /// Path: `PUT /api/channels/{channel}/agents-md`
 ///
-/// Accepts JSON `{ "content": "...", "scope": "channel" }`.
+/// Accepts JSON `{ "content": "...", "scope": "channel"|"project" }`.
 /// If content is empty, deletes the file. Returns 204 on success.
 async fn api_channel_agents_md_update(
     State(state): State<Arc<WebState>>,
@@ -2897,10 +2912,12 @@ async fn api_channel_agents_md_update(
     }
 
     let repo = &state.config.dir_key;
-    let path = crate::paths::projects_dir_for_repo(repo)
-        .join("channels")
-        .join(&channel)
-        .join("AGENTS.md");
+    let local_dir = crate::paths::projects_dir_for_repo(repo);
+
+    let path = match body.scope.as_deref() {
+        Some("project") => local_dir.join("AGENTS.md"),
+        _ => local_dir.join("channels").join(&channel).join("AGENTS.md"),
+    };
 
     if body.content.trim().is_empty() {
         // Delete the file if it exists

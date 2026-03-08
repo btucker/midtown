@@ -1496,10 +1496,12 @@ export async function selectDm(coworkerName) {
 	fetchHistory(channelName);
 }
 
-// Fetch AGENTS.md content for a channel
-export async function fetchChannelAgentsMd(channel) {
+// Fetch AGENTS.md content for a channel (optionally filtered by scope)
+export async function fetchChannelAgentsMd(channel, scope = null) {
 	try {
-		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`);
+		let url = `${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`;
+		if (scope) url += `?scope=${encodeURIComponent(scope)}`;
+		const res = await fetch(url);
 		if (res.ok) {
 			return await res.json();
 		}
@@ -1510,13 +1512,13 @@ export async function fetchChannelAgentsMd(channel) {
 	return { content: "", source: "none" };
 }
 
-// Save AGENTS.md content for a channel
-export async function saveChannelAgentsMd(channel, content) {
+// Save AGENTS.md content for a channel (scope: "channel" or "project")
+export async function saveChannelAgentsMd(channel, content, scope = "channel") {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`, {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ content, scope: "channel" }),
+			body: JSON.stringify({ content, scope }),
 		});
 		if (res.ok || res.status === 204) {
 			return { ok: true };
