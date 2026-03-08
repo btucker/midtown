@@ -1551,13 +1551,6 @@ fn dispatch_owned_pending_tasks(
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
-                let nudge_msg = crate::agents::coworker_nudge_prompt(tid, subj);
-                // Deliver via mailbox (non-urgent task assignment to idle coworker).
-                effects.push(Effect::DeliverMailboxMessage {
-                    name: o.clone(),
-                    message: nudge_msg,
-                    summary: Some(format!("Task !{} assignment", tid)),
-                });
                 let session_id = snap
                     .name_session_map
                     .get(&o.to_lowercase())

@@ -1157,7 +1157,6 @@ pub(super) fn build_fork_config(
 ) -> (String, crate::headless::HeadlessConfig) {
     let config_dir =
         crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider);
-    let team = crate::mailbox::team_name_for_repo(repo_name);
 
     // Use the exact name if overridden (e.g., crash recovery reuses the original
     // fork name to keep cooldown keys stable). Otherwise derive from hint/caller.
@@ -1181,12 +1180,6 @@ pub(super) fn build_fork_config(
 
     let mut env = crate::launch::build_agent_env_vars(
         &fork_name,
-        &crate::launch::CoworkerRole::ChannelLead {
-            channel_name: fork_channel.unwrap_or_default().to_string(),
-            domain_context: String::new(),
-            agents_md: None,
-        },
-        &Some(team.clone()),
         &fork_channel.map(String::from),
         auth_provider,
         &config_dir,
@@ -1208,9 +1201,6 @@ pub(super) fn build_fork_config(
         persist_session: true,
         resume_session_id: Some(calling_session_id.to_string()),
         inactivity_timeout: None,
-        team_name: Some(team.clone()),
-        agent_id: Some(crate::mailbox::agent_id(&fork_name, &team)),
-        agent_name: Some(fork_name.clone()),
         settings_path: None,
         setting_sources: None,
         auth_provider,

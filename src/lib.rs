@@ -125,9 +125,6 @@ pub mod launch;
 // Lightweight filesystem sandbox (sandbox-exec on macOS, bwrap on Linux)
 pub mod sandbox;
 
-// Agent teams mailbox writer (filesystem-based message delivery)
-pub mod mailbox;
-
 // Session key type for multi-session coworker identity
 pub mod session_key;
 

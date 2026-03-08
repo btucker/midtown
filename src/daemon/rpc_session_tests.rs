@@ -1256,7 +1256,7 @@ fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
     );
 
     // With name_override: the exact original name is preserved
-    let (respawned_name_via_override, cfg) = build_fork_config(
+    let (respawned_name_via_override, _cfg) = build_fork_config(
         thread_id,
         "",
         None,
@@ -1272,11 +1272,6 @@ fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
     assert_eq!(
         original_name, respawned_name_via_override,
         "name_override should produce the exact same fork name for stable cooldown keys"
-    );
-    assert_eq!(
-        cfg.agent_name.as_deref(),
-        Some(original_name.as_str()),
-        "HeadlessConfig agent_name should match the overridden name"
     );
 }
 

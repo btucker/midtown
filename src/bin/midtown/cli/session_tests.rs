@@ -172,7 +172,6 @@ fn test_to_cli_args_resume_includes_all_flags() {
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: Some("test-team".to_string()),
         working_dir: None,
         model: "opus".to_string(),
         channel: None,
@@ -224,16 +223,6 @@ fn test_to_cli_args_resume_includes_all_flags() {
         "Should include --append-system-prompt flag"
     );
 
-    // Should include agent teams flags
-    assert!(
-        args.contains(&"--agent-id".to_string()),
-        "Should include --agent-id flag for agent teams"
-    );
-    assert!(
-        args.contains(&"--team-name".to_string()),
-        "Should include --team-name flag for agent teams"
-    );
-
     // Resume mode → no session ID
     assert!(session_id.is_none());
 }
@@ -247,7 +236,6 @@ fn test_to_cli_args_fresh_generates_session_id() {
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: None,
         working_dir: None,
         model: "sonnet".to_string(),
         channel: None,
@@ -291,7 +279,6 @@ fn test_to_cli_args_coworker_restricts_settings() {
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: None,
         working_dir: None,
         model: "sonnet".to_string(),
         channel: None,
@@ -312,8 +299,6 @@ fn test_to_cli_args_coworker_restricts_settings() {
     // Coworker should have --setting-sources
     assert!(args.contains(&"--setting-sources".to_string()));
     assert!(args.contains(&"project,local".to_string()));
-    // No agent teams without team_name
-    assert!(!args.contains(&"--agent-id".to_string()));
 }
 
 // ── build_attach_shell_command ────────────────────────────────────────
@@ -426,39 +411,6 @@ fn test_coworker_attach_no_task_list_id() {
     );
 }
 
-#[test]
-fn test_lead_attach_includes_agent_teams_flags() {
-    let cwd = find_project_root();
-    let result = build_attach_shell_command(
-        &cwd,
-        "lead",
-        midtown::auth::AuthProvider::Claude,
-        "session-123",
-        None,
-        None,
-        true,
-    );
-
-    let command = result.expect("build_attach_shell_command should succeed");
-
-    // Attach should include agent teams flags (previously missing)
-    assert!(
-        command.contains("--agent-id"),
-        "Lead attach should include --agent-id flag, got: {}",
-        command
-    );
-    assert!(
-        command.contains("--team-name"),
-        "Lead attach should include --team-name flag, got: {}",
-        command
-    );
-    assert!(
-        command.contains("--agent-name"),
-        "Lead attach should include --agent-name flag, got: {}",
-        command
-    );
-}
-
 // ── Model flag in to_cli_args ─────────────────────────────────────────
 
 #[test]
@@ -470,7 +422,6 @@ fn test_to_cli_args_includes_model_flag() {
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: None,
         working_dir: None,
         model: "opus".to_string(),
         channel: None,
@@ -511,7 +462,6 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: None,
         working_dir: None,
         model: "sonnet".to_string(),
         channel: None,

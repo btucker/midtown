@@ -1033,18 +1033,6 @@ impl DaemonState {
             let mut map = self.session_profile_map.lock().unwrap();
             map.remove(&name.to_lowercase());
         }
-        // Clear the inbox for this name so the next session that gets
-        // allocated this name does not inherit unread messages from this session.
-        {
-            let team_name = crate::mailbox::team_name_for_repo(&self.project_name);
-            if let Err(e) = crate::mailbox::clear_inbox(&team_name, name) {
-                warn!(
-                    "cleanup_coworker_state: failed to clear inbox for '{}': {}",
-                    name, e
-                );
-            }
-        }
-
         // Release name back to NamePool and clean up session reverse maps.
         // Each lock is acquired and released independently (no nesting)
         // to avoid implicit lock-ordering dependencies.
@@ -1578,23 +1566,6 @@ impl DaemonState {
                 crate::settings::write_coworker_settings_file()?
             };
             headless_config.settings_path = Some(settings_file.to_string_lossy().to_string());
-        }
-
-        // Set up agent-teams infrastructure (mailbox) before spawning
-        if let Some(ref team_name) = config.team_name {
-            let member = crate::mailbox::TeamMember {
-                name: name.clone(),
-                agent_id: crate::mailbox::agent_id(&name, team_name),
-                agent_type: match config.role {
-                    crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
-                    crate::launch::CoworkerRole::Lead => "lead".to_string(),
-                    crate::launch::CoworkerRole::Coworker => "coworker".to_string(),
-                    crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
-                },
-            };
-            if let Err(e) = crate::mailbox::upsert_team_member(team_name, member) {
-                tracing::warn!("Failed to set up team config for {}: {}", name, e);
-            }
         }
 
         // Determine the session ID for this spawn.

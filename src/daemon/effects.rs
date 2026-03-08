@@ -173,16 +173,10 @@ pub enum Effect {
         session_id: String,
         config: crate::launch::LaunchConfig,
     },
-    /// Deliver a message to a coworker via the agent teams mailbox.
+    /// Send a nudge message to a coworker by name via stdin prompt injection.
     ///
-    /// Uses the filesystem-based inbox (`~/.claude/teams/{team}/inboxes/{name}.json`)
-    /// for non-urgent messages like task assignments and PR feedback. The coworker
-    /// polls its inbox between turns, so delivery is not immediate.
-    DeliverMailboxMessage {
-        name: String,
-        message: String,
-        summary: Option<String>,
-    },
+    /// Used for non-urgent messages like task assignments and PR feedback.
+    NudgeCoworkerByName { name: String, message: String },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     ///
     /// The executor resolves channel and thread in two phases:
@@ -1138,36 +1132,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::DeliverMailboxMessage {
-                name,
-                message,
-                summary,
-            } => {
-                let team_name = crate::mailbox::team_name_for_repo(&state.project_name);
-                let mut msg = crate::mailbox::MailboxMessage::new(&message, "midtown")
-                    .with_color("yellow".to_string());
-                if let Some(s) = summary {
-                    msg = msg.with_summary(s);
-                }
-                match crate::mailbox::write_to_inbox(&team_name, &name, msg) {
-                    Ok(()) => {
-                        debug!("Delivered mailbox message to {}", name);
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to deliver mailbox message to {}: {} — falling back to headless stdin",
-                            name, e
-                        );
-                        // Fallback: try headless send_message as a last resort
-                        if let Err(nudge_err) =
-                            state.session_manager.send_message(&name, &message).await
-                        {
-                            warn!(
-                                "Fallback headless nudge also failed for {}: {}",
-                                name, nudge_err
-                            );
-                        }
-                    }
+            Effect::NudgeCoworkerByName { name, message } => {
+                if let Err(e) = state.session_manager.send_message(&name, &message).await {
+                    warn!("NudgeCoworkerByName: failed to nudge {}: {}", name, e);
+                } else {
+                    debug!("NudgeCoworkerByName: delivered message to {}", name);
                 }
             }
             Effect::PostToChannel {
@@ -2713,17 +2682,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 config.working_dir = Some(working_dir.clone());
                 config.initial_prompt = Some(initial_prompt.clone());
-
-                // 2b. Clear any stale inbox messages left by a previous session
-                // that held this name. Names are recycled from the NamePool, so
-                // without this a new session would inherit unread messages meant
-                // for its predecessor.
-                {
-                    let team_name = crate::mailbox::team_name_for_repo(&state.project_name);
-                    if let Err(e) = crate::mailbox::clear_inbox(&team_name, &name) {
-                        warn!("SpawnSession: failed to clear inbox for '{}': {}", name, e);
-                    }
-                }
 
                 // 3. Spawn via state.spawn_coworker (handles worktree, register, session manager)
                 match state.spawn_coworker(&config).await {

@@ -79,16 +79,6 @@ pub struct HeadlessConfig {
     #[serde(default)]
     #[serde(with = "optional_duration_secs")]
     pub inactivity_timeout: Option<Duration>,
-    /// Agent teams team name. When set, adds `--team-name` CLI flag and sets
-    /// `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var.
-    #[serde(default)]
-    pub team_name: Option<String>,
-    /// Agent teams agent ID. When set, adds `--agent-id` CLI flag.
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    /// Agent teams agent name. When set, adds `--agent-name` CLI flag.
-    #[serde(default)]
-    pub agent_name: Option<String>,
     /// Path to a Claude Code settings JSON file. When set, adds `--settings` flag.
     #[serde(default)]
     pub settings_path: Option<String>,
@@ -1193,9 +1183,6 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         persist_session: _persist_session,
         resume_session_id,
         inactivity_timeout: _inactivity_timeout,
-        team_name: _team_name,
-        agent_id: _agent_id,
-        agent_name: _agent_name,
         settings_path,
         setting_sources,
         auth_provider: _auth_provider,
@@ -1602,10 +1589,6 @@ impl ClaudeHeadlessAdapter {
         cmd.env_remove("MIDTOWN_AGENT");
         cmd.env_remove("CLAUDECODE");
         cmd.env("DISABLE_AUTOUPDATER", "1");
-
-        if config.team_name.is_some() && config.auth_provider == crate::auth::AuthProvider::Claude {
-            cmd.env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1");
-        }
 
         for (key, value) in &config.env {
             cmd.env(key, value);

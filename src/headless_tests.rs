@@ -14,9 +14,6 @@ fn test_config() -> HeadlessConfig {
         resume_session_id: None,
         session_id: None,
         inactivity_timeout: None,
-        team_name: None,
-        agent_id: None,
-        agent_name: None,
         settings_path: None,
         setting_sources: None,
         auth_provider: crate::auth::AuthProvider::Claude,
@@ -193,9 +190,6 @@ fn test_headless_config_all_fields_roundtrip() {
         persist_session: true,
         resume_session_id: Some("abc-123".to_string()),
         inactivity_timeout: Some(Duration::from_secs(300)),
-        team_name: Some("midtown-myrepo".to_string()),
-        agent_id: Some("park@midtown-myrepo".to_string()),
-        agent_name: Some("park".to_string()),
         settings_path: Some("/tmp/settings.json".to_string()),
         setting_sources: Some("project,local".to_string()),
         auth_provider: crate::auth::AuthProvider::Codex,
@@ -210,9 +204,6 @@ fn test_headless_config_all_fields_roundtrip() {
     assert!(parsed.persist_session);
     assert_eq!(parsed.resume_session_id, Some("abc-123".to_string()));
     assert_eq!(parsed.inactivity_timeout, Some(Duration::from_secs(300)));
-    assert_eq!(parsed.team_name, Some("midtown-myrepo".to_string()));
-    assert_eq!(parsed.agent_id, Some("park@midtown-myrepo".to_string()));
-    assert_eq!(parsed.agent_name, Some("park".to_string()));
     assert_eq!(parsed.settings_path, Some("/tmp/settings.json".to_string()));
     assert_eq!(parsed.setting_sources, Some("project,local".to_string()));
     assert_eq!(parsed.auth_provider, crate::auth::AuthProvider::Codex);
@@ -227,9 +218,6 @@ fn test_headless_config_defaults_from_minimal_json() {
     assert!(!config.persist_session);
     assert!(config.resume_session_id.is_none());
     assert!(config.inactivity_timeout.is_none());
-    assert!(config.team_name.is_none());
-    assert!(config.agent_id.is_none());
-    assert!(config.agent_name.is_none());
     assert!(config.settings_path.is_none());
     assert!(config.setting_sources.is_none());
     assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);

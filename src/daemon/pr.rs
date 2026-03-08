@@ -3425,13 +3425,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // the reviewer finishes, causing the PR to merge as soon as CI passes — bypassing
         // the review entirely (as happened with PR #1523).
         if let Some(ref author) = pr_author {
-            on_success.push(Effect::DeliverMailboxMessage {
+            on_success.push(Effect::NudgeCoworkerByName {
                 name: author.clone(),
                 message: daemon_messages::reviewer_spawned_author_warning(
                     &reviewer_name,
                     pr_number,
                 ),
-                summary: Some(format!("Review in progress on PR #{}", pr_number)),
             });
         }
 
@@ -4992,7 +4991,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ShutdownCoworker { .. } => "ShutdownCoworker",
         Effect::ShutdownCoworkerWithCallbacks { .. } => "ShutdownCoworkerWithCallbacks",
         Effect::ResumeCoworker { .. } => "ResumeCoworker",
-        Effect::DeliverMailboxMessage { .. } => "DeliverMailboxMessage",
+        Effect::NudgeCoworkerByName { .. } => "NudgeCoworkerByName",
         Effect::PostToChannel { .. } => "PostToChannel",
         Effect::PostSystemMessage { .. } => "PostSystemMessage",
         Effect::BroadcastCoworkerUpdate { .. } => "BroadcastCoworkerUpdate",

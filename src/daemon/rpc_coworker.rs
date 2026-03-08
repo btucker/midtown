@@ -66,7 +66,6 @@ pub(super) async fn handle_coworker_spawn(
     };
 
     // Build headless launch config
-    let team = crate::mailbox::team_name_for_repo(&state.project_name);
     let config = crate::launch::LaunchConfig {
         name,
         session_mode: if resume {
@@ -78,7 +77,6 @@ pub(super) async fn handle_coworker_spawn(
         initial_prompt: prompt,
         additional_dirs: vec![],
         pr_number: None,
-        team_name: Some(team),
         working_dir: None,
         model: super::helpers::resolve_model_for_role(
             state.paths.dir_key(),

@@ -395,11 +395,6 @@ impl ProjectPaths {
     pub fn task_list_id(&self) -> String {
         format!("midtown-{}", self.dir_key)
     }
-
-    /// Team name for agent mailbox (uses project_name for logical identity).
-    pub fn team_name(&self) -> String {
-        format!("midtown-{}", self.project_name)
-    }
 }
 
 /// Parsed YAML frontmatter from an AGENTS.md file.
