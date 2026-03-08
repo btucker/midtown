@@ -1410,7 +1410,13 @@ impl DaemonState {
             channel_router,
             socket_path,
             coworker_records: tokio::sync::RwLock::new(HashMap::new()),
-            pr_issue_tracker: Mutex::new(PrIssueTracker::new()),
+            pr_issue_tracker: Mutex::new(PrIssueTracker::with_permanent_nudges(
+                persistent_state
+                    .permanent_pr_nudges
+                    .iter()
+                    .cloned()
+                    .collect(),
+            )),
             project_name,
             paths,
             repo_owner,

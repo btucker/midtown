@@ -15,7 +15,8 @@ use super::constants::{
 // ---------------------------------------------------------------------------
 
 /// Types of actionable PR issues
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PrIssueType {
     /// PR has merge conflicts
     MergeConflict,
@@ -115,6 +116,22 @@ impl PrIssueTracker {
     pub fn record_permanent_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
         self.permanent.insert((pr_number, issue_type));
         self.nudged.insert((pr_number, issue_type), Instant::now());
+    }
+
+    /// Create a tracker pre-loaded with permanent nudges restored from persistent state.
+    /// Populates `nudged` from `permanent` so `should_nudge()` returns false for
+    /// restored entries (matching `record_permanent_nudge()` which inserts into both).
+    pub fn with_permanent_nudges(nudges: HashSet<(u64, PrIssueType)>) -> Self {
+        let nudged = nudges.iter().map(|key| (*key, Instant::now())).collect();
+        Self {
+            nudged,
+            permanent: nudges,
+        }
+    }
+
+    /// Returns a reference to the permanent nudge set (for persisting to disk).
+    pub fn permanent_nudges(&self) -> &HashSet<(u64, PrIssueType)> {
+        &self.permanent
     }
 
     /// Record a nudge with a backdated timestamp (test helper).
