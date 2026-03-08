@@ -2373,6 +2373,145 @@ async fn test_fork_bound_threads_skipped_for_dm_channels() {
     );
 }
 
+// ── Non-user thread reply fork respawn tests ──────────────────────────────────
+
+/// When a non-user sender (coworker) posts a thread reply to a topic channel
+/// where the fork session is dead, `try_lazy_fork_respawn()` should be called
+/// to attempt respawn — just like it is for user messages.
+///
+/// Bug: The non-user sender nudge path at lines 299-327 sent a NudgeSession
+/// effect without checking if the fork was alive. Dead forks never got respawned
+/// for non-user thread replies.
+///
+/// This test verifies that a coworker's thread reply to a dead fork triggers
+/// cleanup of the stale topic_sessions entry (since respawn fails in test env).
+#[tokio::test]
+async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-non-user-dead-fork-respawn");
+
+    // Post a parent message in the topic channel to get a valid thread_parent_id
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+    let dead_fork_sid = "dead-fork-for-non-user-test";
+    let dead_fork_name = "web-thread-nonuser-fork";
+
+    // Set up a dead fork: topic_sessions + session_to_name mappings exist,
+    // but no process is running (is_alive returns false by default).
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(dead_fork_sid.to_string(), dead_fork_name.to_string());
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(dead_fork_name.to_string(), dead_fork_sid.to_string());
+
+    // Add a persisted SessionRecord so respawn metadata can be read
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            dead_fork_sid.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: dead_fork_sid.to_string(),
+                current_name: Some(dead_fork_name.to_string()),
+                preferred_name: Some(dead_fork_name.to_string()),
+                working_dir: String::new(),
+                coworker_type: "channel-lead".to_string(),
+                is_running: false,
+                bound_thread_id: Some(thread_parent_id.clone()),
+                channel: Some("web".to_string()),
+                provider: Some(crate::auth::AuthProvider::Claude),
+                ..Default::default()
+            },
+        );
+    }
+
+    // is_alive returns false by default — fork is dead.
+
+    // A coworker posts a thread reply to the dead fork's thread.
+    let response = handle_channel_post(
+        1_i64.into(),
+        "york",
+        "coworker follow-up in thread",
+        Some("web"),
+        Some(&thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed even with dead fork"
+    );
+
+    // The stale topic_sessions entry should be cleaned up because respawn
+    // fails in test env (no actual headless process). This proves that
+    // try_lazy_fork_respawn() was called for the non-user sender path.
+    let topic = state.topic_sessions.lock().unwrap();
+    assert!(
+        !topic.contains_key(&thread_parent_id)
+            || topic.get(&thread_parent_id).map(String::as_str) != Some(dead_fork_sid),
+        "Non-user thread reply to dead fork should trigger respawn attempt and clean up stale entry"
+    );
+}
+
+/// When a non-user sender posts a thread reply to a topic channel where the
+/// fork session is alive, the message should route normally without respawn.
+#[tokio::test]
+async fn test_non_user_thread_reply_to_alive_fork_routes_normally() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-non-user-alive-fork");
+
+    let thread_parent_id = post_parent_message(&state, Some("web")).await;
+    let fork_sid = "alive-fork-non-user";
+    let fork_name = "web-thread-alive-nonuser";
+
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_parent_id.clone(), fork_sid.to_string());
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(fork_sid.to_string(), fork_name.to_string());
+
+    // Mark fork as alive
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == fork_name
+        })));
+
+    // Coworker posts thread reply — fork is alive, should route normally
+    let response = handle_channel_post(
+        1_i64.into(),
+        "york",
+        "coworker reply to alive fork",
+        Some("web"),
+        Some(&thread_parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed for alive fork"
+    );
+
+    // topic_sessions should be unchanged — fork is alive
+    let topic = state.topic_sessions.lock().unwrap();
+    assert_eq!(
+        topic.get(&thread_parent_id).map(String::as_str),
+        Some(fork_sid),
+        "alive fork session should remain in topic_sessions for non-user reply"
+    );
+}
+
 #[tokio::test]
 async fn test_is_known_agent_name_checks_all_registries() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-is-known-agent");
