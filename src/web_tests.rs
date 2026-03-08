@@ -1467,3 +1467,237 @@ async fn test_set_workflow_rejects_path_traversal() {
     .await;
     assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
 }
+
+// --- AGENTS.md endpoint tests ---
+
+fn make_agents_md_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> Arc<WebState> {
+    let (updates_tx, _) = broadcast::channel(10);
+    let (channel_post_tx, _) = mpsc::channel(10);
+    Arc::new(WebState {
+        config: WebConfig {
+            dir_key: dir_key.to_string(),
+            project_name: dir_key.to_string(),
+        },
+        updates_tx,
+        coworkers: None,
+        channel_post_tx,
+        push_manager: None,
+        all_repo_paths: repo_paths,
+        default_branch: "main".to_string(),
+        max_coworkers: 8,
+        repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+    })
+}
+
+#[tokio::test]
+async fn test_agents_md_get_empty() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md(
+        State(state),
+        Path("web".to_string()),
+        Query(AgentsMdQuery { scope: None }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.0["content"], "");
+    assert_eq!(result.0["source"], "none");
+}
+
+#[tokio::test]
+async fn test_agents_md_get_channel_local() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let channel_dir = crate::paths::projects_dir_for_repo("test-agents")
+        .join("channels")
+        .join("web");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("AGENTS.md"), "# Web channel instructions").unwrap();
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md(
+        State(state),
+        Path("web".to_string()),
+        Query(AgentsMdQuery { scope: None }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.0["content"], "# Web channel instructions");
+    assert_eq!(result.0["source"], "channel-local");
+}
+
+#[tokio::test]
+async fn test_agents_md_get_project_local() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let project_dir = crate::paths::projects_dir_for_repo("test-agents");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    std::fs::write(project_dir.join("AGENTS.md"), "# Project instructions").unwrap();
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md(
+        State(state),
+        Path("web".to_string()),
+        Query(AgentsMdQuery { scope: None }),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.0["content"], "# Project instructions");
+    assert_eq!(result.0["source"], "project-local");
+}
+
+#[tokio::test]
+async fn test_agents_md_get_scope_filter() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let local_dir = crate::paths::projects_dir_for_repo("test-agents");
+    let channel_dir = local_dir.join("channels").join("web");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("AGENTS.md"), "channel content").unwrap();
+    std::fs::write(local_dir.join("AGENTS.md"), "project content").unwrap();
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+
+    // Scope=project should skip channel files
+    let result = api_channel_agents_md(
+        State(state.clone()),
+        Path("web".to_string()),
+        Query(AgentsMdQuery {
+            scope: Some("project".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.0["content"], "project content");
+    assert_eq!(result.0["source"], "project-local");
+
+    // Scope=channel should only return channel file
+    let result = api_channel_agents_md(
+        State(state),
+        Path("web".to_string()),
+        Query(AgentsMdQuery {
+            scope: Some("channel".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.0["content"], "channel content");
+    assert_eq!(result.0["source"], "channel-local");
+}
+
+#[tokio::test]
+async fn test_agents_md_put_creates_file() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md_update(
+        State(state),
+        Path("web".to_string()),
+        Json(UpdateAgentsMdRequest {
+            content: "# New instructions".to_string(),
+            scope: Some("channel".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, StatusCode::NO_CONTENT);
+
+    let path = crate::paths::projects_dir_for_repo("test-agents")
+        .join("channels")
+        .join("web")
+        .join("AGENTS.md");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "# New instructions");
+}
+
+#[tokio::test]
+async fn test_agents_md_put_empty_deletes_file() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let channel_dir = crate::paths::projects_dir_for_repo("test-agents")
+        .join("channels")
+        .join("web");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    let path = channel_dir.join("AGENTS.md");
+    std::fs::write(&path, "some content").unwrap();
+    assert!(path.exists());
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md_update(
+        State(state),
+        Path("web".to_string()),
+        Json(UpdateAgentsMdRequest {
+            content: "".to_string(),
+            scope: Some("channel".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, StatusCode::NO_CONTENT);
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn test_agents_md_put_project_scope() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let state = make_agents_md_state("test-agents", Vec::new());
+    let result = api_channel_agents_md_update(
+        State(state),
+        Path("web".to_string()),
+        Json(UpdateAgentsMdRequest {
+            content: "# Project-wide".to_string(),
+            scope: Some("project".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, StatusCode::NO_CONTENT);
+
+    let project_path = crate::paths::projects_dir_for_repo("test-agents").join("AGENTS.md");
+    assert_eq!(
+        std::fs::read_to_string(project_path).unwrap(),
+        "# Project-wide"
+    );
+}
+
+#[tokio::test]
+async fn test_agents_md_rejects_path_traversal() {
+    let state = make_agents_md_state("test-agents", Vec::new());
+
+    let result = api_channel_agents_md(
+        State(state.clone()),
+        Path("../etc".to_string()),
+        Query(AgentsMdQuery { scope: None }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+
+    let result = api_channel_agents_md_update(
+        State(state),
+        Path("../etc".to_string()),
+        Json(UpdateAgentsMdRequest {
+            content: "malicious".to_string(),
+            scope: None,
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+}

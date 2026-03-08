@@ -1495,3 +1495,38 @@ export async function selectDm(coworkerName) {
 	// Always fetch full history on DM switch (same rationale as selectChannel).
 	fetchHistory(channelName);
 }
+
+// Fetch AGENTS.md content for a channel (optionally filtered by scope)
+export async function fetchChannelAgentsMd(channel, scope = null) {
+	try {
+		let url = `${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`;
+		if (scope) url += `?scope=${encodeURIComponent(scope)}`;
+		const res = await fetch(url);
+		if (res.ok) {
+			return await res.json();
+		}
+		console.warn("Failed to fetch AGENTS.md:", res.status);
+	} catch (err) {
+		console.warn("Failed to fetch AGENTS.md:", err);
+	}
+	return { content: "", source: "none" };
+}
+
+// Save AGENTS.md content for a channel (scope: "channel" or "project")
+export async function saveChannelAgentsMd(channel, content, scope = "channel") {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ content, scope }),
+		});
+		if (res.ok || res.status === 204) {
+			return { ok: true };
+		}
+		console.error("Failed to save AGENTS.md:", res.status);
+		return { ok: false, error: `HTTP ${res.status}` };
+	} catch (err) {
+		console.error("Failed to save AGENTS.md:", err);
+		return { ok: false, error: err.message };
+	}
+}

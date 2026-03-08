@@ -967,36 +967,71 @@ pub fn hooks_log_file() -> PathBuf {
 /// Implements a 4-level resolution order so scripts can be committed to the repo
 /// (shared with the team) or kept local (machine-specific overrides):
 ///
+/// AGENTS.md scope: "channel" or "project".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentsMdScope {
+    Channel,
+    Project,
+}
+
+/// Build the candidate path list for AGENTS.md resolution.
+///
+/// Returns `(path, scope, source_label)` tuples in priority order:
+///
+/// 1. `<project_root>/.midtown/channels/<channel>/AGENTS.md` — channel-repo
+/// 2. `~/.midtown/projects/<repo>/channels/<channel>/AGENTS.md` — channel-local
+/// 3. `<project_root>/.midtown/AGENTS.md` — project-repo
+/// 4. `~/.midtown/projects/<repo>/AGENTS.md` — project-local
+pub fn agents_md_candidates(
+    channel: &str,
+    project_root: Option<&Path>,
+    repo: &str,
+) -> Vec<(std::path::PathBuf, AgentsMdScope, &'static str)> {
+    let local_dir = projects_dir_for_repo(repo);
+    let mut candidates = Vec::new();
+
+    // 1. Channel-specific, in repo
+    if let Some(root) = project_root {
+        candidates.push((
+            root.join(".midtown")
+                .join("channels")
+                .join(channel)
+                .join("AGENTS.md"),
+            AgentsMdScope::Channel,
+            "channel-repo",
+        ));
+    }
+    // 2. Channel-specific, local
+    candidates.push((
+        local_dir.join("channels").join(channel).join("AGENTS.md"),
+        AgentsMdScope::Channel,
+        "channel-local",
+    ));
+    // 3. Project-wide, in repo
+    if let Some(root) = project_root {
+        candidates.push((
+            root.join(".midtown").join("AGENTS.md"),
+            AgentsMdScope::Project,
+            "project-repo",
+        ));
+    }
+    // 4. Project-wide, local
+    candidates.push((
+        local_dir.join("AGENTS.md"),
+        AgentsMdScope::Project,
+        "project-local",
+    ));
+
+    candidates
+}
+
 /// Resolve the `AGENTS.md` file for a channel (first found wins).
-///
-/// Searches the following paths in priority order:
-///
-/// 1. `<project_root>/.midtown/channels/<channel>/AGENTS.md` — channel-specific, in repo
-/// 2. `~/.midtown/projects/<repo>/channels/<channel>/AGENTS.md` — channel-specific, local
-/// 3. `<project_root>/.midtown/AGENTS.md` — project-wide, in repo
-/// 4. `~/.midtown/projects/<repo>/AGENTS.md` — project-wide, local
 ///
 /// Returns the content of the first `AGENTS.md` found, or `None` if none exist.
 pub fn agents_md_for_channel(channel: &str, project_root: &Path, repo: &str) -> Option<String> {
-    let candidates = [
-        // 1. Channel-specific, in repo
-        project_root
-            .join(".midtown")
-            .join("channels")
-            .join(channel)
-            .join("AGENTS.md"),
-        // 2. Channel-specific, local
-        projects_dir_for_repo(repo)
-            .join("channels")
-            .join(channel)
-            .join("AGENTS.md"),
-        // 3. Project-wide, in repo
-        project_root.join(".midtown").join("AGENTS.md"),
-        // 4. Project-wide, local
-        projects_dir_for_repo(repo).join("AGENTS.md"),
-    ];
+    let candidates = agents_md_candidates(channel, Some(project_root), repo);
 
-    for path in &candidates {
+    for (path, _, _) in &candidates {
         if let Ok(content) = std::fs::read_to_string(path)
             && !content.trim().is_empty()
         {

@@ -450,6 +450,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
         .route("/api/screenshots/{filename}", get(api_get_screenshot))
+        .route(
+            "/api/channels/{channel}/agents-md",
+            get(api_channel_agents_md).put(api_channel_agents_md_update),
+        )
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -2804,6 +2808,125 @@ pub fn channel_list_changed(action: &str, channel: &str) -> WebUpdate {
         action: action.to_string(),
         channel: channel.to_string(),
     })
+}
+
+/// Query parameters for the AGENTS.md endpoint.
+#[derive(Debug, Deserialize)]
+struct AgentsMdQuery {
+    /// Optional scope filter: "channel" or "project". If omitted, resolves
+    /// using the standard priority chain (channel-repo → channel-local →
+    /// project-repo → project-local).
+    scope: Option<String>,
+}
+
+/// Read the AGENTS.md content for a channel, with source information.
+///
+/// Path: `/api/channels/{channel}/agents-md[?scope=channel|project]`
+///
+/// Returns JSON with the content and which source it came from.
+async fn api_channel_agents_md(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Query(params): Query<AgentsMdQuery>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let repo = &state.config.dir_key;
+    let project_root = state.all_repo_paths.first();
+
+    let scope_filter = match params.scope.as_deref() {
+        Some("channel") => Some(crate::paths::AgentsMdScope::Channel),
+        Some("project") => Some(crate::paths::AgentsMdScope::Project),
+        _ => None,
+    };
+
+    let candidates =
+        crate::paths::agents_md_candidates(&channel, project_root.map(|p| p.as_path()), repo);
+
+    for (path, scope, source) in &candidates {
+        if scope_filter.is_some() && scope_filter.as_ref() != Some(scope) {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !content.trim().is_empty()
+        {
+            return Ok(Json(serde_json::json!({
+                "content": content,
+                "source": source,
+            })));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "content": "",
+        "source": "none",
+    })))
+}
+
+/// Request body for updating a channel's AGENTS.md.
+#[derive(Debug, Deserialize)]
+struct UpdateAgentsMdRequest {
+    content: String,
+    /// Scope: "channel" (default) or "project".
+    scope: Option<String>,
+}
+
+/// Write or delete the AGENTS.md for a channel or project scope.
+///
+/// Path: `PUT /api/channels/{channel}/agents-md`
+///
+/// Accepts JSON `{ "content": "...", "scope": "channel"|"project" }`.
+/// If content is empty, deletes the file. Returns 204 on success.
+async fn api_channel_agents_md_update(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Json(body): Json<UpdateAgentsMdRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let repo = &state.config.dir_key;
+    let local_dir = crate::paths::projects_dir_for_repo(repo);
+
+    let path = match body.scope.as_deref() {
+        Some("project") => local_dir.join("AGENTS.md"),
+        _ => local_dir.join("channels").join(&channel).join("AGENTS.md"),
+    };
+
+    if body.content.trim().is_empty() {
+        // Delete the file if it exists
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| {
+                error!("Failed to delete AGENTS.md at {}: {e}", path.display());
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+    } else {
+        // Create parent directories and write the file
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                error!("Failed to create directories for {}: {e}", path.display());
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        std::fs::write(&path, &body.content).map_err(|e| {
+            error!("Failed to write AGENTS.md at {}: {e}", path.display());
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[path = "web_tests.rs"]
