@@ -2159,22 +2159,32 @@ async fn api_channel_workflow(
     // Get workflow state for this channel
     let workflow_state = persistent_state.workflow_state.get(channel).cloned();
 
-    // Generate mermaid diagram from assigned workflow's transitions metadata
-    let mermaid = assigned_workflow.as_ref().and_then(|assigned_name| {
-        discovered
-            .iter()
-            .find(|w| &w.name == assigned_name)
-            .and_then(|w| w.metadata.as_ref())
-            .and_then(|meta| {
-                if meta.transitions.is_empty() {
-                    return None;
-                }
-                Some(generate_mermaid_from_transitions(
-                    &meta.states,
-                    &meta.transitions,
-                ))
-            })
-    });
+    // Generate mermaid diagram: use assigned workflow's transitions if available,
+    // otherwise fall back to the default workflow diagram.
+    let mermaid = assigned_workflow
+        .as_ref()
+        .and_then(|assigned_name| {
+            discovered
+                .iter()
+                .find(|w| &w.name == assigned_name)
+                .and_then(|w| w.metadata.as_ref())
+                .and_then(|meta| {
+                    if meta.transitions.is_empty() {
+                        return None;
+                    }
+                    Some(generate_mermaid_from_transitions(
+                        &meta.states,
+                        &meta.transitions,
+                    ))
+                })
+        })
+        .or_else(|| {
+            if assigned_workflow.is_none() {
+                Some(DEFAULT_WORKFLOW_MERMAID.to_string())
+            } else {
+                None
+            }
+        });
 
     Ok(Json(serde_json::json!({
         "assigned_workflow": assigned_workflow,
@@ -2221,6 +2231,25 @@ async fn api_list_workflows(
         "assignments": assignments,
     })))
 }
+
+/// Mermaid stateDiagram for the built-in default workflow.
+///
+/// Matches the state machine in `sdk/python/midtown/default_workflow.py`:
+/// pending → in_progress → in_review → approved → merged
+/// with back-edges for changes_requested and direct merge paths.
+const DEFAULT_WORKFLOW_MERMAID: &str = "\
+stateDiagram-v2
+    [*] --> pending
+    pending --> in_progress : task assigned
+    in_progress --> in_review : PR opened
+    in_progress --> approved : PR approved
+    in_review --> approved : PR approved
+    in_review --> in_progress : changes requested
+    approved --> in_progress : changes requested
+    in_progress --> merged : PR merged
+    in_review --> merged : PR merged
+    approved --> merged : PR merged
+    merged --> [*]";
 
 /// Generate a mermaid stateDiagram-v2 string from workflow states and transitions.
 fn generate_mermaid_from_transitions(
