@@ -300,13 +300,20 @@ pub(super) async fn handle_channel_post(
         let default_channel = state.channel_router.default_channel_name();
         let is_topic = channel_name != default_channel && !channel_name.starts_with("dm-");
         if is_topic && let Some(parent_id) = thread_parent_id {
-            let fork_session_id = state
+            let mut fork_session_id = state
                 .topic_sessions
                 .lock()
                 .unwrap()
                 .get(parent_id)
                 .filter(|s| s.as_str() != "pending")
                 .cloned();
+
+            // Lazy fork restoration: if the fork session is dead, attempt
+            // respawn so non-user thread replies don't go to dead sessions.
+            if let Some(ref fork_sid) = fork_session_id {
+                fork_session_id = try_lazy_fork_respawn(state, fork_sid, parent_id).await;
+            }
+
             if let Some(ref fork_sid) = fork_session_id {
                 // Avoid self-nudge: don't nudge the fork if it's the sender.
                 let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
@@ -317,7 +324,7 @@ pub(super) async fn handle_channel_post(
                         channel_name,
                         &content,
                         wake_msg_id,
-                        fork_session_id,
+                        fork_session_id.clone(),
                         Some(parent_id),
                     );
                     crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
