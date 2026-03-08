@@ -74,6 +74,15 @@ fn is_stale_codex_session_error(error_msg: &str) -> bool {
         || lowercase.contains("thread_not_found")
 }
 
+/// Detect "Prompt is too long" context exhaustion errors.
+///
+/// These occur when a coworker's conversation grows past the model's context
+/// window. Retrying can never succeed — the session must be killed and
+/// restarted fresh with task context preserved.
+fn is_context_exhausted_error(error_msg: &str) -> bool {
+    error_msg.to_lowercase().contains("prompt is too long")
+}
+
 /// Parse usage limit messages to extract reset time.
 ///
 /// Claude Code usage limit messages typically contain text like:
@@ -231,6 +240,7 @@ pub struct CoworkerSession {
     /// Includes:
     /// - "Tool names must be unique" conflicts.
     /// - Stale Codex resume/session errors (e.g., "no rollout found for thread id ...").
+    /// - Context exhaustion ("prompt is too long").
     pub has_tool_name_conflict: bool,
     /// Whether this session was spawned as a `--resume` (vs fresh).
     /// Used to detect failed resume attempts: if a resume session exits quickly,
@@ -1140,6 +1150,12 @@ impl SessionManager {
                                         cs.has_tool_name_conflict = true;
                                         warn!(
                                             "Session '{}' hit stale Codex session/thread error — needs fresh restart",
+                                            name
+                                        );
+                                    } else if is_context_exhausted_error(&combined) {
+                                        cs.has_tool_name_conflict = true;
+                                        warn!(
+                                            "Session '{}' hit context exhaustion ('prompt is too long') — needs fresh restart",
                                             name
                                         );
                                     } else {

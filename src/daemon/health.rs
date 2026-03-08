@@ -1122,6 +1122,7 @@ pub(super) fn check_and_nudge_api_errors(
 /// The `has_tool_name_conflict` flag currently covers unrecoverable conditions:
 /// - "Tool names must be unique" registration conflicts.
 /// - Stale Codex resume/session IDs (e.g., "no rollout found for thread id ...").
+/// - Context exhaustion ("prompt is too long") — the conversation outgrew the model's window.
 ///
 /// Generic API retries cannot fix these. We clear the saved session ID first, then
 /// shut down and restart fresh.
