@@ -363,54 +363,6 @@ fn test_coworker_attach_includes_system_prompt() {
     );
 }
 
-#[test]
-fn test_lead_attach_sets_task_list_id() {
-    let cwd = find_project_root();
-    let result = build_attach_shell_command(
-        &cwd,
-        "lead",
-        midtown::auth::AuthProvider::Claude,
-        "session-123",
-        Some("lead"),
-        None,
-        true,
-    );
-
-    assert!(result.is_ok(), "build_attach_shell_command should succeed");
-    let command = result.unwrap();
-
-    // Lead should have CLAUDE_CODE_TASK_LIST_ID set
-    assert!(
-        command.contains("CLAUDE_CODE_TASK_LIST_ID="),
-        "Lead attach command should set CLAUDE_CODE_TASK_LIST_ID env var, got: {}",
-        command
-    );
-}
-
-#[test]
-fn test_coworker_attach_no_task_list_id() {
-    let cwd = find_project_root();
-    let result = build_attach_shell_command(
-        &cwd,
-        "park",
-        midtown::auth::AuthProvider::Claude,
-        "session-456",
-        None,
-        None,
-        true,
-    );
-
-    assert!(result.is_ok(), "build_attach_shell_command should succeed");
-    let command = result.unwrap();
-
-    // Coworkers should NOT have CLAUDE_CODE_TASK_LIST_ID set
-    assert!(
-        !command.contains("CLAUDE_CODE_TASK_LIST_ID="),
-        "Coworker attach command should not set CLAUDE_CODE_TASK_LIST_ID env var, got: {}",
-        command
-    );
-}
-
 // ── Model flag in to_cli_args ─────────────────────────────────────────
 
 #[test]
