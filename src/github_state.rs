@@ -564,8 +564,10 @@ impl GitHubState {
         self.pr_author_sessions
             .retain(|pr, _| open_set.contains(pr));
 
-        // Clean up external PR tracking for closed PRs
-        self.cleanup_closed_external_prs(open_pr_numbers);
+        // NOTE: cleanup_closed_external_prs is NOT called here because
+        // cleanup_closed_prs receives a filtered list (external PRs already removed).
+        // External PR cleanup is called separately with the unfiltered PR list
+        // in evaluate_open_prs.
     }
 
     /// Store the Claude session ID for a PR author.
@@ -667,16 +669,37 @@ impl GitHubState {
             if self.allowed_external_repos.contains(&info.source_repo) {
                 return false;
             }
+            // For polling-detected PRs with placeholder name ("owner/fork"),
+            // also check if any allowed repo shares the same owner.
+            if info.source_repo.ends_with("/fork") {
+                let owner = info.source_repo.trim_end_matches("/fork");
+                if self
+                    .allowed_external_repos
+                    .iter()
+                    .any(|r| r.starts_with(owner) && r.as_bytes().get(owner.len()) == Some(&b'/'))
+                {
+                    return false;
+                }
+            }
             return true;
         }
         false
     }
 
     /// Record an external PR. Returns true if this is newly detected (not previously known).
+    ///
+    /// If the PR was previously recorded with a placeholder repo name (e.g. `"owner/fork"`
+    /// from the polling path), updates it with the real repo name when available from webhooks.
     pub fn record_external_pr(&mut self, pr_number: u64, source_repo: &str, title: &str) -> bool {
         use std::collections::hash_map::Entry;
         match self.external_prs.entry(pr_number) {
-            Entry::Occupied(_) => false,
+            Entry::Occupied(mut e) => {
+                // Update placeholder repo name with real name from webhook
+                if e.get().source_repo.ends_with("/fork") && !source_repo.ends_with("/fork") {
+                    e.get_mut().source_repo = source_repo.to_string();
+                }
+                false
+            }
             Entry::Vacant(e) => {
                 e.insert(ExternalPrInfo {
                     pr_number,

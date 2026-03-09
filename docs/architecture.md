@@ -432,6 +432,25 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the reviewer check in `pr_action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), both the workflow event AND inline effects are suppressed — no nudge is sent and no cooldown is recorded. The `Approved` nudge cooldown (if any prior one existed) is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
 
+## External/Fork PR Blocking
+
+PRs from external repositories (forks) are automatically blocked from daemon automation by default. This prevents unauthorized fork PRs from triggering reviewer spawning, nudges, task linking, or any other daemon processing.
+
+**Detection paths**:
+- **Webhook path** (primary): `handle_pull_request` extracts `head.repo.full_name` and compares against the base repo. Sets `WebhookEvent.fork_repo` with the fork's full repo name.
+- **Polling path** (backstop): `detect_and_block_external_prs` in `pr.rs` compares `headRepositoryOwner.login` against `repo_owner` from `WorldSnapshot`. Uses `"{owner}/fork"` as a placeholder repo name (the polling API doesn't expose the full fork repo name).
+
+**State** (`GitHubState`):
+- `external_prs: HashMap<u64, ExternalPrInfo>` — tracks detected external PRs with source repo, title, and notification status.
+- `allowed_external_prs: HashSet<u64>` — per-PR allowlist.
+- `allowed_external_repos: HashSet<String>` — per-repo allowlist (matches by owner prefix for polling-detected placeholders).
+
+**RPC methods**: `pr.allow` (allow a specific PR or all PRs from a repo), `pr.list-external` (list detected external PRs).
+
+**CLI**: `midtown pr allow <N>`, `midtown pr allow --repo <owner/repo>`, `midtown pr list --external`.
+
+**Cleanup**: `cleanup_closed_external_prs` is called separately from `cleanup_closed_prs` using the unfiltered open PR list (before external PRs are filtered out), ensuring blocked-but-still-open external PRs are not purged.
+
 ## Worktree Lifecycle
 
 When a coworker is called in, the daemon creates a task-based worktree at `~/.midtown/projects/<repo>/worktrees/<branch-slug>/` via `Effect::EnsureWorktree`. The worktree is created on a named branch matching the branch slug, starting from the default branch (not HEAD). This prevents cross-PR contamination when the lead's HEAD is on an unrelated feature branch. Worktree names are decoupled from coworker identity, enabling build cache reuse across task reassignment. When worktrees for merged PRs are detected, they are cleaned up via `CleanupMergedWorktree` effects. Stale worktrees (those with no corresponding in-progress task) are cleaned up via `CleanupStaleWorktree`.

@@ -865,6 +865,36 @@ fn test_external_pr_persists_and_loads() {
 }
 
 #[test]
+fn test_polling_placeholder_repo_updated_by_webhook() {
+    let mut state = GitHubState::default();
+    // Polling detects first with placeholder name
+    assert!(state.record_external_pr(42, "external-user/fork", "Fix thing"));
+    assert_eq!(state.external_prs[&42].source_repo, "external-user/fork");
+
+    // Webhook arrives with real repo name — should update
+    assert!(!state.record_external_pr(42, "external-user/actual-repo", "Fix thing"));
+    assert_eq!(
+        state.external_prs[&42].source_repo,
+        "external-user/actual-repo"
+    );
+}
+
+#[test]
+fn test_allow_repo_matches_polling_placeholder() {
+    let mut state = GitHubState::default();
+    // PR recorded via polling with placeholder name
+    state.record_external_pr(42, "external-user/fork", "Fix thing");
+    assert!(state.is_blocked_external_pr(42));
+
+    // User allows the real repo name — should unblock the placeholder too
+    state.allow_external_repo("external-user/actual-repo");
+    assert!(
+        !state.is_blocked_external_pr(42),
+        "allowing a repo with same owner should unblock polling-detected PRs"
+    );
+}
+
+#[test]
 fn test_backward_compat_load_without_external_fields() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("github-state.json");
@@ -884,16 +914,39 @@ fn test_backward_compat_load_without_external_fields() {
 }
 
 #[test]
-fn test_cleanup_closed_prs_cleans_external_pr_data() {
+fn test_cleanup_closed_prs_does_not_clean_external_pr_data() {
+    // cleanup_closed_prs receives a filtered PR list (external PRs removed),
+    // so it must NOT clean external PR data — that's done separately via
+    // cleanup_closed_external_prs with the unfiltered list.
     let mut state = GitHubState::default();
     state.record_external_pr(42, "ext/repo", "PR 42");
     state.record_external_pr(43, "ext/repo", "PR 43");
     state.allow_external_pr(42);
 
-    // Only PR 43 is still open
+    // Only PR 43 is in the filtered list (42 was filtered as blocked external)
     state.cleanup_closed_prs(&[43]);
 
-    assert!(!state.external_prs.contains_key(&42));
+    // External PR data should be preserved — cleanup_closed_prs doesn't touch it
+    assert!(state.external_prs.contains_key(&42));
     assert!(state.external_prs.contains_key(&43));
-    assert!(!state.allowed_external_prs.contains(&42));
+    assert!(state.allowed_external_prs.contains(&42));
+}
+
+#[test]
+fn test_cleanup_closed_external_prs_with_unfiltered_list() {
+    // cleanup_closed_external_prs is called separately with the full
+    // unfiltered open PR list, preserving blocked-but-still-open PRs.
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "ext/repo", "PR 42"); // still open, blocked
+    state.record_external_pr(43, "ext/repo", "PR 43"); // closed
+    state.allow_external_pr(42);
+
+    // Both 42 and 43 are in the unfiltered open list, but 43 is now closed
+    state.cleanup_closed_external_prs(&[42]);
+
+    // 42 still open — preserved
+    assert!(state.external_prs.contains_key(&42));
+    assert!(state.allowed_external_prs.contains(&42));
+    // 43 closed — cleaned up
+    assert!(!state.external_prs.contains_key(&43));
 }
