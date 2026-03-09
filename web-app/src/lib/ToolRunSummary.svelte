@@ -11,8 +11,6 @@ let {
 	allMessages = [],
 	startIndex = 0,
 	channelName = undefined,
-	senderOverrides = undefined,
-	dimSenders = undefined,
 	currentTasks = {},
 } = $props();
 
@@ -55,8 +53,6 @@ function toggle() {
 				index={startIndex + i}
 				senderClass="mt-1"
 				{channelName}
-				{senderOverrides}
-				{dimSenders}
 				currentTask={currentTasks[msg.from?.toLowerCase()]}
 			/>
 		{/each}
