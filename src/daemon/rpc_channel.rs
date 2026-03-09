@@ -379,7 +379,7 @@ pub(super) async fn handle_channel_post(
                     .contains_key(&channel_name.to_lowercase());
             if channel_lead_is_dead {
                 let mut stop_times = state.coworker_stop_times.write().unwrap();
-                if stop_times.remove(channel_name).is_some() {
+                if stop_times.remove(&channel_name.to_lowercase()).is_some() {
                     info!(
                         "Cleared channel lead '{}' respawn cooldown — user message while channel lead is dead",
                         channel_name

@@ -1665,9 +1665,12 @@ pub(super) fn check_for_stale_worktrees(
 /// **Session pruning:**
 /// - Reviewer sessions (`is_reviewer=true`) that are stopped are removed
 ///   immediately (no retention wait) since they're never resumed.
-/// - Non-reviewer sessions where `is_running=false` AND `resume_on_startup=false`
-///   AND `last_active` older than `retention_period` are removed entirely
-///   (including their `initial_prompt`, which is dropped with the whole record).
+/// - Channel lead sessions (`coworker_type="channel-lead"`) are never pruned —
+///   they are long-lived and should always be available for resume.
+/// - Non-reviewer, non-channel-lead sessions where `is_running=false` AND
+///   `resume_on_startup=false` AND `last_active` older than `retention_period`
+///   are removed entirely (including their `initial_prompt`, which is dropped
+///   with the whole record).
 ///
 /// **Task metadata pruning:**
 /// - Entries in task_channel, task_model, task_plan, task_execution_skill,

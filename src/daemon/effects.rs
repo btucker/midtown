@@ -1412,18 +1412,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record.current_name = None;
                     }
                 }
-                if let Some(stored_sid) = ps.channel_lead_sessions.remove(name.as_str()) {
-                    if stored_sid.is_empty() {
+                // Preserve the channel_lead_sessions key (insert empty string)
+                // so ensure_channel_leads_alive knows this channel still needs
+                // a lead and will emit RespawnChannelLead on the next tick.
+                if let Some(stored_sid) = ps.channel_lead_sessions.get(name.as_str()) {
+                    if !stored_sid.is_empty() {
                         info!(
-                            "Removing stale empty channel_lead_sessions entry for '{}'",
-                            name
-                        );
-                    } else {
-                        info!(
-                            "Removing stale channel_lead_sessions entry for '{}': {}",
+                            "Clearing stale channel_lead_sessions ID for '{}': {}",
                             name, stored_sid
                         );
                     }
+                    ps.channel_lead_sessions
+                        .insert(name.to_string(), String::new());
                 }
 
                 // Clear task/session bindings for matching session records so dispatch
@@ -2274,10 +2274,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         Err(e) => {
                             warn!("Failed to spawn channel lead for '{}': {}", name, e);
-                            // Clean up the placeholder entry so it doesn't linger as dead state.
-                            // Recovery will spawn a fresh session on the next daemon restart.
+                            // Preserve the key with empty value so
+                            // ensure_channel_leads_alive retries on the next tick.
                             let mut ps = state.persistent_state.lock().await;
-                            ps.channel_lead_sessions.remove(&name);
+                            ps.channel_lead_sessions.insert(name.clone(), String::new());
                             if let Err(save_err) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save daemon state after failed channel lead spawn: {}",
