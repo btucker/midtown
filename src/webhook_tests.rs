@@ -1498,3 +1498,73 @@ fn test_handle_review_comment_placeholder_suppresses_pr_activity() {
         "placeholder review comments should be completely ignored"
     );
 }
+
+// ============================================================================
+// Fork PR detection tests
+// ============================================================================
+
+#[test]
+fn test_handle_pull_request_fork_detected() {
+    let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Fix bug from fork",
+                "user": {"login": "external-user"},
+                "merged": false,
+                "head": {
+                    "ref": "fix-bug",
+                    "repo": {"full_name": "external-user/repo-fork"}
+                },
+                "body": "Fix from external contributor"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+    assert_eq!(event.fork_repo, Some("external-user/repo-fork".to_string()));
+    // Still generates the normal event data
+    assert_eq!(event.needs_review, Some(42));
+}
+
+#[test]
+fn test_handle_pull_request_same_repo_no_fork() {
+    let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Internal PR",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {
+                    "ref": "feature-branch",
+                    "repo": {"full_name": "org/repo"}
+                },
+                "body": "<!-- midtown: lexington -->\n\nInternal change"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+    assert_eq!(event.fork_repo, None);
+}
+
+#[test]
+fn test_handle_pull_request_no_head_repo_no_fork() {
+    // Existing webhook payloads without head.repo should not be detected as forks
+    let payload = r#"{
+            "action": "opened",
+            "number": 42,
+            "pull_request": {
+                "title": "Normal PR",
+                "user": {"login": "btucker"},
+                "merged": false,
+                "head": {"ref": "feature-branch"},
+                "body": "<!-- midtown: lexington -->\n\nNormal change"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
+    assert_eq!(event.fork_repo, None);
+}

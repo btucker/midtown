@@ -753,3 +753,147 @@ fn test_placeholder_comment_id_backward_compat() {
     assert!(assignment.placeholder_comment_id.is_none());
     assert_eq!(assignment.reviewer, "lexington");
 }
+
+// ============================================================================
+// External PR tests
+// ============================================================================
+
+#[test]
+fn test_record_external_pr_returns_true_for_new() {
+    let mut state = GitHubState::default();
+    assert!(state.record_external_pr(42, "external-user/repo", "Fix thing"));
+    assert!(state.external_prs.contains_key(&42));
+    assert_eq!(state.external_prs[&42].source_repo, "external-user/repo");
+    assert_eq!(state.external_prs[&42].title, "Fix thing");
+    assert!(!state.external_prs[&42].notified);
+}
+
+#[test]
+fn test_record_external_pr_returns_false_for_duplicate() {
+    let mut state = GitHubState::default();
+    assert!(state.record_external_pr(42, "external-user/repo", "Fix thing"));
+    assert!(!state.record_external_pr(42, "external-user/repo", "Fix thing v2"));
+    // Original title preserved
+    assert_eq!(state.external_prs[&42].title, "Fix thing");
+}
+
+#[test]
+fn test_is_blocked_external_pr() {
+    let mut state = GitHubState::default();
+
+    // Not external — not blocked
+    assert!(!state.is_blocked_external_pr(42));
+
+    // External — blocked
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    assert!(state.is_blocked_external_pr(42));
+
+    // Same-repo PR — not blocked
+    assert!(!state.is_blocked_external_pr(99));
+}
+
+#[test]
+fn test_allow_external_pr_unblocks() {
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    assert!(state.is_blocked_external_pr(42));
+
+    state.allow_external_pr(42);
+    assert!(!state.is_blocked_external_pr(42));
+}
+
+#[test]
+fn test_allow_external_repo_unblocks_all_from_repo() {
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    state.record_external_pr(43, "external-user/repo", "Fix other thing");
+    state.record_external_pr(44, "other-user/repo", "Different fork");
+
+    assert!(state.is_blocked_external_pr(42));
+    assert!(state.is_blocked_external_pr(43));
+    assert!(state.is_blocked_external_pr(44));
+
+    state.allow_external_repo("external-user/repo");
+
+    assert!(!state.is_blocked_external_pr(42));
+    assert!(!state.is_blocked_external_pr(43));
+    assert!(state.is_blocked_external_pr(44)); // Different repo still blocked
+}
+
+#[test]
+fn test_mark_external_pr_notified() {
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    assert!(!state.external_prs[&42].notified);
+
+    state.mark_external_pr_notified(42);
+    assert!(state.external_prs[&42].notified);
+}
+
+#[test]
+fn test_cleanup_closed_external_prs() {
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    state.record_external_pr(43, "external-user/repo", "Other PR");
+    state.allow_external_pr(42);
+
+    // PR 42 is still open, PR 43 is closed
+    state.cleanup_closed_external_prs(&[42]);
+
+    assert!(state.external_prs.contains_key(&42));
+    assert!(!state.external_prs.contains_key(&43));
+    assert!(state.allowed_external_prs.contains(&42));
+}
+
+#[test]
+fn test_external_pr_persists_and_loads() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("github-state.json");
+
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "external-user/repo", "Fix thing");
+    state.allow_external_pr(42);
+    state.allow_external_repo("trusted-user/repo");
+
+    state.save(&path).unwrap();
+    let loaded = GitHubState::load(&path).unwrap();
+
+    assert!(loaded.external_prs.contains_key(&42));
+    assert!(loaded.allowed_external_prs.contains(&42));
+    assert!(loaded.allowed_external_repos.contains("trusted-user/repo"));
+    assert!(!loaded.is_blocked_external_pr(42));
+}
+
+#[test]
+fn test_backward_compat_load_without_external_fields() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("github-state.json");
+
+    // Simulate an old state file without external PR fields
+    let json = r#"{
+        "pr_reviewers": {},
+        "reviewed_prs": [],
+        "pr_last_webhook_event": {}
+    }"#;
+    std::fs::write(&path, json).unwrap();
+
+    let loaded = GitHubState::load(&path).unwrap();
+    assert!(loaded.external_prs.is_empty());
+    assert!(loaded.allowed_external_prs.is_empty());
+    assert!(loaded.allowed_external_repos.is_empty());
+}
+
+#[test]
+fn test_cleanup_closed_prs_cleans_external_pr_data() {
+    let mut state = GitHubState::default();
+    state.record_external_pr(42, "ext/repo", "PR 42");
+    state.record_external_pr(43, "ext/repo", "PR 43");
+    state.allow_external_pr(42);
+
+    // Only PR 43 is still open
+    state.cleanup_closed_prs(&[43]);
+
+    assert!(!state.external_prs.contains_key(&42));
+    assert!(state.external_prs.contains_key(&43));
+    assert!(!state.allowed_external_prs.contains(&42));
+}

@@ -80,6 +80,9 @@ pub struct WebhookEvent {
     pub ci_check_passed: Option<CiCheckPassed>,
     /// Info about a newly opened PR — used to store the author's session for handoff.
     pub pr_opened: Option<PrOpenedInfo>,
+    /// If this PR is from a fork/external repo, the source repo full name.
+    /// Used by the daemon to block external PRs from automation.
+    pub fork_repo: Option<String>,
 }
 
 impl WebhookEvent {
@@ -108,6 +111,7 @@ impl WebhookEvent {
             check_duration: None,
             ci_check_passed: None,
             pr_opened: None,
+            fork_repo: None,
         }
     }
 
@@ -498,6 +502,14 @@ struct PullRequest {
 struct PullRequestHead {
     #[serde(rename = "ref")]
     branch: String,
+    /// The source repository for this PR head. For fork PRs, this differs from
+    /// the base repository. `None` if the field is absent from the payload.
+    repo: Option<HeadRepository>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HeadRepository {
+    full_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -787,12 +799,27 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         _ => None,
     };
 
+    // Detect fork PRs by comparing head repo against base repo
+    let fork_repo = event
+        .pull_request
+        .head
+        .as_ref()
+        .and_then(|h| h.repo.as_ref())
+        .and_then(|head_repo| {
+            if head_repo.full_name != event.repository.full_name {
+                Some(head_repo.full_name.clone())
+            } else {
+                None
+            }
+        });
+
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
         needs_review,
         merged_pr,
         pr_merged_info,
         pr_opened,
+        fork_repo,
         ..WebhookEvent::github(content)
     }))
 }

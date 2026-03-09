@@ -1171,6 +1171,81 @@ pub(super) async fn handle_pr_review_post(
     }
 }
 
+// ============================================================================
+// External PR handlers
+// ============================================================================
+
+/// Handle `pr.list-external` RPC method — returns blocked external/fork PRs.
+pub(crate) async fn handle_pr_list_external(id: RequestId, state: &DaemonState) -> Response {
+    let ps = state.persistent_state.lock().await;
+    let external_prs: Vec<serde_json::Value> = ps
+        .github
+        .external_prs
+        .values()
+        .map(|info| {
+            let is_blocked = ps.github.is_blocked_external_pr(info.pr_number);
+            serde_json::json!({
+                "pr_number": info.pr_number,
+                "source_repo": info.source_repo,
+                "title": info.title,
+                "detected_at": info.detected_at.to_rfc3339(),
+                "blocked": is_blocked,
+            })
+        })
+        .collect();
+
+    Response::success(id, serde_json::json!({ "external_prs": external_prs }))
+}
+
+/// Handle `pr.allow` RPC method — allow an external PR or repo for daemon processing.
+pub(crate) async fn handle_pr_allow(
+    id: RequestId,
+    pr_number: Option<u64>,
+    repo: Option<String>,
+    state: &DaemonState,
+) -> Response {
+    let mut ps = state.persistent_state.lock().await;
+
+    if let Some(repo) = repo {
+        ps.github.allow_external_repo(&repo);
+        info!("Allowed all external PRs from repo '{}'", repo);
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!("Failed to persist allowed external repo: {}", e);
+        }
+        return Response::success(
+            id,
+            serde_json::json!({
+                "message": format!("All PRs from '{}' are now allowed for daemon processing", repo)
+            }),
+        );
+    }
+
+    if let Some(pr_number) = pr_number {
+        if !ps.github.external_prs.contains_key(&pr_number) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32001,
+                    format!("PR #{} is not a known external PR", pr_number),
+                ),
+            );
+        }
+        ps.github.allow_external_pr(pr_number);
+        info!("Allowed external PR #{} for daemon processing", pr_number);
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!("Failed to persist allowed external PR: {}", e);
+        }
+        return Response::success(
+            id,
+            serde_json::json!({
+                "message": format!("PR #{} is now allowed for daemon processing", pr_number)
+            }),
+        );
+    }
+
+    Response::error(id, RpcError::invalid_params())
+}
+
 #[path = "rpc_prs_tests.rs"]
 #[cfg(test)]
 mod tests;

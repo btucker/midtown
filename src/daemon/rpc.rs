@@ -223,6 +223,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "pr.review"
             | "pr.review-post"
             | "pr.merge"
+            | "pr.allow"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
@@ -440,6 +441,14 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 None => return Response::error(request.id, RpcError::invalid_params()),
             };
             super::rpc_prs::handle_pr_review_post(request.id, pr_number, body, state).await
+        }
+
+        "pr.list-external" => super::rpc_prs::handle_pr_list_external(request.id, state).await,
+
+        "pr.allow" => {
+            let pr_number = params.u64_param("pr");
+            let repo = params.str_param("repo").map(|s| s.to_string());
+            super::rpc_prs::handle_pr_allow(request.id, pr_number, repo, state).await
         }
 
         "coworkers.status" => super::rpc_coworker::handle_coworkers_status(request.id, state).await,

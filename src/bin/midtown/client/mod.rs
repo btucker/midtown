@@ -669,6 +669,18 @@ impl DaemonClient {
         self.send("pr.merge", Some(serde_json::json!({ "pr": pr_number })))
     }
 
+    pub fn pr_list_external(&self) -> Result<Response, String> {
+        self.send("pr.list-external", None)
+    }
+
+    pub fn pr_allow(&self, pr_number: u64) -> Result<Response, String> {
+        self.send("pr.allow", Some(serde_json::json!({ "pr": pr_number })))
+    }
+
+    pub fn pr_allow_repo(&self, repo: &str) -> Result<Response, String> {
+        self.send("pr.allow", Some(serde_json::json!({ "repo": repo })))
+    }
+
     // Workflow commands
 
     pub fn workflow_list_raw(&self) -> Result<serde_json::Value, String> {

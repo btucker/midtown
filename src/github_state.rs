@@ -6,7 +6,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -28,7 +28,7 @@ pub struct GitHubState {
     /// Review status is monotonic — once a PR has a review, it never loses it.
     /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
     #[serde(default)]
-    pub reviewed_prs: std::collections::HashSet<u64>,
+    pub reviewed_prs: HashSet<u64>,
 
     /// Per-PR timestamp of the last webhook event that handled this PR.
     /// Polling checks this to defer to webhooks when they're healthy for a specific PR.
@@ -55,6 +55,26 @@ pub struct GitHubState {
     /// addressed (via `<!-- addresses-review: {id} -->` tags) before allowing merge.
     #[serde(default)]
     pub pr_review_comment_ids: HashMap<u64, Vec<u64>>,
+
+    /// Map of PR number -> external PR info for fork/cross-repo PRs.
+    ///
+    /// Detected via webhook (`head.repo` differs from `base.repo`) or polling
+    /// (`headRepositoryOwner` differs from the base repo owner). External PRs
+    /// are blocked from all daemon automation until explicitly allowed by the user.
+    #[serde(default)]
+    pub external_prs: HashMap<u64, ExternalPrInfo>,
+
+    /// Set of PR numbers explicitly allowed by the user for daemon processing.
+    ///
+    /// Once a PR is in this set, it's treated as a normal (non-external) PR.
+    #[serde(default)]
+    pub allowed_external_prs: HashSet<u64>,
+
+    /// Set of repository full names (e.g., "user/repo") allowed for daemon processing.
+    ///
+    /// All PRs from repos in this set bypass the external PR block.
+    #[serde(default)]
+    pub allowed_external_repos: HashSet<String>,
 }
 
 /// How the reviewer assignment was triggered.
@@ -132,6 +152,22 @@ pub struct PrAuthorSession {
     /// Used to prevent auto-completion of tasks until the PR merges.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+}
+
+/// Info about an external (fork/cross-repo) PR that is blocked from daemon processing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalPrInfo {
+    /// PR number
+    pub pr_number: u64,
+    /// The source repository full name (e.g., "external-user/repo-fork")
+    pub source_repo: String,
+    /// The PR title
+    pub title: String,
+    /// When the external PR was first detected
+    pub detected_at: DateTime<Utc>,
+    /// Whether a channel notification has already been posted for this PR
+    #[serde(default)]
+    pub notified: bool,
 }
 
 fn default_assignment_source() -> AssignmentSource {
@@ -527,6 +563,9 @@ impl GitHubState {
         // Clean up PR author sessions for closed PRs
         self.pr_author_sessions
             .retain(|pr, _| open_set.contains(pr));
+
+        // Clean up external PR tracking for closed PRs
+        self.cleanup_closed_external_prs(open_pr_numbers);
     }
 
     /// Store the Claude session ID for a PR author.
@@ -615,6 +654,64 @@ impl GitHubState {
             .get(&pr_number)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// Check if a PR is from an external/fork repo and NOT yet allowed.
+    ///
+    /// Returns `true` if the PR is blocked (external and not allowlisted).
+    pub fn is_blocked_external_pr(&self, pr_number: u64) -> bool {
+        if self.allowed_external_prs.contains(&pr_number) {
+            return false;
+        }
+        if let Some(info) = self.external_prs.get(&pr_number) {
+            if self.allowed_external_repos.contains(&info.source_repo) {
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Record an external PR. Returns true if this is newly detected (not previously known).
+    pub fn record_external_pr(&mut self, pr_number: u64, source_repo: &str, title: &str) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.external_prs.entry(pr_number) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(e) => {
+                e.insert(ExternalPrInfo {
+                    pr_number,
+                    source_repo: source_repo.to_string(),
+                    title: title.to_string(),
+                    detected_at: Utc::now(),
+                    notified: false,
+                });
+                true
+            }
+        }
+    }
+
+    /// Mark an external PR as having been notified in the channel.
+    pub fn mark_external_pr_notified(&mut self, pr_number: u64) {
+        if let Some(info) = self.external_prs.get_mut(&pr_number) {
+            info.notified = true;
+        }
+    }
+
+    /// Allow a specific external PR for daemon processing.
+    pub fn allow_external_pr(&mut self, pr_number: u64) {
+        self.allowed_external_prs.insert(pr_number);
+    }
+
+    /// Allow all PRs from a specific repository.
+    pub fn allow_external_repo(&mut self, repo: &str) {
+        self.allowed_external_repos.insert(repo.to_string());
+    }
+
+    /// Clean up external PR entries for PRs that are no longer open.
+    pub fn cleanup_closed_external_prs(&mut self, open_pr_numbers: &[u64]) {
+        let open_set: HashSet<_> = open_pr_numbers.iter().collect();
+        self.external_prs.retain(|pr, _| open_set.contains(pr));
+        self.allowed_external_prs.retain(|pr| open_set.contains(pr));
     }
 }
 
