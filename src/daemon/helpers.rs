@@ -992,20 +992,17 @@ pub fn format_task_prompt(task_id: &str, context_message: &str) -> String {
 
 /// Format the ops message for an unexpected session exit.
 ///
-/// Combines the session role/name header with optional stderr tail and
-/// optional formatted session output (from JSONL event log).
+/// Combines the session role/name header with optional stderr tail.
 pub fn format_unexpected_exit_message(
     session_role: &str,
     name: &str,
     stderr_lines: Option<&[String]>,
-    tail_output: Option<&str>,
 ) -> String {
     let header = format!("⚠️ {} {} session exited unexpectedly", session_role, name);
 
     let has_stderr = stderr_lines.is_some_and(|lines| !lines.is_empty());
-    let has_tail = tail_output.is_some_and(|t| !t.trim().is_empty());
 
-    if !has_stderr && !has_tail {
+    if !has_stderr {
         return header;
     }
 
@@ -1026,12 +1023,6 @@ pub fn format_unexpected_exit_message(
             stderr.len(),
             last_n.join("\n")
         ));
-    }
-
-    if let Some(tail) = tail_output
-        && !tail.trim().is_empty()
-    {
-        parts.push(format!("Session tail:\n{}", tail));
     }
 
     parts.join("\n\n")
