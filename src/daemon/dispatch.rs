@@ -1670,6 +1670,10 @@ fn dispatch_owned_pending_tasks(
                             category: "spawn_failure".to_string(),
                             key: o.clone(),
                         },
+                        Effect::ResetTaskToPending {
+                            task_id: tid.clone(),
+                            dir_key: snap.dir_key.clone(),
+                        },
                         Effect::PostToChannel {
                             sender: "midtown".to_string(),
                             message: format!(
@@ -2194,6 +2198,10 @@ fn dispatch_unowned_pending_tasks(
                     Effect::RecordCooldown {
                         category: "spawn_failure".to_string(),
                         key: coworker_name.clone(),
+                    },
+                    Effect::ResetTaskToPending {
+                        task_id: task.id.clone(),
+                        dir_key: snap.dir_key.clone(),
                     },
                     Effect::PostToChannel {
                         sender: "midtown".to_string(),
