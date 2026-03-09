@@ -617,6 +617,18 @@ To add a new effect:
 
 Tool call data is displayed via `msg.tool_data` on channel messages. The `extract_tool_blocks()` function in `stream.rs` pairs `tool_use` blocks from Assistant events with `tool_result` blocks from User events by `call_id`, producing `ToolBlock` structs that are attached to `PostToChannel` effects. Both topic channel messages (via `process_lead_output()`) and DM channel messages (via `process_agent_output()`) carry `tool_data`, giving the web UI and TUI a single, persisted source for rendering tool call activity.
 
+**Data flow:**
+```
+StreamEvent (NDJSON drain) → extract_tool_events() → Vec<ToolBlock>
+    → Effect::PostToChannel { tool_data } → channel message with ToolBlocks
+    → DaemonState.tool_activity_headers (pre-formatted strings per agent)
+    → coworkers.status RPC → TUI reads header strings directly
+```
+
+- **Channel messages**: Tool activity is carried as `tool_data` (structured `ToolBlock` JSON) on `PostToChannel` effects. The web UI reads `msg.tool_data` directly from channel messages. When a channel message with `tool_data` is posted, the daemon also updates `DaemonState.tool_activity_headers` — a `RwLock<HashMap<String, Vec<String>>>` of pre-formatted display strings (e.g. `"✓ read foo.rs"`, `"› $ git status"`).
+- **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to read `tool_activity_headers`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using these pre-formatted header strings directly.
+- **Lifecycle**: Tool activity headers for an agent are cleared from `tool_activity_headers` when the agent posts a non-tool channel message (work phase done) and when a coworker session stops (via `cleanup_coworker_state`).
+
 ## DM Channel Streaming
 
 Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>`), mirroring how channel leads stream their output to topic channels. This allows the web UI and TUI to show real-time coworker activity when viewing a specific coworker's DM channel.

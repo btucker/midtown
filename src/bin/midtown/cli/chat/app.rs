@@ -73,6 +73,16 @@ struct KanbanData {
     repos: Vec<(String, String)>,
 }
 
+/// A tool activity entry with a header string and optional completion timestamp.
+///
+/// The `completed_at` field records when a tool call transitioned from in-progress (›)
+/// to completed (✓/✗), enabling age-out after a configurable duration.
+#[derive(Debug, Clone)]
+pub struct ToolActivityEntry {
+    pub header: String,
+    pub completed_at: Option<std::time::Instant>,
+}
+
 /// Data fetched from background thread for coworker status refresh.
 ///
 /// Polled via `coworkers.status` RPC at a faster interval than PR data.
@@ -88,6 +98,8 @@ struct CoworkerStatusData {
     pending_questions: Vec<PendingQuestion>,
     /// Names of active channel leads (e.g. "auth", "tui")
     channel_lead_names: Vec<String>,
+    /// Pre-formatted tool activity headers per agent
+    tool_activity: HashMap<String, Vec<String>>,
 }
 
 /// Coworker status information for the TUI board sidebar
@@ -322,6 +334,9 @@ pub struct App {
     coworker_status_snapshot_ready: bool,
     /// Whether the headless lead session is actively working
     pub lead_working: bool,
+    /// Tool activity entries per agent, keyed by agent name (lowercase).
+    /// Each entry has a header string and optional completion timestamp for age-out.
+    pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
     /// Optimistic thinking state: channels where user just submitted a message.
     /// Set immediately on message submit; cleared when real tool activity arrives
     /// or after 30 seconds. Used to show spinner before channel lead responds.
@@ -685,6 +700,7 @@ impl App {
             coworker_pulse_frames: HashMap::new(),
             coworker_status_snapshot_ready: false,
             lead_working: false,
+            tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
@@ -907,6 +923,13 @@ impl App {
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
+                    // Merge tool activity, preserving completed_at timestamps
+                    let old = std::mem::take(&mut self.tool_activity);
+                    self.tool_activity = merge_tool_activity(old, data.tool_activity);
+                    // Clear optimistic thinking for channels with real tool activity
+                    for agent_key in self.tool_activity.keys() {
+                        self.channel_lead_thinking.remove(agent_key);
+                    }
                     self.coworker_status_receiver = None;
                 }
                 Err(TryRecvError::Empty) => {
@@ -1072,6 +1095,7 @@ impl App {
                 lead_working: false,
                 pending_questions: Vec::new(),
                 channel_lead_names: Vec::new(),
+                tool_activity: HashMap::new(),
             });
             let _ = tx.send(data);
         });
@@ -2913,6 +2937,36 @@ impl App {
         }
     }
 
+    /// Return visible tool entries for the given agent key.
+    ///
+    /// Filters out completed entries older than 30 seconds and returns the
+    /// most recent entries first (newest at index 0).
+    /// Capped at 3 entries to avoid taking up too much vertical space.
+    pub fn visible_tool_entries(&self, agent_key: &str) -> Vec<&ToolActivityEntry> {
+        let entries = match self.tool_activity.get(agent_key) {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+        let age_limit = std::time::Duration::from_secs(30);
+        let mut visible: Vec<&ToolActivityEntry> = entries
+            .iter()
+            .filter(|e| {
+                // Keep in-progress entries (no completed_at) and recent completions.
+                e.completed_at
+                    .map(|t| t.elapsed() < age_limit)
+                    .unwrap_or(true)
+            })
+            .collect();
+        // Keep only the most recent entries (last N from the vec).
+        let max_entries = 3;
+        if visible.len() > max_entries {
+            visible = visible[visible.len() - max_entries..].to_vec();
+        }
+        // Reverse so newest is first.
+        visible.reverse();
+        visible
+    }
+
     /// Return a style for a coworker row that fades in/out with a small wave delay
     /// based on the row index.
     ///
@@ -2978,6 +3032,9 @@ impl App {
                 .channel_lead_thinking
                 .values()
                 .any(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
+            || !self
+                .visible_tool_entries(self.selected_channel.as_str())
+                .is_empty()
     }
 
     /// Advance the spinner frame if enough time has elapsed since the last tick.
@@ -3693,6 +3750,26 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let tool_activity: HashMap<String, Vec<String>> = data
+        .get("tool_activity")
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .map(|(agent, headers)| {
+                    let strs: Vec<String> = headers
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (agent.clone(), strs)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let channel_lead_names: Vec<String> = data
         .get("channel_leads")
         .and_then(|v| v.as_array())
@@ -3711,6 +3788,7 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         lead_working,
         pending_questions,
         channel_lead_names,
+        tool_activity,
     })
 }
 
@@ -3755,6 +3833,65 @@ fn fetch_pending_questions_via_rpc() -> Vec<PendingQuestion> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Merge incoming tool activity headers with existing entries, preserving completed_at timestamps.
+///
+/// When an entry transitions from in-progress (›) to completed (✓/✗), records the current
+/// instant as `completed_at`. Completed entries that were already tracked preserve their
+/// original `completed_at` timestamp so age-out logic can measure elapsed time correctly.
+///
+/// Matching between old and new entries is done by comparing the body text (everything after
+/// the first character prefix and leading whitespace), allowing a "› Read foo.rs" to match
+/// a "✓ Read foo.rs" across ticks.
+fn merge_tool_activity(
+    old: HashMap<String, Vec<ToolActivityEntry>>,
+    new: HashMap<String, Vec<String>>,
+) -> HashMap<String, Vec<ToolActivityEntry>> {
+    new.into_iter()
+        .map(|(agent, headers)| {
+            let old_entries = old.get(&agent);
+            let entries = headers
+                .into_iter()
+                .map(|header| {
+                    let is_completed = header.starts_with('\u{2713}') // ✓
+                        || header.starts_with('\u{2717}'); // ✗
+                    let completed_at = if is_completed {
+                        // Extract body text: everything after the prefix char and leading space.
+                        let body: &str = header[header
+                            .char_indices()
+                            .nth(1)
+                            .map(|(i, _)| i)
+                            .unwrap_or(header.len())..]
+                            .trim_start();
+                        // Look for a matching old entry by body text to preserve its timestamp.
+                        old_entries
+                            .and_then(|entries| {
+                                entries.iter().find(|e| {
+                                    let old_body = e.header[e
+                                        .header
+                                        .char_indices()
+                                        .nth(1)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(e.header.len())..]
+                                        .trim_start();
+                                    old_body == body
+                                })
+                            })
+                            .and_then(|e| e.completed_at)
+                            .or_else(|| Some(std::time::Instant::now()))
+                    } else {
+                        None
+                    };
+                    ToolActivityEntry {
+                        header,
+                        completed_at,
+                    }
+                })
+                .collect();
+            (agent, entries)
+        })
+        .collect()
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -4003,6 +4140,7 @@ pub(super) mod tests {
             coworker_pulse_frames: HashMap::new(),
             coworker_status_snapshot_ready: false,
             lead_working: false,
+            tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Test default
             pending_questions: Vec::new(),

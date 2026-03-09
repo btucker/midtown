@@ -1369,3 +1369,45 @@ fn test_is_project_lead_rejects_regular_coworkers() {
     // Channel lead names are NOT project leads
     assert!(!is_project_lead("auth", "midtown"));
 }
+
+// ============================================================================
+// Tests for serialize_tool_activity_headers
+// ============================================================================
+
+#[test]
+fn test_serialize_tool_activity_headers_empty() {
+    let map: HashMap<String, Vec<String>> = HashMap::new();
+    let result = super::serialize_tool_activity_headers(&map);
+    assert_eq!(result, serde_json::json!({}));
+}
+
+#[test]
+fn test_serialize_tool_activity_headers_with_entries() {
+    let mut map = HashMap::new();
+    map.insert(
+        "amsterdam".to_string(),
+        vec!["✓ $ git status".to_string(), "› read foo.rs".to_string()],
+    );
+
+    let result = super::serialize_tool_activity_headers(&map);
+    let obj = result.as_object().expect("should be an object");
+    assert!(obj.contains_key("amsterdam"));
+
+    let items = obj["amsterdam"].as_array().expect("should be an array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].as_str().unwrap(), "✓ $ git status");
+    assert_eq!(items[1].as_str().unwrap(), "› read foo.rs");
+}
+
+#[test]
+fn test_serialize_tool_activity_headers_multiple_agents() {
+    let mut map = HashMap::new();
+    map.insert("madison".to_string(), vec!["✗ $ cargo test".to_string()]);
+    map.insert("lead".to_string(), vec!["› edit src/main.rs".to_string()]);
+
+    let result = super::serialize_tool_activity_headers(&map);
+    let obj = result.as_object().expect("should be an object");
+    assert_eq!(obj.len(), 2);
+    assert_eq!(obj["madison"][0].as_str().unwrap(), "✗ $ cargo test");
+    assert_eq!(obj["lead"][0].as_str().unwrap(), "› edit src/main.rs");
+}
