@@ -1,7 +1,7 @@
 /**
  * Check if a message contains only tool calls (no meaningful text content).
  */
-function isToolOnly(msg) {
+export function isToolOnly(msg) {
 	return (!msg.content || !msg.content.trim()) && msg.tool_data?.length > 0;
 }
 
