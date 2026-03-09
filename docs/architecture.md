@@ -641,6 +641,8 @@ Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>
 StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
                            → extract_tool_blocks()    → Vec<ToolBlock> (structured)
                            → detect_provider()        → Option<String> ("claude" | "codex")
+    → process_lead_output()     → Effect::PostToChannel { channel: None | Some("<topic>"), tool_data, provider }
+                                  (main lead → main channel, channel leads → topic channels, forks → bound topic channels)
     → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
     → channel JSONL file + WebSocket broadcast
 ```

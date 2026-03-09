@@ -202,7 +202,7 @@ pub enum Effect {
         /// Specific nudge variant for client-side rendering (e.g. "task_assigned").
         /// Only meaningful when `message_type` is `Nudge`.
         nudge_type: Option<String>,
-        /// Structured tool call data for DM channel messages.
+        /// Structured tool call data for channel messages (DM and topic channels).
         /// When present, the Message will carry raw tool blocks for client-side rendering.
         tool_data: Option<Vec<crate::message::ToolBlock>>,
         /// AI provider that produced this message (e.g., "claude", "codex").
