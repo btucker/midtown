@@ -97,10 +97,13 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
 /// Process headless Lead and channel lead output and generate channel posting effects.
 ///
 /// Aggregates all text content from Assistant events in the current drain cycle
-/// into a single message to avoid channel flooding.
+/// into a single message to avoid channel flooding. Also extracts structured
+/// tool data (`ToolBlock`s) from tool_use/tool_result pairs and attaches them
+/// to the posted channel messages for client-side rendering.
 ///
-/// - The main lead's text is posted to the main channel (`channel: None`).
-/// - Each channel lead's text is posted to its respective topic channel.
+/// - The main lead's text and tool data are posted to the main channel (`channel: None`).
+/// - Each channel lead's text and tool data are posted to its respective topic channel.
+/// - Fork sessions' text and tool data are posted to their bound topic channels.
 /// - Coworker text is handled separately by [`process_agent_output()`].
 ///
 /// `channel_lead_sessions` maps channel name → session ID for active channel leads.
