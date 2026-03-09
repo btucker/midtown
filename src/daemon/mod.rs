@@ -639,6 +639,14 @@ pub(crate) struct DaemonState {
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
+    /// Pre-formatted tool activity headers per agent, keyed by lowercase agent name.
+    ///
+    /// Populated from `tool_data` ToolBlocks on `PostToChannel` effects.
+    /// Each entry is a display string like "✓ read foo.rs" or "› $ git status".
+    /// Cleared when the agent posts a non-tool channel message (work phase done),
+    /// and when a coworker session stops (via `cleanup_coworker_state`).
+    /// Used by `coworkers.status` RPC for the TUI tool activity indicator.
+    pub(crate) tool_activity_headers: std::sync::RwLock<HashMap<String, Vec<String>>>,
     /// Negative cache for `is_pr_reviewed`: PR numbers confirmed NOT to have a review yet.
     ///
     /// `is_pr_reviewed` caches positive results (reviewed) in persistent state forever.
@@ -1002,6 +1010,11 @@ impl DaemonState {
         self.clear_pending_nudge(name);
         // Clear task assignment tracking (coworker is no longer active)
         self.clear_coworker_assignments(name);
+        // Clear tool activity headers (prevents stale activity on respawn)
+        {
+            let mut headers_map = self.tool_activity_headers.write().unwrap();
+            headers_map.remove(name);
+        }
         // Capture fork bindings before cleanup for web UI notification.
         let bound_thread_id = self.fork_bound_threads.lock().unwrap().get(name).cloned();
         let bound_channel = self.fork_bound_channels.lock().unwrap().get(name).cloned();
@@ -1443,6 +1456,7 @@ impl DaemonState {
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
+            tool_activity_headers: std::sync::RwLock::new(HashMap::new()),
             name_pool: std::sync::Mutex::new(name_pool),
             name_to_session: std::sync::Mutex::new(name_to_session),
             session_to_name: std::sync::Mutex::new(session_to_name),

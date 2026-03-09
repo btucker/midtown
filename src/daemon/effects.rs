@@ -8,6 +8,77 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::message::Message;
 
+/// Maximum tool activity entries per agent before oldest are evicted.
+const MAX_TOOL_ITEMS_PER_AGENT: usize = 20;
+
+/// Maximum length (in bytes) for a semantic header string before truncation.
+const MAX_SEMANTIC_HEADER_BYTES: usize = 120;
+
+/// Generate a human-readable header for a tool call (e.g. "$ git status", "read foo.rs").
+fn semantic_header(name: &str, input: &serde_json::Value) -> String {
+    let raw = match name {
+        "Bash" => {
+            let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            format!("$ {command}")
+        }
+        "Edit" | "Write" | "Read" => {
+            let path = first_path_field(input);
+            let verb = name.to_lowercase();
+            format!("{verb} {path}")
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            format!("glob {pattern}")
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            format!("grep /{pattern}/")
+        }
+        "Task" | "Agent" => {
+            let desc = input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            format!("task: {desc}")
+        }
+        "NotebookEdit" => {
+            let path = first_path_field(input);
+            format!("notebook edit {path}")
+        }
+        "WebFetch" => {
+            let url_str = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            format!("fetch {url_str}")
+        }
+        "WebSearch" => {
+            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("search \"{query}\"")
+        }
+        "TodoWrite" => "todo: update".to_string(),
+        "MultiEdit" => {
+            let path = first_path_field(input);
+            format!("multi-edit {path}")
+        }
+        _ => name.to_lowercase(),
+    };
+
+    if raw.len() > MAX_SEMANTIC_HEADER_BYTES {
+        let boundary = raw.floor_char_boundary(MAX_SEMANTIC_HEADER_BYTES);
+        format!("{}\u{2026}", &raw[..boundary])
+    } else {
+        raw
+    }
+}
+
+/// Return the first path-like field found in the input object.
+fn first_path_field(input: &serde_json::Value) -> &str {
+    for key in &["file_path", "notebook_path", "path"] {
+        if let Some(v) = input.get(key).and_then(|v| v.as_str()) {
+            return v;
+        }
+    }
+    ""
+}
+
 async fn load_channel_lead_context(
     base_dir: PathBuf,
     channel_name: &str,
@@ -1231,6 +1302,48 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             }
                         }
                     }
+                }
+
+                // Update tool_activity_headers from tool_data for TUI activity display.
+                // When tool_data has blocks → generate semantic headers and append.
+                // When no tool_data and sender is a real agent → clear (work phase done).
+                // Skip system senders (midtown, user) and non-fork explicit-channel posts.
+                let is_system_sender = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
+                    || sender.eq_ignore_ascii_case(&state.project_name);
+                let has_fork_channel_binding = state
+                    .fork_bound_channels
+                    .lock()
+                    .unwrap()
+                    .contains_key(&sender);
+                let has_explicit_channel = msg.channel.is_some();
+                let skip = is_system_sender
+                    || (has_explicit_channel && !has_fork_channel_binding && !is_dm_channel);
+
+                if let Some(ref blocks) = msg.tool_data {
+                    let agent_key = sender.to_lowercase();
+                    let mut headers_map = state.tool_activity_headers.write().unwrap();
+                    let entry = headers_map.entry(agent_key).or_default();
+                    for block in blocks {
+                        let header = semantic_header(&block.tool_name, &block.input);
+                        let prefix = if block.output.is_some() {
+                            if block.error {
+                                "\u{2717}" // ✗
+                            } else {
+                                "\u{2713}" // ✓
+                            }
+                        } else {
+                            "\u{203a}" // › (in-progress)
+                        };
+                        entry.push(format!("{prefix} {header}"));
+                    }
+                    // Cap to avoid unbounded growth.
+                    if entry.len() > MAX_TOOL_ITEMS_PER_AGENT {
+                        let drain_count = entry.len() - MAX_TOOL_ITEMS_PER_AGENT;
+                        entry.drain(..drain_count);
+                    }
+                } else if !skip {
+                    let mut headers_map = state.tool_activity_headers.write().unwrap();
+                    headers_map.remove(&sender.to_lowercase());
                 }
             }
             Effect::BroadcastCoworkerUpdate {

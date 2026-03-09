@@ -58,18 +58,27 @@ pub fn draw_chat_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Compute the number of lines the lead indicator area should occupy.
+/// Compute the number of lines the lead indicator area should occupy (1–3).
 ///
-/// Always returns 1 to maintain a stable status area — the indicator
+/// Always returns at least 1 to maintain a stable status area — the indicator
 /// never collapses to zero, preventing messages from jumping when activity starts.
-fn lead_indicator_height(_app: &App) -> u16 {
-    1
+/// Returns 1 when idle (dim placeholder), optimistic thinking, or only one entry.
+fn lead_indicator_height(app: &App) -> u16 {
+    let agent_key = app.selected_channel.as_str();
+    let entries_len = app.visible_tool_entries(agent_key).len();
+    if entries_len > 0 {
+        entries_len as u16
+    } else {
+        1 // Always reserve at least 1 line (dim placeholder or optimistic spinner)
+    }
 }
 
 /// Draw the lead working indicator area between chat messages and the input bar.
 ///
-/// Shows the channel/agent name with a pulsing indicator when thinking,
-/// or a dim placeholder when idle.
+/// Shows up to 3 tool entries in chronological order (oldest at top, newest at bottom).
+/// The last line (newest entry) shows the agent name pulsing bold/normal in yellow.
+/// Completed (✓/✗) entries age out after 30 seconds, collapsing the area to 0.
+/// Descriptions are not explicitly truncated — ratatui clips at the terminal edge naturally.
 fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
@@ -77,31 +86,94 @@ fn draw_lead_indicator(f: &mut Frame, app: &mut App, area: Rect) {
 
     let agent_key = app.selected_channel.as_str();
 
-    // Check for optimistic thinking state (show spinner when channel lead is responding)
+    let entries = app.visible_tool_entries(agent_key);
+
+    // Check for optimistic thinking state (show spinner even before tool activity arrives)
     let channel_thinking = app
         .channel_lead_thinking
         .get(agent_key)
         .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
         .unwrap_or(false);
 
-    if channel_thinking {
-        // Show agent name with pulsing bold to indicate activity
-        let line = Line::from(vec![
-            Span::raw(" "),
-            Span::styled(agent_key.to_string(), app.pulse_name_style(Color::Yellow)),
-        ]);
-        f.render_widget(Paragraph::new(vec![line]), area);
-    } else {
-        // Idle: render a dim placeholder to keep the status area stable.
-        // This prevents messages from jumping when activity starts/stops.
-        let line = Line::from(vec![Span::styled(
-            format!("   {agent_key}"),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::DIM),
-        )]);
-        f.render_widget(Paragraph::new(vec![line]), area);
+    if entries.is_empty() {
+        if channel_thinking {
+            // Show agent name with pulsing bold to indicate activity (no tool entries yet)
+            let line = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(agent_key.to_string(), app.pulse_name_style(Color::Yellow)),
+            ]);
+            f.render_widget(Paragraph::new(vec![line]), area);
+        } else {
+            // Idle: render a dim placeholder to keep the status area stable.
+            // This prevents messages from jumping when activity starts/stops.
+            let line = Line::from(vec![Span::styled(
+                format!("   {agent_key}"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )]);
+            f.render_widget(Paragraph::new(vec![line]), area);
+        }
+        return;
     }
+
+    // Pulse the lead name only when this channel has in-progress entries.
+    // Without this guard, a globally-advancing spinner_frame (from active coworkers elsewhere)
+    // would cause the name to falsely animate when the selected channel only has completed entries.
+    let has_in_progress = entries.iter().any(|e| e.header.starts_with('›'));
+    let name_style = if has_in_progress {
+        app.pulse_name_style(Color::Yellow)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+
+    // Width of " lead " prefix: 1 space + agent_name + 1 space
+    let prefix_width = 1 + agent_key.chars().count() + 1;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let n = entries.len();
+
+    // Display oldest first (reverse of visible_tool_entries which returns newest first).
+    // Agent name goes on the last line (newest entry = bottom), like a standard CLI.
+    for (i, entry) in entries.iter().rev().enumerate() {
+        let mut chars = entry.header.chars();
+        let prefix_char = chars.next().unwrap_or('›');
+        let description = chars.as_str().trim_start().to_string();
+
+        let prefix_color = match prefix_char {
+            '\u{2713}' => Color::Green, // ✓
+            '\u{2717}' => Color::Red,   // ✗
+            _ => Color::DarkGray,       // ›
+        };
+        let text_color = if prefix_char == '\u{2717}' {
+            Color::Red
+        } else {
+            Color::DarkGray
+        };
+
+        let is_last = i == n - 1; // last rendered = newest entry = agent name line
+        if is_last {
+            // Last line (newest): " lead › Read foo.rs" — name pulses when in progress
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(format!("{agent_key} "), name_style),
+                Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
+            ]));
+        } else {
+            // Older entries: indented to align with the agent-name line's description.
+            let indent = " ".repeat(prefix_width);
+            lines.push(Line::from(vec![
+                Span::raw(indent),
+                Span::styled(prefix_char.to_string(), Style::default().fg(prefix_color)),
+                Span::styled(format!(" {description}"), Style::default().fg(text_color)),
+            ]));
+        }
+    }
+
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// Compute the number of lines needed to display pending questions.

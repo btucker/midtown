@@ -826,7 +826,7 @@ fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
 /// current (microsecond latency). The TUI polls this at 1–2s to keep the
 /// coworker status panel up-to-date without delay.
 ///
-/// Returns: coworkers, max_coworkers, lead_working,
+/// Returns: coworkers, max_coworkers, lead_working, tool_activity,
 ///          channel_leads, channel_leads_working.
 pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
     let (coworkers_data, channel_lead_names) = build_coworkers_data(state).await;
@@ -837,6 +837,7 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
     let channel_leads_working = build_channel_leads_working(&health_guard, &channel_lead_names);
     drop(health_guard);
 
+    let tool_activity = collect_tool_activity(state);
     let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
 
     Response::success(
@@ -845,6 +846,7 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
             "coworkers": coworkers_data,
             "max_coworkers": state.max_coworkers,
             "lead_working": lead_working,
+            "tool_activity": tool_activity,
             "channel_leads": channel_leads,
             "channel_leads_working": channel_leads_working,
         }),
@@ -1044,6 +1046,35 @@ pub(crate) fn build_channel_leads_working(
             (name.clone(), serde_json::Value::Bool(active))
         })
         .collect()
+}
+
+/// Collect pre-formatted tool activity headers per agent as a JSON value for the RPC response.
+///
+/// Returns a JSON object mapping agent name → array of header strings
+/// (e.g. `{"lead": ["✓ read foo.rs", "› $ git status"]}`).
+/// Sourced from `tool_activity_headers`, populated from `tool_data` on channel messages.
+fn collect_tool_activity(state: &DaemonState) -> serde_json::Value {
+    let headers_map = state.tool_activity_headers.read().unwrap();
+    serialize_tool_activity_headers(&headers_map)
+}
+
+/// Serialize a tool activity headers map to a JSON object.
+///
+/// Separated from `collect_tool_activity` for testability without `DaemonState`.
+fn serialize_tool_activity_headers(
+    headers_map: &HashMap<String, Vec<String>>,
+) -> serde_json::Value {
+    let obj: serde_json::Map<String, serde_json::Value> = headers_map
+        .iter()
+        .map(|(agent, headers)| {
+            let arr: Vec<serde_json::Value> = headers
+                .iter()
+                .map(|h| serde_json::Value::String(h.clone()))
+                .collect();
+            (agent.clone(), serde_json::Value::Array(arr))
+        })
+        .collect();
+    serde_json::Value::Object(obj)
 }
 
 #[path = "rpc_coworker_tests.rs"]

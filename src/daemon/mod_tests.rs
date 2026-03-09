@@ -1571,6 +1571,10 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
     }
     state.record_pending_nudge(name, "test nudge");
     state.record_task_assignment(name, "42");
+    {
+        let mut headers_map = state.tool_activity_headers.write().unwrap();
+        headers_map.insert(name.to_string(), vec!["› $ git status".to_string()]);
+    }
 
     // Verify state was populated
     assert!(!state.cooldowns.lock().unwrap().is_empty());
@@ -1578,6 +1582,13 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
         state
             .coworker_task_assignments
             .lock()
+            .unwrap()
+            .contains_key(name)
+    );
+    assert!(
+        state
+            .tool_activity_headers
+            .read()
             .unwrap()
             .contains_key(name)
     );
@@ -1607,6 +1618,13 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
             "task assignments should be cleared"
         );
     }
+    {
+        let headers_map = state.tool_activity_headers.read().unwrap();
+        assert!(
+            !headers_map.contains_key(name),
+            "tool activity headers should be cleared"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1623,6 +1641,11 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
     state.record_pending_nudge("park", "nudge park");
     state.record_task_assignment("madison", "42");
     state.record_task_assignment("park", "43");
+    {
+        let mut headers_map = state.tool_activity_headers.write().unwrap();
+        headers_map.insert("madison".to_string(), vec!["› $ cargo build".to_string()]);
+        headers_map.insert("park".to_string(), vec!["✓ read foo.rs".to_string()]);
+    }
 
     // Only clean up madison
     state.cleanup_coworker_state("madison").await;
@@ -1648,6 +1671,17 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
         assert!(
             assignments.contains_key("park"),
             "park's task assignment should still exist"
+        );
+    }
+    {
+        let headers_map = state.tool_activity_headers.read().unwrap();
+        assert!(
+            headers_map.contains_key("park"),
+            "park's tool activity headers should still exist"
+        );
+        assert!(
+            !headers_map.contains_key("madison"),
+            "madison's tool activity headers should be cleared"
         );
     }
 }
