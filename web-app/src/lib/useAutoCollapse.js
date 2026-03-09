@@ -5,9 +5,9 @@ const COLLAPSE_DELAY_MS = 30_000;
  * @param {string|null} timestamp — ISO 8601 timestamp of the parent message
  * @returns {'preview' | 'collapsed'}
  */
-export function computeInitialState(timestamp) {
+export function computeInitialState(timestamp, now = Date.now()) {
 	if (!timestamp) return "collapsed";
-	const age = Date.now() - new Date(timestamp).getTime();
+	const age = now - new Date(timestamp).getTime();
 	return age >= COLLAPSE_DELAY_MS ? "collapsed" : "preview";
 }
 
@@ -29,12 +29,13 @@ export function computeInitialState(timestamp) {
  *   });
  */
 export function createAutoCollapse(timestamp) {
-	const initial = computeInitialState(timestamp);
+	const now = Date.now();
+	const initial = computeInitialState(timestamp, now);
 	let timerId = null;
 	let timeoutMs = null;
 
-	if (initial === "preview" && timestamp) {
-		const age = Date.now() - new Date(timestamp).getTime();
+	if (initial === "preview") {
+		const age = now - new Date(timestamp).getTime();
 		timeoutMs = Math.max(0, COLLAPSE_DELAY_MS - age);
 	}
 

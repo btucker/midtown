@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { computeInitialState } from "./useAutoCollapse.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { computeInitialState, createAutoCollapse } from "./useAutoCollapse.js";
 
 describe("computeInitialState", () => {
 	it("returns 'collapsed' when message is older than 30s", () => {
@@ -20,5 +20,58 @@ describe("computeInitialState", () => {
 	it("returns 'preview' when timestamp is exactly now", () => {
 		const now = new Date().toISOString();
 		expect(computeInitialState(now)).toBe("preview");
+	});
+});
+
+describe("createAutoCollapse", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("returns collapsed with null timeoutMs for old messages", () => {
+		const old = new Date(Date.now() - 60_000).toISOString();
+		const ac = createAutoCollapse(old);
+		expect(ac.initial).toBe("collapsed");
+		expect(ac.timeoutMs).toBeNull();
+	});
+
+	it("returns preview with positive timeoutMs for recent messages", () => {
+		const recent = new Date(Date.now() - 5_000).toISOString();
+		const ac = createAutoCollapse(recent);
+		expect(ac.initial).toBe("preview");
+		expect(ac.timeoutMs).toBeGreaterThan(0);
+		expect(ac.timeoutMs).toBeLessThanOrEqual(25_000);
+	});
+
+	it("startTimer fires callback after timeout", () => {
+		const recent = new Date(Date.now() - 5_000).toISOString();
+		const ac = createAutoCollapse(recent);
+		const cb = vi.fn();
+		ac.startTimer(cb);
+		expect(cb).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(ac.timeoutMs);
+		expect(cb).toHaveBeenCalledOnce();
+	});
+
+	it("clearTimer prevents callback from firing", () => {
+		const recent = new Date(Date.now() - 5_000).toISOString();
+		const ac = createAutoCollapse(recent);
+		const cb = vi.fn();
+		ac.startTimer(cb);
+		ac.clearTimer();
+		vi.advanceTimersByTime(30_000);
+		expect(cb).not.toHaveBeenCalled();
+	});
+
+	it("startTimer is a no-op when already collapsed", () => {
+		const old = new Date(Date.now() - 60_000).toISOString();
+		const ac = createAutoCollapse(old);
+		const cb = vi.fn();
+		ac.startTimer(cb);
+		vi.advanceTimersByTime(60_000);
+		expect(cb).not.toHaveBeenCalled();
 	});
 });
