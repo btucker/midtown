@@ -29,6 +29,7 @@ import {
 	usageData,
 	userSenderName,
 } from "./store.js";
+import { isToolOnly } from "./toolRunGrouping.js";
 
 // Strip markdown from the first non-empty line of message content.
 function extractPlainText(content) {
@@ -266,7 +267,7 @@ function annotateThreadReplyCounts(msgs) {
 	const lastReplyMap = {};
 	const participantsMap = {};
 	for (const m of msgs) {
-		if (m.thread_parent_id) {
+		if (m.thread_parent_id && !isToolOnly(m)) {
 			replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1;
 			lastReplyMap[m.thread_parent_id] = m;
 			if (!participantsMap[m.thread_parent_id]) participantsMap[m.thread_parent_id] = [];
@@ -616,25 +617,28 @@ export function handleUpdate(update) {
 				});
 
 				// Increment reply_count on the parent message in messagesByChannel
-				messagesByChannel.update((byChannel) => {
-					const channelMsgs = byChannel[channelName];
-					if (!channelMsgs) return byChannel;
-					return {
-						...byChannel,
-						[channelName]: channelMsgs.map((m) => {
-							if (m.id === msg.thread_parent_id) {
-								const participants = m.reply_participants || [];
-								return {
-									...m,
-									reply_count: (m.reply_count || 0) + 1,
-									last_reply: msg,
-									reply_participants: participants.includes(msg.from) ? participants : [...participants, msg.from],
-								};
-							}
-							return m;
-						}),
-					};
-				});
+				// (skip tool-only messages — they're visual noise, not conversation)
+				if (!isToolOnly(msg)) {
+					messagesByChannel.update((byChannel) => {
+						const channelMsgs = byChannel[channelName];
+						if (!channelMsgs) return byChannel;
+						return {
+							...byChannel,
+							[channelName]: channelMsgs.map((m) => {
+								if (m.id === msg.thread_parent_id) {
+									const participants = m.reply_participants || [];
+									return {
+										...m,
+										reply_count: (m.reply_count || 0) + 1,
+										last_reply: msg,
+										reply_participants: participants.includes(msg.from) ? participants : [...participants, msg.from],
+									};
+								}
+								return m;
+							}),
+						};
+					});
+				}
 
 				// Thread sidebar tracking: auto-track threads when someone replies to the
 				// user's own message, and increment unread for tracked threads.
