@@ -250,4 +250,33 @@ mod tests {
             "settings should not contain unreplaced {{bin}} placeholders"
         );
     }
+
+    /// `.claude/settings.json` must exist and contain `autoCompact: true`.
+    ///
+    /// Fork sessions don't receive `--settings <file>` (they use `--resume --fork-session`
+    /// which skips the explicit settings file to avoid duplicate tool registrations).
+    /// However, ALL sessions get `--setting-sources project,local`, so they read
+    /// `.claude/settings.json`. This project-level file is the only way fork sessions
+    /// receive `autoCompact: true` — without it, forks hit "Prompt is too long" errors
+    /// when conversations grow beyond the context window.
+    ///
+    /// Regression test for !2177.
+    #[test]
+    fn test_project_settings_has_auto_compact() {
+        let project_settings_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/settings.json");
+        assert!(
+            project_settings_path.exists(),
+            ".claude/settings.json must exist so fork sessions get autoCompact \
+             (forks don't receive --settings, only --setting-sources project,local)"
+        );
+        let content = std::fs::read_to_string(&project_settings_path)
+            .expect("should be able to read .claude/settings.json");
+        let settings: serde_json::Value =
+            serde_json::from_str(&content).expect(".claude/settings.json should be valid JSON");
+        assert_eq!(
+            settings["autoCompact"], true,
+            ".claude/settings.json must have autoCompact: true for fork sessions"
+        );
+    }
 }
