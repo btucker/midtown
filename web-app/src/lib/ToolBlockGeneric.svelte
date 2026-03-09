@@ -52,12 +52,12 @@ let highlightedOutput = $derived.by(() => {
 });
 
 // Single-line output preview for the "preview" state
-let outputFirstLine = $derived.by(() => {
+let outputPreview = $derived.by(() => {
 	if (!block.output) return "";
 	const str = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
-	return str.split("\n")[0] || "";
+	return str.split("\n").slice(0, 3).join("\n");
 });
-let highlightedOutputFirstLine = $derived(highlightBlock(outputFirstLine, "json"));
+let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
 </script>
 
 <div class="tool-generic" class:tool-error={block.error}>
@@ -71,7 +71,7 @@ let highlightedOutputFirstLine = $derived(highlightBlock(outputFirstLine, "json"
 
   {#if displayState === 'preview' && block.output}
     <div class="tool-body tool-preview">
-      <pre>{@html highlightedOutputFirstLine}</pre>
+      <pre>{@html highlightedOutputPreview}</pre>
     </div>
   {:else if displayState === 'expanded'}
     <div class="tool-body">
@@ -168,7 +168,7 @@ let highlightedOutputFirstLine = $derived(highlightBlock(outputFirstLine, "json"
   }
 
   .tool-preview {
-    max-height: 1.45em;
+    max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
   }
@@ -179,8 +179,8 @@ let highlightedOutputFirstLine = $derived(highlightBlock(outputFirstLine, "json"
     bottom: 0;
     left: 0;
     right: 0;
-    height: 100%;
-    background: linear-gradient(to right, transparent 60%, hsl(var(--card)));
+    height: 1.4em;
+    background: linear-gradient(to bottom, transparent, hsl(var(--card)));
     pointer-events: none;
   }
 </style>
