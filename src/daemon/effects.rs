@@ -2843,6 +2843,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 );
                             }
                         }
+                        // Record spawn failure cooldown so the next tick doesn't
+                        // immediately retry this coworker (prevents infinite retry
+                        // loops when worktree creation fails — see !2172).
+                        {
+                            let mut cooldowns = state.cooldowns.lock().unwrap();
+                            cooldowns.record("spawn_failure", &name);
+                        }
                         // Release name back since spawn failed
                         {
                             let mut pool = state.name_pool.lock().unwrap();

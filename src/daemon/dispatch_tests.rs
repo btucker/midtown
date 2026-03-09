@@ -4585,3 +4585,103 @@ fn test_build_subject_based_completion_effects_emits_task_completed() {
         panic!("Should emit TaskCompleted with correct fields");
     }
 }
+
+// ============================================================================
+// Bug !2172: daemon repeatedly spawns coworkers into non-existent worktree
+// ============================================================================
+
+#[test]
+fn test_owned_pending_task_skips_spawn_when_spawn_failure_cooldown_active() {
+    // Bug scenario: a pending task with an owner tries to spawn, but the worktree
+    // doesn't exist. The spawn fails, but without a cooldown check, the next tick
+    // (5s later) retries immediately — creating an infinite loop.
+    //
+    // Fix: dispatch_owned_pending_tasks must check spawn_failure_cooldown_names
+    // before attempting to spawn, just like the other dispatch paths do.
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            "2059".to_string(),
+            "Add new feature".to_string(),
+            "columbus".to_string(),
+        )],
+        // Columbus is on spawn failure cooldown (previous spawn failed)
+        spawn_failure_cooldown_names: ["columbus".to_string()].into_iter().collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Must NOT emit any spawn effects when cooldown is active.
+    let spawn_effects: Vec<_> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Effect::SpawnCoworkerWithCallbacks { .. }
+                    | Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnSession { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_effects.is_empty(),
+        "Should NOT spawn when spawn_failure_cooldown is active for the owner. \
+         Without this check, the daemon retries every 5s in an infinite loop. Got: {:?}",
+        spawn_effects
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_owned_pending_task_spawn_failure_records_cooldown() {
+    // Bug scenario: dispatch_owned_pending_tasks has on_failure: vec![] — when
+    // the spawn fails (e.g., missing worktree), no cooldown is recorded and the
+    // task is retried every 5 seconds forever.
+    //
+    // Fix: add RecordCooldown to on_failure so the next tick skips this coworker.
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            "2059".to_string(),
+            "Add new feature".to_string(),
+            "columbus".to_string(),
+        )],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Find the SpawnCoworkerWithCallbacks and check its on_failure
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should emit SpawnCoworkerWithCallbacks for owned pending task");
+
+    // on_failure MUST contain RecordCooldown for spawn_failure
+    let has_cooldown = on_failure.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordCooldown { category, .. } if category == "spawn_failure"
+        )
+    });
+    assert!(
+        has_cooldown,
+        "on_failure must include RecordCooldown for 'spawn_failure' to prevent infinite retry loops. \
+         Got on_failure: {:?}",
+        on_failure
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}

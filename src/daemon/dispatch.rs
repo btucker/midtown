@@ -1588,6 +1588,20 @@ fn dispatch_owned_pending_tasks(
                     continue;
                 }
 
+                // Skip if a previous spawn failure put this coworker on cooldown.
+                // Without this check, a missing worktree causes an infinite retry
+                // loop every 5s (see !2172).
+                if snap
+                    .spawn_failure_cooldown_names
+                    .contains(&o.to_lowercase())
+                {
+                    debug!(
+                        "Spawn failure cooldown active for {} — skipping pending task !{}",
+                        o, tid
+                    );
+                    continue;
+                }
+
                 info!(
                     "Pending task !{} is assigned to {} but coworker not running - spawning",
                     tid, o
@@ -1651,7 +1665,27 @@ fn dispatch_owned_pending_tasks(
                 effects.push(Effect::SpawnCoworkerWithCallbacks {
                     config,
                     on_success,
-                    on_failure: vec![],
+                    on_failure: vec![
+                        Effect::RecordCooldown {
+                            category: "spawn_failure".to_string(),
+                            key: o.clone(),
+                        },
+                        Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: format!(
+                                "⚠️ Spawn failed for pending task !{} (coworker {}) — backing off for {}s",
+                                tid, o, SPAWN_FAILURE_COOLDOWN.as_secs()
+                            ),
+                            channel: Some(OPS_CHANNEL.to_string()),
+                            auto_output: false,
+                            message_type: None,
+                            nudge_type: None,
+                            tool_data: None,
+                            provider: None,
+                            tool_use_id: None,
+                            parent_tool_use_id: None,
+                        },
+                    ],
                 });
 
                 coworkers_dispatched_this_tick.insert(o.to_lowercase());
