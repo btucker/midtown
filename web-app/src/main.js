@@ -7,6 +7,10 @@ const app = mount(App, {
 	target: document.getElementById("app"),
 });
 
+// Svelte 5 mount() appends to the target (unlike Svelte 4 which replaced
+// innerHTML), so the static #app-loader spinner from index.html persists.
+document.getElementById("app-loader")?.remove();
+
 // Register service worker with auto-update
 // When a new version is available, prompt user before updating
 const updateSW = registerSW({
