@@ -35,6 +35,8 @@ import {
 	threadData,
 	threadUnreadCounts,
 } from "./store.js";
+import ToolRunSummary from "./ToolRunSummary.svelte";
+import { groupToolRuns } from "./toolRunGrouping.js";
 
 // Windowed rendering: only render a slice of messages near the viewport.
 // Messages outside this window are not mounted in the DOM.
@@ -79,6 +81,19 @@ let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
 
 // Visible slice of messages for the DOM. Only these get rendered.
 let visibleMessages = $derived(channelMessages.slice(renderStartIndex));
+let groupedMessages = $derived.by(() => {
+	const groups = groupToolRuns(visibleMessages);
+	let offset = 0;
+	return groups.map((segment) => {
+		const startOffset = offset;
+		if (segment.type === "tool-run") {
+			offset += segment.messages.length;
+		} else {
+			offset += 1;
+		}
+		return { ...segment, _offset: startOffset };
+	});
+});
 let hasMoreAbove = $derived(renderStartIndex > 0);
 
 // Track how many messages were present when each channel was first viewed.
@@ -743,77 +758,90 @@ function getToolCallStatusIcon(entry) {
           <div class="text-center text-muted-foreground/50 text-[0.8rem] py-2 select-none">Loading earlier messages…</div>
         {/if}
 
-        {#each visibleMessages as msg, i}
-          {@const globalIndex = renderStartIndex + i}
-          {@const dayLabel = dateChanged(channelMessages, globalIndex)}
-          {#if dayLabel}
-            <DayDivider label={dayLabel} />
-          {/if}
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <div
-            data-testid="message-row"
-            in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
-            class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
-            class:auto-output={msg.auto_output}
-            class:opacity-60={msg.pending}
-            class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
-            onclick={(event) => handleMessageTap(event, msg)}
-          >
-          {#if !msg.thread_parent_id}
-            <button
-              data-testid="thread-reply-button"
-              class="hidden lg:flex absolute right-6 -top-3.5 items-center gap-2 px-3.5 py-1.5 rounded-lg border border-border bg-card text-[0.85rem] font-bold text-foreground cursor-pointer opacity-0 pointer-events-none transition-all duration-150 shadow-sm group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:border-primary hover:shadow-md"
-              onclick={() => openThread(msg, $activeChannel)}
-              aria-label="Reply in thread"
+        {#each groupedMessages as segment}
+          {#if segment.type === 'tool-run'}
+            <ToolRunSummary
+              messages={segment.messages}
+              toolCount={segment.toolCount}
+              lastTimestamp={segment.lastTimestamp}
+              allMessages={channelMessages}
+              startIndex={renderStartIndex + segment._offset}
+              channelName={$activeChannel}
+              {currentTasks}
+            />
+          {:else}
+            {@const msg = segment.message}
+            {@const globalIndex = renderStartIndex + segment._offset}
+            {@const dayLabel = dateChanged(channelMessages, globalIndex)}
+            {#if dayLabel}
+              <DayDivider label={dayLabel} />
+            {/if}
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+            <div
+              data-testid="message-row"
+              in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
+              class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
+              class:auto-output={msg.auto_output}
+              class:opacity-60={msg.pending}
+              class:mobile-thread-tappable={!$isWideScreen && !msg.thread_parent_id}
+              onclick={(event) => handleMessageTap(event, msg)}
             >
-              <ReplyIcon size={16} />
-              <span>Reply</span>
-            </button>
-          {/if}
-
-          <MessageRow
-            {msg}
-            msgs={channelMessages}
-            index={globalIndex}
-            senderClass="mt-1"
-            currentTask={currentTasks[msg.from.toLowerCase()]}
-            channelName={$activeChannel}
-          />
-
-          <!-- Reply indicator for messages with thread replies -->
-          {#if !msg.thread_parent_id && msg.reply_count}
-            {@const threadUnread = $threadUnreadCounts[msg.id] || 0}
-            {@const participants = msg.reply_participants || (msg.last_reply ? [msg.last_reply.from] : [])}
-            <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
+            {#if !msg.thread_parent_id}
               <button
-                data-testid="thread-summary"
-                class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
+                data-testid="thread-reply-button"
+                class="hidden lg:flex absolute right-6 -top-3.5 items-center gap-2 px-3.5 py-1.5 rounded-lg border border-border bg-card text-[0.85rem] font-bold text-foreground cursor-pointer opacity-0 pointer-events-none transition-all duration-150 shadow-sm group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:border-primary hover:shadow-md"
                 onclick={() => openThread(msg, $activeChannel)}
+                aria-label="Reply in thread"
               >
-                {#if participants.length > 0}
-                  <span class="thread-avatars">
-                    {#each participants as p}
-                      <span
-                        class="thread-avatar-chip"
-                        style="background-color: {getSenderColor(p)}"
-                        title={p}
-                      >{p[0].toUpperCase()}</span>
-                    {/each}
-                  </span>
-                {/if}
-                {#if threadUnread > 0}
-                  <span class="thread-unread-pill">{threadUnread} new</span>
-                {:else}
-                  <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
-                {/if}
-                {#if msg.last_reply}
-                  <span class="text-muted-foreground/60">&middot;</span>
-                  <span class="text-muted-foreground">{formatTime(msg.last_reply.timestamp)}</span>
-                {/if}
+                <ReplyIcon size={16} />
+                <span>Reply</span>
               </button>
+            {/if}
+
+            <MessageRow
+              {msg}
+              msgs={channelMessages}
+              index={globalIndex}
+              senderClass="mt-1"
+              currentTask={currentTasks[msg.from.toLowerCase()]}
+              channelName={$activeChannel}
+            />
+
+            <!-- Reply indicator for messages with thread replies -->
+            {#if !msg.thread_parent_id && msg.reply_count}
+              {@const threadUnread = $threadUnreadCounts[msg.id] || 0}
+              {@const participants = msg.reply_participants || (msg.last_reply ? [msg.last_reply.from] : [])}
+              <div class="flex gap-0" style="padding-left: calc(2.4rem + 0.5rem);">
+                <button
+                  data-testid="thread-summary"
+                  class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
+                  onclick={() => openThread(msg, $activeChannel)}
+                >
+                  {#if participants.length > 0}
+                    <span class="thread-avatars">
+                      {#each participants as p}
+                        <span
+                          class="thread-avatar-chip"
+                          style="background-color: {getSenderColor(p)}"
+                          title={p}
+                        >{p[0].toUpperCase()}</span>
+                      {/each}
+                    </span>
+                  {/if}
+                  {#if threadUnread > 0}
+                    <span class="thread-unread-pill">{threadUnread} new</span>
+                  {:else}
+                    <span>{msg.reply_count} {msg.reply_count === 1 ? 'reply' : 'replies'}</span>
+                  {/if}
+                  {#if msg.last_reply}
+                    <span class="text-muted-foreground/60">&middot;</span>
+                    <span class="text-muted-foreground">{formatTime(msg.last_reply.timestamp)}</span>
+                  {/if}
+                </button>
+              </div>
+            {/if}
             </div>
           {/if}
-          </div>
         {/each}
       {/if}
 
