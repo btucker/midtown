@@ -194,7 +194,7 @@ export const activeChannelTab = writable({});
 
 // Per-channel settings persisted to localStorage.
 // Format: { [channelName]: { inlineToolCalls: boolean } }
-// inlineToolCalls: when true, Edit/Write tool calls are shown inline in the message
+// inlineToolCalls: when true, tool calls are shown inline in the message
 // stream (like DM threads) instead of grouped in the ThreadActivityDrawer.
 export const channelSettings = writable(loadFromLocalStorage("midtown_channel_settings", {}));
 channelSettings.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_settings", v));

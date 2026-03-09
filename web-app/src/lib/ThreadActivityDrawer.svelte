@@ -10,8 +10,10 @@
  *   threadParentId — thread identity (used for reset tracking and fork owner color)
  *   thinking       — true when the user just sent a message and we're waiting for tool calls
  *
- * Click the drawer to expand it into a scrollable panel showing the full tool call history.
- * Click again or press Escape to collapse back to the compact view.
+ * When inlineToolCalls is false (channel setting), clicking the drawer expands it into
+ * a scrollable panel showing the full tool call history. Click again or press Escape
+ * to collapse. When inlineToolCalls is true (default), the drawer shows only typing
+ * dots and tool blocks render inline in the message stream instead.
  */
 
 import { onDestroy } from "svelte";
