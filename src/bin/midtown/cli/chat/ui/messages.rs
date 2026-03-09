@@ -190,6 +190,29 @@ pub fn render_message(
     }
 
     let rendered_content = render_content_lines(&msg.content, content_width, ctx.content_style);
+    // When content is empty but tool_data is present, generate a text summary
+    // (e.g. "[Bash, Read]") so the TUI shows what tools were called.
+    let rendered_content = if msg.content.is_empty() {
+        if let Some(ref blocks) = msg.tool_data {
+            if !blocks.is_empty() {
+                let summary = format!(
+                    "[{}]",
+                    blocks
+                        .iter()
+                        .map(|b| b.tool_name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                render_content_lines(&summary, content_width, ctx.content_style)
+            } else {
+                rendered_content
+            }
+        } else {
+            rendered_content
+        }
+    } else {
+        rendered_content
+    };
     let rendered_content = apply_mention_highlights(rendered_content);
 
     let mut result = Vec::new();
@@ -1580,3 +1603,7 @@ mod tests {
         );
     }
 }
+
+#[path = "messages_tests.rs"]
+#[cfg(test)]
+mod tool_data_tests;

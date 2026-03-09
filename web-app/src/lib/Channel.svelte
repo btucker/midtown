@@ -4,7 +4,7 @@ import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
 import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
-import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
+import { closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
 import { openImageLightbox } from "./biggerPicture.js";
 import {
 	collectToolBlocks,
@@ -16,18 +16,8 @@ import {
 } from "./channelUtils.js";
 import DayDivider from "./DayDivider.svelte";
 import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
-import MermaidDiagram from "./MermaidDiagram.svelte";
 import MessageRow from "./MessageRow.svelte";
-import { hasMermaid, parseSegments, renderContent } from "./markdown.js";
-import {
-	AVENUE_COLORS,
-	dateChanged,
-	formatTime,
-	getSenderColor,
-	isDimSender,
-	parseInsightSegments,
-	timeChanged,
-} from "./messageUtils.js";
+import { AVENUE_COLORS, dateChanged, formatTime, getSenderColor, timeChanged } from "./messageUtils.js";
 import { clearMobileTextarea } from "./mobileInput.js";
 import {
 	activeChannel,
@@ -45,7 +35,6 @@ import {
 	threadData,
 	threadUnreadCounts,
 } from "./store.js";
-import ToolDataBlocks from "./ToolDataBlocks.svelte";
 
 // Windowed rendering: only render a slice of messages near the viewport.
 // Messages outside this window are not mounted in the DOM.
@@ -469,14 +458,6 @@ onMount(() => {
 	}
 });
 
-function isAction(msg) {
-	return msg.msg_type === "action" || msg.content?.startsWith("/me ");
-}
-
-function getActionContent(msg) {
-	return msg.content.replace(/^\/me\s*/, "");
-}
-
 // NOTE: Any new link type added to markdown.js (channel/task/PR/coworker/etc.) must be
 // handled in BOTH handleLinkClick (desktop — fires on the scroll viewport) AND
 // resolveMessageTapAction (mobile decision logic in channelUtils.js). handleMessageTap
@@ -797,60 +778,7 @@ function getToolCallStatusIcon(entry) {
             senderClass="mt-1"
             currentTask={currentTasks[msg.from.toLowerCase()]}
             channelName={$activeChannel}
-          >
-            {#if isAction(msg) && !hasMermaid(msg.content)}
-              <div class="flex gap-0 break-words">
-                <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">*</span>
-                <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
-              </div>
-            {:else if isAction(msg) && hasMermaid(msg.content)}
-              {#each parseSegments(getActionContent(msg)) as segment, si}
-                {#if segment.type === 'mermaid'}
-                  <MermaidDiagram code={segment.content} />
-                {:else}
-                  <div class="flex gap-0 break-words">
-                    {#if si === 0}
-                      <span class="flex-shrink-0 mr-[0.3em]" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">*</span>
-                    {:else}
-                      <span class="flex-shrink-0 mr-[0.3em] invisible">*</span>
-                    {/if}
-                    <span class="action-text flex-1 min-w-0" style="color: {getSenderColor(msg.from, undefined, $activeChannel)}">{@html renderContent(segment.content, getApiBase())}</span>
-                  </div>
-                {/if}
-              {/each}
-            {:else}
-              {#each parseInsightSegments(msg.content) as segment}
-                {#if segment.type === 'insight'}
-                  <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {getSenderColor(msg.from, undefined, $activeChannel)}80">
-                    {#if hasMermaid(segment.content)}
-                      {#each parseSegments(segment.content) as mseg}
-                        {#if mseg.type === 'mermaid'}
-                          <MermaidDiagram code={mseg.content} />
-                        {:else}
-                          <div class="message-text text-foreground">{@html renderContent(mseg.content, getApiBase())}</div>
-                        {/if}
-                      {/each}
-                    {:else}
-                      <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
-                    {/if}
-                  </div>
-                {:else if hasMermaid(segment.content)}
-                  {#each parseSegments(segment.content) as mseg}
-                    {#if mseg.type === 'mermaid'}
-                      <MermaidDiagram code={mseg.content} />
-                    {:else}
-                      <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(mseg.content, getApiBase())}</div>
-                    {/if}
-                  {/each}
-                {:else}
-                  <div class="break-words message-text {isDimSender(msg.from) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
-                {/if}
-              {/each}
-            {/if}
-            {#if msg.tool_data?.length}
-              <ToolDataBlocks blocks={msg.tool_data} />
-            {/if}
-          </MessageRow>
+          />
 
           <!-- Reply indicator for messages with thread replies -->
           {#if !msg.thread_parent_id && msg.reply_count}

@@ -8,10 +8,12 @@ import {
 	getPermalinkUrl,
 	getSenderColor,
 	isDimSender,
+	parseInsightSegments,
 	senderChanged,
 	timeChanged,
 } from "./messageUtils.js";
 import { activeProject, channels, coworkers, daemonStatus } from "./store.js";
+import ToolDataBlocks from "./ToolDataBlocks.svelte";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";
@@ -102,6 +104,14 @@ function handleTimestampClick(e) {
 		}, 1500);
 	});
 }
+
+function isAction(msg) {
+	return msg.msg_type === "action" || msg.content?.startsWith("/me ");
+}
+
+function getActionContent(msg) {
+	return msg.content.replace(/^\/me\s*/, "");
+}
 </script>
 
 {#if isTaskDivider(msg)}
@@ -174,9 +184,25 @@ function handleTimestampClick(e) {
       {#if children}
         {@render children()}
       {:else}
-        <div class="break-words {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">
-          {@html renderContent(msg.content || '', getApiBase())}
-        </div>
+        {#if isAction(msg)}
+          <div class="flex gap-0 break-words">
+            <span class="flex-shrink-0 mr-[0.3em]" style="color: {displayColor}">*</span>
+            <span class="action-text flex-1 min-w-0" style="color: {displayColor}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+          </div>
+        {:else}
+          {#each parseInsightSegments(msg.content || '') as segment}
+            {#if segment.type === 'insight'}
+              <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {displayColor}80">
+                <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
+              </div>
+            {:else if segment.content.trim()}
+              <div class="break-words message-text {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+            {/if}
+          {/each}
+        {/if}
+        {#if msg.tool_data?.length}
+          <ToolDataBlocks blocks={msg.tool_data} />
+        {/if}
       {/if}
     </div>
   </div>
@@ -205,9 +231,25 @@ function handleTimestampClick(e) {
       {#if children}
         {@render children()}
       {:else}
-        <div class="break-words {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">
-          {@html renderContent(msg.content || '', getApiBase())}
-        </div>
+        {#if isAction(msg)}
+          <div class="flex gap-0 break-words">
+            <span class="flex-shrink-0 mr-[0.3em]" style="color: {displayColor}">*</span>
+            <span class="action-text flex-1 min-w-0" style="color: {displayColor}">{@html renderContent(getActionContent(msg), getApiBase())}</span>
+          </div>
+        {:else}
+          {#each parseInsightSegments(msg.content || '') as segment}
+            {#if segment.type === 'insight'}
+              <div class="border-l-2 pl-3 max-w-[85%] my-0.5" style="border-color: {displayColor}80">
+                <div class="message-text text-foreground">{@html renderContent(segment.content, getApiBase())}</div>
+              </div>
+            {:else if segment.content.trim()}
+              <div class="break-words message-text {isDimSender(msg.from, dimSenders) ? 'text-muted-foreground' : 'text-foreground'}">{@html renderContent(segment.content, getApiBase())}</div>
+            {/if}
+          {/each}
+        {/if}
+        {#if msg.tool_data?.length}
+          <ToolDataBlocks blocks={msg.tool_data} />
+        {/if}
       {/if}
     </div>
   </div>

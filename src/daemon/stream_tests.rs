@@ -409,7 +409,7 @@ fn test_process_lead_output_empty_text_posts_tool_data_only() {
         Effect::PostToChannel {
             tool_data, message, ..
         } => {
-            assert_eq!(message, "[Read]");
+            assert_eq!(message, "");
             assert!(tool_data.is_some(), "should have tool_data");
         }
         _ => panic!("Expected PostToChannel with tool_data"),
@@ -552,7 +552,7 @@ fn test_process_lead_output_channel_lead_empty_text_posts_tool_data() {
         } => {
             assert_eq!(sender, "web");
             assert_eq!(channel.as_deref(), Some("web"));
-            assert_eq!(message, "[Read]");
+            assert_eq!(message, "");
             assert!(tool_data.is_some());
         }
         _ => panic!("Expected PostToChannel with tool_data"),
@@ -711,7 +711,7 @@ fn test_process_lead_output_tool_data_populated_for_main_lead() {
             ..
         } => {
             assert_eq!(sender, "lead");
-            assert_eq!(message, "[Read]");
+            assert_eq!(message, "");
             assert!(channel.is_none(), "Main lead posts to main channel");
             assert!(*auto_output);
             let blocks = tool_data.as_ref().expect("should have tool_data");
@@ -762,7 +762,7 @@ fn test_process_lead_output_tool_data_and_text_produce_separate_effects() {
         Effect::PostToChannel {
             message, tool_data, ..
         } => {
-            assert_eq!(message, "[Bash]");
+            assert_eq!(message, "");
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
             assert_eq!(blocks[0].tool_name, "Bash");
@@ -803,7 +803,7 @@ fn test_process_lead_output_tool_data_for_channel_lead() {
             ..
         } => {
             assert_eq!(sender, "web");
-            assert_eq!(message, "[Grep]");
+            assert_eq!(message, "");
             assert_eq!(channel.as_deref(), Some("web"));
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
@@ -846,7 +846,7 @@ fn test_process_lead_output_tool_data_for_fork_session() {
             ..
         } => {
             assert_eq!(sender, "fork-1234");
-            assert_eq!(message, "[Edit]");
+            assert_eq!(message, "");
             assert_eq!(channel.as_deref(), Some("topic-omega"));
             assert!(*auto_output);
             let blocks = tool_data.as_ref().expect("should have tool_data");
@@ -965,7 +965,7 @@ fn test_process_lead_output_multiple_tool_calls_in_summary() {
         Effect::PostToChannel {
             message, tool_data, ..
         } => {
-            assert_eq!(message, "[Read, Bash]");
+            assert_eq!(message, "");
             assert_eq!(tool_data.as_ref().unwrap().len(), 2);
         }
         _ => panic!("Expected PostToChannel effect"),
@@ -1114,8 +1114,8 @@ fn test_process_agent_output_empty_text_not_posted() {
             message, tool_data, ..
         } => {
             assert_eq!(
-                message, "[Read]",
-                "DM tool message should have tool name summary for TUI visibility"
+                message, "",
+                "tool-data-only messages should have empty content"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
@@ -1299,8 +1299,8 @@ fn test_dm_tool_text_and_tools_produce_separate_effects() {
             ..
         } => {
             assert_eq!(
-                message, "[Bash]",
-                "DM tool message should have tool name summary for TUI visibility"
+                message, "",
+                "tool-data-only messages should have empty content"
             );
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);

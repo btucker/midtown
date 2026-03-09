@@ -200,8 +200,9 @@ pub fn process_lead_output(
 /// Create PostToChannel effects carrying `tool_data` for topic channel messages.
 ///
 /// Extracts tool blocks from the session's events and posts them as a separate
-/// message with a `[ToolName, ...]` summary for TUI visibility. Thread routing
-/// for fork sessions is handled by the effect executor via `fork_bound_threads`.
+/// message. Content is empty; clients render tool_data directly (TUI generates
+/// a text summary, web app renders structured blocks). Thread routing for fork
+/// sessions is handled by the effect executor via `fork_bound_threads`.
 fn append_tool_data_effects(
     effects: &mut Vec<Effect>,
     session_events: &[StreamEvent],
@@ -212,17 +213,11 @@ fn append_tool_data_effects(
     if blocks.is_empty() {
         return;
     }
-    let tool_summary = format!(
-        "[{}]",
-        blocks
-            .iter()
-            .map(|b| b.tool_name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
     effects.push(Effect::PostToChannel {
         sender,
-        message: tool_summary,
+        // Content is empty; clients render tool_data directly (TUI generates
+        // a text summary, web app renders structured blocks).
+        message: String::new(),
         channel,
         auto_output: true,
         message_type: None,
@@ -625,21 +620,13 @@ pub fn process_agent_output(
             }
 
             // Post top-level tool blocks, tagged with tool_use_id from the first block.
-            // Include a tool name summary (e.g. "[Bash, Read]") for TUI visibility,
-            // since the terminal renderer only displays msg.content, not tool_data.
+            // Content is empty; clients render tool_data directly (TUI generates
+            // a text summary, web app renders structured blocks).
             if !top_level_blocks.is_empty() {
                 let tool_use_id = top_level_blocks.first().and_then(|b| b.call_id.clone());
-                let tool_summary = format!(
-                    "[{}]",
-                    top_level_blocks
-                        .iter()
-                        .map(|b| b.tool_name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: tool_summary,
+                    message: String::new(),
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
@@ -671,18 +658,12 @@ pub fn process_agent_output(
             }
 
             // Post sub-agent tool blocks as thread replies (grouped by parent_tool_use_id).
+            // Content is empty; clients render tool_data directly (TUI generates
+            // a text summary, web app renders structured blocks).
             for (parent_id, blocks) in sub_agent_blocks {
-                let tool_summary = format!(
-                    "[{}]",
-                    blocks
-                        .iter()
-                        .map(|b| b.tool_name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
                 effects.push(Effect::PostToChannel {
                     sender: name.clone(),
-                    message: tool_summary,
+                    message: String::new(),
                     channel: Some(dm_channel.clone()),
                     auto_output: false,
                     message_type: None,
