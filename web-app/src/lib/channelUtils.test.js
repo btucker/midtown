@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	collectToolBlocks,
 	computeExpandedAfterChannelNameClick,
 	computeExpandedAfterTriangleClick,
 	computeVisibleDmChannels,
@@ -8,7 +9,9 @@ import {
 	getChannelPrs,
 	getChannelTaskCount,
 	getChannelThreads,
+	getMostRecentToolCall,
 	getPrUrl,
+	hasInProgressToolBlocks,
 	resolveMessageTapAction,
 } from "./channelUtils.js";
 
@@ -636,5 +639,99 @@ describe("resolveMessageTapAction", () => {
 			link: internalLink({ coworker: "york" }),
 		});
 		expect(result).toEqual({ type: "open_thread" });
+	});
+});
+
+// ── Tool block derivation utilities ──────────────────────────────────────────
+
+describe("collectToolBlocks", () => {
+	it("returns empty array for messages with no tool_data", () => {
+		const msgs = [{ content: "hello" }, { content: "world", tool_data: [] }];
+		expect(collectToolBlocks(msgs)).toEqual([]);
+	});
+
+	it("collects tool_data blocks from multiple messages", () => {
+		const block1 = { call_id: "c1", tool_name: "Read", output: null };
+		const block2 = { call_id: "c1", output: "file contents" };
+		const block3 = { call_id: "c2", tool_name: "Edit", output: null };
+		const msgs = [
+			{ content: "msg1", tool_data: [block1, block2] },
+			{ content: "msg2" },
+			{ content: "msg3", tool_data: [block3] },
+		];
+		expect(collectToolBlocks(msgs)).toEqual([block1, block2, block3]);
+	});
+});
+
+describe("hasInProgressToolBlocks", () => {
+	it("returns false for empty blocks", () => {
+		expect(hasInProgressToolBlocks([])).toBe(false);
+	});
+
+	it("returns false when all blocks have output (completed)", () => {
+		const blocks = [
+			{ call_id: "c1", tool_name: "Read", output: null },
+			{ call_id: "c1", output: "result" },
+		];
+		expect(hasInProgressToolBlocks(blocks)).toBe(false);
+	});
+
+	it("returns true when a block has output === null with no matching completion", () => {
+		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }];
+		expect(hasInProgressToolBlocks(blocks)).toBe(true);
+	});
+
+	it("returns true when one call is completed but another is still in-progress", () => {
+		const blocks = [
+			{ call_id: "c1", tool_name: "Read", output: null },
+			{ call_id: "c1", output: "done" },
+			{ call_id: "c2", tool_name: "Edit", output: null },
+		];
+		expect(hasInProgressToolBlocks(blocks)).toBe(true);
+	});
+
+	it("returns false when blocks lack call_id", () => {
+		const blocks = [{ output: null }];
+		expect(hasInProgressToolBlocks(blocks)).toBe(false);
+	});
+});
+
+describe("getMostRecentToolCall", () => {
+	it("returns null for empty blocks", () => {
+		expect(getMostRecentToolCall([])).toBeNull();
+	});
+
+	it("returns the last tool_name block with InProgress status", () => {
+		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }];
+		const result = getMostRecentToolCall(blocks);
+		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "InProgress" });
+	});
+
+	it("returns ok status when a matching result exists", () => {
+		const blocks = [
+			{ call_id: "c1", tool_name: "Read", output: null },
+			{ call_id: "c1", output: "result" },
+		];
+		const result = getMostRecentToolCall(blocks);
+		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "ok" });
+	});
+
+	it("returns error status when result has error flag", () => {
+		const blocks = [
+			{ call_id: "c1", tool_name: "Read", output: null },
+			{ call_id: "c1", output: "failed", error: true },
+		];
+		const result = getMostRecentToolCall(blocks);
+		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "error" });
+	});
+
+	it("returns the most recent tool call when multiple exist", () => {
+		const blocks = [
+			{ call_id: "c1", tool_name: "Read", output: null },
+			{ call_id: "c1", output: "done" },
+			{ call_id: "c2", tool_name: "Edit", output: null },
+		];
+		const result = getMostRecentToolCall(blocks);
+		expect(result).toEqual({ toolName: "Edit", callId: "c2", status: "InProgress" });
 	});
 });

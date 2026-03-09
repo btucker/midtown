@@ -224,13 +224,23 @@ let prevThreadId = null;
     prevThreadId = tid
   })
 
-  // Clear thinking when tool_data appears on new thread messages.
-  // When a reply arrives with tool_data containing an in-progress tool call
-  // (output === null), the lead/fork is working — clear the thinking indicator.
+  // Clear thinking when in-progress tool blocks appear on thread messages.
+  // A tool block is in-progress when output === null and no later block with
+  // the same call_id has output set (i.e. completed). We only clear thinking
+  // when genuinely new work is happening, not just because historical messages
+  // have completed tool_data.
   $effect(() => {
     const msgs = $threadData?.messages ?? []
-    const hasToolData = msgs.some((m) => m.tool_data?.length > 0)
-    if (hasToolData) {
+    const completedCallIds = new Set()
+    for (const msg of msgs) {
+      for (const block of msg.tool_data ?? []) {
+        if (block.call_id && block.output != null) completedCallIds.add(block.call_id)
+      }
+    }
+    const hasInProgress = msgs.some((m) =>
+      m.tool_data?.some((b) => b.output == null && b.call_id && !completedCallIds.has(b.call_id))
+    )
+    if (hasInProgress) {
       untrack(() => { thinking = false })
       if (thinkingTimeout) {
         clearTimeout(thinkingTimeout)

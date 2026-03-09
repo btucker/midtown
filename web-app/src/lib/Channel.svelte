@@ -6,7 +6,14 @@ import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
 import { closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
 import { openImageLightbox } from "./biggerPicture.js";
-import { findPr as findPrUtil, getPrUrl as getPrUrlUtil, resolveMessageTapAction } from "./channelUtils.js";
+import {
+	collectToolBlocks,
+	findPr as findPrUtil,
+	getMostRecentToolCall,
+	getPrUrl as getPrUrlUtil,
+	hasInProgressToolBlocks,
+	resolveMessageTapAction,
+} from "./channelUtils.js";
 import DayDivider from "./DayDivider.svelte";
 import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
 import MermaidDiagram from "./MermaidDiagram.svelte";
@@ -193,19 +200,7 @@ function isNewMessage(channelName, index) {
 }
 
 // Activity strip: derive tool call state from msg.tool_data on channel messages.
-// Collect all tool_data blocks from recent messages, correlate by call_id to determine
-// in-progress vs completed status.
-let allToolBlocks = $derived.by(() => {
-	const blocks = [];
-	for (const msg of channelMessages) {
-		if (msg.tool_data?.length) {
-			for (const block of msg.tool_data) {
-				blocks.push(block);
-			}
-		}
-	}
-	return blocks;
-});
+let allToolBlocks = $derived(collectToolBlocks(channelMessages));
 
 // Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
 let isLeadWorking = $derived(
@@ -214,41 +209,21 @@ let isLeadWorking = $derived(
 		: !!$daemonStatus?.channel_leads_working?.[$activeChannel],
 );
 
-// A tool call is in-progress when its ToolBlock has output === null and no later
-// ToolBlock with the same call_id has output set.
-let hasInProgressItems = $derived.by(() => {
-	const completedCallIds = new Set();
-	for (const block of allToolBlocks) {
-		if (block.call_id && block.output != null) {
-			completedCallIds.add(block.call_id);
-		}
-	}
-	return allToolBlocks.some((block) => block.output == null && block.call_id && !completedCallIds.has(block.call_id));
-});
+let hasInProgressItems = $derived(hasInProgressToolBlocks(allToolBlocks));
 
 let showActivity = $derived(allToolBlocks.length > 0 || isLeadWorking);
-let showDots = $derived(isLeadWorking || hasInProgressItems);
+// Use isLeadWorking as the sole dots signal. Since tool_data persists on
+// messages, hasInProgressItems can be stale if an agent crashes mid-tool —
+// isLeadWorking is the authoritative signal.
+let showDots = $derived(isLeadWorking);
 
 // Most recent tool call entry for inline display in the activity strip.
-// Scan all tool blocks: build a result map, then find the last tool_use block.
 let mostRecentToolCallEntry = $derived.by(() => {
-	if (allToolBlocks.length === 0) return null;
-	// Build status map from blocks that have output (completed calls)
-	const resultStatus = {};
-	for (const block of allToolBlocks) {
-		if (block.call_id && block.output != null) {
-			resultStatus[block.call_id] = block.error ? "error" : "ok";
-		}
-	}
-	// Find the last block that represents a tool invocation (has a tool_name)
-	for (let i = allToolBlocks.length - 1; i >= 0; i--) {
-		const block = allToolBlocks[i];
-		if (block.tool_name) {
-			const status = block.call_id ? (resultStatus[block.call_id] ?? null) : null;
-			return { block, status };
-		}
-	}
-	return null;
+	const entry = getMostRecentToolCall(allToolBlocks);
+	if (!entry) return null;
+	// Find the original block for template compatibility
+	const block = allToolBlocks.findLast((b) => b.tool_name === entry.toolName && b.call_id === entry.callId);
+	return block ? { block, status: entry.status === "InProgress" ? null : entry.status } : null;
 });
 
 // Autocomplete filtering and data preparation
