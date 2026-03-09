@@ -4075,30 +4075,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "Coworker"
                         };
 
-                        // Format message with stderr if available
-                        let message_text = if let Some(stderr_lines) = stderr_by_name.get(&name) {
-                            if stderr_lines.is_empty() {
-                                format!("⚠️ {} {} session exited unexpectedly", session_role, name)
-                            } else {
-                                // Include last N lines of stderr (up to 10 lines)
-                                let last_n: Vec<&str> = stderr_lines
-                                    .iter()
-                                    .rev()
-                                    .take(10)
-                                    .rev()
-                                    .map(|s| s.as_str())
-                                    .collect();
-                                format!(
-                                    "⚠️ {} {} session exited unexpectedly\n\nStderr ({} lines):\n{}",
-                                    session_role,
-                                    name,
-                                    stderr_lines.len(),
-                                    last_n.join("\n")
-                                )
-                            }
-                        } else {
-                            format!("⚠️ {} {} session exited unexpectedly", session_role, name)
-                        };
+                        // Fetch tail output from the session's JSONL event log
+                        let tail_output = state.session_manager.get_tail_output(&name, 20).await;
+
+                        // Format message with stderr and tail output
+                        let message_text = helpers::format_unexpected_exit_message(
+                            session_role,
+                            &name,
+                            stderr_by_name.get(&name).map(|v| v.as_slice()),
+                            tail_output.as_deref(),
+                        );
 
                         // Lead exits go to main channel (user needs to see them).
                         // Coworker/channel-lead exits go to #ops (operational noise).
