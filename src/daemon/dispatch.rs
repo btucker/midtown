@@ -1970,6 +1970,18 @@ fn dispatch_unowned_pending_tasks(
             name
         };
 
+        // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+        if snap
+            .spawn_failure_cooldown_names
+            .contains(&coworker_name.to_lowercase())
+        {
+            debug!(
+                "Task !{}: skipping {} (spawn failure cooldown active)",
+                task.id, coworker_name
+            );
+            continue;
+        }
+
         let already_running = snap
             .coworkers
             .active_names
@@ -2178,7 +2190,29 @@ fn dispatch_unowned_pending_tasks(
                 dir_key: snap.dir_key.clone(),
                 config,
                 on_success,
-                on_failure: vec![],
+                on_failure: vec![
+                    Effect::RecordCooldown {
+                        category: "spawn_failure".to_string(),
+                        key: coworker_name.clone(),
+                    },
+                    Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: format!(
+                            "⚠️ Spawn failed for task !{} (coworker {}) — backing off for {}s",
+                            task.id,
+                            coworker_name,
+                            SPAWN_FAILURE_COOLDOWN.as_secs()
+                        ),
+                        channel: Some(OPS_CHANNEL.to_string()),
+                        auto_output: false,
+                        message_type: None,
+                        nudge_type: None,
+                        tool_data: None,
+                        provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
+                    },
+                ],
             });
             spawns_queued_this_tick += 1;
         }

@@ -1182,21 +1182,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             crate::daemon::constants::SESSION_DISPATCH_COOLDOWN,
         );
         // Collect all coworker names that are on the spawn failure cooldown.
-        // We check against every known coworker name (active + sessions).
-        let all_names: HashSet<String> = active_coworkers
+        // Check ALL pool names (AVENUE_NAMES + OVERFLOW_NAMES), not just active
+        // coworkers. A failed spawn never makes the coworker "active", so checking
+        // only active_coworkers would miss cooldowns for freshly-allocated names
+        // that failed to spawn (e.g., unowned task dispatch).
+        let all_pool_names = crate::coworker::AVENUE_NAMES
             .iter()
-            .map(|cw| cw.name.to_lowercase())
-            .collect();
-        let on_cooldown: HashSet<String> = all_names
-            .iter()
+            .chain(crate::coworker::OVERFLOW_NAMES.iter());
+        let on_cooldown: HashSet<String> = all_pool_names
             .filter(|name| {
                 !cooldowns.check(
                     "spawn_failure",
-                    name,
+                    &name.to_lowercase(),
                     crate::daemon::constants::SPAWN_FAILURE_COOLDOWN,
                 )
             })
-            .cloned()
+            .map(|name| name.to_lowercase())
             .collect();
         (orphan_active, session_active, on_cooldown)
     };

@@ -4685,3 +4685,127 @@ fn test_owned_pending_task_spawn_failure_records_cooldown() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
+    // Bug scenario: dispatch_unowned_pending_tasks produces AssignAndSpawn with
+    // on_failure: vec![] — when the spawn fails, no cooldown is recorded and
+    // the daemon retries every tick forever (same bug class as !2172).
+    //
+    // Fix: add RecordCooldown to on_failure so the next tick skips this coworker.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2059".to_string(),
+            subject: "Add new feature".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Find the AssignAndSpawn and check its on_failure
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should emit AssignAndSpawn for unowned pending task");
+
+    // on_failure MUST contain RecordCooldown for spawn_failure
+    let has_cooldown = on_failure.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordCooldown { category, .. } if category == "spawn_failure"
+        )
+    });
+    assert!(
+        has_cooldown,
+        "on_failure must include RecordCooldown for 'spawn_failure' to prevent infinite retry loops. \
+         Got on_failure: {:?}",
+        on_failure
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_unowned_pending_task_skipped_when_cooldown_active() {
+    // Verify that dispatch_unowned_pending_tasks actually checks
+    // spawn_failure_cooldown_names and skips coworkers in cooldown.
+    // Without this check, recording cooldown on failure is useless —
+    // the next tick would just allocate the same name and retry.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let mut snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2059".to_string(),
+            subject: "Add new feature".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    // First: verify the task DOES get dispatched without cooldown
+    let effects = spawn_for_pending_tasks(&snap, &state);
+    let has_assign = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AssignAndSpawn { .. }));
+    assert!(has_assign, "Should emit AssignAndSpawn without cooldown");
+
+    // Now: put the first available coworker name in cooldown
+    let channel_lead_names = snap.channel_lead_names();
+    let first_name = state
+        .coworkers
+        .next_available_name_excluding(&channel_lead_names)
+        .unwrap();
+    snap.spawn_failure_cooldown_names
+        .insert(first_name.to_lowercase());
+
+    // Re-dispatch: the cooldown should cause this coworker to be skipped.
+    // A different coworker name will be allocated (if available), but the
+    // key point is the cooldown check fires for the first name.
+    let effects2 = spawn_for_pending_tasks(&snap, &state);
+
+    // The task may still get dispatched to a different coworker name,
+    // but verify the first name is NOT used.
+    let dispatched_name = effects2.iter().find_map(|e| {
+        if let Effect::AssignAndSpawn { owner, .. } = e {
+            Some(owner.clone())
+        } else {
+            None
+        }
+    });
+    if let Some(name) = &dispatched_name {
+        assert_ne!(
+            name.to_lowercase(),
+            first_name.to_lowercase(),
+            "Coworker in cooldown should not be dispatched"
+        );
+    }
+}
