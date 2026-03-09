@@ -218,9 +218,6 @@ pub enum WebUpdate {
     /// Error response for a client action
     #[serde(rename = "error")]
     Error(ErrorData),
-    /// Universal event items from agent sessions
-    #[serde(rename = "universal_items")]
-    UniversalItems(UniversalItemsData),
     /// A coworker is waiting for user input (AskUserQuestion tool call)
     #[serde(rename = "coworker_question")]
     CoworkerQuestion(CoworkerQuestionData),
@@ -337,19 +334,6 @@ pub struct CoworkerStatusData {
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorData {
     pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct UniversalItemsData {
-    pub agent_name: String,
-    /// The channel this agent's tool calls belong to. `None` for the main lead (main channel),
-    /// `Some(channel_name)` for a channel lead (displayed only in that topic channel).
-    pub channel: Option<String>,
-    /// When set, this agent's tool calls should appear in the thread panel for this
-    /// thread parent ID rather than in the main channel activity strip.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_parent_id: Option<String>,
-    pub items: Vec<crate::universal_events::UniversalItem>,
 }
 
 #[derive(Debug, Clone, Serialize)]

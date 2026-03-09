@@ -639,16 +639,6 @@ pub(crate) struct DaemonState {
     /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
     /// enqueues logical control messages (nudges/keys) without terminal coupling.
     headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
-    /// Recent tool call/result items per agent, keyed by lowercase agent name.
-    ///
-    /// Updated by `BroadcastUniversalItems` effects as stream events arrive.
-    /// Capped at `MAX_TOOL_ITEMS_PER_AGENT` per agent to bound memory.
-    /// Cleared when a channel message from the agent is posted (work phase done),
-    /// and when a coworker session stops (via `cleanup_coworker_state`).
-    /// Exposed via `coworkers.status` RPC (live, not cached) so the TUI can display
-    /// per-coworker tool activity alongside chat messages.
-    pub(crate) recent_tool_items:
-        std::sync::RwLock<HashMap<String, Vec<crate::universal_events::UniversalItem>>>,
     /// Negative cache for `is_pr_reviewed`: PR numbers confirmed NOT to have a review yet.
     ///
     /// `is_pr_reviewed` caches positive results (reviewed) in persistent state forever.
@@ -1012,11 +1002,6 @@ impl DaemonState {
         self.clear_pending_nudge(name);
         // Clear task assignment tracking (coworker is no longer active)
         self.clear_coworker_assignments(name);
-        // Clear recent tool activity (prevents stale activity on respawn)
-        {
-            let mut tool_map = self.recent_tool_items.write().unwrap();
-            tool_map.remove(name);
-        }
         // Capture fork bindings before cleanup for web UI notification.
         let bound_thread_id = self.fork_bound_threads.lock().unwrap().get(name).cloned();
         let bound_channel = self.fork_bound_channels.lock().unwrap().get(name).cloned();
@@ -1458,7 +1443,6 @@ impl DaemonState {
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
-            recent_tool_items: std::sync::RwLock::new(HashMap::new()),
             name_pool: std::sync::Mutex::new(name_pool),
             name_to_session: std::sync::Mutex::new(name_to_session),
             session_to_name: std::sync::Mutex::new(session_to_name),
@@ -3739,10 +3723,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
-                // Process lead, channel lead, and coworker text output + tool call universal events.
+                // Process lead, channel lead, and coworker text output.
                 // Routes through Effect pipeline to maintain architecture consistency.
                 // All functions need channel_lead_sessions — acquire the lock once.
-                let (lead_effects, coworker_effects, universal_effects) = {
+                let (lead_effects, coworker_effects) = {
                     let ps = state.persistent_state.lock().await;
                     let fork_bound_channels = state.fork_bound_channels.lock().unwrap();
                     let lead_effects = stream::process_lead_output(
@@ -3769,33 +3753,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let coworker_effects =
                         stream::process_agent_output(&events, &dm_agent_names);
 
-                    // Universal events still use the filtered coworker set because
-                    // leads, channel leads, and forks are handled by dedicated loops
-                    // inside process_universal_events — including them here would
-                    // create duplicate BroadcastUniversalItems effects.
-                    let coworker_names: std::collections::HashSet<String> = dm_agent_names
-                        .iter()
-                        .filter(|name| {
-                            *name != &state.project_name
-                                && !ps.channel_lead_sessions.contains_key(*name)
-                                && !fork_bound_channels.contains_key(*name)
-                        })
-                        .cloned()
-                        .collect();
-                    let fork_bound_threads = state.fork_bound_threads.lock().unwrap();
-                    let universal_effects = stream::process_universal_events(
-                        &events,
-                        &ps.channel_lead_sessions,
-                        &state.project_name,
-                        &fork_bound_channels,
-                        &fork_bound_threads,
-                        &coworker_names,
-                    );
-                    (lead_effects, coworker_effects, universal_effects)
+                    (lead_effects, coworker_effects)
                 };
                 effects::execute_effects(lead_effects, &state).await;
                 effects::execute_effects(coworker_effects, &state).await;
-                effects::execute_effects(universal_effects, &state).await;
 
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it

@@ -140,9 +140,6 @@ pub mod platform_launch;
 // API usage data (session + weekly utilization from Anthropic OAuth API)
 pub mod usage;
 
-// Universal event types for provider-agnostic session event processing
-pub mod universal_events;
-
 // Workflow event types for customizable channel workflow scripts
 pub mod workflow;
 

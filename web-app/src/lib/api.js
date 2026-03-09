@@ -738,11 +738,6 @@ export function handleUpdate(update) {
 			});
 			break;
 		}
-		case "universal_items":
-			// No-op: tool call display now reads from msg.tool_data on channel messages.
-			// The daemon still broadcasts these during Phase 2 for comparison; they are
-			// silently ignored here. Phase 3 will remove the broadcast entirely.
-			break;
 		case "coworker_question":
 			pendingQuestions.update((qs) => {
 				// Replace existing question from same coworker (only one question per coworker at a time)

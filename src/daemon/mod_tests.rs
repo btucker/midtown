@@ -1533,16 +1533,6 @@ fn make_cleanup_test_state() -> (
     (state, temp_dir, _guard)
 }
 
-fn make_tool_item(id: &str) -> crate::universal_events::UniversalItem {
-    crate::universal_events::UniversalItem {
-        item_id: id.to_string(),
-        kind: crate::universal_events::ItemKind::ToolCall,
-        content: vec![],
-        status: crate::universal_events::ItemStatus::Completed,
-        timestamp: chrono::Utc::now(),
-    }
-}
-
 #[test]
 fn stuck_task_restart_attempts_enforce_rolling_cap() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
@@ -1581,10 +1571,6 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
     }
     state.record_pending_nudge(name, "test nudge");
     state.record_task_assignment(name, "42");
-    {
-        let mut tool_map = state.recent_tool_items.write().unwrap();
-        tool_map.insert(name.to_string(), vec![make_tool_item("item-1")]);
-    }
 
     // Verify state was populated
     assert!(!state.cooldowns.lock().unwrap().is_empty());
@@ -1595,7 +1581,6 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
             .unwrap()
             .contains_key(name)
     );
-    assert!(state.recent_tool_items.read().unwrap().contains_key(name));
 
     // Run cleanup
     state.cleanup_coworker_state(name).await;
@@ -1622,10 +1607,6 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
             "task assignments should be cleared"
         );
     }
-    {
-        let tool_map = state.recent_tool_items.read().unwrap();
-        assert!(!tool_map.contains_key(name), "tool items should be cleared");
-    }
 }
 
 #[tokio::test]
@@ -1642,11 +1623,6 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
     state.record_pending_nudge("park", "nudge park");
     state.record_task_assignment("madison", "42");
     state.record_task_assignment("park", "43");
-    {
-        let mut tool_map = state.recent_tool_items.write().unwrap();
-        tool_map.insert("madison".to_string(), vec![make_tool_item("item-1")]);
-        tool_map.insert("park".to_string(), vec![make_tool_item("item-2")]);
-    }
 
     // Only clean up madison
     state.cleanup_coworker_state("madison").await;
@@ -1672,13 +1648,6 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
         assert!(
             assignments.contains_key("park"),
             "park's task assignment should still exist"
-        );
-    }
-    {
-        let tool_map = state.recent_tool_items.read().unwrap();
-        assert!(
-            tool_map.contains_key("park"),
-            "park's tool items should still exist"
         );
     }
 }

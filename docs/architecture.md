@@ -542,7 +542,7 @@ The `midtown chat` command opens a split-panel interface with:
 - Real-time token usage and cost tracking
 
 **Data polling**:
-- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL. Response includes `lead_working` (bool), `channel_leads_working` (map of channel name → bool), `tool_activity`, `coworkers`, `max_coworkers`, and `channel_leads`.
+- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL. Response includes `lead_working` (bool), `channel_leads_working` (map of channel name → bool), `coworkers`, `max_coworkers`, and `channel_leads`.
 - **Task list** (5s): Local filesystem reads (`~/.claude/tasks/`) — nearly instant, no network.
 - **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
 - **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
@@ -613,24 +613,9 @@ To add a new effect:
 3. Add a new markup branch inside the `{#each activeEffects}` block plus scoped styles/keyframes for the effect. Reuse the overlay semantics (absolute positioning, opacity fades, `pointer-events: none`) so rapid merges cannot degrade layout performance.
 4. Whenever possible, pull palette values from `COLOR_PALETTE`/`AVENUE_COLORS` instead of hardcoding new hex codes. This keeps dark/light themes and future recolors consistent.
 
-## Universal Events Pipeline
+## Tool Call Display
 
-The `universal_events` module (`src/universal_events/`) provides a provider-agnostic event model for structured agent activity. It captures tool calls and tool results from Claude Code's `stream-json` output, stores them in daemon memory, and broadcasts them to WebSocket clients and TUI as structured data, parallel to the existing text pipeline.
-
-**Data flow:**
-```
-StreamEvent (NDJSON drain) → extract_tool_events() → Vec<UniversalItem>
-    → Effect::BroadcastUniversalItems → DaemonState.recent_tool_items (per-agent ring buffer)
-                                      → WebUpdate::UniversalItems → WebSocket clients
-                                      → coworkers.status RPC → TUI tool activity display
-```
-
-- **Types** (`mod.rs`): `UniversalItem`, `ItemKind`, `ContentPart`, `ItemStatus` — agent-agnostic, extensible to other providers.
-- **Claude converter** (`claude.rs`): Pure function `extract_tool_events()` that extracts both `tool_use` content blocks from `StreamEvent::Assistant` events and `tool_result` blocks from `StreamEvent::User` events. Each tool call is emitted with a `semantic_header` (human-readable description of the operation) and each tool result carries success/error status.
-- **Integration** (`daemon/stream.rs`): `process_universal_events()` accepts the `channel_lead_sessions` map and emits `BroadcastUniversalItems` effects for the main lead (channel=None) and for each active channel lead (channel=Some(channel_name)). Coworker tool calls are not broadcast to the universal events pipeline (they are only visible via DM channels — see below).
-- **Broadcast**: The `BroadcastUniversalItems` effect sends `WebUpdate::UniversalItems` to all connected WebSocket clients and updates `DaemonState.recent_tool_items` (a `RwLock<HashMap<String, Vec<UniversalItem>>>`, capped at `MAX_TOOL_ITEMS_PER_AGENT=20` items per agent). Agent name and optional channel are carried at the envelope level (`UniversalItemsData`). The web UI stores items keyed by channel name (`'midtown'` for the main lead, or the topic channel name for channel leads) so each channel view shows only the relevant tool calls.
-- **TUI rendering**: The TUI polls `coworkers.status` (at 2s intervals) which calls `collect_tool_activity()` to serialize `recent_tool_items`. The TUI renders a compact activity strip at the bottom of the chat pane showing the most recent tool calls per active agent, using `semantic_header` for tool call labels and "✓ ok" / "✗ error" for tool results.
-- **Lifecycle**: Tool activity for a coworker is cleared from `recent_tool_items` when the coworker shuts down (in `shutdown_coworker_impl()`), preventing ghost activity from persisting when the avenue name is reused.
+Tool call data is displayed via `msg.tool_data` on channel messages. The `extract_tool_blocks()` function in `stream.rs` pairs `tool_use` blocks from Assistant events with `tool_result` blocks from User events by `call_id`, producing `ToolBlock` structs that are attached to `PostToChannel` effects. Both topic channel messages (via `process_lead_output()`) and DM channel messages (via `process_agent_output()`) carry `tool_data`, giving the web UI and TUI a single, persisted source for rendering tool call activity.
 
 ## DM Channel Streaming
 
