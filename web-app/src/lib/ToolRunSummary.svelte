@@ -1,4 +1,5 @@
 <script>
+import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
 import { createAutoCollapse } from "./useAutoCollapse.js";
 
@@ -23,6 +24,12 @@ $effect.pre(() => {
 	if (!userOverride) displayState = ac.initial === "collapsed" ? "collapsed" : "expanded";
 });
 
+// Skip intro transitions on initial mount (avoid animating already-collapsed items)
+let mounted = $state(false);
+$effect(() => {
+	mounted = true;
+});
+
 $effect(() => {
 	if (userOverride) return;
 	const currentAc = ac;
@@ -40,12 +47,19 @@ function toggle() {
 </script>
 
 {#if displayState === "collapsed"}
-	<button class="tool-run-summary" onclick={toggle}>
+	<button
+		class="tool-run-summary"
+		onclick={toggle}
+		in:fade={{ duration: mounted ? 150 : 0, delay: mounted ? 150 : 0 }}
+	>
 		<span class="tool-run-icon">▸</span>
 		<span class="tool-run-text">{toolCount} tools used</span>
 	</button>
 {:else}
-	<div class="tool-run-expanded">
+	<div
+		class="tool-run-expanded"
+		out:slide={{ duration: 200 }}
+	>
 		<button class="tool-run-summary tool-run-expanded-header" onclick={toggle}>
 			<span class="tool-run-icon">▾</span>
 			<span class="tool-run-text">{toolCount} tools used</span>
@@ -69,7 +83,7 @@ function toggle() {
 		align-items: center;
 		gap: 6px;
 		padding: 4px 10px;
-		margin: 4px 0;
+		margin: 4px 0 4px calc(2.4rem + 0.5rem);
 		background: transparent;
 		border: 1px solid hsl(var(--border) / 0.5);
 		border-radius: 12px;
@@ -94,17 +108,6 @@ function toggle() {
 	}
 
 	.tool-run-expanded {
-		animation: tool-run-expand 0.2s ease-out;
-	}
-
-	@keyframes tool-run-expand {
-		from {
-			opacity: 0.5;
-			max-height: 2em;
-		}
-		to {
-			opacity: 1;
-			max-height: 5000px;
-		}
+		overflow: hidden;
 	}
 </style>
