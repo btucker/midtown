@@ -201,7 +201,7 @@ function getActionContent(msg) {
           {/each}
         {/if}
         {#if msg.tool_data?.length}
-          <ToolDataBlocks blocks={msg.tool_data} />
+          <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}
     </div>
@@ -248,7 +248,7 @@ function getActionContent(msg) {
           {/each}
         {/if}
         {#if msg.tool_data?.length}
-          <ToolDataBlocks blocks={msg.tool_data} />
+          <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}
     </div>

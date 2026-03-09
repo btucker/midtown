@@ -9,7 +9,7 @@
  */
 import { highlightLine } from "./highlighting.js";
 
-let { filePath, oldString, newString } = $props();
+let { filePath, oldString, newString, bare = false } = $props();
 let expanded = $state(false);
 
 const EXT_TO_LANG = {
@@ -57,26 +57,8 @@ function toggle() {
 }
 </script>
 
-<div class="diff-view">
-  <button
-    class="diff-header"
-    onclick={toggle}
-    aria-expanded={expanded}
-  >
-    <span class="diff-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
-    <span class="diff-label">Edit</span>
-    <span class="diff-path">{shortPath}</span>
-    <span class="diff-stats">
-      {#if hasOldContent}
-        <span class="diff-stat-del">−{oldLines.length}</span>
-      {/if}
-      {#if hasNewContent}
-        <span class="diff-stat-add">+{newLines.length}</span>
-      {/if}
-    </span>
-  </button>
-
-  <div class="diff-body" class:diff-collapsed={isLong && !expanded}>
+{#if bare}
+  <div class="diff-body-bare">
     {#each oldLines as line}
       {#if !(oldLines.length === 1 && line === '')}
         <div class="diff-line diff-line-del">
@@ -94,7 +76,46 @@ function toggle() {
       {/if}
     {/each}
   </div>
-</div>
+{:else}
+  <div class="diff-view">
+    <button
+      class="diff-header"
+      onclick={toggle}
+      aria-expanded={expanded}
+    >
+      <span class="diff-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
+      <span class="diff-label">Edit</span>
+      <span class="diff-path">{shortPath}</span>
+      <span class="diff-stats">
+        {#if hasOldContent}
+          <span class="diff-stat-del">−{oldLines.length}</span>
+        {/if}
+        {#if hasNewContent}
+          <span class="diff-stat-add">+{newLines.length}</span>
+        {/if}
+      </span>
+    </button>
+
+    <div class="diff-body" class:diff-collapsed={isLong && !expanded}>
+      {#each oldLines as line}
+        {#if !(oldLines.length === 1 && line === '')}
+          <div class="diff-line diff-line-del">
+            <span class="diff-line-prefix">−</span>
+            <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
+          </div>
+        {/if}
+      {/each}
+      {#each newLines as line}
+        {#if !(newLines.length === 1 && line === '')}
+          <div class="diff-line diff-line-add">
+            <span class="diff-line-prefix">+</span>
+            <span class="diff-line-content">{@html highlightLine(line, lang)}</span>
+          </div>
+        {/if}
+      {/each}
+    </div>
+  </div>
+{/if}
 
 <style>
   .diff-view {
@@ -169,6 +190,10 @@ function toggle() {
 
   :global(.dark) .diff-stat-add {
     color: #85e89d;
+  }
+
+  .diff-body-bare {
+    overflow-x: auto;
   }
 
   .diff-body {

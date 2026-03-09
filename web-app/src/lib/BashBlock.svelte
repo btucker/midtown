@@ -1,15 +1,35 @@
 <script>
 /**
- * BashBlock — renders a Bash tool call with command + collapsible output.
+ * BashBlock — renders a Bash tool call with command + auto-collapsing output.
  *
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
+ *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
  */
 import { highlightBlock } from "./highlighting.js";
+import { createAutoCollapse } from "./useAutoCollapse.js";
 
-let { block } = $props();
+let { block, timestamp = null } = $props();
 
-let expanded = $state(false);
+let displayState = $state("collapsed");
+let userOverride = $state(false);
+
+const ac = createAutoCollapse(timestamp);
+displayState = ac.initial;
+
+$effect(() => {
+	if (userOverride) return;
+	ac.startTimer(() => {
+		displayState = "collapsed";
+	});
+	return () => ac.clearTimer();
+});
+
+function toggle() {
+	userOverride = true;
+	ac.clearTimer();
+	displayState = displayState === "expanded" ? "collapsed" : "expanded";
+}
 
 let command = $derived(block.input?.command || "");
 let outputText = $derived.by(() => {
@@ -21,7 +41,6 @@ let outputText = $derived.by(() => {
 });
 let hasOutput = $derived(outputText !== "");
 let outputLines = $derived(outputText.split("\n"));
-let isLong = $derived(outputLines.length > 10);
 
 // Detect output language based on content
 function detectOutputLanguage(output) {
@@ -42,20 +61,24 @@ let highlightedCommand = $derived(highlightBlock(command, "bash"));
 let outputLang = $derived(detectOutputLanguage(outputText));
 let highlightedOutput = $derived(highlightBlock(outputText, outputLang));
 
-function toggle() {
-	expanded = !expanded;
-}
+// First-line preview for the preview state
+let firstLine = $derived(outputLines[0] || "");
+let highlightedFirstLine = $derived(highlightBlock(firstLine, outputLang));
 </script>
 
 <div class="bash-block" class:bash-error={block.error}>
-  <button class="bash-header" onclick={toggle} aria-expanded={expanded}>
-    <span class="bash-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
+  <button class="bash-header" onclick={toggle} aria-expanded={displayState === 'expanded'}>
+    <span class="bash-chevron">{displayState === 'expanded' ? '▾' : '▸'}</span>
     <span class="bash-prompt">$</span>
     <span class="bash-command">{@html highlightedCommand}</span>
   </button>
 
-  {#if hasOutput}
-    <div class="bash-output" class:bash-collapsed={isLong && !expanded}>
+  {#if hasOutput && displayState === 'preview'}
+    <div class="bash-output bash-preview">
+      <pre>{@html highlightedFirstLine}</pre>
+    </div>
+  {:else if hasOutput && displayState === 'expanded'}
+    <div class="bash-output">
       <pre>{@html highlightedOutput}</pre>
     </div>
   {/if}
@@ -132,20 +155,20 @@ function toggle() {
     color: hsl(var(--foreground));
   }
 
-  .bash-collapsed {
-    max-height: 14em;
-    overflow-y: hidden;
+  .bash-preview {
+    max-height: 1.45em;
+    overflow: hidden;
     position: relative;
   }
 
-  .bash-collapsed::after {
+  .bash-preview::after {
     content: '';
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    height: 3em;
-    background: linear-gradient(transparent, hsl(var(--card)));
+    height: 100%;
+    background: linear-gradient(to right, transparent 60%, hsl(var(--card)));
     pointer-events: none;
   }
 

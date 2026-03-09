@@ -1,0 +1,106 @@
+<script>
+import MessageRow from "./MessageRow.svelte";
+import { createAutoCollapse } from "./useAutoCollapse.js";
+
+const TOOL_RUN_DELAY_MS = 60_000;
+
+let {
+	messages,
+	toolCount,
+	lastTimestamp,
+	allMessages = [],
+	startIndex = 0,
+	channelName = undefined,
+	currentTasks = {},
+} = $props();
+
+let displayState = $state("collapsed");
+let userOverride = $state(false);
+
+const ac = createAutoCollapse(lastTimestamp, TOOL_RUN_DELAY_MS);
+displayState = ac.initial === "collapsed" ? "collapsed" : "expanded";
+
+$effect(() => {
+	if (userOverride) return;
+	ac.startTimer(() => {
+		displayState = "collapsed";
+	});
+	return () => ac.clearTimer();
+});
+
+function toggle() {
+	userOverride = true;
+	ac.clearTimer();
+	displayState = displayState === "expanded" ? "collapsed" : "expanded";
+}
+</script>
+
+{#if displayState === "collapsed"}
+	<button class="tool-run-summary" onclick={toggle}>
+		<span class="tool-run-icon">▸</span>
+		<span class="tool-run-text">{toolCount} tools used</span>
+	</button>
+{:else}
+	<div class="tool-run-expanded">
+		<button class="tool-run-summary tool-run-expanded-header" onclick={toggle}>
+			<span class="tool-run-icon">▾</span>
+			<span class="tool-run-text">{toolCount} tools used</span>
+		</button>
+		{#each messages as msg, i}
+			<MessageRow
+				{msg}
+				msgs={allMessages}
+				index={startIndex + i}
+				senderClass="mt-1"
+				{channelName}
+				currentTask={currentTasks[msg.from?.toLowerCase()]}
+			/>
+		{/each}
+	</div>
+{/if}
+
+<style>
+	.tool-run-summary {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 10px;
+		margin: 4px 0;
+		background: transparent;
+		border: 1px solid hsl(var(--border) / 0.5);
+		border-radius: 12px;
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: 0.72rem;
+		color: hsl(var(--muted-foreground));
+		width: fit-content;
+		transition: background 0.15s;
+	}
+
+	.tool-run-summary:hover {
+		background: hsl(var(--accent) / 0.5);
+	}
+
+	.tool-run-icon {
+		font-size: 0.65rem;
+	}
+
+	.tool-run-expanded-header {
+		margin-bottom: 0;
+	}
+
+	.tool-run-expanded {
+		animation: tool-run-expand 0.2s ease-out;
+	}
+
+	@keyframes tool-run-expand {
+		from {
+			opacity: 0.5;
+			max-height: 2em;
+		}
+		to {
+			opacity: 1;
+			max-height: 5000px;
+		}
+	}
+</style>

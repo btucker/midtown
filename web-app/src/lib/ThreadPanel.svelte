@@ -20,6 +20,8 @@ let prevThreadId = null;
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskRow from './TaskRow.svelte'
   import DiffView from './DiffView.svelte'
+  import ToolRunSummary from './ToolRunSummary.svelte'
+  import { groupTimelineToolRuns } from './toolRunGrouping.js'
   import { clearMobileTextarea } from './mobileInput.js'
 
   // Thread panel resize state (desktop only)
@@ -318,6 +320,7 @@ let prevThreadId = null;
   // Pre-compute the messages-only list from the merged timeline, for MessageRow's
   // senderChanged/timeChanged logic. Avoids recomputing in every iteration.
   let timelineMessages = $derived(mergedTimeline.filter((e) => e.type === 'message').map((e) => e.data))
+  let groupedTimeline = $derived(groupTimelineToolRuns(mergedTimeline))
 
   // Track viewport changes to know which panel is active
   onMount(() => {
@@ -624,8 +627,17 @@ let prevThreadId = null;
       {/if}
 
       <!-- Thread replies (interleaved with edit diffs for DM channels) -->
-      {#each mergedTimeline as entry, i}
-        {#if entry.type === 'edit'}
+      {#each groupedTimeline as entry, i}
+        {#if entry.type === 'tool-run'}
+          <ToolRunSummary
+            messages={entry.entries.map(e => e.data)}
+            toolCount={entry.toolCount}
+            lastTimestamp={entry.lastTimestamp}
+            allMessages={timelineMessages}
+            startIndex={entry.entries[0].msgIndex}
+            channelName={$threadData?.channelName}
+          />
+        {:else if entry.type === 'edit'}
           <DiffView
             filePath={entry.data.filePath}
             oldString={entry.data.oldString}
@@ -772,8 +784,17 @@ let prevThreadId = null;
       {/if}
 
       <!-- Replies (interleaved with edit diffs for DM channels) -->
-      {#each mergedTimeline as entry, i}
-        {#if entry.type === 'edit'}
+      {#each groupedTimeline as entry, i}
+        {#if entry.type === 'tool-run'}
+          <ToolRunSummary
+            messages={entry.entries.map(e => e.data)}
+            toolCount={entry.toolCount}
+            lastTimestamp={entry.lastTimestamp}
+            allMessages={timelineMessages}
+            startIndex={entry.entries[0].msgIndex}
+            channelName={$threadData?.channelName}
+          />
+        {:else if entry.type === 'edit'}
           <DiffView
             filePath={entry.data.filePath}
             oldString={entry.data.oldString}

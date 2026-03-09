@@ -3,15 +3,36 @@
  * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
  *
  * Shows the tool name as a header with a collapsible JSON view of input/output.
+ * Auto-collapses after 30s: preview (1 line) → collapsed (header only).
  *
  * Props:
- *   block — ToolBlock { tool_name, input, output, error }
+ *   block     — ToolBlock { tool_name, input, output, error }
+ *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
  */
 import { highlightBlock } from "./highlighting.js";
+import { createAutoCollapse } from "./useAutoCollapse.js";
 
-let { block } = $props();
+let { block, timestamp = null } = $props();
 
-let expanded = $state(false);
+let displayState = $state("collapsed");
+let userOverride = $state(false);
+
+const ac = createAutoCollapse(timestamp);
+displayState = ac.initial;
+
+$effect(() => {
+	if (userOverride) return;
+	ac.startTimer(() => {
+		displayState = "collapsed";
+	});
+	return () => ac.clearTimer();
+});
+
+function toggle() {
+	userOverride = true;
+	ac.clearTimer();
+	displayState = displayState === "expanded" ? "collapsed" : "expanded";
+}
 
 let summary = $derived.by(() => {
 	const inp = block.input;
@@ -30,21 +51,29 @@ let highlightedOutput = $derived.by(() => {
 	return highlightBlock(outputStr, "json");
 });
 
-function toggle() {
-	expanded = !expanded;
-}
+// Single-line output preview for the "preview" state
+let outputFirstLine = $derived.by(() => {
+	if (!block.output) return "";
+	const str = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
+	return str.split("\n")[0] || "";
+});
+let highlightedOutputFirstLine = $derived(highlightBlock(outputFirstLine, "json"));
 </script>
 
 <div class="tool-generic" class:tool-error={block.error}>
-  <button class="tool-header" onclick={toggle} aria-expanded={expanded}>
-    <span class="tool-chevron">{expanded ? '▾' : '▸'}</span>
+  <button class="tool-header" onclick={toggle} aria-expanded={displayState === 'expanded'}>
+    <span class="tool-chevron">{displayState === 'expanded' ? '▾' : '▸'}</span>
     <span class="tool-name">{summary}</span>
     {#if block.error}
       <span class="tool-error-badge">error</span>
     {/if}
   </button>
 
-  {#if expanded}
+  {#if displayState === 'preview' && block.output}
+    <div class="tool-body tool-preview">
+      <pre>{@html highlightedOutputFirstLine}</pre>
+    </div>
+  {:else if displayState === 'expanded'}
     <div class="tool-body">
       <pre>{@html highlightedInput}</pre>
       {#if block.output}
@@ -136,5 +165,22 @@ function toggle() {
     color: hsl(var(--muted-foreground));
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }
+
+  .tool-preview {
+    max-height: 1.45em;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .tool-preview::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    background: linear-gradient(to right, transparent 60%, hsl(var(--card)));
+    pointer-events: none;
   }
 </style>
