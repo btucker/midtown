@@ -1,14 +1,16 @@
-const COLLAPSE_DELAY_MS = 30_000;
+export const DEFAULT_COLLAPSE_DELAY_MS = 30_000;
 
 /**
  * Compute the initial display state based on message age.
  * @param {string|null} timestamp — ISO 8601 timestamp of the parent message
+ * @param {number} now — current time in ms since epoch
+ * @param {number} delay — collapse delay in ms
  * @returns {'preview' | 'collapsed'}
  */
-export function computeInitialState(timestamp, now = Date.now()) {
+export function computeInitialState(timestamp, now = Date.now(), delay = DEFAULT_COLLAPSE_DELAY_MS) {
 	if (!timestamp) return "collapsed";
 	const age = now - new Date(timestamp).getTime();
-	return age >= COLLAPSE_DELAY_MS ? "collapsed" : "preview";
+	return age >= delay ? "collapsed" : "preview";
 }
 
 /**
@@ -28,15 +30,15 @@ export function computeInitialState(timestamp, now = Date.now()) {
  *       return () => ac.clearTimer();
  *   });
  */
-export function createAutoCollapse(timestamp) {
+export function createAutoCollapse(timestamp, delay = DEFAULT_COLLAPSE_DELAY_MS) {
 	const now = Date.now();
-	const initial = computeInitialState(timestamp, now);
+	const initial = computeInitialState(timestamp, now, delay);
 	let timerId = null;
 	let timeoutMs = null;
 
 	if (initial === "preview") {
 		const age = now - new Date(timestamp).getTime();
-		timeoutMs = Math.max(0, COLLAPSE_DELAY_MS - age);
+		timeoutMs = Math.max(0, delay - age);
 	}
 
 	return {

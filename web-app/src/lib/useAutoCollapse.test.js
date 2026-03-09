@@ -23,6 +23,19 @@ describe("computeInitialState", () => {
 	});
 });
 
+describe("computeInitialState with custom delay", () => {
+	it("uses custom delay when provided", () => {
+		const ts = new Date(Date.now() - 45_000).toISOString();
+		expect(computeInitialState(ts)).toBe("collapsed");
+		expect(computeInitialState(ts, Date.now(), 60_000)).toBe("preview");
+	});
+
+	it("collapses at custom delay boundary", () => {
+		const ts = new Date(Date.now() - 60_000).toISOString();
+		expect(computeInitialState(ts, Date.now(), 60_000)).toBe("collapsed");
+	});
+});
+
 describe("createAutoCollapse", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
