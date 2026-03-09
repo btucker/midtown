@@ -1192,7 +1192,7 @@ pub(super) fn build_fork_config(
 
     let headless_config = crate::headless::HeadlessConfig {
         model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
-        system_prompt: String::new(),
+        system_prompt: crate::agents::main_lead_system_prompt(repo_name),
         json_schema: None,
         cwd: working_dir.map(String::from),
         project_name: Some(repo_name.to_string()),
@@ -1201,7 +1201,13 @@ pub(super) fn build_fork_config(
         persist_session: true,
         resume_session_id: Some(calling_session_id.to_string()),
         inactivity_timeout: None,
-        settings_path: None,
+        settings_path: match crate::settings::write_lead_settings_file() {
+            Ok(path) => Some(path.to_string_lossy().to_string()),
+            Err(e) => {
+                warn!("Failed to write lead settings file for fork session: {e}");
+                None
+            }
+        },
         setting_sources: None,
         auth_provider,
         env,

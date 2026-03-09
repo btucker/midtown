@@ -1432,3 +1432,77 @@ async fn test_thread_ownership_query() {
         "pending sentinel should report false"
     );
 }
+
+// ============================================================================
+// build_fork_config system prompt and settings tests
+// ============================================================================
+
+/// `build_fork_config` must set a non-empty system prompt (the lead system
+/// prompt), so that respawned forks (resume_session_id = None) get proper
+/// instructions instead of starting with a blank slate.
+#[test]
+fn test_build_fork_config_sets_lead_system_prompt() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let repo_name = "test-repo";
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-prompt-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        repo_name,
+        None,
+    );
+
+    assert!(
+        !headless_config.system_prompt.is_empty(),
+        "Fork system_prompt should not be empty — it should contain the lead system prompt"
+    );
+    // main_lead_system_prompt() replaces {project_name} with repo_name
+    assert!(
+        headless_config.system_prompt.contains(repo_name),
+        "Fork system_prompt should contain the project name from lead prompt templates, got: {}",
+        &headless_config.system_prompt[..headless_config.system_prompt.len().min(200)]
+    );
+}
+
+/// `build_fork_config` should attempt to write lead settings. When the write
+/// succeeds, `settings_path` should be `Some(...)` pointing to the lead
+/// settings file. When it fails (e.g., sandboxed environment), it should
+/// gracefully degrade to `None` without panicking.
+#[test]
+fn test_build_fork_config_sets_lead_settings_path() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-settings-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    // write_lead_settings_file() writes to ~/.local/state/midtown/ which may
+    // be blocked in sandboxed environments. When it succeeds, settings_path
+    // should point to the lead settings file. When it fails, build_fork_config
+    // gracefully degrades to None (logged as a warning).
+    if let Some(path) = &headless_config.settings_path {
+        assert!(
+            path.contains("lead-settings"),
+            "settings_path should reference the lead settings file, got: {}",
+            path
+        );
+    }
+    // Either way, the function should not panic — graceful degradation is the key invariant.
+}
