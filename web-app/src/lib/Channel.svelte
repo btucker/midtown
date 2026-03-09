@@ -25,7 +25,6 @@ import { clearMobileTextarea } from "./mobileInput.js";
 import {
 	activeChannel,
 	activeProject,
-	agentToolItems,
 	channels as channelsStore,
 	channelTargetMsgId,
 	coworkers,
@@ -54,9 +53,6 @@ let pendingFileUrl = $state(null);
 let uploading = $state(false);
 let textareaElement = $state(null);
 let formWrapperElement = $state(null);
-let channelItemsActive = $state(false);
-let channelItemsActiveTimeout = null;
-let channelItemsActiveVersion = 0; // version counter to discard stale microtasks
 let topSentinel = $state(null);
 let topObserver = null;
 
@@ -196,54 +192,60 @@ function isNewMessage(channelName, index) {
 	return index >= threshold;
 }
 
-// Tool call items for the active channel.
-// Main channel ('midtown') shows the lead's tool calls; topic channels show their channel lead's.
-let activeChannelToolItems = $derived($agentToolItems[$activeChannel] || []);
+// Activity strip: derive tool call state from msg.tool_data on channel messages.
+// Collect all tool_data blocks from recent messages, correlate by call_id to determine
+// in-progress vs completed status.
+let allToolBlocks = $derived.by(() => {
+	const blocks = [];
+	for (const msg of channelMessages) {
+		if (msg.tool_data?.length) {
+			for (const block of msg.tool_data) {
+				blocks.push(block);
+			}
+		}
+	}
+	return blocks;
+});
 
-// Activity strip computed values (always-rendered single line above input)
 // Main channel uses the top-level lead_working flag; topic channels use per-channel-lead signals.
 let isLeadWorking = $derived(
 	$activeChannel === $activeProject
 		? !!$daemonStatus?.lead_working
 		: !!$daemonStatus?.channel_leads_working?.[$activeChannel],
 );
-// Correlate InProgress tool calls with received ToolResults: a ToolUse item stays
-// InProgress in the store even after its ToolResult arrives in a later batch (items
-// are appended, not updated). Only count a call as truly in-progress if no matching
-// ToolResult exists in the store.
+
+// A tool call is in-progress when its ToolBlock has output === null and no later
+// ToolBlock with the same call_id has output set.
 let hasInProgressItems = $derived.by(() => {
 	const completedCallIds = new Set();
-	for (const item of activeChannelToolItems) {
-		for (const part of item.content) {
-			if (part.ToolResult) completedCallIds.add(part.ToolResult.call_id);
+	for (const block of allToolBlocks) {
+		if (block.call_id && block.output != null) {
+			completedCallIds.add(block.call_id);
 		}
 	}
-	return activeChannelToolItems.some((item) => {
-		if (item.status !== "InProgress") return false;
-		return item.content.some((part) => part.ToolCall && !completedCallIds.has(part.ToolCall.call_id));
-	});
+	return allToolBlocks.some((block) => block.output == null && block.call_id && !completedCallIds.has(block.call_id));
 });
-let showActivity = $derived(activeChannelToolItems.length > 0 || isLeadWorking);
-let showDots = $derived(isLeadWorking || (hasInProgressItems && channelItemsActive));
+
+let showActivity = $derived(allToolBlocks.length > 0 || isLeadWorking);
+let showDots = $derived(isLeadWorking || hasInProgressItems);
 
 // Most recent tool call entry for inline display in the activity strip.
-// Replicates ToolActivity's merge logic but returns only the last call.
+// Scan all tool blocks: build a result map, then find the last tool_use block.
 let mostRecentToolCallEntry = $derived.by(() => {
-	if (activeChannelToolItems.length === 0) return null;
+	if (allToolBlocks.length === 0) return null;
+	// Build status map from blocks that have output (completed calls)
 	const resultStatus = {};
-	for (const item of activeChannelToolItems) {
-		for (const part of item.content) {
-			if (part.ToolResult) {
-				resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? "error" : "ok";
-			}
+	for (const block of allToolBlocks) {
+		if (block.call_id && block.output != null) {
+			resultStatus[block.call_id] = block.error ? "error" : "ok";
 		}
 	}
-	for (let i = activeChannelToolItems.length - 1; i >= 0; i--) {
-		const item = activeChannelToolItems[i];
-		if (item.content.some((p) => p.ToolCall)) {
-			const callId = item.content.find((p) => p.ToolCall)?.ToolCall?.call_id;
-			const status = callId ? (resultStatus[callId] ?? null) : null;
-			return { item, status };
+	// Find the last block that represents a tool invocation (has a tool_name)
+	for (let i = allToolBlocks.length - 1; i >= 0; i--) {
+		const block = allToolBlocks[i];
+		if (block.tool_name) {
+			const status = block.call_id ? (resultStatus[block.call_id] ?? null) : null;
+			return { block, status };
 		}
 	}
 	return null;
@@ -610,48 +612,6 @@ $effect(() => {
 	tick().then(() => resizeTextarea());
 });
 
-// Track tool item activity freshness: mark active when new items arrive,
-// mark stale after 8s of silence. This catches channel leads that stop
-// mid-tool (no ToolResult or final message to clear InProgress items).
-$effect(() => {
-	const items = activeChannelToolItems;
-	if (channelItemsActiveTimeout) {
-		clearTimeout(channelItemsActiveTimeout);
-		channelItemsActiveTimeout = null;
-	}
-	// Version counter prevents stale microtasks from overwriting newer state.
-	// Each effect run increments the version; the microtask only writes if its
-	// captured version still matches, discarding writes from superseded runs.
-	const version = ++channelItemsActiveVersion;
-	if (items.length > 0) {
-		// Defer state write to avoid state_unsafe_mutation — channelItemsActive
-		// feeds $derived showDots which is read during the same flush cycle
-		queueMicrotask(() => {
-			if (version !== channelItemsActiveVersion) return;
-			channelItemsActive = true;
-		});
-		channelItemsActiveTimeout = setTimeout(() => {
-			channelItemsActive = false;
-			channelItemsActiveTimeout = null;
-		}, 8000);
-	} else {
-		queueMicrotask(() => {
-			if (version !== channelItemsActiveVersion) return;
-			channelItemsActive = false;
-		});
-	}
-});
-
-// Ensure the timeouts are cleared when the component is destroyed
-$effect(() => {
-	return () => {
-		if (channelItemsActiveTimeout) {
-			clearTimeout(channelItemsActiveTimeout);
-			channelItemsActiveTimeout = null;
-		}
-	};
-});
-
 async function handleSubmit(e) {
 	e.preventDefault();
 
@@ -785,12 +745,19 @@ function handleInput() {
 }
 
 function describeToolCall(entry) {
-	for (const part of entry.item.content) {
-		if (part.ToolCall) {
-			return part.ToolCall.semantic_header || part.ToolCall.name?.toLowerCase() || "?";
-		}
+	const block = entry.block;
+	// Derive a human-readable description from the tool block's input.
+	// For Bash: show the command; for file ops: show the file path; otherwise tool name.
+	if (block.tool_name === "Bash" && block.input?.command) {
+		const cmd = block.input.command;
+		return cmd.length > 60 ? `${cmd.slice(0, 57)}...` : cmd;
 	}
-	return "?";
+	if (block.input?.file_path) {
+		const fp = block.input.file_path;
+		const short = fp.split("/").slice(-2).join("/");
+		return `${block.tool_name.toLowerCase()} ${short}`;
+	}
+	return block.tool_name?.toLowerCase() || "?";
 }
 
 function getToolCallStatusIcon(entry) {

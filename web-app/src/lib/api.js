@@ -2,7 +2,6 @@ import { get } from "svelte/store";
 import {
 	activeChannel,
 	activeProject,
-	agentToolItems,
 	authProfiles,
 	authProfilesByProvider,
 	authSwitching,
@@ -25,77 +24,11 @@ import {
 	threadForkOwners,
 	threadForkParents,
 	threadOwnership,
-	threadToolItems,
 	threadUnreadCounts,
 	trackedThreads,
 	usageData,
 	userSenderName,
 } from "./store.js";
-
-// Maximum number of tool call items retained per agent in the activity store.
-const MAX_TOOL_ITEMS_PER_AGENT = 20;
-
-// How long (ms) to keep tool call items visible after a channel lead posts a message.
-// This prevents the activity strip from vanishing the instant the lead's response arrives.
-const TOOL_ITEMS_CLEAR_DELAY_MS = 4000;
-
-// Pending clear timeouts keyed by the agentToolItems channel key.
-// Allows the universal_items handler to cancel a pending clear if new tool
-// activity arrives before the delay expires (agent is still working).
-const agentClearTimeouts = new Map();
-
-// Tracks which fork session owns each thread's tool items (thread_parent_id → agent_name).
-// Used by the thread-clear guard to ensure only the owning fork's messages trigger a clear,
-// preventing coworkers or the lead from prematurely clearing a fork's tool display.
-const threadOwners = new Map();
-
-// ── rAF batching for universal_items ────────────────────────────────────────
-// Accumulate tool call items during a frame, then flush them in a single
-// store update via requestAnimationFrame. This prevents cascading re-renders
-// when the daemon bursts many tool items within one frame.
-const pendingChannelItems = new Map(); // channelKey → items[]
-const pendingThreadItems = new Map(); // threadId → items[]
-let batchRafId = null;
-
-export function flushToolItemBatch() {
-	batchRafId = null;
-
-	if (pendingChannelItems.size > 0) {
-		agentToolItems.update((byChannel) => {
-			const updated = { ...byChannel };
-			for (const [key, items] of pendingChannelItems) {
-				const existing = updated[key] || [];
-				updated[key] = [...existing, ...items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
-			}
-			return updated;
-		});
-		pendingChannelItems.clear();
-	}
-
-	if (pendingThreadItems.size > 0) {
-		threadToolItems.update((byThread) => {
-			const updated = { ...byThread };
-			for (const [key, items] of pendingThreadItems) {
-				const existing = updated[key] || [];
-				updated[key] = [...existing, ...items].slice(-MAX_TOOL_ITEMS_PER_AGENT);
-			}
-			return updated;
-		});
-		pendingThreadItems.clear();
-	}
-}
-
-function scheduleBatchFlush() {
-	if (batchRafId === null) {
-		if (typeof requestAnimationFrame !== "undefined") {
-			batchRafId = requestAnimationFrame(flushToolItemBatch);
-		} else {
-			// Node/test environment: flush synchronously on next microtask
-			batchRafId = -1;
-			queueMicrotask(flushToolItemBatch);
-		}
-	}
-}
 
 // Strip markdown from the first non-empty line of message content.
 function extractPlainText(content) {
@@ -265,12 +198,7 @@ export function switchProject(projectName, webhookPort) {
 	});
 	repoStatuses.set([]);
 	usageData.set([]);
-	agentClearTimeouts.forEach((t) => clearTimeout(t));
-	agentClearTimeouts.clear();
-	threadOwners.clear();
 	threadForkOwners.set({});
-	agentToolItems.set({});
-	threadToolItems.set({});
 	threadData.set(null);
 	threadOwnership.set({});
 	// Clear tracked threads when switching to a different project.
@@ -687,30 +615,6 @@ export function handleUpdate(update) {
 					return td;
 				});
 
-				// Schedule a delayed clear of thread tool activity when the owning fork posts a reply.
-				// Only the fork that produced the thread's tool items should trigger this clear —
-				// a coworker or lead posting to the same thread must not prematurely clear the display.
-				const threadOwner = threadOwners.get(msg.thread_parent_id);
-				if (msg.from && threadOwner && msg.from === threadOwner) {
-					const threadClearKey = `thread:${msg.thread_parent_id}`;
-					if (agentClearTimeouts.has(threadClearKey)) {
-						clearTimeout(agentClearTimeouts.get(threadClearKey));
-					}
-					const timeout = setTimeout(() => {
-						agentClearTimeouts.delete(threadClearKey);
-						threadOwners.delete(msg.thread_parent_id);
-						// Note: threadForkOwners is NOT cleared here — the fork owner
-						// persists as long as the fork exists. It's only cleared when
-						// a thread_ownership event with has_dedicated_session=false arrives.
-						threadToolItems.update((byThread) => {
-							const updated = { ...byThread };
-							delete updated[msg.thread_parent_id];
-							return updated;
-						});
-					}, TOOL_ITEMS_CLEAR_DELAY_MS);
-					agentClearTimeouts.set(threadClearKey, timeout);
-				}
-
 				// Increment reply_count on the parent message in messagesByChannel
 				messagesByChannel.update((byChannel) => {
 					const channelMsgs = byChannel[channelName];
@@ -813,37 +717,6 @@ export function handleUpdate(update) {
 					}
 					return channelList;
 				});
-
-				// Schedule a delayed clear of tool activity when a sender posts a message.
-				// Using a delay (rather than clearing immediately) keeps recently completed
-				// tool calls visible long enough for the user to read them before the
-				// activity strip resets. Only applies to top-level messages; a thread
-				// reply mid-task should not clear the coworker's tool activity.
-				//
-				// Key by channelName (not msg.from): agentToolItems is channel-keyed, so
-				// the correct key to delete is the channel the message was posted to.
-				// Exception: skip when the main lead posts to the main channel — deleting
-				// 'midtown' tool items on every lead response would clear in-progress activity.
-				const fromLower = msg.from ? msg.from.toLowerCase() : "";
-				const isMainLeadOnMainChannel = channelName === "midtown" && (fromLower === "lead" || fromLower === "midtown");
-				if (msg.from && !isMainLeadOnMainChannel) {
-					if (agentClearTimeouts.has(channelName)) {
-						clearTimeout(agentClearTimeouts.get(channelName));
-					}
-					const timeout = setTimeout(() => {
-						agentClearTimeouts.delete(channelName);
-						agentToolItems.update((byAgent) => {
-							const updated = { ...byAgent };
-							delete updated[channelName];
-							return updated;
-						});
-					}, TOOL_ITEMS_CLEAR_DELAY_MS);
-					agentClearTimeouts.set(channelName, timeout);
-					// Note: pending questions are NOT cleared on channel messages. A coworker
-					// posting a /me status update does not mean their question was answered.
-					// Questions are cleared by: (1) the daemon via nudge delivery, (2) optimistic
-					// removal in sendAnswer(), or (3) a new coworker_question event replacing it.
-				}
 			}
 			break;
 		}
@@ -865,44 +738,11 @@ export function handleUpdate(update) {
 			});
 			break;
 		}
-		case "universal_items": {
-			// Tool call activity keyed by channel or thread.
-			// data: { agent_name, channel, thread_parent_id?, items }
-			// When thread_parent_id is present, the items belong to a forked lead working
-			// in a thread — route them to threadToolItems so they appear in the thread panel
-			// instead of the main channel activity strip.
-			//
-			// Items are batched via requestAnimationFrame to coalesce rapid bursts
-			// (common during active coding) into a single store update per frame.
-			const threadId = update.data.thread_parent_id;
-			if (threadId) {
-				// Track which fork session owns this thread's tool items
-				if (update.data.agent_name) {
-					threadOwners.set(threadId, update.data.agent_name);
-					threadForkOwners.update((m) => ({ ...m, [threadId]: update.data.agent_name }));
-				}
-				if (agentClearTimeouts.has(`thread:${threadId}`)) {
-					clearTimeout(agentClearTimeouts.get(`thread:${threadId}`));
-					agentClearTimeouts.delete(`thread:${threadId}`);
-				}
-				const pending = pendingThreadItems.get(threadId) || [];
-				pending.push(...update.data.items);
-				pendingThreadItems.set(threadId, pending);
-				scheduleBatchFlush();
-			} else {
-				// Channel-scoped: main lead or channel lead tool calls.
-				const channelKey = update.data.channel ?? get(activeProject);
-				if (agentClearTimeouts.has(channelKey)) {
-					clearTimeout(agentClearTimeouts.get(channelKey));
-					agentClearTimeouts.delete(channelKey);
-				}
-				const pending = pendingChannelItems.get(channelKey) || [];
-				pending.push(...update.data.items);
-				pendingChannelItems.set(channelKey, pending);
-				scheduleBatchFlush();
-			}
+		case "universal_items":
+			// No-op: tool call display now reads from msg.tool_data on channel messages.
+			// The daemon still broadcasts these during Phase 2 for comparison; they are
+			// silently ignored here. Phase 3 will remove the broadcast entirely.
 			break;
-		}
 		case "coworker_question":
 			pendingQuestions.update((qs) => {
 				// Replace existing question from same coworker (only one question per coworker at a time)
