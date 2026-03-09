@@ -1706,6 +1706,15 @@ pub(super) fn check_for_state_gc(
             continue;
         }
 
+        // Channel lead sessions are long-lived and should always be available
+        // for resume — never garbage-collect them.
+        if record.coworker_type == "channel-lead" {
+            if let Some(ref tid) = record.task_id {
+                surviving_task_ids.insert(tid.clone());
+            }
+            continue;
+        }
+
         // Dead non-reviewer sessions: check retention
         let age = now.signed_duration_since(record.last_active);
         if !record.resume_on_startup && age >= retention_period {

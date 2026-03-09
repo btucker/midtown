@@ -367,6 +367,26 @@ pub(super) async fn handle_channel_post(
             };
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         } else if is_topic_channel {
+            // When the channel lead is dead and in respawn cooldown, clear the
+            // cooldown so ensure_channel_leads_alive respawns it on the next tick.
+            // This mirrors the main lead's expedite_lead_respawn_on_user_message.
+            let session_name = crate::launch::channel_lead_session_name(channel_name);
+            let channel_lead_is_dead = !state.session_manager.is_alive(&session_name).await
+                && !state
+                    .attached_coworkers
+                    .lock()
+                    .unwrap()
+                    .contains_key(&channel_name.to_lowercase());
+            if channel_lead_is_dead {
+                let mut stop_times = state.coworker_stop_times.write().unwrap();
+                if stop_times.remove(channel_name).is_some() {
+                    info!(
+                        "Cleared channel lead '{}' respawn cooldown — user message while channel lead is dead",
+                        channel_name
+                    );
+                }
+            }
+
             // Resolve the fork session for this message:
             // - For thread replies: route to the existing dedicated session bound to that thread.
             // - For new top-level messages: no auto-fork. The channel lead handles directly.
