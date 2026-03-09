@@ -91,6 +91,7 @@ impl WorktreeManager {
         // If the worktree exists and is registered, update it to current HEAD
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
             self.update_lead_worktree(&worktree_path)?;
+            crate::settings::ensure_auto_compact_settings(&worktree_path);
             return Ok(worktree_path);
         }
 
@@ -142,12 +143,14 @@ impl WorktreeManager {
                     ));
                 }
 
+                crate::settings::ensure_auto_compact_settings(&worktree_path);
                 return Ok(worktree_path);
             }
 
             return Err(WorktreeError::GitError(stderr));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
@@ -327,6 +330,7 @@ impl WorktreeManager {
 
         // Check if worktree already exists and is valid (idempotent)
         if worktree_path.exists() && self.is_worktree_registered(&worktree_path) {
+            crate::settings::ensure_auto_compact_settings(&worktree_path);
             return Ok(worktree_path);
         }
 
@@ -380,12 +384,14 @@ impl WorktreeManager {
                     ));
                 }
 
+                crate::settings::ensure_auto_compact_settings(&worktree_path);
                 return Ok(worktree_path);
             }
 
             return Err(WorktreeError::GitError(stderr));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
@@ -408,6 +414,7 @@ impl WorktreeManager {
                     worktree_id, actual_branch
                 )));
             }
+            crate::settings::ensure_auto_compact_settings(&worktree_path);
             return Ok(worktree_path);
         }
 
@@ -562,6 +569,7 @@ impl WorktreeManager {
             )));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
