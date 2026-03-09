@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { groupToolRuns } from "./toolRunGrouping.js";
+import { groupTimelineToolRuns, groupToolRuns } from "./toolRunGrouping.js";
 
 function msg(id, content, toolData = null) {
 	return { id, content, tool_data: toolData, timestamp: new Date().toISOString() };
@@ -74,5 +74,92 @@ describe("groupToolRuns", () => {
 		];
 		const groups = groupToolRuns(msgs);
 		expect(groups[0].lastTimestamp).toBe("2026-01-01T00:01:00Z");
+	});
+});
+
+// Helpers for timeline entries
+function timelineMsg(id, content, toolData = null) {
+	return {
+		type: "message",
+		data: {
+			id,
+			content,
+			tool_data: toolData,
+			timestamp: new Date().toISOString(),
+		},
+		timestamp: new Date().toISOString(),
+		msgIndex: 0,
+	};
+}
+
+function timelineToolMsg(id, tools) {
+	return timelineMsg(
+		id,
+		"",
+		tools.map((name) => ({ tool_name: name, input: {} })),
+	);
+}
+
+function timelineEdit(id) {
+	return {
+		type: "edit",
+		data: {
+			itemId: id,
+			filePath: "test.js",
+			oldString: "a",
+			newString: "b",
+			timestamp: new Date().toISOString(),
+		},
+		timestamp: new Date().toISOString(),
+		msgIndex: -1,
+	};
+}
+
+describe("groupTimelineToolRuns", () => {
+	it("returns empty array for empty input", () => {
+		expect(groupTimelineToolRuns([])).toEqual([]);
+	});
+
+	it("groups consecutive tool-only timeline entries", () => {
+		const entries = [timelineToolMsg("1", ["Bash"]), timelineToolMsg("2", ["Read", "Grep"])];
+		const groups = groupTimelineToolRuns(entries);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].type).toBe("tool-run");
+		expect(groups[0].toolCount).toBe(3);
+		expect(groups[0].entries).toEqual(entries);
+	});
+
+	it("does not group a single tool-only entry", () => {
+		const entries = [timelineToolMsg("1", ["Bash"])];
+		const groups = groupTimelineToolRuns(entries);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].type).toBe("message");
+	});
+
+	it("edit entries break tool runs", () => {
+		const entries = [timelineToolMsg("1", ["Bash"]), timelineEdit("e1"), timelineToolMsg("2", ["Read"])];
+		const groups = groupTimelineToolRuns(entries);
+		expect(groups).toHaveLength(3);
+		expect(groups[0].type).toBe("message"); // single tool, not grouped
+		expect(groups[1].type).toBe("edit");
+		expect(groups[2].type).toBe("message"); // single tool, not grouped
+	});
+
+	it("text messages break tool runs", () => {
+		const entries = [
+			timelineToolMsg("1", ["Bash"]),
+			timelineToolMsg("2", ["Read"]),
+			timelineMsg("3", "Done!", null),
+			timelineToolMsg("4", ["Edit"]),
+			timelineToolMsg("5", ["Bash"]),
+		];
+		const groups = groupTimelineToolRuns(entries);
+		expect(groups).toHaveLength(3);
+		expect(groups[0].type).toBe("tool-run");
+		expect(groups[0].toolCount).toBe(2);
+		expect(groups[1].type).toBe("message");
+		expect(groups[1].data.id).toBe("3");
+		expect(groups[2].type).toBe("tool-run");
+		expect(groups[2].toolCount).toBe(2);
 	});
 });

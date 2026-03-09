@@ -45,3 +45,40 @@ export function groupToolRuns(messages) {
 
 	return segments;
 }
+
+/**
+ * Group consecutive tool-only timeline entries into collapsible runs.
+ * Works on the merged timeline array from ThreadPanel (entries have {type, data, timestamp, msgIndex}).
+ * Edit entries and text message entries break runs.
+ * Single tool-only entries are NOT grouped.
+ */
+export function groupTimelineToolRuns(timeline) {
+	const segments = [];
+	let currentRun = [];
+
+	function flushRun() {
+		if (currentRun.length >= 2) {
+			const toolCount = currentRun.reduce((sum, e) => sum + (e.data.tool_data?.length || 0), 0);
+			segments.push({
+				type: "tool-run",
+				entries: currentRun,
+				toolCount,
+				lastTimestamp: currentRun[currentRun.length - 1].data.timestamp,
+			});
+		} else {
+			for (const e of currentRun) segments.push(e);
+		}
+		currentRun = [];
+	}
+
+	for (const entry of timeline) {
+		if (entry.type === "message" && isToolOnly(entry.data)) {
+			currentRun.push(entry);
+		} else {
+			flushRun();
+			segments.push(entry);
+		}
+	}
+	flushRun();
+	return segments;
+}
