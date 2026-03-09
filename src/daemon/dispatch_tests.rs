@@ -4809,3 +4809,116 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
         );
     }
 }
+
+#[test]
+fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
+    // Bug: dispatch_owned_pending_tasks on_failure lacks ResetTaskToPending.
+    // Without it, the task keeps its owner after spawn failure. When cooldown
+    // expires, the same coworker retries → fails → cooldown → infinite loop.
+    //
+    // Fix: add ResetTaskToPending to on_failure so the task loses its owner
+    // and can be picked up by a different coworker.
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            "2059".to_string(),
+            "Add new feature".to_string(),
+            "columbus".to_string(),
+        )],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Find the SpawnCoworkerWithCallbacks and check its on_failure
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SpawnCoworkerWithCallbacks { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should emit SpawnCoworkerWithCallbacks for owned pending task");
+
+    // on_failure MUST contain ResetTaskToPending for task 2059
+    let has_reset = on_failure.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ResetTaskToPending { task_id, .. } if task_id == "2059"
+        )
+    });
+    assert!(
+        has_reset,
+        "on_failure must include ResetTaskToPending to clear ownership after spawn failure. \
+         Without it, the task stays owned by the failed coworker and loops forever. \
+         Got on_failure: {:?}",
+        on_failure
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
+    // Bug: assign_pending_tasks AssignAndSpawn on_failure lacks ResetTaskToPending.
+    // Without it, on spawn failure the task can cycle through all coworker names
+    // (each getting a cooldown) before starting over when cooldowns expire.
+    //
+    // Fix: add ResetTaskToPending to on_failure for consistency with all other
+    // spawn failure paths and to clear any in-memory task assignment state.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2059".to_string(),
+            subject: "Add new feature".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Find the AssignAndSpawn and check its on_failure
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should emit AssignAndSpawn for unowned pending task");
+
+    // on_failure MUST contain ResetTaskToPending for task 2059
+    let has_reset = on_failure.iter().any(|e| {
+        matches!(
+            e,
+            Effect::ResetTaskToPending { task_id, .. } if task_id == "2059"
+        )
+    });
+    assert!(
+        has_reset,
+        "on_failure must include ResetTaskToPending to clear task state after spawn failure. \
+         Without it, the task cycles through all coworker names on failure. \
+         Got on_failure: {:?}",
+        on_failure
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
