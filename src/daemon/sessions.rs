@@ -1538,6 +1538,44 @@ impl SessionManager {
             .map(|(output, _, _)| output)
     }
 
+    /// Get a short tail of recent session output for diagnostics (e.g., crash messages).
+    ///
+    /// Like `get_output` but reads only the last `max_lines` JSONL events instead
+    /// of 200, producing a compact summary suitable for ops messages.
+    pub async fn get_tail_output(&self, name: &str, max_lines: usize) -> Option<String> {
+        let log_path = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .values()
+                .find(|cs| cs.name == name)
+                .map(|cs| cs.output_log_path.clone())
+                .unwrap_or_else(|| crate::paths::headless_output_file(&self.repo_name, name))
+        };
+
+        let content = tokio::task::spawn_blocking(move || std::fs::read_to_string(log_path))
+            .await
+            .ok()?
+            .ok()?;
+
+        if content.is_empty() {
+            return None;
+        }
+
+        let lines: Vec<String> = content
+            .lines()
+            .rev()
+            .take(max_lines)
+            .map(|s| s.to_string())
+            .collect();
+
+        let output = format_events_as_rich_text(lines.iter().rev().map(|s| s.as_str()));
+        if output == "(no output yet)" {
+            None
+        } else {
+            Some(output)
+        }
+    }
+
     /// Get recent output for a coworker alongside the log file path and byte offset.
     ///
     /// Returns a rich formatted string that includes:
