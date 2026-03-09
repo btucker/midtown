@@ -3814,9 +3814,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let fork_thread_id = state.fork_bound_threads.lock().unwrap().get(&name).cloned();
                     let fork_channel = state.fork_bound_channels.lock().unwrap().get(&name).cloned();
 
-                    // Capture tail output BEFORE remove (remove deletes the log file).
-                    let tail_output = state.session_manager.get_tail_output(&name, 20).await;
-
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
@@ -4078,31 +4075,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "Coworker"
                         };
 
-                        // Format message with stderr and tail output (captured above)
+                        // Format message with stderr
                         let message_text = helpers::format_unexpected_exit_message(
                             session_role,
                             &name,
                             stderr_by_name.get(&name).map(|v| v.as_slice()),
-                            tail_output.as_deref(),
                         );
 
-                        // Lead exits go to main channel (user needs to see them).
-                        // Coworker/channel-lead exits go to #ops (operational noise).
-                        if is_lead {
-                            let msg = crate::message::Message::text("midtown", message_text);
-                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                                warn!("Failed to post session exit message for {}: {}", name, e);
-                            }
-                        } else {
-                            let msg = crate::message::Message::for_channel(
-                                constants::OPS_CHANNEL,
-                                "midtown",
-                                message_text,
-                                crate::message::MessageType::Text,
-                            );
-                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                                warn!("Failed to post session exit message for {}: {}", name, e);
-                            }
+                        // All exit messages go to #ops (operational noise).
+                        let msg = crate::message::Message::for_channel(
+                            constants::OPS_CHANNEL,
+                            "midtown",
+                            message_text,
+                            crate::message::MessageType::Text,
+                        );
+                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                            warn!("Failed to post session exit message for {}: {}", name, e);
                         }
                     }
                 }

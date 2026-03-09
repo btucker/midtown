@@ -1494,25 +1494,25 @@ fn get_merged_task_pr_returns_none_for_unknown_task() {
 // ============================================================================
 
 #[test]
-fn test_unexpected_exit_message_no_stderr_no_tail() {
-    let msg = format_unexpected_exit_message("Coworker", "park", None, None);
+fn test_unexpected_exit_message_no_stderr() {
+    let msg = format_unexpected_exit_message("Coworker", "park", None);
     assert_eq!(msg, "⚠️ Coworker park session exited unexpectedly");
 }
 
 #[test]
-fn test_unexpected_exit_message_empty_stderr_no_tail() {
+fn test_unexpected_exit_message_empty_stderr() {
     let empty: Vec<String> = vec![];
-    let msg = format_unexpected_exit_message("Coworker", "park", Some(&empty), None);
+    let msg = format_unexpected_exit_message("Coworker", "park", Some(&empty));
     assert_eq!(msg, "⚠️ Coworker park session exited unexpectedly");
 }
 
 #[test]
-fn test_unexpected_exit_message_with_stderr_no_tail() {
+fn test_unexpected_exit_message_with_stderr() {
     let stderr = vec![
         "error: something went wrong".to_string(),
         "panic at line 42".to_string(),
     ];
-    let msg = format_unexpected_exit_message("Coworker", "park", Some(&stderr), None);
+    let msg = format_unexpected_exit_message("Coworker", "park", Some(&stderr));
     assert!(msg.contains("⚠️ Coworker park session exited unexpectedly"));
     assert!(msg.contains("Stderr (2 lines)"));
     assert!(msg.contains("error: something went wrong"));
@@ -1520,31 +1520,9 @@ fn test_unexpected_exit_message_with_stderr_no_tail() {
 }
 
 #[test]
-fn test_unexpected_exit_message_with_stderr_and_tail() {
-    let stderr = vec!["error: crash".to_string()];
-    let tail = "Let me check that file.\n**[Read]**\n```json\n{}\n```";
-    let msg = format_unexpected_exit_message("Coworker", "madison", Some(&stderr), Some(tail));
-    assert!(msg.contains("⚠️ Coworker madison session exited unexpectedly"));
-    assert!(msg.contains("Stderr (1 lines)"));
-    assert!(msg.contains("error: crash"));
-    assert!(msg.contains("Session tail"));
-    assert!(msg.contains("Let me check that file."));
-}
-
-#[test]
-fn test_unexpected_exit_message_tail_only_no_stderr() {
-    let tail = "Running cargo build...";
-    let msg = format_unexpected_exit_message("Channel lead", "park", None, Some(tail));
-    assert!(msg.contains("⚠️ Channel lead park session exited unexpectedly"));
-    assert!(msg.contains("Session tail"));
-    assert!(msg.contains("Running cargo build..."));
-    assert!(!msg.contains("Stderr"));
-}
-
-#[test]
 fn test_unexpected_exit_message_stderr_truncated_to_10() {
     let stderr: Vec<String> = (0..20).map(|i| format!("line {}", i)).collect();
-    let msg = format_unexpected_exit_message("Coworker", "park", Some(&stderr), None);
+    let msg = format_unexpected_exit_message("Coworker", "park", Some(&stderr));
     assert!(msg.contains("Stderr (20 lines)"));
     // Should contain last 10 lines (10-19), not first 10 (0-9)
     assert!(msg.contains("line 19"));
@@ -1554,6 +1532,6 @@ fn test_unexpected_exit_message_stderr_truncated_to_10() {
 
 #[test]
 fn test_unexpected_exit_message_lead_role() {
-    let msg = format_unexpected_exit_message("Lead", "midtown", None, None);
+    let msg = format_unexpected_exit_message("Lead", "midtown", None);
     assert_eq!(msg, "⚠️ Lead midtown session exited unexpectedly");
 }
