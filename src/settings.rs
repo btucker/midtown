@@ -155,6 +155,41 @@ pub fn write_coworker_initial_prompt_file(name: &str, prompt: &str) -> crate::Re
     Ok(path)
 }
 
+/// Ensure `.claude/settings.json` with `autoCompact: true` exists in the given directory.
+///
+/// Fork sessions receive `--setting-sources project,local` (which reads
+/// `.claude/settings.json` from the cwd) but NOT `--settings <file>` (skipped
+/// on resume to avoid duplicate tool registrations). Writing this file into
+/// each worktree is the project-agnostic mechanism for fork sessions to get
+/// autoCompact, preventing "Prompt is too long" errors when conversations
+/// grow beyond the context window.
+///
+/// This is idempotent: if the file already exists with `autoCompact: true`,
+/// it's left unchanged. If it exists without `autoCompact`, the key is added.
+pub fn ensure_auto_compact_settings(dir: &std::path::Path) {
+    let claude_dir = dir.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+
+    // If file already exists with autoCompact: true, no-op
+    if let Ok(content) = std::fs::read_to_string(&settings_path)
+        && let Ok(existing) = serde_json::from_str::<serde_json::Value>(&content)
+    {
+        if existing.get("autoCompact") == Some(&serde_json::Value::Bool(true)) {
+            return;
+        }
+        // File exists but missing autoCompact — add it
+        let mut obj = existing;
+        obj["autoCompact"] = serde_json::Value::Bool(true);
+        let _ = std::fs::write(&settings_path, serde_json::to_string_pretty(&obj).unwrap());
+        return;
+    }
+
+    // File doesn't exist or isn't valid JSON — write a minimal one
+    if std::fs::create_dir_all(&claude_dir).is_ok() {
+        let _ = std::fs::write(&settings_path, "{\n  \"autoCompact\": true\n}\n");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -251,32 +286,65 @@ mod tests {
         );
     }
 
-    /// `.claude/settings.json` must exist and contain `autoCompact: true`.
+    /// `ensure_auto_compact_settings` creates `.claude/settings.json` with autoCompact.
     ///
     /// Fork sessions don't receive `--settings <file>` (they use `--resume --fork-session`
     /// which skips the explicit settings file to avoid duplicate tool registrations).
     /// However, ALL sessions get `--setting-sources project,local`, so they read
-    /// `.claude/settings.json`. This project-level file is the only way fork sessions
-    /// receive `autoCompact: true` — without it, forks hit "Prompt is too long" errors
-    /// when conversations grow beyond the context window.
+    /// `.claude/settings.json`. Writing this file into worktrees is the project-agnostic
+    /// mechanism for fork sessions to get `autoCompact: true`.
     ///
-    /// Regression test for !2177.
+    /// Regression test for !2177 / !2180.
     #[test]
-    fn test_project_settings_has_auto_compact() {
-        let project_settings_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".claude/settings.json");
-        assert!(
-            project_settings_path.exists(),
-            ".claude/settings.json must exist so fork sessions get autoCompact \
-             (forks don't receive --settings, only --setting-sources project,local)"
-        );
-        let content = std::fs::read_to_string(&project_settings_path)
-            .expect("should be able to read .claude/settings.json");
-        let settings: serde_json::Value =
-            serde_json::from_str(&content).expect(".claude/settings.json should be valid JSON");
-        assert_eq!(
-            settings["autoCompact"], true,
-            ".claude/settings.json must have autoCompact: true for fork sessions"
-        );
+    fn test_ensure_auto_compact_creates_settings() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        // File doesn't exist yet
+        let settings_path = dir.path().join(".claude/settings.json");
+        assert!(!settings_path.exists());
+
+        // Call should create it
+        ensure_auto_compact_settings(dir.path());
+        assert!(settings_path.exists());
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["autoCompact"], true);
+    }
+
+    #[test]
+    fn test_ensure_auto_compact_idempotent() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+
+        // Create the file first
+        ensure_auto_compact_settings(dir.path());
+
+        // Call again — should not error
+        ensure_auto_compact_settings(dir.path());
+
+        let settings_path = dir.path().join(".claude/settings.json");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["autoCompact"], true);
+    }
+
+    #[test]
+    fn test_ensure_auto_compact_preserves_existing_keys() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let claude_dir = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+
+        // Write a settings file with other keys but no autoCompact
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{"someKey": "someValue"}"#,
+        )
+        .unwrap();
+
+        ensure_auto_compact_settings(dir.path());
+
+        let content = std::fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+        let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(settings["autoCompact"], true);
+        assert_eq!(settings["someKey"], "someValue");
     }
 }

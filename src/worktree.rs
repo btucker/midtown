@@ -142,12 +142,14 @@ impl WorktreeManager {
                     ));
                 }
 
+                crate::settings::ensure_auto_compact_settings(&worktree_path);
                 return Ok(worktree_path);
             }
 
             return Err(WorktreeError::GitError(stderr));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
@@ -380,12 +382,14 @@ impl WorktreeManager {
                     ));
                 }
 
+                crate::settings::ensure_auto_compact_settings(&worktree_path);
                 return Ok(worktree_path);
             }
 
             return Err(WorktreeError::GitError(stderr));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
@@ -562,6 +566,7 @@ impl WorktreeManager {
             )));
         }
 
+        crate::settings::ensure_auto_compact_settings(&worktree_path);
         Ok(worktree_path)
     }
 
