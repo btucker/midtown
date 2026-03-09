@@ -1201,11 +1201,15 @@ pub(super) fn build_fork_config(
         persist_session: true,
         resume_session_id: Some(calling_session_id.to_string()),
         inactivity_timeout: None,
-        settings_path: match crate::settings::write_lead_settings_file() {
-            Ok(path) => Some(path.to_string_lossy().to_string()),
-            Err(e) => {
-                warn!("Failed to write lead settings file for fork session: {e}");
-                None
+        settings_path: if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
+            None
+        } else {
+            match crate::settings::write_lead_settings_file() {
+                Ok(path) => Some(path.to_string_lossy().to_string()),
+                Err(e) => {
+                    warn!("Failed to write lead settings file for fork session: {e}");
+                    None
+                }
             }
         },
         setting_sources: None,

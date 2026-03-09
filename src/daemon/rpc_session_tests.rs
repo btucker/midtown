@@ -1506,3 +1506,29 @@ fn test_build_fork_config_sets_lead_settings_path() {
     }
     // Either way, the function should not panic — graceful degradation is the key invariant.
 }
+
+/// Codex sessions reject `settings_path` in `codex_launch_plan_from_config`,
+/// so `build_fork_config` must leave it as `None` for Codex auth provider.
+#[test]
+fn test_build_fork_config_skips_settings_path_for_codex() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-codex-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Codex,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        headless_config.settings_path.is_none(),
+        "Codex forks must have settings_path = None to avoid codex_launch_plan_from_config rejection"
+    );
+}
