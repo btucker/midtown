@@ -7,7 +7,7 @@ let prevThreadId = null;
 </script>
 
 <script>
-  import { threadData, agentToolItems, threadToolItems, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
+  import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
   import { sendMessage, closeThread, getApiBase, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
@@ -224,20 +224,22 @@ let prevThreadId = null;
     prevThreadId = tid
   })
 
-  // Clear thinking when real InProgress tool items arrive.
-  // When a fork is handling the thread, its tool calls land in threadToolItems — use
-  // those exclusively to avoid channel-lead crosstalk (the original bug). When no fork
-  // exists (threadToolItems empty), the channel lead handles the reply and its tool
-  // events go to agentToolItems — fall back to those so the thinking indicator clears.
+  // Clear thinking when in-progress tool blocks appear on thread messages.
+  // A tool block is in-progress when output === null and no later block with
+  // the same call_id has output set (i.e. completed). We only clear thinking
+  // when genuinely new work is happening, not just because historical messages
+  // have completed tool_data.
   $effect(() => {
-    const parentId = $threadData?.parentMessage?.id
-    const channelName = $threadData?.channelName ?? 'midtown'
-    const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
-    const channelItems = $agentToolItems[channelName] || []
-    // Prefer thread-scoped items when a fork is active (any items present);
-    // fall back to channel items when no fork has produced thread tool calls.
-    const items = threadItems.length > 0 ? threadItems : channelItems
-    const hasInProgress = items.some((item) => item.status === 'InProgress')
+    const msgs = $threadData?.messages ?? []
+    const completedCallIds = new Set()
+    for (const msg of msgs) {
+      for (const block of msg.tool_data ?? []) {
+        if (block.call_id && block.output != null) completedCallIds.add(block.call_id)
+      }
+    }
+    const hasInProgress = msgs.some((m) =>
+      m.tool_data?.some((b) => b.output == null && b.call_id && !completedCallIds.has(b.call_id))
+    )
     if (hasInProgress) {
       untrack(() => { thinking = false })
       if (thinkingTimeout) {
@@ -270,53 +272,35 @@ let prevThreadId = null;
 
   let editDiffs = $derived.by(() => {
     if (!showInlineDiffs || !$threadData) return []
-    const channelName = $threadData.channelName
-    const parentId = $threadData.parentMessage?.id
-    // DM channels use channel-keyed tool items; non-DM channels with inline
-    // enabled prefer thread-scoped items (from fork sessions) and fall back
-    // to channel-level items.
-    const threadItems = parentId ? ($threadToolItems[parentId] || []) : []
-    const channelItems = $agentToolItems[channelName] || []
-    const items = isDmChannel ? channelItems : (threadItems.length > 0 ? threadItems : channelItems)
-    // Build result status map: call_id → 'error' | 'ok'
-    // so we can skip diffs for failed Edit/Write calls.
-    const resultStatus = {}
-    for (const item of items) {
-      if (!item.content) continue
-      for (const part of item.content) {
-        if (part.ToolResult) {
-          resultStatus[part.ToolResult.call_id] = part.ToolResult.is_error ? 'error' : 'ok'
-        }
-      }
-    }
+    // Unified path: extract Edit/Write diffs from msg.tool_data on thread messages.
+    // Works identically for DM and topic channels now that both carry tool_data.
+    const allMessages = [...($threadData.parentMessage ? [$threadData.parentMessage] : []), ...($threadData.messages ?? [])]
     const diffs = []
-    for (const item of items) {
-      if (!item.content) continue
-      for (const part of item.content) {
-        if (part.ToolCall && (part.ToolCall.name === 'Edit' || part.ToolCall.name === 'Write')) {
-          const callId = part.ToolCall.call_id
-          if (resultStatus[callId] === 'error') continue
-          const input = part.ToolCall.input || {}
-          // Edit has file_path + old_string + new_string; Write has file_path + content
-          if (part.ToolCall.name === 'Edit' && (input.old_string || input.new_string)) {
-            diffs.push({
-              type: 'edit',
-              timestamp: item.timestamp,
-              itemId: item.item_id,
-              filePath: input.file_path || '',
-              oldString: input.old_string || '',
-              newString: input.new_string || '',
-            })
-          } else if (part.ToolCall.name === 'Write' && input.content) {
-            diffs.push({
-              type: 'edit',
-              timestamp: item.timestamp,
-              itemId: item.item_id,
-              filePath: input.file_path || '',
-              oldString: '',
-              newString: input.content || '',
-            })
-          }
+    for (const msg of allMessages) {
+      if (!msg.tool_data?.length) continue
+      for (const block of msg.tool_data) {
+        if (block.tool_name !== 'Edit' && block.tool_name !== 'Write') continue
+        // Skip failed tool calls
+        if (block.error) continue
+        const input = block.input || {}
+        if (block.tool_name === 'Edit' && (input.old_string || input.new_string)) {
+          diffs.push({
+            type: 'edit',
+            timestamp: msg.timestamp,
+            itemId: block.call_id || msg.id,
+            filePath: input.file_path || '',
+            oldString: input.old_string || '',
+            newString: input.new_string || '',
+          })
+        } else if (block.tool_name === 'Write' && input.content) {
+          diffs.push({
+            type: 'edit',
+            timestamp: msg.timestamp,
+            itemId: block.call_id || msg.id,
+            filePath: input.file_path || '',
+            oldString: '',
+            newString: input.content || '',
+          })
         }
       }
     }
@@ -794,7 +778,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Input -->
     <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
@@ -1048,7 +1032,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
 
     <!-- Mobile input -->
     <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>

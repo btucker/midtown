@@ -315,6 +315,62 @@ export function getChannelPrs(channelName, kanban) {
 	return filterPrsByChannel(kanban.review, channelName, taskChannelMap);
 }
 
+// ── Tool block derivation utilities ───────────────────────────────────────────
+
+/**
+ * Collect all tool_data blocks from an array of channel messages.
+ */
+export function collectToolBlocks(messages) {
+	const blocks = [];
+	for (const msg of messages) {
+		if (msg.tool_data?.length) {
+			for (const block of msg.tool_data) {
+				blocks.push(block);
+			}
+		}
+	}
+	return blocks;
+}
+
+/**
+ * Determine whether any tool block is in-progress: output === null and no
+ * later block with the same call_id has output set (completed).
+ */
+export function hasInProgressToolBlocks(allToolBlocks) {
+	const completedCallIds = new Set();
+	for (const block of allToolBlocks) {
+		if (block.call_id && block.output != null) {
+			completedCallIds.add(block.call_id);
+		}
+	}
+	return allToolBlocks.some((block) => block.output == null && block.call_id && !completedCallIds.has(block.call_id));
+}
+
+/**
+ * Find the most recent tool call entry for inline display.
+ * Returns { toolName, callId, status } or null.
+ */
+export function getMostRecentToolCall(allToolBlocks) {
+	if (allToolBlocks.length === 0) return null;
+	const resultStatus = {};
+	for (const block of allToolBlocks) {
+		if (block.call_id && block.output != null) {
+			resultStatus[block.call_id] = block.error ? "error" : "ok";
+		}
+	}
+	for (let i = allToolBlocks.length - 1; i >= 0; i--) {
+		const block = allToolBlocks[i];
+		if (block.tool_name) {
+			return {
+				toolName: block.tool_name,
+				callId: block.call_id,
+				status: resultStatus[block.call_id] || "InProgress",
+			};
+		}
+	}
+	return null;
+}
+
 // ── Mobile message tap handling ───────────────────────────────────────────────
 
 /**

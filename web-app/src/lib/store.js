@@ -199,17 +199,6 @@ export const activeChannelTab = writable({});
 export const channelSettings = writable(loadFromLocalStorage("midtown_channel_settings", {}));
 channelSettings.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_settings", v));
 
-// Recent tool call activity keyed by channel name.
-// 'midtown' holds the main lead's tool calls; topic channel names hold their channel lead's tool calls.
-// Format: { 'midtown': [{ item_id, kind, content, status, timestamp }, ...], 'web': [...], ... }
-// Each array holds the most recent items (capped at MAX_TOOL_ITEMS_PER_AGENT) for display.
-export const agentToolItems = writable({});
-
-// Thread-scoped tool call activity keyed by thread parent message ID.
-// When a forked lead works in a thread, its tool calls are stored here instead of agentToolItems.
-// Format: { 'msg-1234': [{ item_id, kind, content, status, timestamp }, ...], ... }
-export const threadToolItems = writable({});
-
 // Pending questions from coworkers waiting for user input
 // Format: [{ id, coworker_name, question, timestamp }, ...]
 export const pendingQuestions = writable([]);
