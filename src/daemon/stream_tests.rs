@@ -390,13 +390,13 @@ fn test_process_lead_output_aggregates_multiple_events() {
 }
 
 #[test]
-fn test_process_lead_output_empty_text_not_posted() {
+fn test_process_lead_output_empty_text_posts_tool_data_only() {
     let mut events = HashMap::new();
     events.insert(
         "lead".to_string(),
         vec![StreamEvent::Assistant {
             message: json!({
-                "content": [{"type": "tool_use", "name": "Read", "input": {}}]
+                "content": [{"type": "tool_use", "id": "tc_1", "name": "Read", "input": {}}]
             }),
             session_id: None,
             extra: json!(null),
@@ -404,10 +404,16 @@ fn test_process_lead_output_empty_text_not_posted() {
     );
 
     let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
-    assert!(
-        effects.is_empty(),
-        "Should not post if no text content found"
-    );
+    assert_eq!(effects.len(), 1, "Should post tool_data even without text");
+    match &effects[0] {
+        Effect::PostToChannel {
+            tool_data, message, ..
+        } => {
+            assert_eq!(message, "[Read]");
+            assert!(tool_data.is_some(), "should have tool_data");
+        }
+        _ => panic!("Expected PostToChannel with tool_data"),
+    }
 }
 
 // ── leading newline trimming tests ──────────────────────────────────
@@ -519,7 +525,7 @@ fn test_process_lead_output_channel_lead_text_posted_to_channel() {
 }
 
 #[test]
-fn test_process_lead_output_channel_lead_empty_text_not_posted() {
+fn test_process_lead_output_channel_lead_empty_text_posts_tool_data() {
     let mut events = HashMap::new();
     events.insert(
         "web".to_string(),
@@ -535,10 +541,22 @@ fn test_process_lead_output_channel_lead_empty_text_not_posted() {
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
     let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
-    assert!(
-        effects.is_empty(),
-        "Should not post empty text for channel lead"
-    );
+    assert_eq!(effects.len(), 1, "Should post tool_data even without text");
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            channel,
+            tool_data,
+            message,
+            ..
+        } => {
+            assert_eq!(sender, "web");
+            assert_eq!(channel.as_deref(), Some("web"));
+            assert_eq!(message, "[Read]");
+            assert!(tool_data.is_some());
+        }
+        _ => panic!("Expected PostToChannel with tool_data"),
+    }
 }
 
 #[test]
@@ -656,6 +674,329 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
         assert_eq!(message, "Reply from fork");
         assert_eq!(channel.as_deref(), Some("topic-omega"));
         assert!(auto_output, "stream output should be auto_output");
+    }
+}
+
+// ── process_lead_output tool_data tests ──────────────────────────────
+
+#[test]
+fn test_process_lead_output_tool_data_populated_for_main_lead() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Read",
+                    "input": {"file_path": "src/main.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    // Should have exactly 1 effect — the tool_data message (no text).
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            tool_data,
+            auto_output,
+            ..
+        } => {
+            assert_eq!(sender, "lead");
+            assert_eq!(message, "[Read]");
+            assert!(channel.is_none(), "Main lead posts to main channel");
+            assert!(*auto_output);
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Read");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_tool_data_and_text_produce_separate_effects() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [
+                    {"type": "text", "text": "Let me check that file."},
+                    {"type": "tool_use", "id": "tc_1", "name": "Bash", "input": {"command": "cat foo.rs"}}
+                ]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    assert_eq!(
+        effects.len(),
+        2,
+        "text and tool_data should be separate effects"
+    );
+
+    // First effect: text message
+    match &effects[0] {
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert_eq!(message, "Let me check that file.");
+            assert!(tool_data.is_none());
+        }
+        _ => panic!("Expected text PostToChannel"),
+    }
+
+    // Second effect: tool_data message
+    match &effects[1] {
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert_eq!(message, "[Bash]");
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Bash");
+        }
+        _ => panic!("Expected tool PostToChannel"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_tool_data_for_channel_lead() {
+    let mut events = HashMap::new();
+    events.insert(
+        "web".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Grep",
+                    "input": {"pattern": "TODO"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "some-session-id".to_string());
+
+    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            tool_data,
+            ..
+        } => {
+            assert_eq!(sender, "web");
+            assert_eq!(message, "[Grep]");
+            assert_eq!(channel.as_deref(), Some("web"));
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Grep");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_tool_data_for_fork_session() {
+    let mut events = HashMap::new();
+    events.insert(
+        "fork-1234".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Edit",
+                    "input": {"file_path": "src/lib.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut fork_bound_channels = HashMap::new();
+    fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            tool_data,
+            auto_output,
+            ..
+        } => {
+            assert_eq!(sender, "fork-1234");
+            assert_eq!(message, "[Edit]");
+            assert_eq!(channel.as_deref(), Some("topic-omega"));
+            assert!(*auto_output);
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0].tool_name, "Edit");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_batch_boundary_tool_use_without_result() {
+    // When a tool_use arrives without a tool_result in the same batch,
+    // the ToolBlock should have output: None (in-progress indicator).
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_pending",
+                    "name": "Bash",
+                    "input": {"command": "cargo build"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { tool_data, .. } => {
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert!(
+                blocks[0].output.is_none(),
+                "tool_use without result should have output: None"
+            );
+            assert!(!blocks[0].error);
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_tool_data_with_result_in_same_batch() {
+    // When tool_use and tool_result arrive in the same batch, output is populated.
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![
+            StreamEvent::Assistant {
+                message: json!({
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "tc_1",
+                        "name": "Bash",
+                        "input": {"command": "echo hello"}
+                    }]
+                }),
+                session_id: None,
+                extra: json!(null),
+            },
+            StreamEvent::User {
+                message: json!({
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "tc_1",
+                        "content": "hello"
+                    }]
+                }),
+                extra: json!(null),
+            },
+        ],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { tool_data, .. } => {
+            let blocks = tool_data.as_ref().expect("should have tool_data");
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(
+                blocks[0].output.as_ref().and_then(|v| v.as_str()),
+                Some("hello"),
+                "tool_use with result should have populated output"
+            );
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_multiple_tool_calls_in_summary() {
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [
+                    {"type": "tool_use", "id": "tc_1", "name": "Read", "input": {"file_path": "a.rs"}},
+                    {"type": "tool_use", "id": "tc_2", "name": "Bash", "input": {"command": "ls"}}
+                ]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert_eq!(message, "[Read, Bash]");
+            assert_eq!(tool_data.as_ref().unwrap().len(), 2);
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_text_only_has_no_tool_data() {
+    // Text-only events should NOT produce a tool_data effect.
+    let mut events = HashMap::new();
+    events.insert(
+        "lead".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello from lead"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            message, tool_data, ..
+        } => {
+            assert_eq!(message, "Hello from lead");
+            assert!(tool_data.is_none(), "text-only should have no tool_data");
+        }
+        _ => panic!("Expected PostToChannel effect"),
     }
 }
 

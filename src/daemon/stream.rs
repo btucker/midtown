@@ -129,6 +129,12 @@ pub fn process_lead_output(
                 parent_tool_use_id: None,
             });
         }
+        append_tool_data_effects(
+            &mut effects,
+            lead_events,
+            main_lead_session_name.to_string(),
+            None,
+        );
     }
 
     // Channel leads → each posts to its respective topic channel.
@@ -149,6 +155,12 @@ pub fn process_lead_output(
                     parent_tool_use_id: None,
                 });
             }
+            append_tool_data_effects(
+                &mut effects,
+                cl_events,
+                channel_name.clone(),
+                Some(channel_name.clone()),
+            );
         }
     }
 
@@ -170,10 +182,53 @@ pub fn process_lead_output(
                     parent_tool_use_id: None,
                 });
             }
+            append_tool_data_effects(
+                &mut effects,
+                fork_events,
+                fork_name.clone(),
+                Some(channel_name.clone()),
+            );
         }
     }
 
     effects
+}
+
+/// Create PostToChannel effects carrying `tool_data` for topic channel messages.
+///
+/// Extracts tool blocks from the session's events and posts them as a separate
+/// message with a `[ToolName, ...]` summary for TUI visibility. Thread routing
+/// for fork sessions is handled by the effect executor via `fork_bound_threads`.
+fn append_tool_data_effects(
+    effects: &mut Vec<Effect>,
+    session_events: &[StreamEvent],
+    sender: String,
+    channel: Option<String>,
+) {
+    let blocks = extract_tool_blocks(session_events);
+    if blocks.is_empty() {
+        return;
+    }
+    let tool_summary = format!(
+        "[{}]",
+        blocks
+            .iter()
+            .map(|b| b.tool_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    effects.push(Effect::PostToChannel {
+        sender,
+        message: tool_summary,
+        channel,
+        auto_output: true,
+        message_type: None,
+        nudge_type: None,
+        tool_data: Some(blocks),
+        provider: None,
+        tool_use_id: None,
+        parent_tool_use_id: None,
+    });
 }
 
 /// Detect the AI provider from stream events.
