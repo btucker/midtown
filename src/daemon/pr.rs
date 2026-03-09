@@ -984,6 +984,87 @@ fn update_review_status_cache(
     cache.review_feedback_pr_owners = review_feedback;
 }
 
+/// Detect external/fork PRs from polling data and record them in persistent state.
+///
+/// Compares each PR's `headRepositoryOwner` against the base repo owner.
+/// For newly detected external PRs, generates a channel notification effect
+/// directed at the user (not agents).
+async fn detect_and_block_external_prs(
+    state: &DaemonState,
+    snap: &WorldSnapshot,
+    prs: &[serde_json::Value],
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let repo_owner = match snap.repo_owner.as_deref() {
+        Some(owner) => owner,
+        None => return effects, // Can't detect forks without knowing our repo owner
+    };
+
+    let mut ps = state.persistent_state.lock().await;
+    for pr in prs {
+        let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+        if pr_number == 0 {
+            continue;
+        }
+
+        // headRepositoryOwner is an object with a "login" field
+        let head_owner = pr
+            .get("headRepositoryOwner")
+            .and_then(|o| o.get("login"))
+            .and_then(|l| l.as_str());
+
+        let head_owner = match head_owner {
+            Some(owner) => owner,
+            None => continue, // Field missing — assume same-repo PR
+        };
+
+        if head_owner.eq_ignore_ascii_case(repo_owner) {
+            continue; // Same owner — not a fork
+        }
+
+        let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+        // gh pr list only gives us the head owner login, not the full repo name.
+        // Use "owner/fork" as a placeholder — the webhook path has the real full_name.
+        let source_repo = format!("{}/fork", head_owner);
+
+        let is_new = ps.github.record_external_pr(pr_number, &source_repo, title);
+
+        // Only notify if newly detected AND not already allowed
+        if is_new && !ps.github.is_blocked_external_pr(pr_number) {
+            // PR was just recorded but already allowed — no notification needed
+            continue;
+        }
+
+        if is_new {
+            info!(
+                "Detected external PR #{} from fork '{}': {}",
+                pr_number, source_repo, title
+            );
+            ps.github.mark_external_pr_notified(pr_number);
+
+            effects.push(Effect::PostSystemMessage {
+                message: format!(
+                    "⚠️ PR #{} from fork `{}` is from an external repository. \
+                     External PRs are not processed automatically. \
+                     To allow it, run: `midtown pr allow {}`",
+                    pr_number, source_repo, pr_number
+                ),
+                channel: if snap.default_channel.is_empty() {
+                    None
+                } else {
+                    Some(snap.default_channel.clone())
+                },
+            });
+        }
+    }
+
+    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+        warn!("Failed to persist external PR state: {}", e);
+    }
+
+    effects
+}
+
 /// Poll all open PRs and return effects for actionable issues.
 ///
 /// Fetches PR data from GitHub, reads tracker state to avoid duplicate nudges,
@@ -1080,7 +1161,7 @@ pub(super) async fn poll_prs_for_issues(
             "--state",
             "open",
             "--json",
-            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,author,body",
+            "number,mergeable,statusCheckRollup,headRefName,reviewDecision,title,isDraft,createdAt,state,author,body,headRepositoryOwner",
         ])
         .output()
         .await?;
@@ -1130,6 +1211,29 @@ pub(super) async fn poll_prs_for_issues(
         })
         .collect();
 
+    // Detect and block external/fork PRs from daemon processing.
+    // External PRs are detected by comparing headRepositoryOwner against the base repo owner.
+    // Blocked PRs generate a one-time channel notification and are excluded from all
+    // downstream processing (reviewer spawning, nudges, task linking, etc.).
+    effects.extend(detect_and_block_external_prs(state, snap, &prs).await);
+
+    // Collect ALL open PR numbers before filtering, so cleanup_closed_external_prs
+    // sees the full set and doesn't purge still-open blocked external PRs.
+    let all_open_pr_numbers: Vec<u64> = prs
+        .iter()
+        .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
+        .collect();
+
+    let prs: Vec<serde_json::Value> = {
+        let ps = state.persistent_state.lock().await;
+        prs.into_iter()
+            .filter(|pr| {
+                let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+                !ps.github.is_blocked_external_pr(pr_number)
+            })
+            .collect()
+    };
+
     effects.extend(
         update_pr_caches(
             state,
@@ -1140,6 +1244,19 @@ pub(super) async fn poll_prs_for_issues(
         )
         .await,
     );
+
+    // Clean up external PR tracking for truly closed PRs, using the unfiltered
+    // open PR list so blocked-but-still-open external PRs are preserved.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.cleanup_closed_external_prs(&all_open_pr_numbers);
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!(
+                "Failed to save daemon-state.json after external PR cleanup: {}",
+                e
+            );
+        }
+    }
 
     effects.extend(
         process_pr_issue_nudges(snap, state, &prs, &active_coworkers, &idle_coworkers).await,
@@ -4003,6 +4120,19 @@ pub(super) async fn handle_pr_comment_nudge(
     activity: crate::webhook::PrActivity,
 ) {
     let pr_number = activity.pr_number;
+
+    // Skip nudges for blocked external PRs — comment/review webhooks don't
+    // carry fork_repo, so the webhook-level gate doesn't catch these.
+    {
+        let ps = state.persistent_state.lock().await;
+        if ps.github.is_blocked_external_pr(pr_number) {
+            debug!(
+                "PR #{} is a blocked external PR, skipping comment nudge",
+                pr_number
+            );
+            return;
+        }
+    }
 
     // Check for lead/* branches first, before filtering by coworker ownership
     let branch = match activity.branch {

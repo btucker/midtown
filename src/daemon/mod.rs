@@ -3323,6 +3323,57 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     error!("Failed to forward webhook message to channel: {}", e);
                 }
 
+                // Detect and block external/fork PRs from webhook events.
+                // If the PR is from a fork and not yet allowed, record it, notify,
+                // and skip all downstream PR processing (reviewer spawn, session
+                // storage, task association, etc.).
+                if let Some(ref fork_repo) = webhook_event.fork_repo {
+                    let pr_number = webhook_event.needs_review
+                        .or(webhook_event.merged_pr)
+                        .or(webhook_event.pr_opened.as_ref().map(|o| o.pr_number));
+
+                    if let Some(pr_number) = pr_number {
+                        let mut ps = state.persistent_state.lock().await;
+                        let title = webhook_event.pr_opened.as_ref()
+                            .map(|o| o.title.as_str())
+                            .unwrap_or("");
+                        let is_new = ps.github.record_external_pr(pr_number, fork_repo, title);
+
+                        if ps.github.is_blocked_external_pr(pr_number) {
+                            if is_new {
+                                ps.github.mark_external_pr_notified(pr_number);
+                                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                                    warn!("Failed to persist external PR state: {}", e);
+                                }
+                                info!(
+                                    "Webhook: Blocked external PR #{} from fork '{}'",
+                                    pr_number, fork_repo
+                                );
+                                let default_ch = state.default_channel_name().to_string();
+                                let channel = if default_ch.is_empty() { None } else { Some(default_ch) };
+                                let msg = format!(
+                                    "⚠️ PR #{} from fork `{}` is from an external repository. \
+                                     External PRs are not processed automatically. \
+                                     To allow it, run: `midtown pr allow {}`",
+                                    pr_number, fork_repo, pr_number
+                                );
+                                effects::execute_effects(
+                                    vec![effects::Effect::PostSystemMessage {
+                                        message: msg,
+                                        channel,
+                                    }],
+                                    &state,
+                                ).await;
+                            }
+                            // Skip all downstream PR processing for this blocked external PR
+                            continue;
+                        }
+                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                            warn!("Failed to persist external PR state: {}", e);
+                        }
+                    }
+                }
+
                 // Nudge PR owner when someone else comments on their PR
                 if let Some(activity) = webhook_event.pr_activity {
                     let state = Arc::clone(&state);

@@ -6,7 +6,11 @@ use crate::client::DaemonClient;
 #[derive(Subcommand, Debug, Clone)]
 pub enum PrCommand {
     /// List pull requests
-    List,
+    List {
+        /// Show only blocked external/fork PRs
+        #[arg(long)]
+        external: bool,
+    },
     /// Review-related subcommands
     Review {
         #[command(subcommand)]
@@ -17,6 +21,15 @@ pub enum PrCommand {
         /// The PR number to merge
         #[arg(long)]
         pr: u64,
+    },
+    /// Allow an external/fork PR for daemon processing
+    Allow {
+        /// The PR number to allow
+        #[arg(required_unless_present = "repo")]
+        pr_number: Option<u64>,
+        /// Allow all PRs from this repository (e.g., "user/repo")
+        #[arg(long)]
+        repo: Option<String>,
     },
 }
 
@@ -40,7 +53,13 @@ pub enum ReviewCommand {
 
 pub fn handle(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        PrCommand::List => client.pr_list(),
+        PrCommand::List { external } => {
+            if *external {
+                client.pr_list_external()
+            } else {
+                client.pr_list()
+            }
+        }
         PrCommand::Review { command } => match command {
             ReviewCommand::Request { pr_number } => client.pr_review(*pr_number),
             ReviewCommand::Post { pr, body_file } => {
@@ -50,5 +69,14 @@ pub fn handle(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String
             }
         },
         PrCommand::Merge { pr } => client.pr_merge(*pr),
+        PrCommand::Allow { pr_number, repo } => {
+            if let Some(repo) = repo {
+                client.pr_allow_repo(repo)
+            } else if let Some(pr) = pr_number {
+                client.pr_allow(*pr)
+            } else {
+                Err("Either a PR number or --repo is required".to_string())
+            }
+        }
     }
 }
