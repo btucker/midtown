@@ -3879,24 +3879,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     task_id, sid
                                 );
                             }
-                            record.resume_on_startup = false;
+                            // Channel leads are long-lived — keep resume_on_startup=true
+                            // so they're always eligible for resume and never GC'd.
+                            if record.coworker_type != "channel-lead" {
+                                record.resume_on_startup = false;
+                            }
                         }
-                        // Also clear channel_lead_sessions for channel lead sessions.
-                        // Channel leads use the channel name as their session name, so
-                        // name == channel_name. Without this, the stale ID persists in
-                        // channel_lead_sessions and causes a crash loop on daemon restart.
-                        if let Some(stored_id) = ps.channel_lead_sessions.remove(name.as_str()) {
-                            if stored_id.is_empty() {
+                        // For channel lead sessions: clear the stale session ID but
+                        // preserve the key in channel_lead_sessions so
+                        // ensure_channel_leads_alive knows this channel still needs a
+                        // lead and will emit RespawnChannelLead on the next tick.
+                        if let Some(stored_id) = ps.channel_lead_sessions.get(name.as_str()) {
+                            if !stored_id.is_empty() {
                                 info!(
-                                    "Removing stale empty channel_lead_sessions entry for '{}' after failed resume",
-                                    name
-                                );
-                            } else {
-                                info!(
-                                    "Removing stale channel_lead_sessions entry for '{}' after failed resume (was: {})",
+                                    "Clearing stale channel_lead_sessions ID for '{}' after failed resume (was: {})",
                                     name, stored_id
                                 );
                             }
+                            ps.channel_lead_sessions
+                                .insert(name.to_string(), String::new());
                         }
                         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                             warn!("Failed to save persistent state after clearing session_id: {}", e);

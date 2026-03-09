@@ -4058,3 +4058,102 @@ fn test_ensure_channel_leads_alive_respects_cooldown() {
         "recently stopped channel lead should not be respawned during cooldown"
     );
 }
+
+/// Channel lead sessions should NOT be garbage-collected even when
+/// resume_on_startup=false and past retention period. Channel leads are
+/// long-lived and should always be available for resume.
+#[test]
+fn state_gc_preserves_channel_lead_sessions() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead channel lead session, 48 hours old, resume_on_startup=false
+    // (e.g., after session refresh marked it false because it was dead)
+    let mut channel_lead = make_session(
+        "cl-ops",
+        false,
+        false,
+        false,
+        now - chrono::Duration::hours(48),
+        None,
+    );
+    channel_lead.coworker_type = "channel-lead".to_string();
+    sessions.insert("cl-ops".to_string(), channel_lead);
+
+    // Dead dev session, same age — should be pruned
+    sessions.insert(
+        "dead-dev".to_string(),
+        make_session(
+            "dead-dev",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(48),
+            Some("10"),
+        ),
+    );
+
+    let retention = chrono::Duration::hours(24);
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids, ..
+        } => {
+            assert!(
+                !dead_session_ids.contains(&"cl-ops".to_string()),
+                "channel lead session should NOT be garbage-collected"
+            );
+            assert!(
+                dead_session_ids.contains(&"dead-dev".to_string()),
+                "dead dev session should still be pruned"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+/// When a user posts in a topic channel and the channel lead is dead
+/// (within respawn cooldown), clearing the stop time should allow
+/// ensure_channel_leads_alive to respawn on the next tick.
+#[test]
+fn ensure_channel_leads_alive_respawns_after_cooldown_cleared() {
+    let mut snap = empty_snap();
+    snap.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+
+    // Stopped 1 second ago — within the 5-minute cooldown
+    let recent_stop = snap.now_utc - chrono::Duration::seconds(1);
+    snap.coworkers
+        .coworker_stop_times
+        .insert("ops".to_string(), recent_stop);
+
+    // Precondition: cooldown blocks respawn
+    let effects = ensure_channel_leads_alive(&snap);
+    assert!(
+        effects.is_empty(),
+        "precondition: cooldown should block respawn"
+    );
+
+    // Simulate what expedite does: clear the stop time
+    snap.coworkers.coworker_stop_times.remove("ops");
+
+    // Now ensure_channel_leads_alive should respawn immediately
+    let effects = ensure_channel_leads_alive(&snap);
+    assert_eq!(effects.len(), 1, "should respawn after cooldown is cleared");
+    match &effects[0] {
+        Effect::RespawnChannelLead { channel_name } => {
+            assert_eq!(channel_name, "ops");
+        }
+        other => panic!("expected RespawnChannelLead, got {:?}", other),
+    }
+}

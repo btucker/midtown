@@ -969,6 +969,52 @@ async fn test_user_message_with_dead_lead_clears_cooldown() {
     );
 }
 
+/// Verify that a user message on a topic channel while the channel lead is
+/// dead clears the channel lead's respawn cooldown (stop time removed),
+/// matching the main lead's expedite pattern.
+#[tokio::test]
+async fn test_user_message_in_topic_channel_clears_channel_lead_cooldown() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-topic-channel-lead-cooldown");
+
+    let channel_name = "ops";
+
+    // Register the channel lead in persistent state so the daemon knows about it
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel_name.to_string(), "sess-ops-123".to_string());
+        ps.save_for_repo(state.paths.dir_key()).unwrap();
+    }
+
+    // Simulate channel lead having been stopped 2 minutes ago (within 5-min cooldown)
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(
+            channel_name.to_string(),
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+        );
+    }
+
+    // User posts in the topic channel — the channel lead is dead
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "hello ops channel",
+        Some(channel_name),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    // The channel lead's cooldown should have been cleared
+    let stop_times = state.coworker_stop_times.read().unwrap();
+    assert!(
+        !stop_times.contains_key(channel_name),
+        "Channel lead stop time should be cleared after user message with dead channel lead"
+    );
+}
+
 /// Verify that channel.create creates a new channel successfully.
 #[tokio::test]
 async fn test_handle_channel_create_new_channel() {
