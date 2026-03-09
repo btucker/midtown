@@ -54,15 +54,6 @@ pub struct PendingQuestion {
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
-/// A single tool activity entry displayed in the lead indicator area.
-pub struct ToolActivityEntry {
-    /// Full display string like "✓ Read foo.rs", "✗ Run tests", or "› Write bar.rs".
-    pub header: String,
-    /// The instant when this entry was first observed as completed (✓ or ✗).
-    /// None for in-progress entries (›).
-    pub completed_at: Option<std::time::Instant>,
-}
-
 /// Info about a clipboard image pending delivery to the lead session.
 #[derive(Debug, Clone)]
 pub struct PendingImageInfo {
@@ -93,8 +84,6 @@ struct CoworkerStatusData {
     max_coworkers: usize,
     /// Whether the headless lead session is actively working
     lead_working: bool,
-    /// Recent tool call activity per agent
-    tool_activity: HashMap<String, Vec<String>>,
     /// Pending questions from coworkers waiting for user input
     pending_questions: Vec<PendingQuestion>,
     /// Names of active channel leads (e.g. "auth", "tui")
@@ -333,10 +322,6 @@ pub struct App {
     coworker_status_snapshot_ready: bool,
     /// Whether the headless lead session is actively working
     pub lead_working: bool,
-    /// Recent tool call activity per agent, keyed by lowercase agent name.
-    /// Contains human-readable semantic headers (e.g., "$ git status", "read src/lib.rs").
-    /// Updated from coworkers.status RPC (live, not cached). Cleared when agent posts a message.
-    pub tool_activity: HashMap<String, Vec<ToolActivityEntry>>,
     /// Optimistic thinking state: channels where user just submitted a message.
     /// Set immediately on message submit; cleared when real tool activity arrives
     /// or after 30 seconds. Used to show spinner before channel lead responds.
@@ -700,7 +685,6 @@ impl App {
             coworker_pulse_frames: HashMap::new(),
             coworker_status_snapshot_ready: false,
             lead_working: false,
-            tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
@@ -920,11 +904,6 @@ impl App {
                 Ok(data) => {
                     self.update_coworker_status(data.coworkers);
                     self.lead_working = data.lead_working;
-                    self.tool_activity = merge_tool_activity(
-                        std::mem::take(&mut self.tool_activity),
-                        data.tool_activity,
-                    );
-                    self.clear_channel_lead_thinking_for_in_progress();
                     self.max_coworkers = data.max_coworkers;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
@@ -1091,7 +1070,6 @@ impl App {
                 coworkers: Vec::new(),
                 max_coworkers: 10,
                 lead_working: false,
-                tool_activity: HashMap::new(),
                 pending_questions: Vec::new(),
                 channel_lead_names: Vec::new(),
             });
@@ -2095,16 +2073,11 @@ impl App {
         // Hash selected channel — changing channels changes which agent's indicator
         // is shown, which may affect indicator_height and thus the message area size.
         self.selected_channel.hash(&mut hasher);
-        // Hash the indicator height — as completed entries age out, indicator_height changes,
-        // which changes the message area size via the layout constraint. Without this,
-        // the cache produces stale line counts when the indicator collapses.
-        let agent_key = self.selected_channel.as_str();
-        self.visible_tool_entries(agent_key).len().hash(&mut hasher);
-        // Hash channel_lead_thinking for the current agent — the optimistic thinking state
-        // also changes lead_indicator_height (0 -> 1), affecting the message area layout.
+        // Hash channel_lead_thinking for the current channel — the optimistic thinking state
+        // affects the lead indicator display (idle vs thinking).
         let is_thinking = self
             .channel_lead_thinking
-            .get(agent_key)
+            .get(self.selected_channel.as_str())
             .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
             .unwrap_or(false);
         is_thinking.hash(&mut hasher);
@@ -2990,64 +2963,13 @@ impl App {
             .insert(channel.to_string(), std::time::Instant::now());
     }
 
-    /// Clear optimistic thinking state for channels that now have InProgress tool activity.
-    ///
-    /// Only clears when InProgress entries (completed_at == None) exist, not stale completed
-    /// entries. Completed entries are retained in tool_activity until they age out, so
-    /// filtering on non-empty would prematurely clear the spinner.
-    pub fn clear_channel_lead_thinking_for_in_progress(&mut self) {
-        let channels_with_in_progress: Vec<String> = self
-            .tool_activity
-            .iter()
-            .filter(|(_, entries)| entries.iter().any(|e| e.completed_at.is_none()))
-            .map(|(ch, _)| ch.clone())
-            .collect();
-        for ch in channels_with_in_progress {
-            self.channel_lead_thinking.remove(&ch);
-        }
-    }
-
-    /// Returns the visible tool activity entries for the given agent, newest first.
-    ///
-    /// Applies 30-second age-out for completed (✓/✗) entries. In-progress (›) entries
-    /// are always included. Returns at most 3 entries.
-    pub fn visible_tool_entries(&self, agent_key: &str) -> Vec<&ToolActivityEntry> {
-        const ACTIVITY_AGE_OUT: std::time::Duration = std::time::Duration::from_secs(30);
-        let now = std::time::Instant::now();
-
-        let entries = match self.tool_activity.get(agent_key) {
-            Some(e) if !e.is_empty() => e,
-            _ => return Vec::new(),
-        };
-
-        let mut visible: Vec<&ToolActivityEntry> = entries
-            .iter()
-            .filter(|entry| {
-                match entry.completed_at {
-                    None => true, // In-progress entries never age out
-                    Some(completed_at) => now.duration_since(completed_at) < ACTIVITY_AGE_OUT,
-                }
-            })
-            .collect();
-
-        // Newest first: reverse the slice (most recent entries are appended last in the Vec).
-        visible.reverse();
-        // Cap at 3.
-        visible.truncate(3);
-        visible
-    }
-
-    /// Returns true if any animation frame is needed (lead working, in-progress tool entries,
-    /// or an active coworker status change pulse).
+    /// Returns true if any animation frame is needed (lead working, or an active
+    /// coworker status change pulse).
     ///
     /// Controls whether `tick_spinner()` advances the frame — which drives name pulsing
     /// via `pulse_name_style()`. Returns false when everything is idle so the frame clock stops.
     pub fn any_spinner_visible(&self) -> bool {
         self.lead_working
-            || self
-                .tool_activity
-                .values()
-                .any(|entries| entries.iter().any(|e| e.completed_at.is_none()))
             || self
                 .coworker_pulse_frames
                 .values()
@@ -3771,22 +3693,6 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let tool_activity: HashMap<String, Vec<String>> = data
-        .get("tool_activity")
-        .and_then(|v| v.as_object())
-        .map(|obj| {
-            obj.iter()
-                .map(|(agent, items)| {
-                    let headers: Vec<String> = items
-                        .as_array()
-                        .map(|arr| extract_tool_activity_headers(arr))
-                        .unwrap_or_default();
-                    (agent.clone(), headers)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
     let channel_lead_names: Vec<String> = data
         .get("channel_leads")
         .and_then(|v| v.as_array())
@@ -3803,7 +3709,6 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         coworkers,
         max_coworkers,
         lead_working,
-        tool_activity,
         pending_questions,
         channel_lead_names,
     })
@@ -3850,119 +3755,6 @@ fn fetch_pending_questions_via_rpc() -> Vec<PendingQuestion> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// Convert a list of serialized `UniversalItem`s into display strings.
-///
-/// ToolResult items are folded into their matching ToolCall: when a ToolResult
-/// exists for a call, the ToolCall header gains a `✓` (success) or `✗` (error)
-/// prefix. In-progress calls (no result yet) use `›`. ToolResult items are
-/// not emitted as standalone entries.
-fn extract_tool_activity_headers(items: &[serde_json::Value]) -> Vec<String> {
-    use std::collections::HashMap;
-
-    // First pass: collect result status keyed by call_id.
-    let mut result_status: HashMap<&str, bool> = HashMap::new();
-    for item in items {
-        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-            for part in content {
-                if let Some(result) = part.get("ToolResult")
-                    && let Some(call_id) = result.get("call_id").and_then(|v| v.as_str())
-                {
-                    let is_error = result
-                        .get("is_error")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    result_status.insert(call_id, is_error);
-                }
-            }
-        }
-    }
-
-    // Second pass: emit one display string per ToolCall, annotated with result status.
-    let mut headers = Vec::new();
-    for item in items {
-        if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
-            for part in content {
-                if let Some(call) = part.get("ToolCall") {
-                    let header = call
-                        .get("semantic_header")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| {
-                            call.get("name").and_then(|v| v.as_str()).unwrap_or("?")
-                        });
-                    let call_id = call.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let display = match result_status.get(call_id) {
-                        Some(false) => format!("\u{2713} {header}"), // ✓ header
-                        Some(true) => format!("\u{2717} {header}"),  // ✗ header
-                        None => format!("\u{203a} {header}"),        // › header (in-progress)
-                    };
-                    headers.push(display);
-                    break; // one ToolCall per item
-                }
-            }
-        }
-    }
-    headers
-}
-
-/// Merge incoming tool activity headers with existing entries, preserving completed_at timestamps.
-///
-/// When an entry transitions from in-progress (›) to completed (✓/✗), records the current
-/// instant as `completed_at`. Completed entries that were already tracked preserve their
-/// original `completed_at` timestamp so age-out logic can measure elapsed time correctly.
-///
-/// Matching between old and new entries is done by comparing the body text (everything after
-/// the first character prefix and leading whitespace), allowing a "› Read foo.rs" to match
-/// a "✓ Read foo.rs" across ticks.
-fn merge_tool_activity(
-    old: HashMap<String, Vec<ToolActivityEntry>>,
-    new: HashMap<String, Vec<String>>,
-) -> HashMap<String, Vec<ToolActivityEntry>> {
-    new.into_iter()
-        .map(|(agent, headers)| {
-            let old_entries = old.get(&agent);
-            let entries = headers
-                .into_iter()
-                .map(|header| {
-                    let is_completed = header.starts_with('\u{2713}') // ✓
-                        || header.starts_with('\u{2717}'); // ✗
-                    let completed_at = if is_completed {
-                        // Extract body text: everything after the prefix char and leading space.
-                        let body: &str = header[header
-                            .char_indices()
-                            .nth(1)
-                            .map(|(i, _)| i)
-                            .unwrap_or(header.len())..]
-                            .trim_start();
-                        // Look for a matching old entry by body text to preserve its timestamp.
-                        old_entries
-                            .and_then(|entries| {
-                                entries.iter().find(|e| {
-                                    let old_body = e.header[e
-                                        .header
-                                        .char_indices()
-                                        .nth(1)
-                                        .map(|(i, _)| i)
-                                        .unwrap_or(e.header.len())..]
-                                        .trim_start();
-                                    old_body == body
-                                })
-                            })
-                            .and_then(|e| e.completed_at)
-                            .or_else(|| Some(std::time::Instant::now()))
-                    } else {
-                        None
-                    };
-                    ToolActivityEntry {
-                        header,
-                        completed_at,
-                    }
-                })
-                .collect();
-            (agent, entries)
-        })
-        .collect()
 }
 
 /// Cache for default branch names, keyed by repo full name (or empty string for current repo).
@@ -4211,7 +4003,6 @@ pub(super) mod tests {
             coworker_pulse_frames: HashMap::new(),
             coworker_status_snapshot_ready: false,
             lead_working: false,
-            tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
             max_coworkers: 10, // Test default
             pending_questions: Vec::new(),
@@ -5089,109 +4880,6 @@ pub(super) mod tests {
         assert!(!App::is_valid_channel_name("semi;colon"));
     }
 
-    // --- extract_tool_activity_headers tests ---
-
-    fn tool_call_item(
-        call_id: &str,
-        name: &str,
-        semantic_header: Option<&str>,
-    ) -> serde_json::Value {
-        let mut call = serde_json::json!({
-            "call_id": call_id,
-            "name": name,
-        });
-        if let Some(header) = semantic_header {
-            call["semantic_header"] = serde_json::Value::String(header.to_string());
-        }
-        serde_json::json!({"content": [{"ToolCall": call}]})
-    }
-
-    fn tool_result_item(call_id: &str, is_error: bool) -> serde_json::Value {
-        serde_json::json!({"content": [{"ToolResult": {"call_id": call_id, "is_error": is_error}}]})
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_empty() {
-        let result = extract_tool_activity_headers(&[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_in_progress() {
-        let items = vec![tool_call_item("id1", "Read", Some("Read foo.rs"))];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result, vec!["› Read foo.rs"]);
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_success() {
-        let items = vec![
-            tool_call_item("id1", "Read", Some("Read foo.rs")),
-            tool_result_item("id1", false),
-        ];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result, vec!["✓ Read foo.rs"]);
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_error() {
-        let items = vec![
-            tool_call_item("id1", "Bash", Some("Run tests")),
-            tool_result_item("id1", true),
-        ];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result, vec!["✗ Run tests"]);
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_falls_back_to_name() {
-        // No semantic_header — should use "name" field
-        let items = vec![tool_call_item("id1", "Read", None)];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result, vec!["› Read"]);
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_multiple_calls() {
-        // Three calls: first completed, second errored, third in-progress
-        let items = vec![
-            tool_call_item("id1", "Read", Some("Read foo.rs")),
-            tool_result_item("id1", false),
-            tool_call_item("id2", "Bash", Some("Run tests")),
-            tool_result_item("id2", true),
-            tool_call_item("id3", "Write", Some("Write bar.rs")),
-        ];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(
-            result,
-            vec!["✓ Read foo.rs", "✗ Run tests", "› Write bar.rs"]
-        );
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_result_before_call() {
-        // Result appears before its matching ToolCall — should still annotate correctly
-        // since first pass collects all results regardless of order.
-        let items = vec![
-            tool_result_item("id1", false),
-            tool_call_item("id1", "Read", Some("Read foo.rs")),
-        ];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result, vec!["✓ Read foo.rs"]);
-    }
-
-    #[test]
-    fn test_extract_tool_activity_headers_skips_tool_result_items() {
-        // ToolResult items should not appear as standalone entries in the output.
-        let items = vec![
-            tool_call_item("id1", "Read", Some("Read foo.rs")),
-            tool_result_item("id1", false),
-        ];
-        let result = extract_tool_activity_headers(&items);
-        assert_eq!(result.len(), 1, "Only one entry (the ToolCall)");
-        assert_eq!(result[0], "✓ Read foo.rs");
-    }
-
     // --- Thread state tests ---
 
     #[test]
@@ -5563,175 +5251,6 @@ pub(super) mod tests {
         );
     }
 
-    // --- merge_tool_activity tests ---
-
-    #[test]
-    fn test_merge_tool_activity_preserves_completed_at() {
-        // Old: in-progress entry
-        let old_entries = vec![ToolActivityEntry {
-            header: "\u{203a} Read foo.rs".to_string(),
-            completed_at: None,
-        }];
-        let old: HashMap<String, Vec<ToolActivityEntry>> =
-            [("lead".to_string(), old_entries)].into_iter().collect();
-
-        // New: same entry now completed
-        let new: HashMap<String, Vec<String>> =
-            [("lead".to_string(), vec!["\u{2713} Read foo.rs".to_string()])]
-                .into_iter()
-                .collect();
-
-        let merged = merge_tool_activity(old, new);
-        let entries = merged.get("lead").unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(
-            entries[0].completed_at.is_some(),
-            "Should have completed_at when transitioning from in-progress to completed"
-        );
-    }
-
-    #[test]
-    fn test_merge_tool_activity_preserves_existing_completed_at() {
-        use std::time::{Duration, Instant};
-        let old_time = Instant::now() - Duration::from_secs(10);
-        let old_entries = vec![ToolActivityEntry {
-            header: "\u{2713} Read foo.rs".to_string(),
-            completed_at: Some(old_time),
-        }];
-        let old: HashMap<String, Vec<ToolActivityEntry>> =
-            [("lead".to_string(), old_entries)].into_iter().collect();
-
-        // New: same completed entry arrives again
-        let new: HashMap<String, Vec<String>> =
-            [("lead".to_string(), vec!["\u{2713} Read foo.rs".to_string()])]
-                .into_iter()
-                .collect();
-
-        let merged = merge_tool_activity(old, new);
-        let entries = merged.get("lead").unwrap();
-        assert_eq!(entries.len(), 1);
-        // completed_at should be preserved (same instant as old)
-        assert!(
-            entries[0].completed_at.unwrap().duration_since(old_time) < Duration::from_millis(1),
-            "Should preserve old completed_at"
-        );
-    }
-
-    #[test]
-    fn test_merge_tool_activity_inprogress_has_no_timestamp() {
-        let old: HashMap<String, Vec<ToolActivityEntry>> = HashMap::new();
-        let new: HashMap<String, Vec<String>> = [(
-            "lead".to_string(),
-            vec!["\u{203a} Write bar.rs".to_string()],
-        )]
-        .into_iter()
-        .collect();
-
-        let merged = merge_tool_activity(old, new);
-        let entries = merged.get("lead").unwrap();
-        assert!(
-            entries[0].completed_at.is_none(),
-            "In-progress entries should have no completed_at"
-        );
-    }
-
-    // --- visible_tool_entries tests ---
-
-    #[test]
-    fn test_visible_tool_entries_empty() {
-        let app = test_app();
-        assert!(app.visible_tool_entries("lead").is_empty());
-    }
-
-    #[test]
-    fn test_visible_tool_entries_in_progress_always_visible() {
-        let mut app = test_app();
-        app.tool_activity = std::collections::HashMap::from([(
-            "lead".to_string(),
-            vec![ToolActivityEntry {
-                header: "\u{203a} Read foo.rs".to_string(),
-                completed_at: None,
-            }],
-        )]);
-        let result = app.visible_tool_entries("lead");
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].header, "\u{203a} Read foo.rs");
-    }
-
-    #[test]
-    fn test_visible_tool_entries_completed_recent_visible() {
-        let mut app = test_app();
-        app.tool_activity = std::collections::HashMap::from([(
-            "lead".to_string(),
-            vec![ToolActivityEntry {
-                header: "\u{2713} Read foo.rs".to_string(),
-                completed_at: Some(std::time::Instant::now()),
-            }],
-        )]);
-        let result = app.visible_tool_entries("lead");
-        assert_eq!(
-            result.len(),
-            1,
-            "Recently completed entry should be visible"
-        );
-    }
-
-    #[test]
-    fn test_visible_tool_entries_aged_out_hidden() {
-        let mut app = test_app();
-        app.tool_activity = std::collections::HashMap::from([(
-            "lead".to_string(),
-            vec![ToolActivityEntry {
-                header: "\u{2713} Read foo.rs".to_string(),
-                completed_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(61)),
-            }],
-        )]);
-        let result = app.visible_tool_entries("lead");
-        assert!(
-            result.is_empty(),
-            "Entry completed >30s ago should be hidden"
-        );
-    }
-
-    #[test]
-    fn test_visible_tool_entries_max_3_newest_first() {
-        let mut app = test_app();
-        let now = std::time::Instant::now();
-        app.tool_activity = std::collections::HashMap::from([(
-            "lead".to_string(),
-            vec![
-                ToolActivityEntry {
-                    header: "\u{2713} call1".to_string(),
-                    completed_at: Some(now),
-                },
-                ToolActivityEntry {
-                    header: "\u{2713} call2".to_string(),
-                    completed_at: Some(now),
-                },
-                ToolActivityEntry {
-                    header: "\u{2713} call3".to_string(),
-                    completed_at: Some(now),
-                },
-                ToolActivityEntry {
-                    header: "\u{2713} call4".to_string(),
-                    completed_at: Some(now),
-                },
-                ToolActivityEntry {
-                    header: "\u{203a} call5".to_string(),
-                    completed_at: None,
-                },
-            ],
-        )]);
-        let result = app.visible_tool_entries("lead");
-        assert_eq!(result.len(), 3, "Max 3 entries");
-        assert_eq!(
-            result[0].header, "\u{203a} call5",
-            "Newest (call5) should be first"
-        );
-        assert_eq!(result[1].header, "\u{2713} call4");
-        assert_eq!(result[2].header, "\u{2713} call3");
-    }
-
     #[test]
     fn test_set_channel_lead_thinking_inserts_entry() {
         let mut app = test_app();
@@ -5760,53 +5279,6 @@ pub(super) mod tests {
         assert_ne!(
             key_before, key_after,
             "Cache key should change when channel_lead_thinking is set for the selected channel"
-        );
-    }
-
-    #[test]
-    fn test_clear_channel_lead_thinking_not_cleared_by_completed_entries() {
-        // Optimistic thinking state must NOT be cleared when tool_activity only has
-        // completed entries. The spinner should persist until an InProgress entry arrives.
-        let mut app = test_app();
-        app.set_channel_lead_thinking("myproject");
-
-        // Add only completed (aged-out) entries for the channel
-        app.tool_activity.insert(
-            "myproject".to_string(),
-            vec![ToolActivityEntry {
-                header: "\u{2713} Read foo.rs".to_string(),
-                completed_at: Some(std::time::Instant::now()),
-            }],
-        );
-
-        app.clear_channel_lead_thinking_for_in_progress();
-
-        assert!(
-            app.channel_lead_thinking.contains_key("myproject"),
-            "Thinking should NOT be cleared when tool_activity only has completed entries"
-        );
-    }
-
-    #[test]
-    fn test_clear_channel_lead_thinking_cleared_by_in_progress_entry() {
-        // Optimistic thinking state MUST be cleared when an InProgress entry arrives,
-        // since the channel lead has started responding.
-        let mut app = test_app();
-        app.set_channel_lead_thinking("myproject");
-
-        app.tool_activity.insert(
-            "myproject".to_string(),
-            vec![ToolActivityEntry {
-                header: "\u{203a} Write bar.rs".to_string(),
-                completed_at: None, // InProgress
-            }],
-        );
-
-        app.clear_channel_lead_thinking_for_in_progress();
-
-        assert!(
-            !app.channel_lead_thinking.contains_key("myproject"),
-            "Thinking should be cleared when an InProgress tool entry exists"
         );
     }
 

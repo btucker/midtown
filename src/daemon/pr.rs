@@ -4995,7 +4995,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::PostToChannel { .. } => "PostToChannel",
         Effect::PostSystemMessage { .. } => "PostSystemMessage",
         Effect::BroadcastCoworkerUpdate { .. } => "BroadcastCoworkerUpdate",
-        Effect::BroadcastUniversalItems { .. } => "BroadcastUniversalItems",
         Effect::RecordCooldown { .. } => "RecordCooldown",
         Effect::SetUsageLimitNudge { .. } => "SetUsageLimitNudge",
         Effect::ClearUsageLimitNudge => "ClearUsageLimitNudge",

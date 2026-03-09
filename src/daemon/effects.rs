@@ -3,9 +3,6 @@ use std::path::PathBuf;
 
 use tracing::{debug, info, warn};
 
-/// Maximum number of tool call/result items retained per agent in `recent_tool_items`.
-const MAX_TOOL_ITEMS_PER_AGENT: usize = 20;
-
 use super::DaemonState;
 use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
@@ -228,22 +225,6 @@ pub enum Effect {
         name: String,
         status: String,
         current_task: Option<String>,
-    },
-    /// Broadcast universal event items to WebSocket clients.
-    ///
-    /// Sends structured tool call data to connected web/TUI clients for
-    /// real-time visualization of agent activity.
-    ///
-    /// `channel` is `None` for the main lead (displayed in the main channel)
-    /// or `Some(channel_name)` for a channel lead (displayed only in that topic channel).
-    ///
-    /// `thread_parent_id` is set for fork-bound sessions whose tool calls should appear
-    /// in the thread panel rather than the main channel activity strip.
-    BroadcastUniversalItems {
-        agent_name: String,
-        channel: Option<String>,
-        thread_parent_id: Option<String>,
-        items: Vec<crate::universal_events::UniversalItem>,
     },
     /// Record a cooldown entry (category + key).
     RecordCooldown { category: String, key: String },
@@ -1151,7 +1132,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 tool_use_id,
                 parent_tool_use_id,
             } => {
-                let has_explicit_channel = channel.is_some();
                 let msg_type = message_type.unwrap_or(crate::message::MessageType::Text);
 
                 // Resolve the target channel:
@@ -1252,24 +1232,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                     }
                 }
-
-                // Clear tool activity for this agent when they post a channel message.
-                // A channel post signals the end of a work phase — the activity strip should reset.
-                // Skip system senders (midtown) and non-fork explicit-channel posts.
-                // Forked sessions should still clear tool activity when they post to
-                // their inherited thread channel.
-                let is_system_sender = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
-                    || sender.eq_ignore_ascii_case(&state.project_name);
-                let has_fork_channel_binding = state
-                    .fork_bound_channels
-                    .lock()
-                    .unwrap()
-                    .contains_key(&sender);
-                let skip = is_system_sender || (has_explicit_channel && !has_fork_channel_binding);
-                if !skip {
-                    let mut tool_map = state.recent_tool_items.write().unwrap();
-                    tool_map.remove(&sender.to_lowercase());
-                }
             }
             Effect::BroadcastCoworkerUpdate {
                 name,
@@ -1277,33 +1239,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 current_task,
             } => {
                 state.broadcast_coworker_update(&name, &status, current_task.as_deref());
-            }
-            Effect::BroadcastUniversalItems {
-                agent_name,
-                channel,
-                thread_parent_id,
-                items,
-            } => {
-                // Store items in DaemonState for TUI RPC consumers (coworkers.status).
-                {
-                    let mut tool_map = state.recent_tool_items.write().unwrap();
-                    let entry = tool_map.entry(agent_name.to_lowercase()).or_default();
-                    entry.extend(items.iter().cloned());
-                    // Cap to avoid unbounded growth.
-                    if entry.len() > MAX_TOOL_ITEMS_PER_AGENT {
-                        let drain_count = entry.len() - MAX_TOOL_ITEMS_PER_AGENT;
-                        entry.drain(..drain_count);
-                    }
-                }
-                // Also broadcast via WebSocket for web UI consumers.
-                state.broadcast_web_update(crate::web::WebUpdate::UniversalItems(
-                    crate::web::UniversalItemsData {
-                        agent_name,
-                        channel,
-                        thread_parent_id,
-                        items,
-                    },
-                ));
             }
             Effect::RecordCooldown { category, key } => {
                 let mut cooldowns = state.cooldowns.lock().unwrap();

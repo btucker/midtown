@@ -208,7 +208,7 @@ pub(super) async fn handle_coworker_break(
     }
     // Clean up all transient coworker state through the centralized path.
     // This handles: deregistration, stop-time, coworker_records, cooldowns,
-    // pending nudges, task assignments, recent_tool_items, NamePool release,
+    // pending nudges, task assignments, NamePool release,
     // session reverse maps, SessionRecord update, and pending_questions.
     // Note: we intentionally do NOT unbind the worktree here — break preserves
     // the worktree for potential resumption.
@@ -826,7 +826,7 @@ fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
 /// current (microsecond latency). The TUI polls this at 1–2s to keep the
 /// coworker status panel up-to-date without delay.
 ///
-/// Returns: coworkers, max_coworkers, lead_working, tool_activity,
+/// Returns: coworkers, max_coworkers, lead_working,
 ///          channel_leads, channel_leads_working.
 pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
     let (coworkers_data, channel_lead_names) = build_coworkers_data(state).await;
@@ -837,7 +837,6 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
     let channel_leads_working = build_channel_leads_working(&health_guard, &channel_lead_names);
     drop(health_guard);
 
-    let tool_activity = collect_tool_activity(state);
     let channel_leads: Vec<&String> = channel_lead_names.iter().collect();
 
     Response::success(
@@ -846,7 +845,6 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
             "coworkers": coworkers_data,
             "max_coworkers": state.max_coworkers,
             "lead_working": lead_working,
-            "tool_activity": tool_activity,
             "channel_leads": channel_leads,
             "channel_leads_working": channel_leads_working,
         }),
@@ -1046,28 +1044,6 @@ pub(crate) fn build_channel_leads_working(
             (name.clone(), serde_json::Value::Bool(active))
         })
         .collect()
-}
-
-/// Collect recent tool call/result items per agent as a JSON value for the RPC response.
-///
-/// Returns a JSON object mapping agent name → array of serialized `UniversalItem`s.
-/// This is live state — never cached — so the TUI always sees the latest activity.
-fn collect_tool_activity(state: &DaemonState) -> serde_json::Value {
-    let tool_map = state.recent_tool_items.read().unwrap();
-    serialize_tool_activity(&tool_map)
-}
-
-/// Serialize a tool activity map to a JSON object.
-///
-/// Separated from `collect_tool_activity` for testability without `DaemonState`.
-fn serialize_tool_activity(
-    tool_map: &HashMap<String, Vec<crate::universal_events::UniversalItem>>,
-) -> serde_json::Value {
-    let obj: serde_json::Map<String, serde_json::Value> = tool_map
-        .iter()
-        .filter_map(|(agent, items)| serde_json::to_value(items).ok().map(|v| (agent.clone(), v)))
-        .collect();
-    serde_json::Value::Object(obj)
 }
 
 #[path = "rpc_coworker_tests.rs"]
