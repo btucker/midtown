@@ -94,7 +94,7 @@ $effect(() => {
         <div class="setting-info">
           <span class="setting-label">Inline tool calls</span>
           <span class="setting-description">
-            Show Edit/Write tool calls inline in the message stream instead of grouped at the bottom.
+            Show tool calls inline in the message stream instead of grouped at the bottom.
           </span>
         </div>
         <button
