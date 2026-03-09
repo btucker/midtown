@@ -50,6 +50,7 @@ export function createAutoCollapse(timestamp) {
 		},
 		startTimer(onCollapse) {
 			if (timeoutMs != null) {
+				if (timerId != null) clearTimeout(timerId);
 				timerId = setTimeout(onCollapse, timeoutMs);
 			}
 		},

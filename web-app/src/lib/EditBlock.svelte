@@ -47,10 +47,10 @@ function toggle() {
 
   {#if displayState === 'preview'}
     <div class="edit-preview">
-      <DiffView {filePath} {oldString} {newString} />
+      <DiffView {filePath} {oldString} {newString} bare />
     </div>
   {:else if displayState === 'expanded'}
-    <DiffView {filePath} {oldString} {newString} />
+    <DiffView {filePath} {oldString} {newString} bare />
   {/if}
 </div>
 
