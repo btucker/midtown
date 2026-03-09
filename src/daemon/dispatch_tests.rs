@@ -4685,3 +4685,62 @@ fn test_owned_pending_task_spawn_failure_records_cooldown() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
+    // Bug scenario: dispatch_unowned_pending_tasks produces AssignAndSpawn with
+    // on_failure: vec![] — when the spawn fails, no cooldown is recorded and
+    // the daemon retries every tick forever (same bug class as !2172).
+    //
+    // Fix: add RecordCooldown to on_failure so the next tick skips this coworker.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2059".to_string(),
+            subject: "Add new feature".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Find the AssignAndSpawn and check its on_failure
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should emit AssignAndSpawn for unowned pending task");
+
+    // on_failure MUST contain RecordCooldown for spawn_failure
+    let has_cooldown = on_failure.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordCooldown { category, .. } if category == "spawn_failure"
+        )
+    });
+    assert!(
+        has_cooldown,
+        "on_failure must include RecordCooldown for 'spawn_failure' to prevent infinite retry loops. \
+         Got on_failure: {:?}",
+        on_failure
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
+    );
+}
