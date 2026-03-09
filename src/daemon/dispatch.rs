@@ -1970,6 +1970,18 @@ fn dispatch_unowned_pending_tasks(
             name
         };
 
+        // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+        if snap
+            .spawn_failure_cooldown_names
+            .contains(&coworker_name.to_lowercase())
+        {
+            debug!(
+                "Task !{}: skipping {} (spawn failure cooldown active)",
+                task.id, coworker_name
+            );
+            continue;
+        }
+
         let already_running = snap
             .coworkers
             .active_names
