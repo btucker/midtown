@@ -3814,6 +3814,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let fork_thread_id = state.fork_bound_threads.lock().unwrap().get(&name).cloned();
                     let fork_channel = state.fork_bound_channels.lock().unwrap().get(&name).cloned();
 
+                    // Capture tail output BEFORE remove (remove deletes the log file).
+                    let tail_output = state.session_manager.get_tail_output(&name, 20).await;
+
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
@@ -4075,10 +4078,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "Coworker"
                         };
 
-                        // Fetch tail output from the session's JSONL event log
-                        let tail_output = state.session_manager.get_tail_output(&name, 20).await;
-
-                        // Format message with stderr and tail output
+                        // Format message with stderr and tail output (captured above)
                         let message_text = helpers::format_unexpected_exit_message(
                             session_role,
                             &name,
