@@ -10,17 +10,17 @@ import EditBlock from "./EditBlock.svelte";
 import TodoBlock from "./TodoBlock.svelte";
 import ToolBlockGeneric from "./ToolBlockGeneric.svelte";
 
-let { blocks } = $props();
+let { blocks, timestamp = null } = $props();
 </script>
 
 {#each blocks as block (block)}
   {#if block.tool_name === 'Bash'}
-    <BashBlock {block} />
+    <BashBlock {block} {timestamp} />
   {:else if block.tool_name === 'Edit'}
-    <EditBlock {block} />
+    <EditBlock {block} {timestamp} />
   {:else if block.tool_name === 'TodoWrite'}
-    <TodoBlock {block} />
+    <TodoBlock {block} {timestamp} />
   {:else}
-    <ToolBlockGeneric {block} />
+    <ToolBlockGeneric {block} {timestamp} />
   {/if}
 {/each}
