@@ -1713,6 +1713,126 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     }
 }
 
+/// Verify that when a placeholder comment already exists on a PR,
+/// `post_pr_comment` edits the existing comment (PATCH) instead of creating
+/// a new one (`gh pr comment`). This prevents placeholder accumulation when
+/// reviewers are re-spawned after timeout.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_reuses_existing_placeholder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-reuse");
+
+    let pr_number = 77u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "riverside", AssignmentSource::Webhook);
+    }
+
+    // Mock `gh` to:
+    // 1. Return an existing placeholder comment when listing PR comments
+    // 2. Accept the PATCH request to update it
+    // 3. Log which commands were called for verification
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let log_file = temp_dir.path().join("gh_calls.log");
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    // The mock script routes based on arguments:
+    // - "repo view ..." → returns repo full name (needed by get_repo_full_name)
+    // - "api ... /issues/.../comments" (GET) → returns JSON with existing placeholder
+    // - "api --method PATCH ..." → logs and returns success
+    // - "pr comment ..." → logs (should NOT be called)
+    std::fs::write(
+        &mock_gh_script,
+        format!(
+            r#"#!/bin/bash
+echo "$@" >> "{log}"
+if echo "$@" | grep -q "repo view"; then
+  echo 'test/repo'
+elif echo "$@" | grep -q "PATCH"; then
+  echo '{{"id": 55555}}'
+elif echo "$@" | grep -q "issues/.*/comments"; then
+  echo '[{{"id": 55555, "body": "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by pleasant..."}}]'
+elif echo "$@" | grep -q "pr comment"; then
+  echo 'https://github.com/test/repo/pull/77#issuecomment-99999'
+fi
+"#,
+            log = log_file.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "riverside".to_string(),
+        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside..."
+            .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Verify: the PATCH endpoint was called (editing existing comment)
+    let log_contents = std::fs::read_to_string(&log_file).unwrap();
+    assert!(
+        log_contents.contains("PATCH"),
+        "Should have called gh api --method PATCH to edit existing placeholder, got: {}",
+        log_contents,
+    );
+
+    // Verify: `gh pr comment` was NOT called (no new comment created)
+    assert!(
+        !log_contents.contains("pr comment"),
+        "Should NOT have called `gh pr comment` when placeholder exists, got: {}",
+        log_contents,
+    );
+
+    // Verify: the existing comment ID (55555) was stored on the assignment
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps
+            .github
+            .pr_reviewers
+            .get(&pr_number)
+            .expect("assignment should still exist");
+        assert_eq!(
+            assignment.placeholder_comment_id,
+            Some(55555),
+            "Should store the existing comment ID 55555 on the assignment"
+        );
+    }
+
+    // Verify: the placeholder cache was populated with the existing comment ID
+    {
+        let cache = state.reviewer_placeholder_cache.lock().unwrap();
+        let (cached_id, _instant) = cache
+            .get(&pr_number)
+            .expect("placeholder cache should be populated");
+        assert_eq!(
+            *cached_id,
+            Some(55555),
+            "Placeholder cache should contain the existing comment ID"
+        );
+    }
+}
+
 // ============================================================================
 // RespawnFork initial_prompt preservation tests
 // ============================================================================

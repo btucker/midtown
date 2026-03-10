@@ -3536,61 +3536,163 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
     }
 }
 
+/// Find an existing `<!-- midtown-placeholder -->` comment on a PR.
+///
+/// Queries the GitHub REST API for issue comments and returns the database ID
+/// of the first comment containing the placeholder marker. Returns `None` if
+/// no placeholder exists or if the API call fails.
+async fn find_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
+    let repo_path = state.all_repo_paths.first()?;
+    let repo_full_name = state.get_repo_full_name(repo_path);
+    if repo_full_name.is_empty() {
+        return None;
+    }
+
+    let endpoint = format!("repos/{}/issues/{}/comments", repo_full_name, pr_number);
+    let output = tokio::process::Command::new("gh")
+        .args(["api", &endpoint])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let comments: Vec<serde_json::Value> = serde_json::from_str(&stdout).ok()?;
+
+    // Find the last placeholder comment (most recent)
+    for comment in comments.iter().rev() {
+        let body = comment.get("body")?.as_str()?;
+        if body.contains("<!-- midtown-placeholder -->") && !body.contains("<!-- midtown:") {
+            return comment.get("id")?.as_u64();
+        }
+    }
+    None
+}
+
 /// Post a "Review in progress" placeholder comment on a PR via `gh pr comment`.
 ///
 /// Parses the comment ID from the stdout URL and stores it on the
 /// `PrReviewerAssignment` so the daemon can later update the placeholder
 /// with the final review via `pr.review-post`.
+///
+/// When a placeholder comment already exists on the PR (from a previous
+/// reviewer cycle that timed out), the existing comment is edited in-place
+/// rather than creating a new one. This prevents placeholder accumulation.
 async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &str, body: &str) {
     let repo_path = state.all_repo_paths.first().cloned();
-    let mut cmd = tokio::process::Command::new("gh");
-    cmd.args(["pr", "comment", &pr_number.to_string(), "--body", body]);
-    if let Some(ref path) = repo_path {
-        cmd.current_dir(path);
-    }
 
-    let output = match cmd.output().await {
-        Ok(output) => output,
-        Err(e) => {
+    // Check for an existing placeholder comment on the PR to reuse.
+    // This prevents placeholder accumulation when reviewers are re-spawned after timeout.
+    let existing_placeholder_id = find_existing_placeholder(state, pr_number).await;
+
+    let comment_id = if let Some(existing_id) = existing_placeholder_id {
+        // Edit the existing placeholder comment via gh api PATCH
+        let repo_full_name = repo_path
+            .as_deref()
+            .map(|p| state.get_repo_full_name(p))
+            .unwrap_or_default();
+
+        if repo_full_name.is_empty() {
             warn!(
-                "Failed to post placeholder comment on PR #{}: {}",
-                pr_number, e
+                "Cannot edit placeholder comment: repo_full_name is empty for PR #{}",
+                pr_number
             );
             return;
         }
+
+        let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, existing_id);
+        let output = tokio::process::Command::new("gh")
+            .args([
+                "api",
+                "--method",
+                "PATCH",
+                &endpoint,
+                "-f",
+                &format!("body={}", body),
+            ])
+            .output()
+            .await;
+
+        match output {
+            Ok(out) if out.status.success() => {
+                info!(
+                    "Edited existing placeholder comment {} on PR #{} for reviewer {}",
+                    existing_id, pr_number, reviewer_name
+                );
+                Some(existing_id)
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                warn!(
+                    "Failed to edit placeholder comment {} on PR #{}: {}",
+                    existing_id,
+                    pr_number,
+                    stderr.trim()
+                );
+                return;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to edit placeholder comment {} on PR #{}: {}",
+                    existing_id, pr_number, e
+                );
+                return;
+            }
+        }
+    } else {
+        // No existing placeholder — create a new comment
+        let mut cmd = tokio::process::Command::new("gh");
+        cmd.args(["pr", "comment", &pr_number.to_string(), "--body", body]);
+        if let Some(ref path) = repo_path {
+            cmd.current_dir(path);
+        }
+
+        let output = match cmd.output().await {
+            Ok(output) => output,
+            Err(e) => {
+                warn!(
+                    "Failed to post placeholder comment on PR #{}: {}",
+                    pr_number, e
+                );
+                return;
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "gh pr comment failed for PR #{}: {}",
+                pr_number,
+                stderr.trim()
+            );
+            return;
+        }
+
+        // Parse comment ID from the URL in stdout (e.g., "https://github.com/.../issuecomment-12345")
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .trim()
+            .rsplit('/')
+            .next()
+            .and_then(|segment| {
+                // Handle both "issuecomment-12345" and bare "12345" formats
+                segment
+                    .strip_prefix("issuecomment-")
+                    .or(Some(segment))
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+            })
+            .or_else(|| {
+                // Fallback: find any trailing number in the URL
+                stdout
+                    .trim()
+                    .rsplit(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|s| s.parse::<u64>().ok())
+            })
     };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "gh pr comment failed for PR #{}: {}",
-            pr_number,
-            stderr.trim()
-        );
-        return;
-    }
-
-    // Parse comment ID from the URL in stdout (e.g., "https://github.com/.../issuecomment-12345")
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let comment_id = stdout
-        .trim()
-        .rsplit('/')
-        .next()
-        .and_then(|segment| {
-            // Handle both "issuecomment-12345" and bare "12345" formats
-            segment
-                .strip_prefix("issuecomment-")
-                .or(Some(segment))
-                .and_then(|s| s.trim().parse::<u64>().ok())
-        })
-        .or_else(|| {
-            // Fallback: find any trailing number in the URL
-            stdout
-                .trim()
-                .rsplit(|c: char| !c.is_ascii_digit())
-                .next()
-                .and_then(|s| s.parse::<u64>().ok())
-        });
 
     if let Some(comment_id) = comment_id {
         info!(
@@ -3635,8 +3737,8 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
         }
     } else {
         warn!(
-            "Could not parse comment ID from gh pr comment output: {}",
-            stdout.trim()
+            "Could not parse comment ID from gh output for PR #{}",
+            pr_number
         );
     }
 }
