@@ -1713,6 +1713,235 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     }
 }
 
+/// Verify that when a placeholder comment ID is already stored on the
+/// `PrReviewerAssignment` (from a previous reviewer cycle), `post_pr_comment`
+/// edits the existing comment (PATCH) instead of creating a new one.
+///
+/// Uses the 3-tier lookup: tier 1 (persistent state) returns the stored ID,
+/// so no GitHub API call is needed for discovery — only for the PATCH update.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_reuses_existing_placeholder() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-reuse");
+
+    let pr_number = 77u64;
+    let existing_comment_id = 55555u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "riverside", AssignmentSource::Webhook);
+        // Pre-populate the placeholder_comment_id (as if a previous reviewer
+        // cycle posted it before timing out). This is the tier 1 lookup path.
+        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
+            assignment.placeholder_comment_id = Some(existing_comment_id);
+        }
+    }
+
+    // Mock `gh` to:
+    // 1. Accept the PATCH request to update the existing comment
+    // 2. Log which commands were called for verification
+    // Note: no "issues/.../comments" mock needed — tier 1 lookup finds the ID
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let log_file = temp_dir.path().join("gh_calls.log");
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    std::fs::write(
+        &mock_gh_script,
+        format!(
+            r#"#!/bin/bash
+echo "$@" >> "{log}"
+if echo "$@" | grep -q "repo view"; then
+  echo 'test/repo'
+elif echo "$@" | grep -q "PATCH"; then
+  echo '{{"id": {existing_comment_id}}}'
+elif echo "$@" | grep -q "pr comment"; then
+  echo 'https://github.com/test/repo/pull/77#issuecomment-99999'
+fi
+"#,
+            log = log_file.display(),
+            existing_comment_id = existing_comment_id,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "riverside".to_string(),
+        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside..."
+            .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Verify: the PATCH endpoint was called (editing existing comment)
+    let log_contents = std::fs::read_to_string(&log_file).unwrap();
+    assert!(
+        log_contents.contains("PATCH"),
+        "Should have called gh api --method PATCH to edit existing placeholder, got: {}",
+        log_contents,
+    );
+
+    // Verify: `gh pr comment` was NOT called (no new comment created)
+    assert!(
+        !log_contents.contains("pr comment"),
+        "Should NOT have called `gh pr comment` when placeholder exists, got: {}",
+        log_contents,
+    );
+
+    // Verify: the existing comment ID is still stored on the assignment
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps
+            .github
+            .pr_reviewers
+            .get(&pr_number)
+            .expect("assignment should still exist");
+        assert_eq!(
+            assignment.placeholder_comment_id,
+            Some(existing_comment_id),
+            "Should preserve the existing comment ID on the assignment"
+        );
+    }
+
+    // Verify: the placeholder cache was populated with the existing comment ID
+    {
+        let cache = state.reviewer_placeholder_cache.lock().unwrap();
+        let (cached_id, _instant) = cache
+            .get(&pr_number)
+            .expect("placeholder cache should be populated");
+        assert_eq!(
+            *cached_id,
+            Some(existing_comment_id),
+            "Placeholder cache should contain the existing comment ID"
+        );
+    }
+}
+
+/// Verify that `lookup_existing_placeholder` falls back to the GitHub API
+/// (tier 3) when the assignment has no stored placeholder_comment_id and
+/// the cache is empty. This covers the re-spawn scenario where the daemon
+/// restarted and lost in-memory state.
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn test_post_pr_comment_reuses_placeholder_via_api_fallback() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-reuse-api");
+
+    let pr_number = 88u64;
+    let existing_comment_id = 66666u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github
+            .assign_reviewer(pr_number, "madison", AssignmentSource::Webhook);
+        // Do NOT set placeholder_comment_id — simulates daemon restart
+    }
+
+    // Mock `gh` to:
+    // 1. Return placeholder via `gh pr view --json comments` (tier 3 fallback)
+    // 2. Accept the PATCH request
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let log_file = temp_dir.path().join("gh_calls.log");
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    std::fs::write(
+        &mock_gh_script,
+        format!(
+            r#"#!/bin/bash
+echo "$@" >> "{log}"
+if echo "$@" | grep -q "repo view"; then
+  echo 'test/repo'
+elif echo "$@" | grep -q "pr view.*--json comments"; then
+  echo '{{"comments": [{{"body": "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by pleasant...", "url": "https://github.com/test/repo/pull/88#issuecomment-{existing_comment_id}"}}]}}'
+elif echo "$@" | grep -q "PATCH"; then
+  echo '{{"id": {existing_comment_id}}}'
+elif echo "$@" | grep -q "pr comment"; then
+  echo 'https://github.com/test/repo/pull/88#issuecomment-99999'
+fi
+"#,
+            log = log_file.display(),
+            existing_comment_id = existing_comment_id,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "madison".to_string(),
+        body:
+            "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by madison..."
+                .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    let log_contents = std::fs::read_to_string(&log_file).unwrap();
+
+    // Verify: tier 3 API fallback was called
+    assert!(
+        log_contents.contains("pr view"),
+        "Should have called `gh pr view --json comments` as tier 3 fallback, got: {}",
+        log_contents,
+    );
+
+    // Verify: PATCH was called (not `gh pr comment`)
+    assert!(
+        log_contents.contains("PATCH"),
+        "Should have called gh api --method PATCH to edit existing placeholder, got: {}",
+        log_contents,
+    );
+    assert!(
+        !log_contents.contains("pr comment"),
+        "Should NOT have called `gh pr comment` when placeholder exists, got: {}",
+        log_contents,
+    );
+
+    // Verify: the placeholder ID was stored on the assignment
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps
+            .github
+            .pr_reviewers
+            .get(&pr_number)
+            .expect("assignment should still exist");
+        assert_eq!(assignment.placeholder_comment_id, Some(existing_comment_id),);
+    }
+}
+
 // ============================================================================
 // RespawnFork initial_prompt preservation tests
 // ============================================================================

@@ -958,7 +958,7 @@ After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted t
 
 The daemon owns the full lifecycle of placeholder comments — both posting and updating. This avoids prompt-compliance issues (e.g., some Claude models escape `!` characters, producing `<\!--` which breaks tag matching).
 
-**Posting**: When a reviewer spawns, `collect_reviewer_effects_with_source()` chains an `Effect::PostPrComment` in the `on_success` callback of `SpawnCoworkerWithCallbacks`. The effect runs `gh pr comment`, parses the comment ID from the stdout URL, and stores it on `PrReviewerAssignment.placeholder_comment_id`. This ID is also cached in `reviewer_placeholder_cache` to avoid API lookups during snapshot collection.
+**Posting**: When a reviewer spawns, `collect_reviewer_effects_with_source()` chains an `Effect::PostPrComment` in the `on_success` callback of `SpawnCoworkerWithCallbacks`. The effect first checks for an existing placeholder via `lookup_existing_placeholder()` (which reuses the same 3-tier resolution described below). If found, it edits the existing comment via `gh api --method PATCH`; otherwise, it creates a new comment via `gh pr comment` and parses the comment ID from the stdout URL. Either way, the comment ID is stored on `PrReviewerAssignment.placeholder_comment_id` and cached in `reviewer_placeholder_cache`.
 
 **Updating with review findings**: The reviewer agent calls `midtown pr review post --pr <N> --body-file <path>` when its review is complete. The `pr.review-post` RPC handler wraps the body with `<!-- midtown: <name> -->` frontmatter and the Midtown footer, then patches the comment via `gh api --method PATCH`. Errors are surfaced to the caller so the reviewer agent can retry.
 
@@ -982,7 +982,7 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 - `reviewer_placeholder_cache: Mutex<HashMap<u64, (Option<u64>, Instant)>>` — Cache for `pr_in_progress_placeholder_comment_id()` lookups. Maps PR number to `(comment_id_or_none, checked_at)`. Both positive and negative entries expire after `PLACEHOLDER_CACHE_TTL_SECS` (120s). Cleared when `mark_reviewed_pr()` is called to ensure freshness after a review is posted.
 
 **Effects:**
-- `Effect::PostPrComment { pr_number, reviewer_name, body }` — Posts a new comment on a PR via `gh pr comment`. Parses the comment ID from the stdout URL and stores it on `PrReviewerAssignment.placeholder_comment_id`. Chained as an `on_success` callback when spawning a reviewer.
+- `Effect::PostPrComment { pr_number, reviewer_name, body }` — Posts or reuses a placeholder comment on a PR. Uses `lookup_existing_placeholder()` (3-tier resolution) to check for an existing placeholder; if found, edits it via `gh api --method PATCH`, otherwise creates a new one via `gh pr comment`. Stores the comment ID on `PrReviewerAssignment.placeholder_comment_id`. Chained as an `on_success` callback when spawning a reviewer.
 - `Effect::UpdatePrComment { comment_id, repo_full_name, new_body }` — Patches an existing GitHub issue comment via `gh api --method PATCH`. Used to update stale "Review in progress" placeholder comments when a reviewer is restarted due to being stuck or dead, and by `pr.review-post` to replace the placeholder with final review findings.
 
 ## Reminders
