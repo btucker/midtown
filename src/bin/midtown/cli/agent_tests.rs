@@ -42,7 +42,6 @@ fn attach_launch_options<'a>(
         channel,
     }
 }
-
 // ── Target normalization ──────────────────────────────────────────────
 
 #[test]
@@ -595,6 +594,27 @@ fn test_codex_attach_does_not_use_claude_system_prompt_flag() {
     assert!(
         !command.contains(" --model "),
         "Codex attach should preserve the resumed thread model instead of overriding it, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_attach_uses_explicit_profile_when_provided() {
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Codex,
+        "thread-123",
+        attach_options(Some("work@example.com"), Some("lead"), None, true),
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+    let expected =
+        midtown::auth::profile_dir_for(midtown::auth::AuthProvider::Codex, "work@example.com");
+    assert!(
+        command.contains(expected.to_string_lossy().as_ref()),
+        "Attach command should use the persisted profile path, got: {}",
         command
     );
 }

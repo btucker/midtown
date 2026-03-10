@@ -516,8 +516,10 @@ impl LaunchConfig {
 
         self.initial_prompt.clone()
     }
-
-    /// Create a config for a standard coworker (convenience wrapper).
+    /// Create a config for a standard coworker.
+    ///
+    /// Coworkers each have isolated task lists. The daemon bakes the task
+    /// description into the initial prompt and tracks assignment internally.
     pub fn coworker(
         name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -1103,6 +1105,57 @@ mod tests {
             "Shell command should contain MIDTOWN_TASK_ID=42, got: {}",
             result.shell_command
         );
+    }
+
+    #[test]
+    fn test_shell_command_codex_fresh_uses_codex_binary() {
+        let mut config = LaunchConfig::coworker(
+            "park",
+            "myrepo",
+            SessionMode::Fresh,
+            Some("Investigate failing tests".to_string()),
+            None,
+        );
+        config.auth_provider = crate::auth::AuthProvider::Codex;
+        config.model = "gpt-5.3-codex".to_string();
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+            std::path::Path::new("/tmp/test-repo"),
+            "midtown",
+        );
+        assert!(result.shell_command.contains(" codex "));
+        assert!(!result.shell_command.contains(" claude "));
+        assert!(
+            result
+                .shell_command
+                .contains("--dangerously-bypass-approvals-and-sandbox")
+        );
+        assert!(result.shell_command.contains("--model"));
+        assert!(result.shell_command.contains("gpt-5.3-codex"));
+        assert!(result.shell_command.contains("Investigate failing tests"));
+        assert!(result.session_id.is_none());
+    }
+
+    #[test]
+    fn test_shell_command_codex_resume_uses_resume_subcommand() {
+        let mut config = LaunchConfig::lead("myrepo", None);
+        config.auth_provider = crate::auth::AuthProvider::Codex;
+        config.model = "gpt-5.3-codex".to_string();
+        config.session_mode = SessionMode::ResumeSession("thread-123".to_string());
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+            std::path::Path::new("/tmp/test-repo"),
+            "midtown",
+        );
+        assert!(result.shell_command.contains(" codex "));
+        assert!(result.shell_command.contains(" resume "));
+        assert!(result.shell_command.contains("thread-123"));
+        assert!(result.shell_command.contains("developer_instructions="));
+        assert!(result.session_id.is_none());
     }
 
     #[test]
