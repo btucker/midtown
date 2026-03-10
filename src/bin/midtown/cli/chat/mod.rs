@@ -1331,8 +1331,15 @@ fn attach_session_split(session_name: &str) {
         .unwrap_or("claude")
         .parse::<midtown::auth::AuthProvider>()
         .unwrap_or(midtown::auth::AuthProvider::Claude);
+    let profile = info
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
-    let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider);
+    let profile_dir = profile
+        .as_deref()
+        .map(|name| midtown::auth::profile_dir_for(provider, name));
+    let _ = midtown::platform_launch::run_platform_prelaunch_hook(provider, profile_dir.as_deref());
 
     let coworker_type = info
         .get("coworker_type")
@@ -1360,9 +1367,12 @@ fn attach_session_split(session_name: &str) {
         session_name,
         provider,
         session_id,
-        coworker_type.as_deref(),
-        channel.as_deref(),
-        false, // include_detach: midtown view calls session_detach explicitly on exit
+        super::session::AttachShellOptions {
+            profile: profile.as_deref(),
+            coworker_type: coworker_type.as_deref(),
+            channel: channel.as_deref(),
+            include_detach: false, // midtown view calls session_detach explicitly on exit
+        },
     ) {
         Ok(cmd) => cmd,
         Err(_) => {

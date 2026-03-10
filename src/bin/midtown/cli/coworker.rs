@@ -368,7 +368,10 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
 
     // Ensure plugins/skills are installed before launching
-    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(
+        config.auth_provider,
+        config.auth_profile_dir.as_deref(),
+    ) {
         eprintln!(
             "Warning: Platform pre-launch hook failed (continuing): {}",
             e

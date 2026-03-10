@@ -1844,8 +1844,17 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
         let provider = provider_str
             .parse::<midtown::auth::AuthProvider>()
             .unwrap_or(midtown::auth::AuthProvider::Claude);
+        let profile = info
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
-        if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+        let profile_dir = profile
+            .as_deref()
+            .map(|name| midtown::auth::profile_dir_for(provider, name));
+        if let Err(e) =
+            midtown::platform_launch::run_platform_prelaunch_hook(provider, profile_dir.as_deref())
+        {
             eprintln!(
                 "Warning: Platform pre-launch hook failed (continuing): {}",
                 e
@@ -1858,9 +1867,12 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             &ctx.project_name,
             provider,
             session_id,
-            Some("lead"),
-            None,
-            false, // include_detach: midtown view calls session_detach explicitly on exit
+            super::session::AttachShellOptions {
+                profile: profile.as_deref(),
+                coworker_type: Some("lead"),
+                channel: None,
+                include_detach: false, // midtown view calls session_detach explicitly on exit
+            },
         )?;
 
         let host = AttachHost::detect();

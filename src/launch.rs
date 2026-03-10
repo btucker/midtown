@@ -287,7 +287,39 @@ pub fn channel_lead_fork_disallowed_tools() -> Vec<String> {
         .collect()
 }
 
+fn shell_quote(input: &str) -> String {
+    shell_escape::escape(input.into()).into_owned()
+}
+
 impl LaunchConfig {
+    fn render_system_prompt(&self, project_name: &str) -> String {
+        match &self.role {
+            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
+                &self.name,
+                project_name,
+                self.escalation_target.as_deref().unwrap_or(project_name),
+                self.auth_provider,
+                self.pr_number,
+            ),
+            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
+            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
+                &self.name,
+                project_name,
+                self.channel.as_deref(),
+            ),
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+                agents_md,
+            } => crate::agents::channel_lead_system_prompt(
+                channel_name,
+                domain_context,
+                project_name,
+                agents_md.as_deref(),
+            ),
+        }
+    }
+
     /// Create a config for a standard coworker.
     ///
     /// Coworkers each have isolated task lists. The daemon bakes the task
@@ -542,31 +574,7 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();
-        let system_prompt = match &self.role {
-            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
-                &self.name,
-                project_name,
-                self.escalation_target.as_deref().unwrap_or(project_name),
-                self.auth_provider,
-                self.pr_number,
-            ),
-            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
-            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
-                &self.name,
-                project_name,
-                self.channel.as_deref(),
-            ),
-            CoworkerRole::ChannelLead {
-                channel_name,
-                domain_context,
-                agents_md,
-            } => crate::agents::channel_lead_system_prompt(
-                channel_name,
-                domain_context,
-                project_name,
-                agents_md.as_deref(),
-            ),
-        };
+        let system_prompt = self.render_system_prompt(project_name);
 
         // Save the lead system prompt to disk for attach resumption
         if matches!(self.role, CoworkerRole::Lead) {
@@ -661,7 +669,7 @@ impl LaunchConfig {
         )
     }
 
-    /// Build the full shell command string for launching Claude in a terminal pane.
+    /// Build the full shell command string for launching the configured provider in a terminal pane.
     ///
     /// `settings_file` and `prompt_file` are pre-written files containing the
     /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
@@ -704,7 +712,7 @@ impl LaunchConfig {
         // Convert env map to shell export format (key='value')
         let env_parts: Vec<String> = env_map
             .iter()
-            .map(|(k, v)| format!("{}='{}'", k, v))
+            .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
             .collect();
 
         let env_export = format!("export {}", env_parts.join(" "));
@@ -740,15 +748,35 @@ impl LaunchConfig {
             vec![]
         };
 
-        // -- CLI arguments (from shared method) --
-        let (cli_args, session_id) =
-            self.to_cli_args(settings_file, prompt_file, initial_prompt_file);
-
-        // Combine: sandbox prefix + CLI args
-        let mut all_args = sandbox_prefix;
-        all_args.extend(cli_args);
-
-        let shell_command = format!("{}; exec {}", env_export, all_args.join(" "));
+        let platform = crate::platform::Platform::from_provider(self.auth_provider);
+        let (shell_command, session_id) = match platform {
+            crate::platform::Platform::Claude => {
+                let (cli_args, session_id) =
+                    self.to_cli_args(settings_file, prompt_file, initial_prompt_file);
+                let mut all_args = sandbox_prefix.clone();
+                all_args.extend(cli_args);
+                (
+                    format!("{}; exec {}", env_export, all_args.join(" ")),
+                    session_id,
+                )
+            }
+            crate::platform::Platform::Codex => {
+                let system_prompt = self.render_system_prompt(project_name);
+                let (cli_args, session_id) = crate::platform::build_codex_headed_args(
+                    self,
+                    &system_prompt,
+                    self.initial_prompt.as_deref(),
+                );
+                let mut all_args = sandbox_prefix;
+                all_args.extend(cli_args);
+                let provider_cmd = all_args
+                    .iter()
+                    .map(|part| shell_quote(part))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (format!("{}; exec {}", env_export, provider_cmd), session_id)
+            }
+        };
 
         LaunchCommand {
             shell_command,
@@ -1006,10 +1034,61 @@ mod tests {
             "midtown",
         );
         assert!(
-            result.shell_command.contains("MIDTOWN_TASK_ID='42'"),
-            "Shell command should contain MIDTOWN_TASK_ID='42', got: {}",
+            result.shell_command.contains("MIDTOWN_TASK_ID=42"),
+            "Shell command should contain MIDTOWN_TASK_ID=42, got: {}",
             result.shell_command
         );
+    }
+
+    #[test]
+    fn test_shell_command_codex_fresh_uses_codex_binary() {
+        let mut config = LaunchConfig::coworker(
+            "park",
+            "myrepo",
+            SessionMode::Fresh,
+            Some("Investigate failing tests".to_string()),
+            None,
+        );
+        config.auth_provider = crate::auth::AuthProvider::Codex;
+        config.model = "gpt-5.3-codex".to_string();
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+            std::path::Path::new("/tmp/test-repo"),
+            "midtown",
+        );
+        assert!(result.shell_command.contains(" codex "));
+        assert!(!result.shell_command.contains(" claude "));
+        assert!(
+            result
+                .shell_command
+                .contains("--dangerously-bypass-approvals-and-sandbox")
+        );
+        assert!(result.shell_command.contains("--model"));
+        assert!(result.shell_command.contains("gpt-5.3-codex"));
+        assert!(result.shell_command.contains("Investigate failing tests"));
+        assert!(result.session_id.is_none());
+    }
+
+    #[test]
+    fn test_shell_command_codex_resume_uses_resume_subcommand() {
+        let mut config = LaunchConfig::lead("myrepo", None);
+        config.auth_provider = crate::auth::AuthProvider::Codex;
+        config.model = "gpt-5.3-codex".to_string();
+        config.session_mode = SessionMode::ResumeSession("thread-123".to_string());
+        let result = config.to_shell_command(
+            std::path::Path::new("/tmp/settings.json"),
+            std::path::Path::new("/tmp/prompt.md"),
+            None,
+            std::path::Path::new("/tmp/test-repo"),
+            "midtown",
+        );
+        assert!(result.shell_command.contains(" codex "));
+        assert!(result.shell_command.contains(" resume "));
+        assert!(result.shell_command.contains("thread-123"));
+        assert!(result.shell_command.contains("developer_instructions="));
+        assert!(result.session_id.is_none());
     }
 
     #[test]

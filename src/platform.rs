@@ -83,6 +83,27 @@ fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<Str
     args
 }
 
+/// Args shared by all interactive Codex sessions.
+///
+/// Codex does not have a direct equivalent to Claude's `--dangerously-skip-permissions`,
+/// so Midtown relies on an external sandbox (when available) and tells Codex to bypass
+/// its own approval/sandbox layer to avoid double-prompting.
+fn build_codex_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<String> {
+    let mut args = vec!["--dangerously-bypass-approvals-and-sandbox".to_string()];
+
+    for dir in additional_dirs {
+        if let Some(d) = dir.to_str() {
+            args.push("--add-dir".to_string());
+            args.push(d.to_string());
+        }
+    }
+
+    args.push("--model".to_string());
+    args.push(model.to_string());
+
+    args
+}
+
 /// Build CLI args for a headless Claude session (JSON streaming mode).
 ///
 /// Calls `build_claude_common_args()` for shared flags, then adds
@@ -283,14 +304,40 @@ pub fn build_codex_headless_args() -> Vec<String> {
 ///
 /// Codex accepts developer instructions as a config override, so we inject
 /// Midtown's role prompt via `-c developer_instructions=<TOML string>`.
-pub fn build_codex_headed_args(session_id: &str, system_prompt: &str) -> Vec<String> {
-    let mut args = vec!["--resume".to_string(), session_id.to_string()];
+pub fn build_codex_headed_args(
+    config: &LaunchConfig,
+    system_prompt: &str,
+    initial_prompt: Option<&str>,
+) -> (Vec<String>, Option<String>) {
+    let mut args = vec!["codex".to_string()];
+    args.extend(build_codex_common_args(
+        &config.model,
+        &config.additional_dirs,
+    ));
+
     if !system_prompt.is_empty() {
         let prompt_toml = toml::Value::String(system_prompt.to_string()).to_string();
         args.push("-c".to_string());
         args.push(format!("developer_instructions={prompt_toml}"));
     }
-    args
+
+    match &config.session_mode {
+        SessionMode::Fresh => {}
+        SessionMode::Resume => {
+            args.push("resume".to_string());
+            args.push("--last".to_string());
+        }
+        SessionMode::ResumeSession(id) => {
+            args.push("resume".to_string());
+            args.push(id.clone());
+        }
+    }
+
+    if let Some(prompt) = initial_prompt {
+        args.push(prompt.to_string());
+    }
+
+    (args, None)
 }
 
 #[path = "platform_tests.rs"]
