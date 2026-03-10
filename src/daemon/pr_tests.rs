@@ -5522,7 +5522,7 @@ fn test_extract_placeholder_comment_id_finds_last_placeholder() {
             },
             {
                 "body": "<!-- midtown: amsterdam -->\n## Code Review by amsterdam\nLGTM",
-                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
             },
             {
                 "body": "Review in progress by broadway",
@@ -5534,6 +5534,55 @@ fn test_extract_placeholder_comment_id_finds_last_placeholder() {
     // Should find the last (most recent) placeholder, which is broadway's
     let result = super::extract_placeholder_comment_id(&json);
     assert_eq!(result, Some(333333));
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_null_url_comments() {
+    // A placeholder comment with null/missing url should not abort the search.
+    // The function should continue to earlier comments with valid urls.
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by park",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-555555"
+            },
+            {
+                "body": "Review in progress by broadway",
+                "url": null
+            }
+        ]
+    });
+
+    // broadway's placeholder (later in array, encountered first in reverse) has null url.
+    // Should skip it and find park's placeholder instead.
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(
+        result,
+        Some(555555),
+        "Should find earlier placeholder when later one has null url"
+    );
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_missing_url_comments() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by park",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-666666"
+            },
+            {
+                "body": "Review in progress by broadway"
+            }
+        ]
+    });
+
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(
+        result,
+        Some(666666),
+        "Should find earlier placeholder when later one has no url field"
+    );
 }
 
 #[test]

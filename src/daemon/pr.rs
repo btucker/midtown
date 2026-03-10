@@ -4041,9 +4041,14 @@ fn extract_placeholder_comment_id(json: &serde_json::Value) -> Option<u64> {
         if body.contains("Review in progress by") && !body.contains("<!-- midtown:") {
             // Extract numeric ID from URL like:
             // https://github.com/owner/repo/pull/123#issuecomment-456789
-            let url = comment.get("url").and_then(|u| u.as_str())?;
-            let id = url.split("issuecomment-").nth(1)?.parse::<u64>().ok()?;
-            return Some(id);
+            if let Some(id) = comment
+                .get("url")
+                .and_then(|u| u.as_str())
+                .and_then(|url| url.split("issuecomment-").nth(1))
+                .and_then(|id_str| id_str.parse::<u64>().ok())
+            {
+                return Some(id);
+            }
         }
     }
     None
