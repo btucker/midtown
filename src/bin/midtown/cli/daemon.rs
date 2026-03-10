@@ -1330,6 +1330,9 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     // Stop the webserver first (it runs independently of the daemon)
     let _ = stop_webserver();
 
+    // Build web-app if source is available and dist is stale
+    build_web_app_if_needed();
+
     // Tell the daemon to exec-restart
     if let Err(e) = client.exec_restart() {
         // Fallback: if RPC fails (e.g., old daemon without exec-restart support),
