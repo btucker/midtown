@@ -298,7 +298,12 @@ pub(super) async fn handle_channel_post(
     //
     // Also route @mentions in topic channel messages from non-user senders
     // (channel leads, coworkers) so that mentioned coworkers receive nudges.
-    if !state.is_user_sender(from) {
+    // Skip protected senders (SKIP_SENDERS) for consistency with chat_monitor_loop.
+    if !state.is_user_sender(from)
+        && !super::constants::SKIP_SENDERS
+            .iter()
+            .any(|&s| s.eq_ignore_ascii_case(from))
+    {
         let default_channel = state.channel_router.default_channel_name();
         let is_topic = channel_name != default_channel && !channel_name.starts_with("dm-");
         if is_topic {

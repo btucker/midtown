@@ -2709,3 +2709,77 @@ async fn test_channel_lead_mention_in_topic_channel_routes_to_coworker() {
         "route_mentions should have been called for @amsterdam in topic channel message"
     );
 }
+
+/// Protected senders (SKIP_SENDERS: "system", "midtown", "github") should NOT
+/// trigger route_mentions in topic channels, consistent with chat_monitor_loop.
+#[tokio::test]
+async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
+    for sender in &["system", "midtown", "github"] {
+        let (state, _tmp, _guard) =
+            make_test_state(&format!("midtown-test-skip-sender-{}", sender));
+
+        // Register a running coworker "amsterdam" so route_mentions could find it
+        state
+            .coworkers
+            .insert_for_testing(crate::coworker::Coworker {
+                slot_id: "slot-amsterdam".to_string(),
+                name: "amsterdam".to_string(),
+                status: crate::coworker::CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: chrono::Utc::now(),
+                current_task: None,
+                session_id: Some("sess-amsterdam-1".to_string()),
+                provider: crate::auth::AuthProvider::Claude,
+                model: String::new(),
+                profile: String::new(),
+            });
+
+        {
+            let mut n2s = state.name_to_session.lock().unwrap();
+            n2s.insert("amsterdam".to_string(), "sess-amsterdam-1".to_string());
+        }
+        {
+            let mut s2n = state.session_to_name.lock().unwrap();
+            s2n.insert("sess-amsterdam-1".to_string(), "amsterdam".to_string());
+        }
+
+        // Protected sender posts a message with @amsterdam mention in a topic channel
+        let response = handle_channel_post(
+            1_i64.into(),
+            sender,
+            "@amsterdam check this out",
+            Some("ops"),
+            None,
+            &state,
+        )
+        .await;
+        assert!(
+            response.error.is_none(),
+            "channel.post should succeed for sender {}: {:?}",
+            sender,
+            response.error
+        );
+
+        // Verify route_mentions was NOT called: cooldown tracker should have
+        // no entry for chat_mention_amsterdam.
+        let ch = state.channel_router.get_channel("ops").unwrap();
+        let messages = ch.read_all().unwrap();
+        let posted_msg = messages
+            .last()
+            .expect("channel should contain the posted message");
+
+        let was_mention_routed = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            !cooldowns.check(
+                "chat_mention_amsterdam",
+                &posted_msg.id,
+                std::time::Duration::from_secs(3600),
+            )
+        };
+        assert!(
+            !was_mention_routed,
+            "route_mentions should NOT have been called for SKIP_SENDER '{}' in topic channel",
+            sender
+        );
+    }
+}
