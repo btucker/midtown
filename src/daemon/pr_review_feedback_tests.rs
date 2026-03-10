@@ -138,6 +138,45 @@ mod tests {
         }
     }
 
+    /// Test that follow-up task creation is gated on the PR being owned by
+    /// a coworker (not the lead or a channel lead).
+    ///
+    /// Bug !2190: The webhook path in handle_pr_comment_nudge auto-created
+    /// "Address review feedback" tasks for non-coworker PRs (lead PRs,
+    /// channel lead PRs) because resolve_pr_owner_from_state() could return
+    /// an owner even for non-coworker PRs. The fix gates on
+    /// is_non_lead_coworker() before creating a follow-up task.
+    #[test]
+    fn test_followup_task_only_for_coworker_prs() {
+        use crate::daemon::helpers::is_non_lead_coworker;
+        use std::collections::HashSet;
+
+        let project_name = "midtown";
+        let channel_leads: HashSet<String> = ["daemon-core".to_string()].into_iter().collect();
+
+        // A regular coworker should trigger follow-up task creation
+        assert!(
+            is_non_lead_coworker("columbus", project_name, &channel_leads),
+            "Regular coworker should be eligible for follow-up task creation"
+        );
+
+        // The project lead should NOT trigger follow-up task creation
+        assert!(
+            !is_non_lead_coworker("midtown", project_name, &channel_leads),
+            "Project lead should not get auto-created follow-up tasks"
+        );
+        assert!(
+            !is_non_lead_coworker("lead", project_name, &channel_leads),
+            "Legacy lead name should not get auto-created follow-up tasks"
+        );
+
+        // Channel leads should NOT trigger follow-up task creation
+        assert!(
+            !is_non_lead_coworker("daemon-core", project_name, &channel_leads),
+            "Channel leads should not get auto-created follow-up tasks"
+        );
+    }
+
     /// Test that format_review_content returns None when there are no reviews
     /// or issue comments with review signatures.
     #[test]
