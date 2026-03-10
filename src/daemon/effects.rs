@@ -3536,45 +3536,60 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
     }
 }
 
-/// Find an existing `<!-- midtown-placeholder -->` comment on a PR.
+/// Look up an existing placeholder comment ID for a PR using the 3-tier lookup:
 ///
-/// Queries the GitHub REST API for issue comments and returns the database ID
-/// of the first comment containing the placeholder marker. Returns `None` if
-/// no placeholder exists or if the API call fails.
-async fn find_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    let repo_path = state.all_repo_paths.first()?;
-    let repo_full_name = state.get_repo_full_name(repo_path);
-    if repo_full_name.is_empty() {
-        return None;
-    }
-
-    let endpoint = format!("repos/{}/issues/{}/comments", repo_full_name, pr_number);
-    let output = tokio::process::Command::new("gh")
-        .args(["api", &endpoint])
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let comments: Vec<serde_json::Value> = serde_json::from_str(&stdout).ok()?;
-
-    // Find the last placeholder comment (most recent)
-    for comment in comments.iter().rev() {
-        let body = comment.get("body")?.as_str()?;
-        if body.contains("<!-- midtown-placeholder -->") && !body.contains("<!-- midtown:") {
-            return comment.get("id")?.as_u64();
+/// 1. **Persistent state** — `PrReviewerAssignment.placeholder_comment_id`
+/// 2. **In-memory cache** — `reviewer_placeholder_cache` (TTL-based)
+/// 3. **GitHub API fallback** — `pr_in_progress_placeholder_comment_id` via `spawn_blocking`
+///
+/// This reuses the same lookup infrastructure as `collect_world_snapshot` in
+/// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
+async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
+    // Tier 1: Check stored placeholder_comment_id from the assignment
+    {
+        let ps = state.persistent_state.lock().await;
+        if let Some(assignment) = ps.github.pr_reviewers.get(&pr_number)
+            && let Some(id) = assignment.placeholder_comment_id
+        {
+            return Some(id);
         }
     }
-    None
+
+    // Tier 2: Check in-memory cache
+    const PLACEHOLDER_CACHE_TTL_SECS: u64 = 120;
+    let cached = {
+        let cache = state.reviewer_placeholder_cache.lock().unwrap();
+        cache.get(&pr_number).copied()
+    };
+
+    match cached {
+        Some((id, checked_at)) if checked_at.elapsed().as_secs() < PLACEHOLDER_CACHE_TTL_SECS => {
+            return id; // Use cached result within TTL
+        }
+        _ => {}
+    }
+
+    // Tier 3: Cache miss or expired — fetch from GitHub via spawn_blocking
+    let id = tokio::task::spawn_blocking(move || {
+        super::pr::pr_in_progress_placeholder_comment_id(pr_number)
+    })
+    .await
+    .ok()
+    .flatten();
+
+    // Update cache with result
+    {
+        let mut cache = state.reviewer_placeholder_cache.lock().unwrap();
+        cache.insert(pr_number, (id, std::time::Instant::now()));
+    }
+
+    id
 }
 
-/// Post a "Review in progress" placeholder comment on a PR via `gh pr comment`.
+/// Post a "Review in progress" placeholder comment on a PR.
 ///
-/// Parses the comment ID from the stdout URL and stores it on the
+/// Uses `gh api --method PATCH` to edit an existing placeholder or
+/// `gh pr comment` to create a new one. Stores the comment ID on the
 /// `PrReviewerAssignment` so the daemon can later update the placeholder
 /// with the final review via `pr.review-post`.
 ///
@@ -3586,7 +3601,7 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
 
     // Check for an existing placeholder comment on the PR to reuse.
     // This prevents placeholder accumulation when reviewers are re-spawned after timeout.
-    let existing_placeholder_id = find_existing_placeholder(state, pr_number).await;
+    let existing_placeholder_id = lookup_existing_placeholder(state, pr_number).await;
 
     let comment_id = if let Some(existing_id) = existing_placeholder_id {
         // Edit the existing placeholder comment via gh api PATCH
