@@ -5464,3 +5464,138 @@ async fn test_review_complete_coworker_pr_no_repeat_after_cooldown() {
         effects
     );
 }
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_null_body_comments() {
+    // Bug !2189: A comment with null body caused ? to return None from the
+    // entire function, skipping all remaining comments including the placeholder.
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by amsterdam",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            },
+            {
+                "body": null,
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
+            }
+        ]
+    });
+
+    // The null-body comment appears AFTER the placeholder in the array,
+    // but since we iterate in reverse, it's encountered FIRST.
+    // The bug: ? on the null body returns None from the whole function.
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(
+        result,
+        Some(111111),
+        "Should find the placeholder comment despite a later comment having null body"
+    );
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_missing_body_comments() {
+    // Comment with no "body" field at all
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by park",
+                "url": "https://github.com/owner/repo/pull/10#issuecomment-999999"
+            },
+            {
+                "url": "https://github.com/owner/repo/pull/10#issuecomment-888888"
+            }
+        ]
+    });
+
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(result, Some(999999));
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_finds_last_placeholder() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by amsterdam",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            },
+            {
+                "body": "<!-- midtown: amsterdam -->\n## Code Review by amsterdam\nLGTM",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
+            },
+            {
+                "body": "Review in progress by broadway",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-333333"
+            }
+        ]
+    });
+
+    // Should find the last (most recent) placeholder, which is broadway's
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(result, Some(333333));
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_null_url_comments() {
+    // A placeholder comment with null/missing url should not abort the search.
+    // The function should continue to earlier comments with valid urls.
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by park",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-555555"
+            },
+            {
+                "body": "Review in progress by broadway",
+                "url": null
+            }
+        ]
+    });
+
+    // broadway's placeholder (later in array, encountered first in reverse) has null url.
+    // Should skip it and find park's placeholder instead.
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(
+        result,
+        Some(555555),
+        "Should find earlier placeholder when later one has null url"
+    );
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_skips_missing_url_comments() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "Review in progress by park",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-666666"
+            },
+            {
+                "body": "Review in progress by broadway"
+            }
+        ]
+    });
+
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(
+        result,
+        Some(666666),
+        "Should find earlier placeholder when later one has no url field"
+    );
+}
+
+#[test]
+fn test_extract_placeholder_comment_id_returns_none_when_no_placeholder() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "LGTM!",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            }
+        ]
+    });
+
+    let result = super::extract_placeholder_comment_id(&json);
+    assert_eq!(result, None);
+}

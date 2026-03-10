@@ -4025,18 +4025,30 @@ pub(super) fn pr_in_progress_placeholder_comment_id(pr_number: u64) -> Option<u6
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
 
+    extract_placeholder_comment_id(&json)
+}
+
+/// Extract the placeholder comment ID from parsed PR JSON.
+///
+/// Separated from `pr_in_progress_placeholder_comment_id` for testability.
+fn extract_placeholder_comment_id(json: &serde_json::Value) -> Option<u64> {
     let comments = json.get("comments")?.as_array()?;
 
     // Find the last placeholder comment: contains "Review in progress by"
     // but NOT the midtown frontmatter (which marks the review as completed)
     for comment in comments.iter().rev() {
-        let body = comment.get("body")?.as_str()?;
+        let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
         if body.contains("Review in progress by") && !body.contains("<!-- midtown:") {
             // Extract numeric ID from URL like:
             // https://github.com/owner/repo/pull/123#issuecomment-456789
-            let url = comment.get("url")?.as_str()?;
-            let id = url.split("issuecomment-").nth(1)?.parse::<u64>().ok()?;
-            return Some(id);
+            if let Some(id) = comment
+                .get("url")
+                .and_then(|u| u.as_str())
+                .and_then(|url| url.split("issuecomment-").nth(1))
+                .and_then(|id_str| id_str.parse::<u64>().ok())
+            {
+                return Some(id);
+            }
         }
     }
     None
