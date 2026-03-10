@@ -592,7 +592,15 @@ fn dir_has_newer_file(dir: &Path, than: std::time::SystemTime) -> bool {
 /// - The existing `dist/index.html` is already newer than all source files
 ///
 /// Non-blocking: logs warnings on failure but never aborts startup.
+fn build_web_app_if_needed_quiet() {
+    build_web_app_if_needed_inner(false);
+}
+
 fn build_web_app_if_needed() {
+    build_web_app_if_needed_inner(true);
+}
+
+fn build_web_app_if_needed_inner(show_progress: bool) {
     let web_app_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("web-app");
 
     if !web_app_dir.join("package.json").exists() {
@@ -604,7 +612,9 @@ fn build_web_app_if_needed() {
         return;
     }
 
-    emit_startup_progress(25, "installing web app dependencies");
+    if show_progress {
+        emit_startup_progress(25, "installing web app dependencies");
+    }
 
     let install = Command::new("npm")
         .args(["install", "--prefer-offline"])
@@ -624,7 +634,9 @@ fn build_web_app_if_needed() {
         Ok(_) => {}
     }
 
-    emit_startup_progress(35, "building web app");
+    if show_progress {
+        emit_startup_progress(35, "building web app");
+    }
 
     let build = match Command::new("npm")
         .args(["run", "build"])
@@ -1329,6 +1341,11 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
 
     // Stop the webserver first (it runs independently of the daemon)
     let _ = stop_webserver();
+
+    // Build web-app if source is available and dist is stale.
+    // Use quiet variant to suppress startup progress bar (percentages are
+    // calibrated for handle_start's sequence and would confuse during restart).
+    build_web_app_if_needed_quiet();
 
     // Tell the daemon to exec-restart
     if let Err(e) = client.exec_restart() {
@@ -2434,6 +2451,79 @@ mod tests {
         if let Some(parent) = config_path.parent() {
             let _ = std::fs::remove_dir(parent);
         }
+    }
+
+    #[test]
+    fn test_is_dist_fresh_no_dist_returns_false() {
+        let temp = TempDir::new().unwrap();
+        let web_app_dir = temp.path();
+        let dist_index = web_app_dir.join("dist").join("index.html");
+        // dist/index.html doesn't exist → stale (needs rebuild)
+        assert!(!is_dist_fresh(web_app_dir, &dist_index));
+    }
+
+    #[test]
+    fn test_is_dist_fresh_newer_source_returns_false() {
+        let temp = TempDir::new().unwrap();
+        let web_app_dir = temp.path();
+
+        // Create dist/index.html first
+        let dist_dir = web_app_dir.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let dist_index = dist_dir.join("index.html");
+        fs::write(&dist_index, "old").unwrap();
+
+        // Sleep briefly so source file gets a newer mtime
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Create a source file that's newer than dist
+        let src_dir = web_app_dir.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("app.ts"), "new code").unwrap();
+
+        assert!(!is_dist_fresh(web_app_dir, &dist_index));
+    }
+
+    #[test]
+    fn test_is_dist_fresh_no_newer_source_returns_true() {
+        let temp = TempDir::new().unwrap();
+        let web_app_dir = temp.path();
+
+        // Create source files first
+        let src_dir = web_app_dir.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(src_dir.join("app.ts"), "code").unwrap();
+        fs::write(web_app_dir.join("package.json"), "{}").unwrap();
+
+        // Sleep briefly so dist gets a newer mtime
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Create dist/index.html after source files
+        let dist_dir = web_app_dir.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let dist_index = dist_dir.join("index.html");
+        fs::write(&dist_index, "built").unwrap();
+
+        assert!(is_dist_fresh(web_app_dir, &dist_index));
+    }
+
+    #[test]
+    fn test_is_dist_fresh_newer_config_file_returns_false() {
+        let temp = TempDir::new().unwrap();
+        let web_app_dir = temp.path();
+
+        // Create dist first
+        let dist_dir = web_app_dir.join("dist");
+        fs::create_dir_all(&dist_dir).unwrap();
+        let dist_index = dist_dir.join("index.html");
+        fs::write(&dist_index, "built").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // package.json modified after dist → stale
+        fs::write(web_app_dir.join("package.json"), "{}").unwrap();
+
+        assert!(!is_dist_fresh(web_app_dir, &dist_index));
     }
 }
 
