@@ -138,43 +138,51 @@ mod tests {
         }
     }
 
-    /// Test that follow-up task creation is gated on the PR being owned by
-    /// a coworker (not the lead or a channel lead).
+    /// Test the combined gate: follow-up task creation requires BOTH a completed
+    /// task AND a coworker owner. This mirrors the logic in handle_pr_comment_nudge
+    /// where `review_comment_creates_followup` and `is_non_lead_coworker` are
+    /// checked together.
     ///
-    /// Bug !2190: The webhook path in handle_pr_comment_nudge auto-created
-    /// "Address review feedback" tasks for non-coworker PRs (lead PRs,
-    /// channel lead PRs) because resolve_pr_owner_from_state() could return
-    /// an owner even for non-coworker PRs. The fix gates on
-    /// is_non_lead_coworker() before creating a follow-up task.
+    /// Bug !2190: The webhook path auto-created "Address review feedback" tasks
+    /// for non-coworker PRs because it only checked task status, not owner type.
     #[test]
-    fn test_followup_task_only_for_coworker_prs() {
+    fn test_followup_task_gate_requires_coworker_owner_and_completed_task() {
         use crate::daemon::helpers::is_non_lead_coworker;
+        use crate::rules::review_comment_creates_followup;
+        use crate::tasks::TaskStatus;
         use std::collections::HashSet;
 
         let project_name = "midtown";
-        let channel_leads: HashSet<String> = ["daemon-core".to_string()].into_iter().collect();
+        let channel_leads: HashSet<String> = ["ops".to_string()].into_iter().collect();
 
-        // A regular coworker should trigger follow-up task creation
-        assert!(
-            is_non_lead_coworker("columbus", project_name, &channel_leads),
-            "Regular coworker should be eligible for follow-up task creation"
-        );
+        // Simulate the handler's gate: task completed + owner check
+        // This mirrors: `if review_comment_creates_followup(&task.status) { if !is_non_lead_coworker(...) { notify_user } else { create_task } }`
+        let should_create_followup_task = |owner: &str, status: &TaskStatus| -> bool {
+            review_comment_creates_followup(status)
+                && is_non_lead_coworker(owner, project_name, &channel_leads)
+        };
 
-        // The project lead should NOT trigger follow-up task creation
-        assert!(
-            !is_non_lead_coworker("midtown", project_name, &channel_leads),
-            "Project lead should not get auto-created follow-up tasks"
-        );
-        assert!(
-            !is_non_lead_coworker("lead", project_name, &channel_leads),
-            "Legacy lead name should not get auto-created follow-up tasks"
-        );
+        // Coworker + completed task → create follow-up task
+        assert!(should_create_followup_task(
+            "columbus",
+            &TaskStatus::Completed
+        ));
 
-        // Channel leads should NOT trigger follow-up task creation
-        assert!(
-            !is_non_lead_coworker("daemon-core", project_name, &channel_leads),
-            "Channel leads should not get auto-created follow-up tasks"
-        );
+        // Lead + completed task → notify user, NOT create task
+        assert!(!should_create_followup_task(
+            "midtown",
+            &TaskStatus::Completed
+        ));
+        assert!(!should_create_followup_task("lead", &TaskStatus::Completed));
+
+        // Channel lead + completed task → notify user, NOT create task
+        assert!(!should_create_followup_task("ops", &TaskStatus::Completed));
+
+        // Any owner + in-progress task → no follow-up (handled by normal nudge path)
+        assert!(!should_create_followup_task(
+            "columbus",
+            &TaskStatus::InProgress
+        ));
     }
 
     /// Test that format_review_content returns None when there are no reviews

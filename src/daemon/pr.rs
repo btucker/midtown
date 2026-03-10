@@ -4234,6 +4234,17 @@ pub(super) async fn handle_pr_comment_nudge(
             // notify @user instead — auto-creating tasks for PRs the daemon
             // didn't author leads to spurious task churn.
             if !is_non_lead_coworker(&owner, &state.project_name, &channel_lead_names) {
+                // Check cooldown before notifying — same pattern as all other nudge sites
+                {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
+                        debug!(
+                            "PR #{} non-coworker review comment nudge on cooldown, skipping",
+                            pr_number
+                        );
+                        return;
+                    }
+                }
                 debug!(
                     "PR #{} linked to completed task !{} but owner {} is not a coworker — notifying user instead of creating follow-up task",
                     pr_number, task_id, owner
