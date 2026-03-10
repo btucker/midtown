@@ -138,6 +138,53 @@ mod tests {
         }
     }
 
+    /// Test the combined gate: follow-up task creation requires BOTH a completed
+    /// task AND a coworker owner. This mirrors the logic in handle_pr_comment_nudge
+    /// where `review_comment_creates_followup` and `is_non_lead_coworker` are
+    /// checked together.
+    ///
+    /// Bug !2190: The webhook path auto-created "Address review feedback" tasks
+    /// for non-coworker PRs because it only checked task status, not owner type.
+    #[test]
+    fn test_followup_task_gate_requires_coworker_owner_and_completed_task() {
+        use crate::daemon::helpers::is_non_lead_coworker;
+        use crate::rules::review_comment_creates_followup;
+        use crate::tasks::TaskStatus;
+        use std::collections::HashSet;
+
+        let project_name = "midtown";
+        let channel_leads: HashSet<String> = ["ops".to_string()].into_iter().collect();
+
+        // Simulate the handler's gate: task completed + owner check
+        // This mirrors: `if review_comment_creates_followup(&task.status) { if !is_non_lead_coworker(...) { notify_user } else { create_task } }`
+        let should_create_followup_task = |owner: &str, status: &TaskStatus| -> bool {
+            review_comment_creates_followup(status)
+                && is_non_lead_coworker(owner, project_name, &channel_leads)
+        };
+
+        // Coworker + completed task → create follow-up task
+        assert!(should_create_followup_task(
+            "columbus",
+            &TaskStatus::Completed
+        ));
+
+        // Lead + completed task → notify user, NOT create task
+        assert!(!should_create_followup_task(
+            "midtown",
+            &TaskStatus::Completed
+        ));
+        assert!(!should_create_followup_task("lead", &TaskStatus::Completed));
+
+        // Channel lead + completed task → notify user, NOT create task
+        assert!(!should_create_followup_task("ops", &TaskStatus::Completed));
+
+        // Any owner + in-progress task → no follow-up (handled by normal nudge path)
+        assert!(!should_create_followup_task(
+            "columbus",
+            &TaskStatus::InProgress
+        ));
+    }
+
     /// Test that format_review_content returns None when there are no reviews
     /// or issue comments with review signatures.
     #[test]

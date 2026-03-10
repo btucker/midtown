@@ -495,6 +495,8 @@ Every PR decision (both polling and webhook paths) is logged as a JSONL line to 
 
 Call sites: `process_pr_issue_nudges` (polling), `collect_review_feedback_effects` (polling), `handle_pr_comment_nudge` (webhook), `handle_webhook_review_state_change` (webhook), `handle_webhook_ci_failure` (webhook). All use `log_pr_decision()` with a `PrDecisionEntry` struct.
 
+**Coworker-authorship gate** (in `handle_pr_comment_nudge`): When review feedback arrives on a PR linked to a completed task, follow-up task creation is gated on `is_non_lead_coworker()`. Only coworker-owned PRs get auto-created follow-up tasks; lead and channel-lead PRs notify `@user` instead, avoiding spurious task churn for PRs the daemon didn't author.
+
 This corpus enables verifying functional equivalence when migrating PR workflow logic from Rust to Python workflow scripts. Logging failures are silently swallowed — they must never crash the daemon.
 
 ## Webhook Ports

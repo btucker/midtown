@@ -4198,13 +4198,14 @@ pub(super) async fn handle_pr_comment_nudge(
     };
 
     // Check if this PR is linked to a task, and handle based on task status.
-    if let Some(task_id) = {
+    if let Some((task_id, channel_lead_names)) = {
         let ps = state.persistent_state.lock().await;
         ps.github
             .pr_author_sessions
             .get(&pr_number)
             .and_then(|session| session.task_id.as_ref())
             .cloned()
+            .map(|tid| (tid, ps.channel_lead_names()))
     } && let Some(task) = crate::tasks::read_task(&task_id)
     {
         if task.status == crate::tasks::TaskStatus::InProgress {
@@ -4228,8 +4229,52 @@ pub(super) async fn handle_pr_comment_nudge(
             }
         } else if crate::rules::review_comment_creates_followup(&task.status) {
             // Task is completed — the original coworker session is gone.
-            // Create a follow-up task so normal dispatch handles it cleanly
-            // instead of trying to resume a stale session.
+            // Only create a follow-up task if the PR was actually opened by a
+            // coworker. For non-coworker PRs (lead, channel lead, external),
+            // notify @user instead — auto-creating tasks for PRs the daemon
+            // didn't author leads to spurious task churn.
+            if !is_non_lead_coworker(&owner, &state.project_name, &channel_lead_names) {
+                // Check cooldown before notifying — same pattern as all other nudge sites
+                {
+                    let tracker = state.pr_issue_tracker.lock().await;
+                    if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
+                        debug!(
+                            "PR #{} non-coworker review comment nudge on cooldown, skipping",
+                            pr_number
+                        );
+                        return;
+                    }
+                }
+                debug!(
+                    "PR #{} linked to completed task !{} but owner {} is not a coworker — notifying user instead of creating follow-up task",
+                    pr_number, task_id, owner
+                );
+                let user_msg = format!(
+                    "@user PR #{} has new review feedback from {} — please address it.",
+                    pr_number, activity.actor
+                );
+                let effects = vec![
+                    Effect::PostToChannel {
+                        sender: "midtown".to_string(),
+                        message: user_msg,
+                        channel: Some(state.channel_router.default_channel_name().to_string()),
+                        auto_output: false,
+                        message_type: None,
+                        nudge_type: None,
+                        tool_data: None,
+                        provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
+                    },
+                    Effect::RecordPrNudge {
+                        pr_number,
+                        issue_type: PrIssueType::ReviewComment,
+                    },
+                ];
+                super::effects::execute_effects(effects, state).await;
+                return;
+            }
+
             {
                 let tracker = state.pr_issue_tracker.lock().await;
                 if !tracker.should_nudge(pr_number, PrIssueType::ReviewComment) {
