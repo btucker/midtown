@@ -103,8 +103,8 @@ pub(crate) fn fork_initial_framing(channel_name: &str) -> String {
 /// For topic channels, thread replies route to the existing dedicated session
 /// (if any) or fall back to nudging the channel lead. New top-level messages
 /// always go to the channel lead — users can manually dedicate a session via
-/// the web UI. @mentions are not routed in topic channels since the channel
-/// lead owns all routing in its domain.
+/// the web UI. @mentions in topic channel messages from non-user senders
+/// (channel leads, coworkers) are routed to the mentioned coworkers.
 ///
 /// Accepts an optional `channel` parameter to post to topic channels.
 /// If not provided, defaults to the main channel.
@@ -295,40 +295,55 @@ pub(super) async fn handle_channel_post(
     // thread reply in a topic channel with a bound fork. Skip self-nudging
     // (when the fork itself is posting). User messages are handled below in the
     // is_user_sender block which also handles DM/main channel nudging.
-    if !state.is_user_sender(from) {
+    //
+    // Also route @mentions in topic channel messages from non-user senders
+    // (channel leads, coworkers) so that mentioned coworkers receive nudges.
+    // Skip protected senders (SKIP_SENDERS) for consistency with chat_monitor_loop.
+    if !state.is_user_sender(from)
+        && !super::constants::SKIP_SENDERS
+            .iter()
+            .any(|&s| s.eq_ignore_ascii_case(from))
+    {
         let default_channel = state.channel_router.default_channel_name();
         let is_topic = channel_name != default_channel && !channel_name.starts_with("dm-");
-        if is_topic && let Some(parent_id) = thread_parent_id {
-            let mut fork_session_id = state
-                .topic_sessions
-                .lock()
-                .unwrap()
-                .get(parent_id)
-                .filter(|s| s.as_str() != "pending")
-                .cloned();
+        if is_topic {
+            if let Some(parent_id) = thread_parent_id {
+                let mut fork_session_id = state
+                    .topic_sessions
+                    .lock()
+                    .unwrap()
+                    .get(parent_id)
+                    .filter(|s| s.as_str() != "pending")
+                    .cloned();
 
-            // Lazy fork restoration: if the fork session is dead, attempt
-            // respawn so non-user thread replies don't go to dead sessions.
-            if let Some(ref fork_sid) = fork_session_id {
-                fork_session_id = try_lazy_fork_respawn(state, fork_sid, parent_id).await;
-            }
+                // Lazy fork restoration: if the fork session is dead, attempt
+                // respawn so non-user thread replies don't go to dead sessions.
+                if let Some(ref fork_sid) = fork_session_id {
+                    fork_session_id = try_lazy_fork_respawn(state, fork_sid, parent_id).await;
+                }
 
-            if let Some(ref fork_sid) = fork_session_id {
-                // Avoid self-nudge: don't nudge the fork if it's the sender.
-                let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
-                let is_self = fork_name.as_deref() == Some(from);
-                if !is_self {
-                    let wake_msg_id = msg.thread_anchor_id().to_string();
-                    let nudge_effect = build_topic_thread_nudge_effect(
-                        channel_name,
-                        &content,
-                        wake_msg_id,
-                        fork_session_id.clone(),
-                        Some(parent_id),
-                    );
-                    crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+                if let Some(ref fork_sid) = fork_session_id {
+                    // Avoid self-nudge: don't nudge the fork if it's the sender.
+                    let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+                    let is_self = fork_name.as_deref() == Some(from);
+                    if !is_self {
+                        let wake_msg_id = msg.thread_anchor_id().to_string();
+                        let nudge_effect = build_topic_thread_nudge_effect(
+                            channel_name,
+                            &content,
+                            wake_msg_id,
+                            fork_session_id.clone(),
+                            Some(parent_id),
+                        );
+                        crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+                    }
                 }
             }
+
+            // Route @mentions to the mentioned coworkers. The channel lead
+            // still owns routing in its domain, but the daemon delivers the
+            // nudges that @mentions produce.
+            super::chat::route_mentions(state, &msg).await;
         }
     }
 
