@@ -14,6 +14,7 @@ import {
 	hasInProgressToolBlocks,
 	resolveMessageTapAction,
 } from "./channelUtils.js";
+import { handleCodePaste } from "./codePaste.js";
 import DayDivider from "./DayDivider.svelte";
 import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
 import MessageRow from "./MessageRow.svelte";
@@ -615,7 +616,24 @@ async function handleSubmit(e) {
 
 function handlePaste(e) {
 	const file = extractPastedFile(e);
-	if (file) pendingFile = file;
+	if (file) {
+		pendingFile = file;
+		return;
+	}
+	const cursorPos = handleCodePaste(
+		e,
+		textareaElement,
+		() => inputText,
+		(t) => {
+			inputText = t;
+		},
+	);
+	if (cursorPos !== false) {
+		tick().then(() => {
+			textareaElement.selectionStart = cursorPos;
+			textareaElement.selectionEnd = cursorPos;
+		});
+	}
 }
 
 function clearPendingFile() {
