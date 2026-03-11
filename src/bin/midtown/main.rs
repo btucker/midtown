@@ -16,7 +16,7 @@ use cli::{
 use client::DaemonClient;
 
 #[derive(Parser)]
-#[command(name = "midtown")]
+#[command(name = "midtown", version)]
 #[command(about = "Midtown - AI coworker orchestration", long_about = None)]
 struct Cli {
     /// Output format (json or pretty)
