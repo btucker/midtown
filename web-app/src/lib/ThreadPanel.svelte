@@ -651,6 +651,7 @@ let prevThreadId = null;
             allMessages={timelineMessages}
             startIndex={entry.entries[0].msgIndex}
             channelName={$threadData?.channelName}
+            showToolData={showInlineDiffs}
           />
         {:else if entry.type === 'edit'}
           <DiffView
@@ -810,6 +811,7 @@ let prevThreadId = null;
             allMessages={timelineMessages}
             startIndex={entry.entries[0].msgIndex}
             channelName={$threadData?.channelName}
+            showToolData={showInlineDiffs}
           />
         {:else if entry.type === 'edit'}
           <DiffView
