@@ -503,7 +503,10 @@ pub fn all_ci_checks_passed(pr: &serde_json::Value) -> bool {
 /// Get action text for a PR issue type.
 pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
     match issue_type {
-        PrIssueType::MergeConflict => "please rebase",
+        PrIssueType::MergeConflict => {
+            "please rebase — IMPORTANT: after rebasing, re-read any file before editing it \
+             (your context window has stale contents that could silently revert merged changes)"
+        }
         PrIssueType::CiFailed => "please investigate",
         PrIssueType::ChangesRequested => "please address feedback",
         PrIssueType::Approved => {

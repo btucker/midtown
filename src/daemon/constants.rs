@@ -254,6 +254,28 @@ pub(super) const SYSTEM_SENDERS: &[&str] = &["github", "midtown", "system", "Git
 /// and only nudge leads when notes haven't been reviewed in 3+ days.
 pub(super) const NOTE_REVIEW_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 
+/// Cooldown between merge-rebase nudges for the same coworker (10 minutes).
+///
+/// After nudging a coworker to rebase onto a freshly merged PR, wait before
+/// nudging again. Short enough that a second merge within the window triggers
+/// a fresh nudge once the cooldown expires.
+pub(super) const MERGE_REBASE_NUDGE_COOLDOWN: Duration = Duration::from_secs(600);
+
+/// Cooldown for tracking which merged PR numbers have already triggered rebase
+/// nudges (24 hours).
+///
+/// The `merged_pr_numbers` cache always contains the last 10 merged PRs, so
+/// without this gate, rebase nudges would fire every cooldown window even when
+/// no new PR merged. This cooldown marks a PR number as "seen" so it only
+/// triggers nudges once.
+pub(super) const MERGE_REBASE_PR_SEEN_COOLDOWN: Duration = Duration::from_secs(86400);
+
+/// Cooldown between rebase regression warnings for the same coworker (30 minutes).
+///
+/// After flagging a coworker for a potential post-rebase regression, wait before
+/// re-checking. This prevents spam when the coworker is actively fixing the issue.
+pub(super) const REBASE_REGRESSION_COOLDOWN: Duration = Duration::from_secs(1800);
+
 /// Cooldown between note staleness nudges for the same channel (24 hours).
 ///
 /// Once a channel lead is nudged about stale notes, don't repeat for a day.

@@ -454,9 +454,13 @@ fn test_auto_mergeable_no_checks_field() {
 
 #[test]
 fn test_get_issue_action() {
-    assert_eq!(
-        get_issue_action(PrIssueType::MergeConflict),
-        "please rebase"
+    assert!(
+        get_issue_action(PrIssueType::MergeConflict).starts_with("please rebase"),
+        "MergeConflict action should start with 'please rebase'"
+    );
+    assert!(
+        get_issue_action(PrIssueType::MergeConflict).contains("re-read"),
+        "MergeConflict action should include re-read guidance"
     );
     assert_eq!(
         get_issue_action(PrIssueType::CiFailed),

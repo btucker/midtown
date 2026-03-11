@@ -52,6 +52,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
+            newly_merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
@@ -135,6 +136,9 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -215,6 +219,7 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
+            newly_merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
@@ -298,6 +303,9 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -413,6 +421,7 @@ fn test_check_for_usage_limits_with_reset_time() {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
+            newly_merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
@@ -488,6 +497,9 @@ fn test_check_for_usage_limits_with_reset_time() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -530,6 +542,7 @@ fn test_check_for_usage_limits_already_scheduled() {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
+            newly_merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
@@ -605,6 +618,9 @@ fn test_check_for_usage_limits_already_scheduled() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -682,6 +698,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
             coworkers_with_open_prs: HashSet::new(),
             coworkers_with_merged_prs: HashSet::new(),
             merged_pr_numbers: HashSet::new(),
+            newly_merged_pr_numbers: HashSet::new(),
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
@@ -757,6 +774,9 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     }
 }
@@ -1679,6 +1699,9 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -1804,6 +1827,9 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         limited_pool_profiles: HashSet::new(),
         pr_protected_tasks: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         stale_channel_notes: HashMap::new(),
     };
 

@@ -77,7 +77,9 @@ pub use health::{
     maybe_nudge_usage_limit_expiry,
 };
 #[doc(hidden)]
-pub use pr::{collect_merged_pr_cleanup_effects, reconcile_orphaned_prs};
+pub use pr::{
+    collect_merge_rebase_nudge_effects, collect_merged_pr_cleanup_effects, reconcile_orphaned_prs,
+};
 #[doc(hidden)]
 pub use state::SessionRecord;
 
