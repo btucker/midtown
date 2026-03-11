@@ -153,7 +153,7 @@ pub async fn evaluate_tick(
 
             // Check for post-rebase regressions (coworker commits that touch files
             // changed on main, potentially reverting merged changes)
-            effects.extend(super::pr::check_for_rebase_regressions(snap, state).await);
+            effects.extend(super::pr::check_for_rebase_regressions(snap).await);
 
             // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
             // that webhooks may have missed (no API calls, pure snapshot comparison)

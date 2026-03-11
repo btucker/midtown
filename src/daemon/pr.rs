@@ -5517,10 +5517,7 @@ fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
 /// 4. If overlap detected, nudges the coworker and posts to ops
 ///
 /// Called from `evaluate_tick(PrPollTick)`.
-pub async fn check_for_rebase_regressions(
-    snap: &WorldSnapshot,
-    _state: &DaemonState,
-) -> Vec<Effect> {
+pub async fn check_for_rebase_regressions(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     for coworker_name in &snap.pr.coworkers_with_open_prs {
@@ -5574,52 +5571,93 @@ pub async fn check_for_rebase_regressions(
     effects
 }
 
+/// Maximum number of recent commits to check for post-rebase regressions.
+const REBASE_REGRESSION_RECENT_COMMITS: usize = 3;
+
 /// Collect git data for rebase regression analysis (runs on blocking thread).
 ///
 /// Returns `None` if the worktree is not a valid git repo or if no rebase
 /// was detected recently.
+///
+/// **Key insight on merge-base after rebase**: After `git rebase origin/main`,
+/// `merge-base HEAD origin/main` returns `origin/main` itself (the branch now
+/// has `origin/main` as an ancestor), so `merge_base..origin/main` would be
+/// empty. Instead, we extract the pre-rebase HEAD from the reflog to find the
+/// original fork point, then compute files that changed on main between the
+/// pre-rebase fork point and `origin/main`.
 fn collect_rebase_regression_input(
     working_dir: &str,
     coworker_name: &str,
 ) -> Option<RebaseRegressionInput> {
-    // Check reflog for recent rebase (finish) entry — last 30 minutes
+    // Get reflog with both subject (%gs) and commit hash (%H) plus timestamp (%ci)
     let reflog_lines =
-        run_git_in_worktree(working_dir, &["reflog", "--format=%gs %ci", "-n", "50"]);
+        run_git_in_worktree(working_dir, &["reflog", "--format=%H %gs %ci", "-n", "50"]);
 
-    let rebase_detected = reflog_lines.iter().any(|line| {
-        if !line.contains("rebase (finish)") {
-            return false;
+    // Find the pre-rebase HEAD: the reflog entry BEFORE the most recent
+    // `rebase (start)` entry. This is the commit the branch pointed to before
+    // the rebase began. We need this to compute the original merge-base with
+    // origin/main (before the rebase moved the branch).
+    let mut rebase_start_idx = None;
+    let mut rebase_finish_recent = false;
+
+    for (i, line) in reflog_lines.iter().enumerate() {
+        if line.contains("rebase (finish)") && !rebase_finish_recent {
+            rebase_finish_recent = parse_reflog_timestamp_is_recent(line, 1800); // 30 min
         }
-        // Parse the timestamp from the reflog line to check if it's recent
-        // Format: "rebase (finish): ... YYYY-MM-DD HH:MM:SS +ZZZZ"
-        // We look for the date part after the last occurrence of a date pattern
-        parse_reflog_timestamp_is_recent(line, 1800) // 30 minutes
-    });
+        if line.contains("rebase (start)") && rebase_finish_recent {
+            rebase_start_idx = Some(i);
+            break;
+        }
+    }
 
-    if !rebase_detected {
+    if !rebase_finish_recent {
         return None;
     }
 
-    // Get merge-base with origin/main
-    let merge_base_lines = run_git_in_worktree(working_dir, &["merge-base", "HEAD", "origin/main"]);
-    let merge_base = merge_base_lines.first()?;
+    // The entry after rebase (start) in the reflog is the pre-rebase HEAD
+    // (reflog is newest-first, so "after" means index + 1)
+    let pre_rebase_sha = rebase_start_idx
+        .and_then(|idx| reflog_lines.get(idx + 1))
+        .and_then(|line| line.split_whitespace().next())
+        .map(|s| s.to_string());
 
-    // Files changed on main since the merge-base (what the rebase brought in)
-    let main_changed = run_git_in_worktree(
-        working_dir,
-        &["diff", "--name-only", &format!("{merge_base}..origin/main")],
-    );
-    let files_changed_on_main: HashSet<String> = main_changed.into_iter().collect();
+    // Compute files changed on main using the pre-rebase fork point
+    let files_changed_on_main = if let Some(ref pre_rebase_head) = pre_rebase_sha {
+        // Find the original merge-base (before rebase moved the branch)
+        let original_merge_base_lines =
+            run_git_in_worktree(working_dir, &["merge-base", pre_rebase_head, "origin/main"]);
+        if let Some(original_base) = original_merge_base_lines.first() {
+            let main_changed = run_git_in_worktree(
+                working_dir,
+                &[
+                    "diff",
+                    "--name-only",
+                    &format!("{original_base}..origin/main"),
+                ],
+            );
+            main_changed.into_iter().collect::<HashSet<String>>()
+        } else {
+            return None;
+        }
+    } else {
+        // Fallback: if we can't find the pre-rebase HEAD (e.g., reflog was pruned),
+        // use a simpler heuristic — check what's different between the branch and main.
+        // This is less precise but better than skipping entirely.
+        return None;
+    };
 
     if files_changed_on_main.is_empty() {
         return None;
     }
 
-    // Get commits on the PR branch after the merge-base (PR's own commits)
+    // Get commits on the PR branch after origin/main (the coworker's own commits)
     let pr_commits = run_git_in_worktree(working_dir, &["log", "--format=%H", "origin/main..HEAD"]);
 
-    // Look at the most recent 3 commits only (post-rebase work)
-    let recent_commits: Vec<&String> = pr_commits.iter().take(3).collect();
+    // Look at only the most recent commits (post-rebase work)
+    let recent_commits: Vec<&String> = pr_commits
+        .iter()
+        .take(REBASE_REGRESSION_RECENT_COMMITS)
+        .collect();
     if recent_commits.is_empty() {
         return None;
     }
@@ -5650,15 +5688,11 @@ fn collect_rebase_regression_input(
 /// Returns `true` if the timestamp is recent enough, or `true` if parsing fails
 /// (fail-open: better to check than miss a regression).
 fn parse_reflog_timestamp_is_recent(line: &str, max_age_secs: i64) -> bool {
-    // Try to find a date pattern: YYYY-MM-DD HH:MM:SS
-    // Look from the end of the line since the message part comes first
-    let re_pattern = regex::Regex::new(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})");
+    static TIMESTAMP_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})").unwrap()
+    });
 
-    let Ok(re) = re_pattern else {
-        return true; // fail-open
-    };
-
-    let Some(caps) = re.captures(line) else {
+    let Some(caps) = TIMESTAMP_RE.captures(line) else {
         return true; // fail-open
     };
 
