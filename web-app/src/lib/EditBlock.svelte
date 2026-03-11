@@ -29,14 +29,16 @@ $effect.pre(() => {
 
 $effect(() => {
 	if (userOverride) return;
-	ac.startTimer(() => {
+	const currentAc = ac;
+	currentAc.startTimer(() => {
 		displayState = "collapsed";
 	});
-	return () => ac.clearTimer();
+	return () => currentAc.clearTimer();
 });
 
 function toggle() {
 	userOverride = true;
+	ac.clearTimer();
 	displayState = displayState === "expanded" ? "collapsed" : "expanded";
 }
 </script>

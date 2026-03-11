@@ -23,11 +23,13 @@ export function computeInitialState(timestamp, now = Date.now(), delay = DEFAULT
  *   - startTimer(onCollapse): schedule the collapse callback
  *
  * Usage in a Svelte 5 component:
- *   const ac = createAutoCollapse(timestamp);
- *   let displayState = $state(ac.initial);
+ *   const ac = $derived.by(() => createAutoCollapse(timestamp));
+ *   $effect.pre(() => { if (!userOverride) displayState = ac.initial; });
  *   $effect(() => {
- *       ac.startTimer(() => { displayState = "collapsed"; });
- *       return () => ac.clearTimer();
+ *       if (userOverride) return;
+ *       const currentAc = ac;
+ *       currentAc.startTimer(() => { displayState = "collapsed"; });
+ *       return () => currentAc.clearTimer();
  *   });
  */
 export function createAutoCollapse(timestamp, delay = DEFAULT_COLLAPSE_DELAY_MS) {
