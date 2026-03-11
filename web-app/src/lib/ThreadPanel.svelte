@@ -9,6 +9,7 @@ let prevThreadId = null;
 <script>
   import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
   import { sendMessage, closeThread, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
+  import { handleCodePaste } from './codePaste.js'
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
@@ -434,7 +435,11 @@ let prevThreadId = null;
 
   function handlePaste(e) {
     const file = extractPastedFile(e)
-    if (file) pendingFile = file
+    if (file) {
+      pendingFile = file
+      return
+    }
+    handleCodePaste(e, textareaEl, () => replyText, (t) => { replyText = t })
   }
 
   function clearPendingFile() {

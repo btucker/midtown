@@ -105,7 +105,7 @@ export function detectCode(text) {
  */
 export function wrapInFences(text, language) {
 	const lang = language || "";
-	const body = text.endsWith("\n") ? text.slice(0, -1) : text;
+	const body = text.trimEnd();
 	return `\`\`\`${lang}\n${body}\n\`\`\``;
 }
 
@@ -122,9 +122,6 @@ export function handleCodePaste(e, textareaElement, getCurrentText, setText) {
 	const text = e.clipboardData?.getData("text/plain");
 	if (!text) return false;
 
-	// Already contains fences — don't double-wrap.
-	if (/```/.test(text)) return false;
-
 	const { isCode, language } = detectCode(text);
 	if (!isCode) return false;
 
@@ -137,6 +134,13 @@ export function handleCodePaste(e, textareaElement, getCurrentText, setText) {
 
 	const newText = current.slice(0, start) + fenced + current.slice(end);
 	setText(newText);
+
+	// Reposition cursor after the inserted fenced block.
+	const cursorPos = start + fenced.length;
+	queueMicrotask(() => {
+		textareaElement.selectionStart = cursorPos;
+		textareaElement.selectionEnd = cursorPos;
+	});
 
 	return true;
 }
