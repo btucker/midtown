@@ -5170,23 +5170,19 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
 /// `NudgeCoworkerByName` effects telling each eligible coworker to rebase,
 /// along with guidance about re-reading files after the rebase completes.
 ///
-/// Uses `newly_merged_pr_numbers` (the diff between the current merged-PR cache
-/// and previously seen PRs) so nudges only fire for genuinely new merges, not
-/// every poll tick.
-///
 /// Skips:
-/// - Coworkers on the per-coworker merge-rebase nudge cooldown
+/// - The coworker whose PR just merged (they're being cleaned up)
+/// - Coworkers on the merge-rebase nudge cooldown
 /// - Coworkers without an active session (no `name_session_map` entry)
 pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
-    // Only trigger on genuinely new merges, not the stale last-10 cache
-    if snap.pr.newly_merged_pr_numbers.is_empty() {
+    if snap.pr.merged_pr_numbers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
 
-    // Build a human-readable list of newly merged PR numbers for the nudge message
-    let mut merged_prs: Vec<u64> = snap.pr.newly_merged_pr_numbers.iter().copied().collect();
+    // Build a human-readable list of merged PR numbers for the nudge message
+    let mut merged_prs: Vec<u64> = snap.pr.merged_pr_numbers.iter().copied().collect();
     merged_prs.sort_unstable();
     let pr_list = merged_prs
         .iter()
@@ -5195,26 +5191,21 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         .join(", ");
 
     for coworker_name in &snap.pr.coworkers_with_open_prs {
+        // Skip the coworker(s) whose PR just merged
+        if snap.pr.coworkers_with_merged_prs.contains(coworker_name) {
+            continue;
+        }
+
         // Skip coworkers without an active session
         if !snap.name_session_map.contains_key(coworker_name) {
             continue;
         }
 
-        // Skip coworkers on per-coworker cooldown
+        // Skip coworkers on cooldown
         if snap
             .merge_rebase_nudge_cooldown_names
             .contains(coworker_name)
         {
-            continue;
-        }
-
-        // Skip coworkers who also appear in the merged set (their PR just merged,
-        // they're being cleaned up). Note: coworkers_with_merged_prs covers the
-        // last ~10 merged PRs, so this is conservative — a coworker who merged
-        // days ago and opened a new PR would still be skipped. This is acceptable
-        // since the per-coworker cooldown prevents persistent re-nudging, and the
-        // newly_merged gate above prevents spurious triggers.
-        if snap.pr.coworkers_with_merged_prs.contains(coworker_name) {
             continue;
         }
 
@@ -5241,14 +5232,6 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         effects.push(Effect::RecordCooldown {
             category: "merge_rebase_nudge".to_string(),
             key: coworker_name.clone(),
-        });
-    }
-
-    // Mark newly merged PRs as seen so they don't re-trigger nudges
-    for &pr_num in &snap.pr.newly_merged_pr_numbers {
-        effects.push(Effect::RecordCooldown {
-            category: "merge_rebase_pr_seen".to_string(),
-            key: pr_num.to_string(),
         });
     }
 
@@ -5416,7 +5399,7 @@ fn pr_action_name(action: &crate::rules::PrAction) -> &'static str {
 
 /// Structured input for the pure rebase regression decision function.
 ///
-/// Populated during `collect_world_snapshot()` from git commands, then fed
+/// Populated by `check_for_rebase_regressions()` from git commands, then fed
 /// into `evaluate_rebase_regression()` which is a pure function returning effects.
 #[derive(Debug, Clone)]
 pub struct RebaseRegressionInput {
@@ -5527,16 +5510,64 @@ fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
 
 /// Check for post-rebase regressions across all open PRs.
 ///
-/// Pure decision function: reads pre-collected `rebase_regression_inputs`
-/// from the snapshot (git I/O was performed during `collect_world_snapshot`)
-/// and evaluates each input for overlapping file changes.
+/// For each coworker with an open PR:
+/// 1. Finds their worktree via session records
+/// 2. Checks the git reflog for a recent `rebase (finish)` entry (last 30 min)
+/// 3. If rebased, compares files changed on main vs files in recent commits
+/// 4. If overlap detected, nudges the coworker and posts to ops
 ///
 /// Called from `evaluate_tick(PrPollTick)`.
-pub fn check_for_rebase_regressions(snap: &WorldSnapshot) -> Vec<Effect> {
+pub async fn check_for_rebase_regressions(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
-    for input in &snap.rebase_regression_inputs {
-        effects.extend(evaluate_rebase_regression(input));
+
+    for coworker_name in &snap.pr.coworkers_with_open_prs {
+        // Skip coworkers on cooldown
+        if snap
+            .rebase_regression_cooldown_names
+            .contains(coworker_name)
+        {
+            continue;
+        }
+
+        // Skip coworkers without an active session
+        if !snap.name_session_map.contains_key(coworker_name) {
+            continue;
+        }
+
+        // Find the working directory for this coworker's session
+        let working_dir = snap
+            .name_session_map
+            .get(coworker_name)
+            .and_then(|sid| snap.sessions.get(sid))
+            .map(|rec| rec.working_dir.as_str())
+            .unwrap_or("");
+
+        if working_dir.is_empty() || !std::path::Path::new(working_dir).exists() {
+            continue;
+        }
+
+        // Spawn blocking git work on a thread pool to avoid blocking the tokio runtime
+        let wd = working_dir.to_string();
+        let cw_name = coworker_name.clone();
+        let result =
+            tokio::task::spawn_blocking(move || collect_rebase_regression_input(&wd, &cw_name))
+                .await;
+
+        match result {
+            Ok(Some(input)) => {
+                effects.extend(evaluate_rebase_regression(&input));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                debug!(
+                    coworker = %coworker_name,
+                    error = %e,
+                    "Failed to collect rebase regression input"
+                );
+            }
+        }
     }
+
     effects
 }
 
@@ -5554,7 +5585,7 @@ const REBASE_REGRESSION_RECENT_COMMITS: usize = 3;
 /// empty. Instead, we extract the pre-rebase HEAD from the reflog to find the
 /// original fork point, then compute files that changed on main between the
 /// pre-rebase fork point and `origin/main`.
-pub fn collect_rebase_regression_input(
+fn collect_rebase_regression_input(
     working_dir: &str,
     coworker_name: &str,
 ) -> Option<RebaseRegressionInput> {
@@ -5571,7 +5602,10 @@ pub fn collect_rebase_regression_input(
 
     for (i, line) in reflog_lines.iter().enumerate() {
         if line.contains("rebase (finish)") && !rebase_finish_recent {
-            rebase_finish_recent = parse_reflog_timestamp_is_recent(line, 1800); // 30 min
+            rebase_finish_recent = parse_reflog_timestamp_is_recent(
+                line,
+                super::constants::REBASE_REGRESSION_WINDOW_SECS as i64,
+            );
         }
         if line.contains("rebase (start)") && rebase_finish_recent {
             rebase_start_idx = Some(i);
@@ -5609,7 +5643,9 @@ pub fn collect_rebase_regression_input(
             return None;
         }
     } else {
-        // Can't find the pre-rebase HEAD (e.g., reflog was pruned) — skip this check.
+        // Fallback: if we can't find the pre-rebase HEAD (e.g., reflog was pruned),
+        // use a simpler heuristic — check what's different between the branch and main.
+        // This is less precise but better than skipping entirely.
         return None;
     };
 

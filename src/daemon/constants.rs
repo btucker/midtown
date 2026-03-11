@@ -261,20 +261,19 @@ pub(super) const NOTE_REVIEW_CHECK_INTERVAL: Duration = Duration::from_secs(3600
 /// a fresh nudge once the cooldown expires.
 pub(super) const MERGE_REBASE_NUDGE_COOLDOWN: Duration = Duration::from_secs(600);
 
-/// Cooldown for tracking which merged PR numbers have already triggered rebase
-/// nudges (24 hours).
+/// How far back (in seconds) to consider a rebase "recent" (30 minutes).
 ///
-/// The `merged_pr_numbers` cache always contains the last 10 merged PRs, so
-/// without this gate, rebase nudges would fire every cooldown window even when
-/// no new PR merged. This cooldown marks a PR number as "seen" so it only
-/// triggers nudges once.
-pub(super) const MERGE_REBASE_PR_SEEN_COOLDOWN: Duration = Duration::from_secs(86400);
+/// Used for both the reflog lookback window in `collect_rebase_regression_input`
+/// and the cooldown between regression warnings. These are semantically linked:
+/// a rebase is relevant for this window, and we don't re-warn within it.
+pub(super) const REBASE_REGRESSION_WINDOW_SECS: u64 = 1800;
 
 /// Cooldown between rebase regression warnings for the same coworker (30 minutes).
 ///
 /// After flagging a coworker for a potential post-rebase regression, wait before
 /// re-checking. This prevents spam when the coworker is actively fixing the issue.
-pub(super) const REBASE_REGRESSION_COOLDOWN: Duration = Duration::from_secs(1800);
+pub(super) const REBASE_REGRESSION_COOLDOWN: Duration =
+    Duration::from_secs(REBASE_REGRESSION_WINDOW_SECS);
 
 /// Cooldown between note staleness nudges for the same channel (24 hours).
 ///

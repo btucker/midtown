@@ -149,7 +149,10 @@ fn parse_reflog_timestamp_recent() {
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S +0000")
     );
     assert!(
-        super::parse_reflog_timestamp_is_recent(&recent_line, 1800),
+        super::parse_reflog_timestamp_is_recent(
+            &recent_line,
+            crate::daemon::constants::REBASE_REGRESSION_WINDOW_SECS as i64,
+        ),
         "a just-now timestamp should be considered recent"
     );
 }
@@ -158,7 +161,10 @@ fn parse_reflog_timestamp_recent() {
 fn parse_reflog_timestamp_old() {
     let old_line = "rebase (finish): returning to refs/heads/branch 2020-01-01 00:00:00 +0000";
     assert!(
-        !super::parse_reflog_timestamp_is_recent(old_line, 1800),
+        !super::parse_reflog_timestamp_is_recent(
+            old_line,
+            crate::daemon::constants::REBASE_REGRESSION_WINDOW_SECS as i64,
+        ),
         "a very old timestamp should not be considered recent"
     );
 }
@@ -167,7 +173,10 @@ fn parse_reflog_timestamp_old() {
 fn parse_reflog_timestamp_no_match_fails_open() {
     let no_timestamp = "rebase (finish): some weird line without a date";
     assert!(
-        super::parse_reflog_timestamp_is_recent(no_timestamp, 1800),
+        super::parse_reflog_timestamp_is_recent(
+            no_timestamp,
+            crate::daemon::constants::REBASE_REGRESSION_WINDOW_SECS as i64,
+        ),
         "should fail-open when no timestamp can be parsed"
     );
 }
