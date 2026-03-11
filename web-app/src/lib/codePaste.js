@@ -38,7 +38,7 @@ export function detectCode(text) {
 	// Pure URL or path — not code.
 	if (nonEmptyLines.length === 1) {
 		const trimmed = nonEmptyLines[0].trim();
-		if (/^https?:\/\/\S+$/.test(trimmed) || /^[\/~][\w\-\/.]+$/.test(trimmed)) {
+		if (/^https?:\/\/\S+$/.test(trimmed) || /^[/~][\w\-/.]+$/.test(trimmed)) {
 			return { isCode: false, language: null };
 		}
 	}
