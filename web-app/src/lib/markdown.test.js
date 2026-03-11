@@ -177,6 +177,39 @@ describe("renderContent", () => {
 		expect(result).toContain("hello world");
 		expect(result).toContain("<p>");
 	});
+
+	// Newline preservation (chat behavior: single newlines → <br>)
+	it("converts single newlines to <br> tags", () => {
+		const result = renderContent("line one\nline two\nline three");
+		expect(result).toContain("<br>");
+		// All three lines should appear in the output
+		expect(result).toContain("line one");
+		expect(result).toContain("line two");
+		expect(result).toContain("line three");
+	});
+
+	it("preserves newlines in multi-line plain text", () => {
+		const result = renderContent("hello\nworld");
+		// Should have a <br> between them, not collapse to "hello world"
+		expect(result).toContain("<br>");
+		expect(result).not.toContain("hello world");
+	});
+
+	it("does not add extra <br> inside code blocks", () => {
+		// Code blocks handle their own newlines via <pre>; breaks should not affect them
+		const result = renderContent("```\nline1\nline2\n```");
+		expect(result).toContain("line1");
+		expect(result).toContain("line2");
+		// Code blocks should NOT have <br> injected inside them
+		expect(result).not.toMatch(/<code[^>]*>[\s\S]*<br>[\s\S]*<\/code>/);
+	});
+
+	it("preserves newlines alongside lists", () => {
+		const result = renderContent("intro\n- item1\n- item2");
+		expect(result).toContain("intro");
+		expect(result).toContain("<li>item1</li>");
+		expect(result).toContain("<li>item2</li>");
+	});
 });
 
 describe("hasMermaid", () => {
