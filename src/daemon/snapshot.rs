@@ -458,6 +458,12 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub note_staleness_cooldown_channels: HashSet<String>,
 
+    /// Coworkers recently nudged to rebase after a PR merge.
+    /// Pre-evaluated from `state.cooldowns` (category `"merge_rebase_nudge"`)
+    /// so `collect_merge_rebase_nudge_effects` stays pure.
+    #[serde(default)]
+    pub merge_rebase_nudge_cooldown_names: HashSet<String>,
+
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
     /// by session ID) so decision functions stay pure.
@@ -1202,6 +1208,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         (orphan_active, session_active, on_cooldown)
     };
 
+    // Pre-evaluate merge-rebase nudge cooldowns for all coworkers with open PRs
+    let merge_rebase_nudge_cooldown_names: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        coworkers_with_open_prs
+            .iter()
+            .filter(|name| {
+                !cooldowns.check(
+                    "merge_rebase_nudge",
+                    name,
+                    crate::daemon::constants::MERGE_REBASE_NUDGE_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect()
+    };
+
     // Pre-evaluate note staleness cooldowns for all channels with leads
     let note_staleness_cooldown_channels: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -1411,6 +1433,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         session_dispatch_cooldown_active,
         spawn_failure_cooldown_names,
         note_staleness_cooldown_channels,
+        merge_rebase_nudge_cooldown_names,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1481,6 +1504,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         session_dispatch_cooldown_active: false,
         spawn_failure_cooldown_names: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
+        merge_rebase_nudge_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),

@@ -5164,6 +5164,80 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     effects
 }
 
+/// Nudge active coworkers with open PRs to rebase after a PR merges to main.
+///
+/// When a PR merges, other coworkers' branches may drift. This function emits
+/// `NudgeCoworkerByName` effects telling each eligible coworker to rebase,
+/// along with guidance about re-reading files after the rebase completes.
+///
+/// Skips:
+/// - The coworker whose PR just merged (they're being cleaned up)
+/// - Coworkers on the merge-rebase nudge cooldown
+/// - Coworkers without an active session (no `name_session_map` entry)
+pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+    if snap.pr.merged_pr_numbers.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+
+    // Build a human-readable list of merged PR numbers for the nudge message
+    let mut merged_prs: Vec<u64> = snap.pr.merged_pr_numbers.iter().copied().collect();
+    merged_prs.sort_unstable();
+    let pr_list = merged_prs
+        .iter()
+        .map(|n| format!("#{}", n))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for coworker_name in &snap.pr.coworkers_with_open_prs {
+        // Skip the coworker(s) whose PR just merged
+        if snap.pr.coworkers_with_merged_prs.contains(coworker_name) {
+            continue;
+        }
+
+        // Skip coworkers without an active session
+        if !snap.name_session_map.contains_key(coworker_name) {
+            continue;
+        }
+
+        // Skip coworkers on cooldown
+        if snap
+            .merge_rebase_nudge_cooldown_names
+            .contains(coworker_name)
+        {
+            continue;
+        }
+
+        let message = format!(
+            "A PR ({pr_list}) just merged to main. Please rebase your branch to pick up the changes:\n\
+             1. Run: git fetch origin && git rebase origin/main\n\
+             2. Resolve any conflicts if they arise\n\
+             3. IMPORTANT: After rebasing, you MUST re-read any file before editing it. \
+             The rebase may have changed file contents, and your context window has stale versions. \
+             Using the Edit or Write tool without re-reading first could silently revert changes \
+             from the merged PR."
+        );
+
+        info!(
+            coworker = %coworker_name,
+            merged_prs = %pr_list,
+            "Nudging coworker to rebase after PR merge"
+        );
+
+        effects.push(Effect::NudgeCoworkerByName {
+            name: coworker_name.clone(),
+            message,
+        });
+        effects.push(Effect::RecordCooldown {
+            category: "merge_rebase_nudge".to_string(),
+            key: coworker_name.clone(),
+        });
+    }
+
+    effects
+}
+
 // ---------------------------------------------------------------------------
 // PR decision logging
 // ---------------------------------------------------------------------------
@@ -5330,3 +5404,7 @@ mod review_feedback_tests;
 #[path = "pr_ci_retry_tests.rs"]
 #[cfg(test)]
 mod ci_retry_tests;
+
+#[path = "pr_rebase_nudge_tests.rs"]
+#[cfg(test)]
+mod rebase_nudge_tests;
