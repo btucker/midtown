@@ -364,7 +364,7 @@ $effect(() => {
   }
 
   .agents-status.success {
-    color: hsl(142 71% 45%);
+    color: hsl(var(--accent-green));
   }
 
   .agents-buttons {

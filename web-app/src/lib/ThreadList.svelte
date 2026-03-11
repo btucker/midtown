@@ -124,7 +124,7 @@ function handleDismiss(e, threadId) {
   }
 
   .thread-row.completed {
-    color: hsl(var(--accent-green, 142 71% 45%) / 0.8);
+    color: hsl(var(--accent-green, 145 40% 38%) / 0.8);
   }
 
   .accent-line {
@@ -145,7 +145,7 @@ function handleDismiss(e, threadId) {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: hsl(var(--accent-green, 142 71% 45%));
+    color: hsl(var(--accent-green, 145 40% 38%));
   }
 
   .thread-content {

@@ -42,6 +42,7 @@
   --sidebar-ring: 217.2 91.2% 59.8%;
   --insight: 300 50% 35%;
   --accent-teal: 188 45% 32%;
+  --accent-green: 145 40% 38%;
   --chip-foreground: 0 0% 10%;
   /* Status indicator colors — visible on light backgrounds */
   --status-green: 120 45% 38%;
@@ -86,6 +87,7 @@
   --sidebar-ring: 180 29.4% 52.9%;
   --insight: 300 29.4% 52.9%;
   --accent-teal: 188 45% 65%;
+  --accent-green: 145 35% 55%;
   --chip-foreground: 0 0% 96%;
   /* Status indicator colors — match terminal palette on dark backgrounds */
   --status-green: 120 43% 53%;
@@ -132,6 +134,7 @@
   --color-sidebar-ring: hsl(var(--sidebar-ring));
   --color-insight: hsl(var(--insight));
   --color-accent-teal: hsl(var(--accent-teal));
+  --color-accent-green: hsl(var(--accent-green));
   --color-chip-foreground: hsl(var(--chip-foreground));
   --color-status-green: hsl(var(--status-green));
   --color-status-amber: hsl(var(--status-amber));
