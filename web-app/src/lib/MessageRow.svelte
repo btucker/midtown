@@ -14,6 +14,7 @@ import {
 } from "./messageUtils.js";
 import { activeProject, channels, coworkers, daemonStatus } from "./store.js";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
+import { isToolOnly } from "./toolRunGrouping.js";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";
@@ -116,8 +117,7 @@ function getActionContent(msg) {
 
 // When tool data is hidden and the message has no text content, skip rendering
 // entirely to avoid blank rows (avatar + timestamp with no visible payload).
-let isToolOnly = $derived((!msg.content || !msg.content.trim()) && msg.tool_data?.length > 0);
-let hidden = $derived(!showToolData && isToolOnly);
+let hidden = $derived(!showToolData && isToolOnly(msg));
 </script>
 
 {#if hidden}
