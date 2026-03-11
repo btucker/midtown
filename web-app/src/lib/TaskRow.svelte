@@ -31,7 +31,7 @@ const prUrl = $derived(
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
 function statusBarColor(task) {
-	if (task.status === "done") return "hsl(var(--accent-green, 142 71% 45%))";
+	if (task.status === "done") return "hsl(var(--accent-green, 145 40% 38%))";
 	if (task.status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
 	if (task.owner) return getSenderColor(task.owner);
 	return "hsl(var(--accent-teal))";
@@ -83,11 +83,11 @@ function handleDescriptionClick(e) {
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
-      <span>{task.subject}</span>
+      <span>{#if task.status === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
     {:else}
       <div class="flex items-center gap-1.5">
         <span class="shrink-0 font-semibold {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
-        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{task.subject}</span>
+        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if task.status === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
         {#if isBlocked}
           <span class="shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
         {/if}
@@ -143,7 +143,7 @@ function handleDescriptionClick(e) {
             class="inline-flex items-center gap-1 text-[hsl(var(--link-default))] text-[0.72rem] no-underline hover:underline"
           ><span class="inline-flex items-center justify-center size-4 rounded-full bg-[hsl(var(--muted))]"><Github size={10} /></span>PR #{relatedPr.number}</a>
           {#if relatedPr.ci_status === 'passed'}
-            <CircleCheck size={13} class="text-[hsl(var(--accent-green,142_71%_45%))]" />
+            <CircleCheck size={13} class="text-[hsl(var(--accent-green,145_40%_38%))]" />
           {:else if relatedPr.ci_status === 'failed'}
             <CircleX size={13} class="text-[hsl(var(--status-red,0_84%_60%))]" />
           {:else if relatedPr.ci_status === 'running'}
