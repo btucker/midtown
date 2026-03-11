@@ -29,7 +29,7 @@ renderer.em = ({ raw }) => {
 	return false; // fall through to default rendering
 };
 
-marked.use({ renderer, gfm: true, breaks: false });
+marked.use({ renderer, gfm: true, breaks: true });
 
 /**
  * Split text into segments of plain text and mermaid code blocks.
