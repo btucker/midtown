@@ -17,8 +17,11 @@ let {
 let displayState = $state("collapsed");
 let userOverride = $state(false);
 
-const ac = createAutoCollapse(lastTimestamp, TOOL_RUN_DELAY_MS);
-displayState = ac.initial === "collapsed" ? "collapsed" : "expanded";
+const ac = $derived.by(() => createAutoCollapse(lastTimestamp, TOOL_RUN_DELAY_MS));
+
+$effect.pre(() => {
+	if (!userOverride) displayState = ac.initial === "collapsed" ? "collapsed" : "expanded";
+});
 
 $effect(() => {
 	if (userOverride) return;
@@ -30,7 +33,6 @@ $effect(() => {
 
 function toggle() {
 	userOverride = true;
-	ac.clearTimer();
 	displayState = displayState === "expanded" ? "collapsed" : "expanded";
 }
 </script>
