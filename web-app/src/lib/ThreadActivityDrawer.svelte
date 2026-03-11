@@ -10,10 +10,10 @@
  *   threadParentId — thread identity (used for reset tracking and fork owner color)
  *   thinking       — true when the user just sent a message and we're waiting for tool calls
  *
- * When inlineToolCalls is false (channel setting), clicking the drawer expands it into
- * a scrollable panel showing the full tool call history. Click again or press Escape
- * to collapse. When inlineToolCalls is true (default), the drawer shows only typing
- * dots and tool blocks render inline in the message stream instead.
+ * When inlineMode is false, clicking the drawer expands it into a scrollable panel
+ * showing the full tool call history. Click again or press Escape to collapse.
+ * When inlineMode is true, the drawer shows only typing dots — tool blocks render
+ * inline in the message stream instead.
  */
 
 import { onDestroy } from "svelte";
@@ -21,7 +21,7 @@ import { slide } from "svelte/transition";
 import { getForkOwnerColor } from "./avenue-colors.js";
 import { threadForkOwners } from "./store.js";
 
-let { messages = [], channelName, threadParentId = null, thinking = false } = $props();
+let { messages = [], channelName, threadParentId = null, thinking = false, inlineMode = false } = $props();
 
 // Use the fork owner's avenue color for thinking dots instead of hardcoded lead gold.
 let dotColor = $derived(getForkOwnerColor($threadForkOwners[threadParentId]));
@@ -115,7 +115,7 @@ let visibleItems = $derived(merged.filter((entry) => !expired.has(entry.block.ca
 
 let displayItems = $derived(expanded ? merged : visibleItems);
 
-let isVisible = $derived(merged.length > 0 || thinking);
+let isVisible = $derived(inlineMode ? thinking : merged.length > 0 || thinking);
 
 // Auto-scroll to bottom when new items arrive in expanded mode
 const SCROLL_THRESHOLD = 50;
@@ -178,17 +178,17 @@ let hiddenCount = $derived(merged.length - visibleItems.length);
   <!-- svelte-ignore a11y_no_static_element_interactions a11y_no_noninteractive_tabindex -->
   <div
     class="activity-drawer border-t border-border {expanded ? 'expanded' : ''}"
-    class:cursor-pointer={merged.length > 0}
+    class:cursor-pointer={!inlineMode && merged.length > 0}
     data-testid="thread-activity-drawer"
-    onclick={merged.length > 0 ? toggleExpanded : undefined}
-    onkeydown={handleKeydown}
-    role={merged.length > 0 ? 'button' : undefined}
-    tabindex={merged.length > 0 ? 0 : undefined}
-    aria-expanded={merged.length > 0 ? expanded : undefined}
-    aria-label={merged.length > 0 ? (expanded ? 'Collapse tool call history' : 'Expand tool call history') : undefined}
+    onclick={!inlineMode && merged.length > 0 ? toggleExpanded : undefined}
+    onkeydown={!inlineMode ? handleKeydown : undefined}
+    role={!inlineMode && merged.length > 0 ? 'button' : undefined}
+    tabindex={!inlineMode && merged.length > 0 ? 0 : undefined}
+    aria-expanded={!inlineMode && merged.length > 0 ? expanded : undefined}
+    aria-label={!inlineMode && merged.length > 0 ? (expanded ? 'Collapse tool call history' : 'Expand tool call history') : undefined}
     transition:slide={{ duration: 180 }}
   >
-    {#if merged.length > 0}
+    {#if !inlineMode && merged.length > 0}
       <!-- Header bar with chevron and count -->
       <div class="flex items-center justify-between px-3 py-1 select-none">
         <span class="text-[0.72rem] text-muted-foreground/50 font-mono">
@@ -210,23 +210,25 @@ let hiddenCount = $derived(merged.length - visibleItems.length);
       class:pb-1.5={!expanded || displayItems.length === 0}
       style={expanded ? 'max-height: 50vh;' : ''}
     >
-      {#each displayItems as entry (entry.block.call_id)}
-        {@const dimmed = expanded && completedAt.has(entry.block.call_id)}
-        <div class="flex items-center gap-[6px] py-[1px]" class:opacity-45={dimmed}>
-          <span class="flex-shrink-0 select-none text-[0.82rem] leading-[1.35] text-muted-foreground/60">
-            {#if entry.status === 'error'}
-              <span class="text-destructive">✗</span>
-            {:else if entry.status === 'ok'}
-              ✓
-            {:else}
-              ›
-            {/if}
-          </span>
-          <span
-            class="font-mono text-[0.82rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-destructive' : 'text-muted-foreground'}"
-          >{describeBlock(entry.block)}</span>
-        </div>
-      {/each}
+      {#if !inlineMode}
+        {#each displayItems as entry (entry.block.call_id)}
+          {@const dimmed = expanded && completedAt.has(entry.block.call_id)}
+          <div class="flex items-center gap-[6px] py-[1px]" class:opacity-45={dimmed}>
+            <span class="flex-shrink-0 select-none text-[0.82rem] leading-[1.35] text-muted-foreground/60">
+              {#if entry.status === 'error'}
+                <span class="text-destructive">✗</span>
+              {:else if entry.status === 'ok'}
+                ✓
+              {:else}
+                ›
+              {/if}
+            </span>
+            <span
+              class="font-mono text-[0.82rem] leading-[1.35] whitespace-nowrap overflow-hidden text-ellipsis min-w-0 {entry.status === 'error' ? 'text-destructive' : 'text-muted-foreground'}"
+            >{describeBlock(entry.block)}</span>
+          </div>
+        {/each}
+      {/if}
       {#if thinking}
         <div class="flex items-center gap-[6px] py-[1px]">
           <span class="typing-dots flex gap-[3px] items-center">

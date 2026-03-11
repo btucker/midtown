@@ -3,7 +3,7 @@ import { fetchChannelAgentsMd, saveChannelAgentsMd } from "./api.js";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.js";
 
-let inlineToolCalls = $derived($channelSettings[$activeChannel]?.inlineToolCalls ?? false);
+let inlineToolCalls = $derived($channelSettings[$activeChannel]?.inlineToolCalls ?? true);
 
 function toggleInlineToolCalls() {
 	channelSettings.update((s) => ({

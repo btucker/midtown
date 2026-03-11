@@ -77,7 +77,7 @@ let autocompleteStartPos = $state(0);
 let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
-let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? false));
+let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? true));
 
 // Filter messages by active channel
 let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
