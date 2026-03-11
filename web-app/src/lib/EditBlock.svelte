@@ -21,15 +21,19 @@ let newString = $derived(block.input?.new_string || "");
 let displayState = $state("collapsed");
 let userOverride = $state(false);
 
-const ac = createAutoCollapse(timestamp);
-displayState = ac.initial;
+const ac = $derived.by(() => createAutoCollapse(timestamp));
+
+$effect.pre(() => {
+	if (!userOverride) displayState = ac.initial;
+});
 
 $effect(() => {
 	if (userOverride) return;
-	ac.startTimer(() => {
+	const currentAc = ac;
+	currentAc.startTimer(() => {
 		displayState = "collapsed";
 	});
-	return () => ac.clearTimer();
+	return () => currentAc.clearTimer();
 });
 
 function toggle() {
