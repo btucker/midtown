@@ -113,9 +113,16 @@ function isAction(msg) {
 function getActionContent(msg) {
 	return msg.content.replace(/^\/me\s*/, "");
 }
+
+// When tool data is hidden and the message has no text content, skip rendering
+// entirely to avoid blank rows (avatar + timestamp with no visible payload).
+let isToolOnly = $derived((!msg.content || !msg.content.trim()) && msg.tool_data?.length > 0);
+let hidden = $derived(!showToolData && isToolOnly);
 </script>
 
-{#if isTaskDivider(msg)}
+{#if hidden}
+  <!-- Tool-only message with tool data hidden: render nothing -->
+{:else if isTaskDivider(msg)}
   <!-- Task divider: centered HR with task link -->
   <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
     <div class="flex-1 h-px bg-border/60"></div>
