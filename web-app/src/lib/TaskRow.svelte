@@ -93,21 +93,27 @@ function handleDescriptionClick(e) {
         {/if}
         {#if task.owner}
           {@const ownerGlow = isActive && (!effectiveReviewer || effectiveReviewPosted)}
-          <button
+          <span
+            role="button"
+            tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
             style="background-color: {getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></button>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
+          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
-          <button
+          <span
+            role="button"
+            tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {reviewerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
             style="background-color: {getSenderColor(effectiveReviewer)}; font-family: var(--font-sans){reviewerGlow ? `; --glow-color: ${getSenderColor(effectiveReviewer)}` : ''}"
             title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
             onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
-          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></button>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}
+          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></span>
         {/if}
       </div>
     {/if}
@@ -147,21 +153,27 @@ function handleDescriptionClick(e) {
         <span class="flex-1"></span>
         {#if task.owner}
           {@const ownerGlow = isActive && (!effectiveReviewer || effectiveReviewPosted)}
-          <button
+          <span
+            role="button"
+            tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
             style="background-color: {getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></button>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
+          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
-          <button
+          <span
+            role="button"
+            tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {reviewerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
             style="background-color: {getSenderColor(effectiveReviewer)}; font-family: var(--font-sans){reviewerGlow ? `; --glow-color: ${getSenderColor(effectiveReviewer)}` : ''}"
             title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
             onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
-          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></button>
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}
+          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></span>
         {/if}
       </div>
     {/if}
@@ -172,8 +184,8 @@ function handleDescriptionClick(e) {
       </div>
     {/if}
     {#if isCard && task.description}
-      <details class="group pt-0.5 pb-1" onclick={(e) => e.stopPropagation()}>
-        <summary class="text-[0.72rem] text-muted-foreground/60 cursor-pointer select-none list-none flex items-center gap-1">
+      <details class="group pt-0.5 pb-1">
+        <summary class="text-[0.72rem] text-muted-foreground/60 cursor-pointer select-none list-none flex items-center gap-1" onclick={(e) => e.stopPropagation()}>
           <span class="inline-block transition-transform group-open:rotate-90">▶</span>
           <span>Description</span>
         </summary>
