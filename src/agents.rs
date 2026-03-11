@@ -249,7 +249,7 @@ pub fn main_lead_initial_prompt(project_name: &str, main_channel: &str) -> Strin
          ## Mission\nCoordinate the team, triage incoming work, delegate to coworkers.\n\n\
          ## First Actions\n\
          1. Read the channel for context\n\
-         2. Post to the channel that you're online and ready"
+         2. Wait for messages — do not post a greeting or startup announcement"
     )
 }
 
@@ -261,7 +261,7 @@ pub fn channel_lead_initial_prompt(channel_name: &str) -> String {
          ## Mission\nDomain expert for this channel. Track active work, brainstorm, surface issues proactively.\n\n\
          ## First Actions\n\
          1. Read recent messages in #{channel_name} for context\n\
-         2. Introduce yourself as the domain expert for this channel"
+         2. Wait for messages — do not post a greeting or startup announcement"
     )
 }
 
