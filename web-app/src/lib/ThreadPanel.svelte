@@ -254,12 +254,12 @@ let prevThreadId = null;
   })
 
   // Extract Edit/Write tool calls to render as inline diffs.
-  // Enabled for DM channels (always) or any channel with inlineToolCalls setting.
+  // Enabled by default for all channels; can be disabled per-channel via inlineToolCalls setting.
   // Tool items are keyed by channel name in the store; we pull the items for
   // that channel and filter for Edit/Write calls.
   let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
   let showInlineDiffs = $derived(
-    isDmChannel || ($channelSettings[$threadData?.channelName]?.inlineToolCalls ?? false)
+    isDmChannel || ($channelSettings[$threadData?.channelName]?.inlineToolCalls ?? true)
   )
 
   let editDiffs = $derived.by(() => {
@@ -690,7 +690,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Input -->
     <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
@@ -850,7 +850,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Mobile input -->
     <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
