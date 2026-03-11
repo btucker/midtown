@@ -19,6 +19,20 @@ fn git_head(dir: &std::path::Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn attach_options<'a>(
+    profile: Option<&'a str>,
+    coworker_type: Option<&'a str>,
+    channel: Option<&'a str>,
+    include_detach: bool,
+) -> AttachShellOptions<'a> {
+    AttachShellOptions {
+        profile,
+        coworker_type,
+        channel,
+        include_detach,
+    }
+}
+
 // ── Target normalization ──────────────────────────────────────────────
 
 #[test]
@@ -311,9 +325,7 @@ fn test_lead_attach_includes_system_prompt() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -341,9 +353,7 @@ fn test_coworker_attach_includes_system_prompt() {
         "park",
         midtown::auth::AuthProvider::Claude,
         "session-456",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -452,9 +462,7 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
         "york",
         midtown::auth::AuthProvider::Claude,
         "session-789",
-        Some("reviewer"),
-        None,
-        true,
+        attach_options(None, Some("reviewer"), None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -475,9 +483,7 @@ fn test_lead_attach_gets_opus_model() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        Some("lead"),
-        None,
-        true,
+        attach_options(None, Some("lead"), None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -500,9 +506,7 @@ fn test_channel_lead_attach_gets_channel_lead_role() {
         "ops",
         midtown::auth::AuthProvider::Claude,
         "session-ops-123",
-        Some("channel-lead"),
-        Some("ops"),
-        true,
+        attach_options(None, Some("channel-lead"), Some("ops"), true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed for channel lead");
@@ -555,9 +559,7 @@ fn test_codex_lead_attach_includes_developer_instructions_override() {
         "lead",
         midtown::auth::AuthProvider::Codex,
         "thread-123",
-        Some("lead"),
-        None,
-        true,
+        attach_options(None, Some("lead"), None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -568,8 +570,13 @@ fn test_codex_lead_attach_includes_developer_instructions_override() {
         command
     );
     assert!(
-        command.contains("--resume") && command.contains("thread-123"),
+        command.contains(" resume ") && command.contains("thread-123"),
         "Codex attach should include resume thread id, got: {}",
+        command
+    );
+    assert!(
+        command.contains("--dangerously-bypass-approvals-and-sandbox"),
+        "Codex attach should bypass Codex-managed approvals inside Midtown, got: {}",
         command
     );
     assert!(
@@ -587,15 +594,39 @@ fn test_codex_attach_does_not_use_claude_system_prompt_flag() {
         "park",
         midtown::auth::AuthProvider::Codex,
         "thread-456",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
     assert!(
         !command.contains("--append-system-prompt"),
         "Codex attach should not use Claude-specific --append-system-prompt, got: {}",
+        command
+    );
+    assert!(
+        !command.contains(" --model "),
+        "Codex attach should preserve the resumed thread model instead of overriding it, got: {}",
+        command
+    );
+}
+
+#[test]
+fn test_attach_uses_explicit_profile_when_provided() {
+    let cwd = find_project_root();
+    let result = build_attach_shell_command(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Codex,
+        "thread-123",
+        attach_options(Some("work@example.com"), Some("lead"), None, true),
+    );
+
+    let command = result.expect("build_attach_shell_command should succeed");
+    let expected =
+        midtown::auth::profile_dir_for(midtown::auth::AuthProvider::Codex, "work@example.com");
+    assert!(
+        command.contains(expected.to_string_lossy().as_ref()),
+        "Attach command should use the persisted profile path, got: {}",
         command
     );
 }
@@ -635,9 +666,7 @@ fn test_build_attach_command_uses_shell_command_substitution() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -729,9 +758,7 @@ fn test_build_attach_command_no_double_quoting() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -773,9 +800,7 @@ fn test_build_attach_command_shell_parseable() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        true,
+        attach_options(None, None, None, true),
     );
 
     let command = result.expect("build_attach_shell_command should succeed");
@@ -807,9 +832,7 @@ fn test_view_attach_command_omits_session_detach() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        false, // include_detach=false: midtown view manages detach explicitly on exit
+        attach_options(None, None, None, false), // midtown view manages detach explicitly on exit
     );
     let command = result.expect("build_attach_shell_command should succeed");
     assert!(
@@ -830,9 +853,7 @@ fn test_standalone_attach_command_includes_session_detach() {
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        None,
-        None,
-        true, // include_detach=true: standalone attach needs auto-detach
+        attach_options(None, None, None, true), // standalone attach needs auto-detach
     );
     let command = result.expect("build_attach_shell_command should succeed");
     assert!(

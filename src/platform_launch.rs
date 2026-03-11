@@ -17,15 +17,29 @@ static CLAUDE_PLUGIN_SYNC_OK: AtomicBool = AtomicBool::new(false);
 
 /// Run platform-specific pre-launch hooks.
 ///
-/// Providers are normalized to launch platforms first (`zai` uses the Claude platform).
-pub fn run_platform_prelaunch_hook(provider: AuthProvider) -> Result<(), String> {
+/// Providers are normalized to launch platforms first (`zai` uses the Claude
+/// platform). When `profile_dir` is provided, provider setup that writes into a
+/// profile container targets that explicit directory instead of the ambient
+/// local profile. Codex skill sync relies on this so attach/resume flows update
+/// the launched session's `CODEX_HOME`, not whichever Codex profile is currently active.
+pub fn run_platform_prelaunch_hook(
+    provider: AuthProvider,
+    profile_dir: Option<&Path>,
+) -> Result<(), String> {
     match Platform::from_provider(provider) {
         Platform::Claude => ensure_claude_plugins_installed_once(),
-        Platform::Codex => ensure_codex_skills_synced(),
+        Platform::Codex => ensure_codex_skills_synced(profile_dir),
     }
 }
 
-fn ensure_codex_skills_synced() -> Result<(), String> {
+fn codex_destination_skills_dir(profile_dir: Option<&Path>) -> std::path::PathBuf {
+    profile_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| crate::auth::current_profile_dir_for(AuthProvider::Codex))
+        .join("skills")
+}
+
+fn ensure_codex_skills_synced(profile_dir: Option<&Path>) -> Result<(), String> {
     let Some(home_dir) = dirs::home_dir() else {
         return Ok(());
     };
@@ -35,8 +49,7 @@ fn ensure_codex_skills_synced() -> Result<(), String> {
         return Ok(());
     }
 
-    let profile_dir = crate::auth::current_profile_dir_for(AuthProvider::Codex);
-    let destination_skills_dir = profile_dir.join("skills");
+    let destination_skills_dir = codex_destination_skills_dir(profile_dir);
     sync_directory_with_cleanup(&source_skills_dir, &destination_skills_dir)
 }
 

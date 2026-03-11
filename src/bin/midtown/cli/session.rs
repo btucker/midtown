@@ -299,6 +299,10 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
                 .and_then(|v| v.as_str())
                 .unwrap_or("claude"),
         );
+        let profile = info
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let coworker_type = info
             .get("coworker_type")
             .and_then(|v| v.as_str())
@@ -307,7 +311,12 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             .get("channel")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(provider) {
+        let profile_dir = profile
+            .as_deref()
+            .map(|name| midtown::auth::profile_dir_for(provider, name));
+        if let Err(e) =
+            midtown::platform_launch::run_platform_prelaunch_hook(provider, profile_dir.as_deref())
+        {
             eprintln!(
                 "Warning: Platform pre-launch hook failed (continuing): {}",
                 e
@@ -324,9 +333,12 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             name,
             provider,
             session_id,
-            coworker_type.as_deref(),
-            channel.as_deref(),
-            true, // include_detach: standalone attach resumes headless when pane closes
+            AttachShellOptions {
+                profile: profile.as_deref(),
+                coworker_type: coworker_type.as_deref(),
+                channel: channel.as_deref(),
+                include_detach: true, // standalone attach resumes headless when pane closes
+            },
         )?;
         let launcher = PaneLauncher::detect();
 
@@ -718,38 +730,48 @@ fn usage_attach() -> &'static str {
        midtown session attach park"
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttachShellOptions<'a> {
+    pub profile: Option<&'a str>,
+    pub coworker_type: Option<&'a str>,
+    pub channel: Option<&'a str>,
+    pub include_detach: bool,
+}
+
 /// Build the shell command to run in a pane for an interactive attach session.
 ///
 /// When `include_detach` is `true`, the shell command ends with
 /// `midtown session detach <name>`, which resumes the headless session when the
-/// interactive pane closes.  Set this to `true` for `midtown session attach`
+/// interactive pane closes. Set this to `true` for `midtown session attach`
 /// (standalone interactive use) and `false` for `midtown view`, which calls
-/// `session_detach` explicitly when the chat UI exits — avoiding a race where
-/// the pane's claude process exits before the chat UI and triggers an early
+/// `session_detach` explicitly when the chat UI exits, avoiding a race where
+/// the pane's provider process exits before the chat UI and triggers an early
 /// headless respawn that creates a dual-lead situation.
 pub(crate) fn build_attach_shell_command(
     cwd: &str,
     name: &str,
     provider: midtown::auth::AuthProvider,
     session_id: &str,
-    coworker_type: Option<&str>,
-    channel: Option<&str>,
-    include_detach: bool,
+    options: AttachShellOptions<'_>,
 ) -> Result<String, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
         .ok_or_else(|| "Not in a git repository".to_string())?;
 
-    let profile_dir =
-        midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider);
+    let profile_dir = options
+        .profile
+        .map(|name| midtown::auth::profile_dir_for(provider, name))
+        .unwrap_or_else(|| {
+            midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider)
+        });
 
     // Determine role from coworker_type (provided by daemon's SessionRecord)
-    let role = if coworker_type == Some("lead") {
+    let role = if options.coworker_type == Some("lead") {
         midtown::launch::CoworkerRole::Lead
-    } else if coworker_type == Some("reviewer") {
+    } else if options.coworker_type == Some("reviewer") {
         midtown::launch::CoworkerRole::Reviewer
-    } else if coworker_type == Some("channel-lead") {
+    } else if options.coworker_type == Some("channel-lead") {
         midtown::launch::CoworkerRole::ChannelLead {
-            channel_name: channel.unwrap_or(name).to_string(),
+            channel_name: options.channel.unwrap_or(name).to_string(),
             domain_context: String::new(),
             agents_md: None,
         }
@@ -790,7 +812,7 @@ pub(crate) fn build_attach_shell_command(
 
     let launch_config = midtown::launch::LaunchConfig {
         name: name.to_string(),
-        session_mode: midtown::launch::SessionMode::Resume,
+        session_mode: midtown::launch::SessionMode::ResumeSession(session_id.to_string()),
         role: role.clone(),
         initial_prompt: None,
         additional_dirs: vec![],
@@ -860,11 +882,9 @@ pub(crate) fn build_attach_shell_command(
             cmd_parts.extend(cli_args);
         }
         midtown::auth::AuthProvider::Codex => {
-            cmd_parts.push("codex".to_string());
-            cmd_parts.extend(midtown::platform::build_codex_headed_args(
-                session_id,
-                &system_prompt,
-            ));
+            let (cli_args, _) =
+                midtown::platform::build_codex_headed_args(&launch_config, &system_prompt, None);
+            cmd_parts.extend(cli_args);
         }
     }
 
@@ -887,7 +907,7 @@ pub(crate) fn build_attach_shell_command(
         shell_quote(&provider_cmd),
     );
 
-    if include_detach {
+    if options.include_detach {
         let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
         Ok(format!(
             "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",

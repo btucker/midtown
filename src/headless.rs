@@ -1648,7 +1648,13 @@ impl HeadlessSession {
     /// - **Resume session** (`resume_session_id: Some(id)`): Uses `--resume <id>`,
     ///   omits `--system-prompt` and `--json-schema`.
     pub async fn spawn(config: &HeadlessConfig) -> std::io::Result<Self> {
-        if let Err(e) = crate::platform_launch::run_platform_prelaunch_hook(config.auth_provider) {
+        let profile_dir = match config.auth_provider.env_var() {
+            "" => None,
+            env_var => config.env.get(env_var).map(std::path::Path::new),
+        };
+        if let Err(e) =
+            crate::platform_launch::run_platform_prelaunch_hook(config.auth_provider, profile_dir)
+        {
             warn!("Platform pre-launch hook failed (continuing): {}", e);
         }
 

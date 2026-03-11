@@ -79,6 +79,13 @@ fn test_sync_directory_with_cleanup_noop_when_paths_match() {
 }
 
 #[test]
+fn test_codex_destination_skills_dir_uses_explicit_profile_dir() {
+    let profile_dir = Path::new("/tmp/midtown-codex-profile");
+    let destination = super::codex_destination_skills_dir(Some(profile_dir));
+    assert_eq!(destination, profile_dir.join("skills"));
+}
+
+#[test]
 fn test_filter_healthy_plugins_accepts_valid_claude_plugin() {
     let tmp = tempfile::tempdir().unwrap();
     let plugin_dir = tmp.path().join("superpowers/1.0.0");

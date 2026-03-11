@@ -117,10 +117,12 @@ Each coworker runs as:
 
 In addition to daemon-managed headless sessions, users can launch **headed (interactive terminal) sessions** directly from the CLI:
 
-- `midtown lead [--channel <name>]` — boots a headed lead session via `exec()`, replacing the CLI process with the Claude TUI. Uses `LaunchConfig::lead()` to resolve model/provider/auth, writes system prompt and settings to temp files, then calls `to_shell_command()` to build the full `sh -lc` invocation.
+- `midtown lead [--channel <name>]` — boots a headed lead session via `exec()`, replacing the CLI process with the provider's interactive TUI. Uses `LaunchConfig::lead()` to resolve model/provider/auth, writes prompt files as needed, then calls `to_shell_command()` to build the full provider-aware `sh -lc` invocation.
 - `midtown coworker [--task <id>]` — boots a headed coworker session in a task worktree. If no `--task` is specified, presents a TUI picker for unresolved tasks. Creates/reuses worktrees via `WorktreeManager::create_task_worktree()`.
 
-Both use `SessionMode::Resume` (`--continue`) so they resume an existing Claude session or start fresh. The `exec()` pattern means the Midtown process is fully replaced — no parent process lingers. Initial prompts are written to temp files and passed as positional args via `$(cat /path)`.
+Both use `SessionMode::Resume`, but the concrete CLI shape is provider-specific (`claude --continue` for Claude/z.ai, `codex resume` for Codex). The `exec()` pattern means the Midtown process is fully replaced, so no parent process lingers.
+
+**Attach/view profile fidelity:** `session.attach` now returns the persisted auth profile from the `SessionRecord`, and all headed attach/view/chat entry points reuse that profile when rebuilding the interactive shell command. This keeps attach flows on the same credentials and `CODEX_HOME`/`CLAUDE_CONFIG_DIR` that the headless session was launched with instead of whatever profile happens to be active locally. Codex prelaunch skill sync also targets that explicit profile directory.
 
 ### Daemon-Bypass CLI Commands
 
@@ -142,7 +144,7 @@ These commands are intercepted in `main.rs` *before* the `DaemonClient::connect(
 
 This mirrors the Codex session pattern (`read_stdout_loop` / `read_stderr_loop` in `CodexSharedRuntime`) and ensures the child process never blocks on a full 64 KB kernel pipe buffer regardless of output volume.
 
-**Codex runtime reuse:** In `src/headless.rs`, `CODEX_RUNTIME` is a `HashMap` keyed by profile (`codex-runtime|<CODEX_HOME>`), not a single global process. The daemon now shares one app-server per profile and reuses it across sessions, while isolating runtime state between profiles.
+**Codex runtime reuse:** In `src/headless.rs`, `CODEX_RUNTIME` is a `HashMap` keyed by profile (`codex-runtime|<CODEX_HOME>`), not a single global process. The daemon now shares one app-server per profile and reuses it across sessions, while isolating runtime state between profiles. `HeadlessSession::spawn()` derives the profile directory from provider env (`CODEX_HOME`) before running prelaunch hooks so skill sync lands in the same profile that will back the runtime key.
 
 ### Session-Centric Model
 

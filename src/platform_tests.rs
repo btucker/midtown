@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::auth::AuthProvider;
+use crate::launch::{CoworkerRole, LaunchConfig, SessionMode};
 
 // ── Platform enum ─────────────────────────────────────────────────────
 
@@ -38,6 +39,14 @@ fn test_binary_name_claude() {
 #[test]
 fn test_binary_name_codex() {
     assert_eq!(Platform::Codex.binary_name(), "codex");
+}
+
+#[test]
+fn test_codex_common_args_include_bypass_and_model() {
+    let args = build_codex_common_args(Some("gpt-5.3-codex"), &[]);
+    assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+    assert!(args.contains(&"--model".to_string()));
+    assert!(args.contains(&"gpt-5.3-codex".to_string()));
 }
 
 // ── Common args ───────────────────────────────────────────────────────
@@ -441,21 +450,125 @@ fn test_codex_headless_args_is_app_server() {
 
 #[test]
 fn test_codex_headed_args_has_resume() {
-    let args = build_codex_headed_args("thread-123", "system prompt");
-    assert_eq!(args[0], "--resume");
-    assert_eq!(args[1], "thread-123");
-    assert_eq!(args[2], "-c");
+    let config = LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::ResumeSession("thread-123".to_string()),
+        role: CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        working_dir: None,
+        model: "gpt-5.3-codex".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: AuthProvider::Codex,
+        escalation_target: None,
+        task_id: None,
+        persisted_initial_prompt: None,
+    };
+    let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
+    assert_eq!(session_id, None);
+    assert_eq!(args[0], "codex");
+    assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     assert!(
-        args[3].starts_with("developer_instructions="),
+        !args.contains(&"--model".to_string()),
+        "ResumeSession should not override the persisted Codex thread model"
+    );
+    let resume_idx = args.iter().position(|arg| arg == "resume").unwrap();
+    assert_eq!(args[resume_idx + 1], "thread-123");
+    let config_idx = args.iter().position(|arg| arg == "-c").unwrap();
+    assert_eq!(args[config_idx], "-c");
+    assert!(
+        args[config_idx + 1].starts_with("developer_instructions="),
         "Expected developer_instructions override, got: {}",
-        args[3]
+        args[config_idx + 1]
     );
 }
 
 #[test]
 fn test_codex_headed_args_omits_override_when_prompt_empty() {
-    let args = build_codex_headed_args("thread-123", "");
-    assert_eq!(args, vec!["--resume", "thread-123"]);
+    let config = LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::ResumeSession("thread-123".to_string()),
+        role: CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        working_dir: None,
+        model: "gpt-5.3-codex".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: AuthProvider::Codex,
+        escalation_target: None,
+        task_id: None,
+        persisted_initial_prompt: None,
+    };
+    let (args, _) = build_codex_headed_args(&config, "", None);
+    assert!(args.contains(&"resume".to_string()));
+    assert!(args.contains(&"thread-123".to_string()));
+    assert!(!args.contains(&"-c".to_string()));
+}
+
+#[test]
+fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
+    let config = LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::Resume,
+        role: CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        working_dir: None,
+        model: "gpt-5.3-codex".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: AuthProvider::Codex,
+        escalation_target: None,
+        task_id: None,
+        persisted_initial_prompt: None,
+    };
+
+    let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
+
+    assert_eq!(session_id, None);
+    assert!(args.contains(&"resume".to_string()));
+    assert!(args.contains(&"--last".to_string()));
+    assert!(
+        !args.contains(&"--model".to_string()),
+        "resume --last should preserve the last session's saved model"
+    );
+}
+
+#[test]
+fn test_codex_headed_args_fresh_uses_positional_prompt() {
+    let config = LaunchConfig {
+        name: "park".to_string(),
+        session_mode: SessionMode::Fresh,
+        role: CoworkerRole::Coworker,
+        initial_prompt: Some("ship it".to_string()),
+        additional_dirs: vec![PathBuf::from("/tmp/repo2")],
+        pr_number: None,
+        working_dir: None,
+        model: "gpt-5.1-codex-mini".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: AuthProvider::Codex,
+        escalation_target: None,
+        task_id: None,
+        persisted_initial_prompt: None,
+    };
+    let (args, session_id) = build_codex_headed_args(&config, "system prompt", Some("ship it"));
+    assert_eq!(session_id, None);
+    assert_eq!(args[0], "codex");
+    assert!(args.contains(&"--add-dir".to_string()));
+    assert!(args.contains(&"/tmp/repo2".to_string()));
+    assert!(args.contains(&"--model".to_string()));
+    assert!(args.contains(&"gpt-5.1-codex-mini".to_string()));
+    assert!(
+        !args.contains(&"resume".to_string()),
+        "Fresh launches should not use the resume subcommand"
+    );
+    assert_eq!(args.last().map(String::as_str), Some("ship it"));
 }
 
 // ── Fork session flag ──────────────────────────────────────────────────

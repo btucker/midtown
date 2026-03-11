@@ -112,7 +112,12 @@ pub struct LaunchConfig {
     pub persisted_initial_prompt: Option<String>,
 }
 
-/// The shell command string and generated session ID (if fresh).
+/// The shell command string and any pre-assigned provider session ID.
+///
+/// Fresh Claude launches generate a stable session ID up front so Midtown can
+/// track the session before the CLI emits events. Codex's interactive CLI does
+/// not expose equivalent pre-assignment, so Codex headed launches always leave
+/// `session_id` as `None`.
 pub struct LaunchCommand {
     pub shell_command: String,
     pub session_id: Option<String>,
@@ -287,7 +292,59 @@ pub fn channel_lead_fork_disallowed_tools() -> Vec<String> {
         .collect()
 }
 
+fn shell_quote(input: &str) -> String {
+    shell_escape::escape(input.into()).into_owned()
+}
+
 impl LaunchConfig {
+    fn render_system_prompt(&self, project_name: &str) -> String {
+        match &self.role {
+            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
+                &self.name,
+                project_name,
+                self.escalation_target.as_deref().unwrap_or(project_name),
+                self.auth_provider,
+                self.pr_number,
+            ),
+            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
+            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
+                &self.name,
+                project_name,
+                self.channel.as_deref(),
+            ),
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+                agents_md,
+            } => crate::agents::channel_lead_system_prompt(
+                channel_name,
+                domain_context,
+                project_name,
+                agents_md.as_deref(),
+            ),
+        }
+    }
+
+    fn resolve_codex_initial_prompt(
+        &self,
+        initial_prompt_file: Option<&std::path::Path>,
+    ) -> Option<String> {
+        if let Some(path) = initial_prompt_file {
+            match std::fs::read_to_string(path) {
+                Ok(prompt) => return Some(prompt),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to read Codex initial prompt file {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        self.initial_prompt.clone()
+    }
+
     /// Create a config for a standard coworker.
     ///
     /// Coworkers each have isolated task lists. The daemon bakes the task
@@ -542,31 +599,7 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();
-        let system_prompt = match &self.role {
-            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
-                &self.name,
-                project_name,
-                self.escalation_target.as_deref().unwrap_or(project_name),
-                self.auth_provider,
-                self.pr_number,
-            ),
-            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
-            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
-                &self.name,
-                project_name,
-                self.channel.as_deref(),
-            ),
-            CoworkerRole::ChannelLead {
-                channel_name,
-                domain_context,
-                agents_md,
-            } => crate::agents::channel_lead_system_prompt(
-                channel_name,
-                domain_context,
-                project_name,
-                agents_md.as_deref(),
-            ),
-        };
+        let system_prompt = self.render_system_prompt(project_name);
 
         // Save the lead system prompt to disk for attach resumption
         if matches!(self.role, CoworkerRole::Lead) {
@@ -661,18 +694,24 @@ impl LaunchConfig {
         )
     }
 
-    /// Build the full shell command string for launching Claude in a terminal pane.
+    /// Build the full shell command string for launching the configured provider in a terminal pane.
     ///
-    /// `settings_file` and `prompt_file` are pre-written files containing the
-    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
-    /// is the optional pre-written file containing the initial task/review prompt.
+    /// `settings_file`, `prompt_file`, and `initial_prompt_file` are provider
+    /// launch inputs. Claude/z.ai consume the files directly via `$(cat ...)`;
+    /// Codex reads `initial_prompt_file` eagerly and forwards its contents as
+    /// the final positional prompt argument because its interactive CLI does not
+    /// accept the same file-based prompt pattern.
     /// `primary_repo` is the project root directory, used to compute the
     /// filesystem sandbox profile (writable directories).
     ///
     /// `project_name` is used to load sandbox configuration (allowed_paths).
     ///
-    /// Returns a `LaunchCommand` with the shell command and the session ID
-    /// (if a fresh session was created).
+    /// Returns a `LaunchCommand` with the shell command and any pre-assigned
+    /// provider session ID.
+    ///
+    /// Fresh Claude launches populate `LaunchCommand.session_id`; Codex
+    /// interactive launches cannot, because the Codex CLI does not accept a
+    /// caller-provided thread/session identifier.
     pub fn to_shell_command(
         &self,
         settings_file: &std::path::Path,
@@ -704,7 +743,7 @@ impl LaunchConfig {
         // Convert env map to shell export format (key='value')
         let env_parts: Vec<String> = env_map
             .iter()
-            .map(|(k, v)| format!("{}='{}'", k, v))
+            .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
             .collect();
 
         let env_export = format!("export {}", env_parts.join(" "));
@@ -740,15 +779,36 @@ impl LaunchConfig {
             vec![]
         };
 
-        // -- CLI arguments (from shared method) --
-        let (cli_args, session_id) =
-            self.to_cli_args(settings_file, prompt_file, initial_prompt_file);
-
-        // Combine: sandbox prefix + CLI args
-        let mut all_args = sandbox_prefix;
-        all_args.extend(cli_args);
-
-        let shell_command = format!("{}; exec {}", env_export, all_args.join(" "));
+        let platform = crate::platform::Platform::from_provider(self.auth_provider);
+        let (shell_command, session_id) = match platform {
+            crate::platform::Platform::Claude => {
+                let (cli_args, session_id) =
+                    self.to_cli_args(settings_file, prompt_file, initial_prompt_file);
+                let mut all_args = sandbox_prefix.clone();
+                all_args.extend(cli_args);
+                (
+                    format!("{}; exec {}", env_export, all_args.join(" ")),
+                    session_id,
+                )
+            }
+            crate::platform::Platform::Codex => {
+                let system_prompt = self.render_system_prompt(project_name);
+                let initial_prompt = self.resolve_codex_initial_prompt(initial_prompt_file);
+                let (cli_args, session_id) = crate::platform::build_codex_headed_args(
+                    self,
+                    &system_prompt,
+                    initial_prompt.as_deref(),
+                );
+                let mut all_args = sandbox_prefix;
+                all_args.extend(cli_args);
+                let provider_cmd = all_args
+                    .iter()
+                    .map(|part| shell_quote(part))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (format!("{}; exec {}", env_export, provider_cmd), session_id)
+            }
+        };
 
         LaunchCommand {
             shell_command,
@@ -1006,8 +1066,8 @@ mod tests {
             "midtown",
         );
         assert!(
-            result.shell_command.contains("MIDTOWN_TASK_ID='42'"),
-            "Shell command should contain MIDTOWN_TASK_ID='42', got: {}",
+            result.shell_command.contains("MIDTOWN_TASK_ID=42"),
+            "Shell command should contain MIDTOWN_TASK_ID=42, got: {}",
             result.shell_command
         );
     }

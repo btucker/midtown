@@ -106,6 +106,87 @@ fn test_inject_session_id_env_overwrites_existing_value() {
     );
 }
 
+#[test]
+fn test_shell_command_codex_fresh_uses_codex_binary() {
+    let mut config = LaunchConfig::coworker(
+        "park",
+        "myrepo",
+        SessionMode::Fresh,
+        Some("Investigate failing tests".to_string()),
+        None,
+    );
+    config.auth_provider = crate::auth::AuthProvider::Codex;
+    config.model = "gpt-5.3-codex".to_string();
+    let result = config.to_shell_command(
+        std::path::Path::new("/tmp/settings.json"),
+        std::path::Path::new("/tmp/prompt.md"),
+        None,
+        std::path::Path::new("/tmp/test-repo"),
+        "midtown",
+    );
+    assert!(result.shell_command.contains(" codex "));
+    assert!(!result.shell_command.contains(" claude "));
+    assert!(
+        result
+            .shell_command
+            .contains("--dangerously-bypass-approvals-and-sandbox")
+    );
+    assert!(result.shell_command.contains("--model"));
+    assert!(result.shell_command.contains("gpt-5.3-codex"));
+    assert!(result.shell_command.contains("Investigate failing tests"));
+    assert!(result.session_id.is_none());
+}
+
+#[test]
+fn test_shell_command_codex_fresh_reads_initial_prompt_file() {
+    let prompt_dir = tempfile::tempdir().unwrap();
+    let initial_prompt_path = prompt_dir.path().join("initial-prompt.txt");
+    std::fs::write(&initial_prompt_path, "Prompt from file").unwrap();
+
+    let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+    config.auth_provider = crate::auth::AuthProvider::Codex;
+    config.model = "gpt-5.3-codex".to_string();
+
+    let result = config.to_shell_command(
+        std::path::Path::new("/tmp/settings.json"),
+        std::path::Path::new("/tmp/prompt.md"),
+        Some(&initial_prompt_path),
+        std::path::Path::new("/tmp/test-repo"),
+        "midtown",
+    );
+
+    assert!(
+        result.shell_command.contains("Prompt from file"),
+        "Codex fresh launch should forward the file-backed prompt, got: {}",
+        result.shell_command
+    );
+}
+
+#[test]
+fn test_shell_command_codex_resume_uses_resume_subcommand() {
+    let mut config = LaunchConfig::lead("myrepo", None);
+    config.auth_provider = crate::auth::AuthProvider::Codex;
+    config.model = "gpt-5.3-codex".to_string();
+    config.session_mode = SessionMode::ResumeSession("thread-123".to_string());
+    let result = config.to_shell_command(
+        std::path::Path::new("/tmp/settings.json"),
+        std::path::Path::new("/tmp/prompt.md"),
+        None,
+        std::path::Path::new("/tmp/test-repo"),
+        "midtown",
+    );
+    assert!(result.shell_command.contains(" codex "));
+    assert!(result.shell_command.contains(" resume "));
+    assert!(result.shell_command.contains("thread-123"));
+    assert!(result.shell_command.contains("developer_instructions="));
+    assert!(
+        !result.shell_command.contains(" --model "),
+        "Codex resume should preserve the thread's existing model, got: {}",
+        result.shell_command
+    );
+    assert!(result.session_id.is_none());
+}
+
 // --- Disallowed tools tests ---
 
 #[test]
