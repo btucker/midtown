@@ -65,7 +65,7 @@ let highlightedCommand = $derived(highlightBlock(command, "bash"));
 let outputLang = $derived(detectOutputLanguage(outputText));
 let highlightedOutput = $derived(highlightBlock(outputText, outputLang));
 
-// First-line preview for the preview state
+// 3-line preview for the preview state
 let previewText = $derived(outputLines.slice(0, 3).join("\n"));
 let highlightedPreview = $derived(highlightBlock(previewText, outputLang));
 </script>

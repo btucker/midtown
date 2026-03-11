@@ -644,7 +644,8 @@ export function handleUpdate(update) {
 				// user's own message, and increment unread for tracked threads.
 				// Compare against both 'user' and the configured user_display_name to avoid
 				// counting the user's own replies as unread.
-				if (msg.from !== "user" && msg.from !== get(userSenderName)) {
+				// Skip tool-only messages — they inflate unread badges with visual noise.
+				if (!isToolOnly(msg) && msg.from !== "user" && msg.from !== get(userSenderName)) {
 					// Auto-track: if the parent message was sent by the user, track
 					// the thread in the sidebar so the user sees replies to their messages.
 					// Pass undefined for replyCount so trackThread initializes to 0 for new

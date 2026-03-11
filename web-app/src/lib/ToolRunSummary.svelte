@@ -51,6 +51,7 @@ function toggle() {
 		class="tool-run-summary"
 		onclick={toggle}
 		in:fade={{ duration: mounted ? 150 : 0, delay: mounted ? 150 : 0 }}
+		out:fade={{ duration: mounted ? 100 : 0 }}
 	>
 		<span class="tool-run-icon">▸</span>
 		<span class="tool-run-text">{toolCount} tools used</span>
@@ -58,6 +59,7 @@ function toggle() {
 {:else}
 	<div
 		class="tool-run-expanded"
+		in:slide={{ duration: mounted ? 200 : 0 }}
 		out:slide={{ duration: 200 }}
 	>
 		<button class="tool-run-summary tool-run-expanded-header" onclick={toggle}>

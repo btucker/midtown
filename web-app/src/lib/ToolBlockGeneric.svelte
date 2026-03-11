@@ -3,7 +3,7 @@
  * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
  *
  * Shows the tool name as a header with a collapsible JSON view of input/output.
- * Auto-collapses after 30s: preview (1 line) → collapsed (header only).
+ * Auto-collapses after 30s: preview (3 lines) → collapsed (header only).
  *
  * Props:
  *   block     — ToolBlock { tool_name, input, output, error }
@@ -55,7 +55,7 @@ let highlightedOutput = $derived.by(() => {
 	return highlightBlock(outputStr, "json");
 });
 
-// Single-line output preview for the "preview" state
+// 3-line output preview for the "preview" state
 let outputPreview = $derived.by(() => {
 	if (!block.output) return "";
 	const str = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
