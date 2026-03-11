@@ -1335,6 +1335,40 @@ fn test_cli_global_help_no_panic() {
     );
 }
 
+/// Verify `midtown --version` prints the version from Cargo.toml.
+#[test]
+fn test_cli_version_flag() {
+    let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join("midtown");
+
+    if !binary_path.exists() {
+        eprintln!("Skipping: debug binary not found at {:?}", binary_path);
+        return;
+    }
+
+    let output = Command::new(&binary_path)
+        .args(["--version"])
+        .output()
+        .expect("Failed to run midtown --version");
+
+    assert!(
+        output.status.success(),
+        "midtown --version should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        stdout.contains(version),
+        "Version output should contain '{}'. Got: {}",
+        version,
+        stdout
+    );
+}
+
 /// Regression test: web assets should not be stale.
 ///
 /// Verifies that built web assets in `web/` are at least as new as
