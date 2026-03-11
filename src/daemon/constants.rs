@@ -261,6 +261,12 @@ pub(super) const NOTE_REVIEW_CHECK_INTERVAL: Duration = Duration::from_secs(3600
 /// a fresh nudge once the cooldown expires.
 pub(super) const MERGE_REBASE_NUDGE_COOLDOWN: Duration = Duration::from_secs(600);
 
+/// Cooldown between rebase regression warnings for the same coworker (30 minutes).
+///
+/// After flagging a coworker for a potential post-rebase regression, wait before
+/// re-checking. This prevents spam when the coworker is actively fixing the issue.
+pub(super) const REBASE_REGRESSION_COOLDOWN: Duration = Duration::from_secs(1800);
+
 /// Cooldown between note staleness nudges for the same channel (24 hours).
 ///
 /// Once a channel lead is nudged about stale notes, don't repeat for a day.

@@ -5393,6 +5393,285 @@ fn pr_action_name(action: &crate::rules::PrAction) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Post-rebase diff guard
+// ---------------------------------------------------------------------------
+
+/// Structured input for the pure rebase regression decision function.
+///
+/// Populated by `check_for_rebase_regressions()` from git commands, then fed
+/// into `evaluate_rebase_regression()` which is a pure function returning effects.
+#[derive(Debug, Clone)]
+pub struct RebaseRegressionInput {
+    /// Coworker name (lowercase).
+    pub coworker_name: String,
+    /// Files changed on main since the merge-base (what the rebase brought in).
+    pub files_changed_on_main: HashSet<String>,
+    /// Files modified by recent post-rebase commits.
+    pub files_in_recent_commits: HashSet<String>,
+    /// Whether a rebase was detected in the reflog within the lookback window.
+    pub rebase_detected: bool,
+}
+
+/// Pure decision function: given structured rebase regression data, determine
+/// whether to flag a regression and return the appropriate effects.
+///
+/// Returns effects (nudge + cooldown + ops message) if:
+/// 1. A recent rebase was detected in the reflog
+/// 2. Recent commits touch files that also changed on main during rebase
+///
+/// This function does NO I/O — it only examines the structured input.
+pub fn evaluate_rebase_regression(input: &RebaseRegressionInput) -> Vec<Effect> {
+    if !input.rebase_detected {
+        return vec![];
+    }
+
+    let overlapping_files: Vec<&String> = input
+        .files_in_recent_commits
+        .iter()
+        .filter(|f| input.files_changed_on_main.contains(*f))
+        .collect();
+
+    if overlapping_files.is_empty() {
+        return vec![];
+    }
+
+    let mut sorted_files: Vec<&str> = overlapping_files.iter().map(|s| s.as_str()).collect();
+    sorted_files.sort_unstable();
+    let file_list = sorted_files.join(", ");
+
+    let nudge_message = format!(
+        "⚠️ Post-rebase regression detected: your recent commit(s) modified files that also \
+         changed on main during your rebase. Please verify you haven't accidentally reverted \
+         merged changes in these files: {file_list}\n\
+         Re-read these files with the Read tool and check your changes against what's on main."
+    );
+
+    let ops_message = format!(
+        "⚠️ Rebase regression warning for {}: post-rebase commits touch files that changed \
+         on main ({file_list})",
+        input.coworker_name
+    );
+
+    vec![
+        Effect::NudgeCoworkerByName {
+            name: input.coworker_name.clone(),
+            message: nudge_message,
+        },
+        Effect::RecordCooldown {
+            category: "rebase_regression".to_string(),
+            key: input.coworker_name.clone(),
+        },
+        Effect::PostSystemMessage {
+            message: ops_message,
+            channel: Some(OPS_CHANNEL.to_string()),
+        },
+    ]
+}
+
+/// Run a git command in a worktree directory and return stdout lines.
+///
+/// Returns an empty vec on any error (worktree missing, git not found, etc.).
+fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(working_dir)
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect()
+        }
+        Ok(out) => {
+            debug!(
+                dir = %working_dir,
+                args = ?args,
+                stderr = %String::from_utf8_lossy(&out.stderr),
+                "git command failed in worktree"
+            );
+            vec![]
+        }
+        Err(e) => {
+            debug!(
+                dir = %working_dir,
+                args = ?args,
+                error = %e,
+                "git command error in worktree"
+            );
+            vec![]
+        }
+    }
+}
+
+/// Check for post-rebase regressions across all open PRs.
+///
+/// For each coworker with an open PR:
+/// 1. Finds their worktree via session records
+/// 2. Checks the git reflog for a recent `rebase (finish)` entry (last 30 min)
+/// 3. If rebased, compares files changed on main vs files in recent commits
+/// 4. If overlap detected, nudges the coworker and posts to ops
+///
+/// Called from `evaluate_tick(PrPollTick)`.
+pub async fn check_for_rebase_regressions(
+    snap: &WorldSnapshot,
+    _state: &DaemonState,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    for coworker_name in &snap.pr.coworkers_with_open_prs {
+        // Skip coworkers on cooldown
+        if snap
+            .rebase_regression_cooldown_names
+            .contains(coworker_name)
+        {
+            continue;
+        }
+
+        // Skip coworkers without an active session
+        if !snap.name_session_map.contains_key(coworker_name) {
+            continue;
+        }
+
+        // Find the working directory for this coworker's session
+        let working_dir = snap
+            .name_session_map
+            .get(coworker_name)
+            .and_then(|sid| snap.sessions.get(sid))
+            .map(|rec| rec.working_dir.as_str())
+            .unwrap_or("");
+
+        if working_dir.is_empty() || !std::path::Path::new(working_dir).exists() {
+            continue;
+        }
+
+        // Spawn blocking git work on a thread pool to avoid blocking the tokio runtime
+        let wd = working_dir.to_string();
+        let cw_name = coworker_name.clone();
+        let result =
+            tokio::task::spawn_blocking(move || collect_rebase_regression_input(&wd, &cw_name))
+                .await;
+
+        match result {
+            Ok(Some(input)) => {
+                effects.extend(evaluate_rebase_regression(&input));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                debug!(
+                    coworker = %coworker_name,
+                    error = %e,
+                    "Failed to collect rebase regression input"
+                );
+            }
+        }
+    }
+
+    effects
+}
+
+/// Collect git data for rebase regression analysis (runs on blocking thread).
+///
+/// Returns `None` if the worktree is not a valid git repo or if no rebase
+/// was detected recently.
+fn collect_rebase_regression_input(
+    working_dir: &str,
+    coworker_name: &str,
+) -> Option<RebaseRegressionInput> {
+    // Check reflog for recent rebase (finish) entry — last 30 minutes
+    let reflog_lines =
+        run_git_in_worktree(working_dir, &["reflog", "--format=%gs %ci", "-n", "50"]);
+
+    let rebase_detected = reflog_lines.iter().any(|line| {
+        if !line.contains("rebase (finish)") {
+            return false;
+        }
+        // Parse the timestamp from the reflog line to check if it's recent
+        // Format: "rebase (finish): ... YYYY-MM-DD HH:MM:SS +ZZZZ"
+        // We look for the date part after the last occurrence of a date pattern
+        parse_reflog_timestamp_is_recent(line, 1800) // 30 minutes
+    });
+
+    if !rebase_detected {
+        return None;
+    }
+
+    // Get merge-base with origin/main
+    let merge_base_lines = run_git_in_worktree(working_dir, &["merge-base", "HEAD", "origin/main"]);
+    let merge_base = merge_base_lines.first()?;
+
+    // Files changed on main since the merge-base (what the rebase brought in)
+    let main_changed = run_git_in_worktree(
+        working_dir,
+        &["diff", "--name-only", &format!("{merge_base}..origin/main")],
+    );
+    let files_changed_on_main: HashSet<String> = main_changed.into_iter().collect();
+
+    if files_changed_on_main.is_empty() {
+        return None;
+    }
+
+    // Get commits on the PR branch after the merge-base (PR's own commits)
+    let pr_commits = run_git_in_worktree(working_dir, &["log", "--format=%H", "origin/main..HEAD"]);
+
+    // Look at the most recent 3 commits only (post-rebase work)
+    let recent_commits: Vec<&String> = pr_commits.iter().take(3).collect();
+    if recent_commits.is_empty() {
+        return None;
+    }
+
+    // Collect files touched by recent commits
+    let mut files_in_recent_commits = HashSet::new();
+    for commit in &recent_commits {
+        let files = run_git_in_worktree(
+            working_dir,
+            &["diff", "--name-only", &format!("{commit}^..{commit}")],
+        );
+        files_in_recent_commits.extend(files);
+    }
+
+    Some(RebaseRegressionInput {
+        coworker_name: coworker_name.to_string(),
+        files_changed_on_main,
+        files_in_recent_commits,
+        rebase_detected: true,
+    })
+}
+
+/// Parse a reflog line's timestamp and check if it's within `max_age_secs` of now.
+///
+/// Reflog lines from `--format=%gs %ci` look like:
+///   "rebase (finish): returning to refs/heads/branch 2026-03-11 10:30:00 -0700"
+///
+/// Returns `true` if the timestamp is recent enough, or `true` if parsing fails
+/// (fail-open: better to check than miss a regression).
+fn parse_reflog_timestamp_is_recent(line: &str, max_age_secs: i64) -> bool {
+    // Try to find a date pattern: YYYY-MM-DD HH:MM:SS
+    // Look from the end of the line since the message part comes first
+    let re_pattern = regex::Regex::new(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})");
+
+    let Ok(re) = re_pattern else {
+        return true; // fail-open
+    };
+
+    let Some(caps) = re.captures(line) else {
+        return true; // fail-open
+    };
+
+    let timestamp_str = &caps[1];
+    match chrono::DateTime::parse_from_str(timestamp_str, "%Y-%m-%d %H:%M:%S %z") {
+        Ok(ts) => {
+            let age = chrono::Utc::now().signed_duration_since(ts);
+            age.num_seconds() < max_age_secs
+        }
+        Err(_) => true, // fail-open
+    }
+}
+
 #[path = "pr_tests.rs"]
 #[cfg(test)]
 mod tests;
@@ -5408,3 +5687,7 @@ mod ci_retry_tests;
 #[path = "pr_rebase_nudge_tests.rs"]
 #[cfg(test)]
 mod rebase_nudge_tests;
+
+#[path = "pr_diff_guard_tests.rs"]
+#[cfg(test)]
+mod diff_guard_tests;

@@ -151,6 +151,10 @@ pub async fn evaluate_tick(
             // Nudge coworkers with open PRs to rebase after a merge
             effects.extend(super::pr::collect_merge_rebase_nudge_effects(snap));
 
+            // Check for post-rebase regressions (coworker commits that touch files
+            // changed on main, potentially reverting merged changes)
+            effects.extend(super::pr::check_for_rebase_regressions(snap, state).await);
+
             // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
             // that webhooks may have missed (no API calls, pure snapshot comparison)
             effects.extend(super::pr::collect_pr_task_link_effects(snap));

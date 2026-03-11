@@ -464,6 +464,12 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub merge_rebase_nudge_cooldown_names: HashSet<String>,
 
+    /// Coworkers recently warned about post-rebase regressions.
+    /// Pre-evaluated from `state.cooldowns` (category `"rebase_regression"`)
+    /// so `check_for_rebase_regressions` can skip already-warned coworkers.
+    #[serde(default)]
+    pub rebase_regression_cooldown_names: HashSet<String>,
+
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
     /// by session ID) so decision functions stay pure.
@@ -1224,6 +1230,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // Pre-evaluate rebase regression cooldowns for all coworkers with open PRs
+    let rebase_regression_cooldown_names: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        coworkers_with_open_prs
+            .iter()
+            .filter(|name| {
+                !cooldowns.check(
+                    "rebase_regression",
+                    name,
+                    crate::daemon::constants::REBASE_REGRESSION_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect()
+    };
+
     // Pre-evaluate note staleness cooldowns for all channels with leads
     let note_staleness_cooldown_channels: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -1434,6 +1456,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         spawn_failure_cooldown_names,
         note_staleness_cooldown_channels,
         merge_rebase_nudge_cooldown_names,
+        rebase_regression_cooldown_names,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1505,6 +1528,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         spawn_failure_cooldown_names: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_regression_cooldown_names: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
