@@ -14,6 +14,7 @@ import {
 } from "./messageUtils.js";
 import { activeProject, channels, coworkers, daemonStatus } from "./store.js";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
+import { isToolOnly } from "./toolRunGrouping.js";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";
@@ -31,6 +32,7 @@ let {
 	threadParentId = undefined,
 	isDedicatedSession = false,
 	forkParentLead = undefined,
+	showToolData = true,
 	class: extraClass = "",
 	children = undefined,
 } = $props();
@@ -112,9 +114,15 @@ function isAction(msg) {
 function getActionContent(msg) {
 	return msg.content.replace(/^\/me\s*/, "");
 }
+
+// When tool data is hidden and the message has no text content, skip rendering
+// entirely to avoid blank rows (avatar + timestamp with no visible payload).
+let hidden = $derived(!showToolData && isToolOnly(msg));
 </script>
 
-{#if isTaskDivider(msg)}
+{#if hidden}
+  <!-- Tool-only message with tool data hidden: render nothing -->
+{:else if isTaskDivider(msg)}
   <!-- Task divider: centered HR with task link -->
   <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
     <div class="flex-1 h-px bg-border/60"></div>
@@ -200,7 +208,7 @@ function getActionContent(msg) {
             {/if}
           {/each}
         {/if}
-        {#if msg.tool_data?.length}
+        {#if showToolData && msg.tool_data?.length}
           <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}
@@ -247,7 +255,7 @@ function getActionContent(msg) {
             {/if}
           {/each}
         {/if}
-        {#if msg.tool_data?.length}
+        {#if showToolData && msg.tool_data?.length}
           <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}

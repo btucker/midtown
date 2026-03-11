@@ -13,6 +13,7 @@ let {
 	startIndex = 0,
 	channelName = undefined,
 	currentTasks = {},
+	showToolData = true,
 } = $props();
 
 let displayState = $state("collapsed");
@@ -74,6 +75,7 @@ function toggle() {
 				senderClass="mt-1"
 				{channelName}
 				currentTask={currentTasks[msg.from?.toLowerCase()]}
+				{showToolData}
 			/>
 		{/each}
 	</div>
