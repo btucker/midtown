@@ -31,6 +31,7 @@ let {
 	threadParentId = undefined,
 	isDedicatedSession = false,
 	forkParentLead = undefined,
+	showToolData = true,
 	class: extraClass = "",
 	children = undefined,
 } = $props();
@@ -200,7 +201,7 @@ function getActionContent(msg) {
             {/if}
           {/each}
         {/if}
-        {#if msg.tool_data?.length}
+        {#if showToolData && msg.tool_data?.length}
           <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}
@@ -247,7 +248,7 @@ function getActionContent(msg) {
             {/if}
           {/each}
         {/if}
-        {#if msg.tool_data?.length}
+        {#if showToolData && msg.tool_data?.length}
           <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
         {/if}
       {/if}

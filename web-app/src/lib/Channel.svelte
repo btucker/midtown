@@ -22,6 +22,7 @@ import { clearMobileTextarea } from "./mobileInput.js";
 import {
 	activeChannel,
 	activeProject,
+	channelSettings,
 	channels as channelsStore,
 	channelTargetMsgId,
 	coworkers,
@@ -75,6 +76,7 @@ let autocompleteStartPos = $state(0);
 let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
+let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? false));
 
 // Filter messages by active channel
 let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
@@ -768,6 +770,7 @@ function getToolCallStatusIcon(entry) {
               startIndex={renderStartIndex + segment._offset}
               channelName={$activeChannel}
               {currentTasks}
+              showToolData={showInlineToolData}
             />
           {:else}
             {@const msg = segment.message}
@@ -805,6 +808,7 @@ function getToolCallStatusIcon(entry) {
               senderClass="mt-1"
               currentTask={currentTasks[msg.from.toLowerCase()]}
               channelName={$activeChannel}
+              showToolData={showInlineToolData}
             />
 
             <!-- Reply indicator for messages with thread replies -->
