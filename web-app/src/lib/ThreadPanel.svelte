@@ -254,7 +254,7 @@ let prevThreadId = null;
   })
 
   // Extract Edit/Write tool calls to render as inline diffs.
-  // Enabled for DM channels (always) or any channel with inlineToolCalls setting.
+  // Enabled by default for all channels; can be disabled per-channel via inlineToolCalls setting.
   // Tool items are keyed by channel name in the store; we pull the items for
   // that channel and filter for Edit/Write calls.
   let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
