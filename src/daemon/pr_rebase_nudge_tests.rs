@@ -5,7 +5,7 @@ use crate::daemon::snapshot::minimal_snapshot_for_test;
 #[test]
 fn nudges_coworkers_with_open_prs_when_pr_merges() {
     let mut snap = minimal_snapshot_for_test();
-    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.newly_merged_pr_numbers.insert(100);
     snap.pr
         .coworkers_with_open_prs
         .insert("lexington".to_string());
@@ -40,12 +40,25 @@ fn nudges_coworkers_with_open_prs_when_pr_merges() {
         })
         .collect();
     assert_eq!(cooldown_keys.len(), 2);
+
+    // Newly merged PRs should also get RecordCooldown for "merge_rebase_pr_seen"
+    let pr_seen_keys: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::RecordCooldown { category, key } if category == "merge_rebase_pr_seen" => {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pr_seen_keys.len(), 1);
+    assert!(pr_seen_keys.contains(&"100".to_string()));
 }
 
 #[test]
 fn does_not_nudge_coworker_whose_pr_merged() {
     let mut snap = minimal_snapshot_for_test();
-    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.newly_merged_pr_numbers.insert(100);
     snap.pr
         .coworkers_with_open_prs
         .insert("lexington".to_string());
@@ -75,7 +88,7 @@ fn does_not_nudge_coworker_whose_pr_merged() {
 #[test]
 fn does_not_nudge_coworkers_on_cooldown() {
     let mut snap = minimal_snapshot_for_test();
-    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.newly_merged_pr_numbers.insert(100);
     snap.pr
         .coworkers_with_open_prs
         .insert("lexington".to_string());
@@ -105,7 +118,7 @@ fn does_not_nudge_coworkers_on_cooldown() {
 #[test]
 fn does_not_nudge_coworkers_without_sessions() {
     let mut snap = minimal_snapshot_for_test();
-    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.newly_merged_pr_numbers.insert(100);
     snap.pr
         .coworkers_with_open_prs
         .insert("lexington".to_string());
@@ -143,9 +156,29 @@ fn no_nudges_when_no_prs_merged() {
 }
 
 #[test]
+fn no_nudges_when_only_stale_merged_prs_in_cache() {
+    let mut snap = minimal_snapshot_for_test();
+    // merged_pr_numbers has entries (stale cache) but newly_merged is empty
+    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.merged_pr_numbers.insert(101);
+    // newly_merged_pr_numbers is empty (these PRs were already seen)
+    snap.pr
+        .coworkers_with_open_prs
+        .insert("lexington".to_string());
+    snap.name_session_map
+        .insert("lexington".to_string(), "session-1".to_string());
+
+    let effects = collect_merge_rebase_nudge_effects(&snap);
+    assert!(
+        effects.is_empty(),
+        "stale merged PRs should not trigger nudges"
+    );
+}
+
+#[test]
 fn nudge_message_contains_rebase_guidance() {
     let mut snap = minimal_snapshot_for_test();
-    snap.pr.merged_pr_numbers.insert(42);
+    snap.pr.newly_merged_pr_numbers.insert(42);
     snap.pr
         .coworkers_with_open_prs
         .insert("lexington".to_string());

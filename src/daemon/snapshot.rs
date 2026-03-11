@@ -169,6 +169,11 @@ pub struct SnapshotPrState {
     /// PR numbers of recently merged PRs. Used by task dispatch to skip
     /// tasks that reference a merged PR (e.g., "Address review feedback on PR #709").
     pub merged_pr_numbers: HashSet<u64>,
+    /// Subset of `merged_pr_numbers` that haven't been seen before (no cooldown
+    /// on `"merge_rebase_pr_seen"`). Used by `collect_merge_rebase_nudge_effects`
+    /// to only nudge about genuinely new merges, not the entire last-10 cache.
+    #[serde(default)]
+    pub newly_merged_pr_numbers: HashSet<u64>,
     /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
     pub ci_passed_pr_coworkers: HashSet<String>,
     /// Coworkers whose open PR has CI passed AND has review feedback to address.
@@ -469,6 +474,12 @@ pub struct WorldSnapshot {
     /// so `check_for_rebase_regressions` can skip already-warned coworkers.
     #[serde(default)]
     pub rebase_regression_cooldown_names: HashSet<String>,
+
+    /// Pre-collected rebase regression inputs for each eligible coworker.
+    /// Git I/O (reflog, diff, merge-base) is performed during snapshot collection
+    /// so that `check_for_rebase_regressions` remains a pure decision function.
+    #[serde(skip)]
+    pub rebase_regression_inputs: Vec<super::pr::RebaseRegressionInput>,
 
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
@@ -863,6 +874,21 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         super::pr::get_coworkers_with_merged_prs(state, &early_branch_owners);
     // Merged PR numbers are populated as a side effect of the above call.
     let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
+    // Compute newly merged PRs (not yet seen for rebase nudge purposes)
+    let newly_merged_pr_numbers: HashSet<u64> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        merged_pr_numbers
+            .iter()
+            .filter(|&num| {
+                cooldowns.check(
+                    "merge_rebase_pr_seen",
+                    &num.to_string(),
+                    crate::daemon::constants::MERGE_REBASE_PR_SEEN_COOLDOWN,
+                )
+            })
+            .copied()
+            .collect()
+    };
     let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review, open_prs_data) = {
         let cache = state.pr_coworker_cache.read().unwrap();
         (
@@ -1329,6 +1355,47 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(session_id, _)| session_id.clone())
         .collect();
 
+    // ── Pre-collect rebase regression inputs ──────────────────────────────
+    // Runs git I/O (reflog, diff, merge-base) during snapshot collection so
+    // that check_for_rebase_regressions remains a pure decision function.
+    // Follows the same pattern as stale_working_dir_sessions above.
+    let rebase_regression_inputs: Vec<super::pr::RebaseRegressionInput> = {
+        let mut inputs = Vec::new();
+        for coworker_name in &coworkers_with_open_prs {
+            // Skip coworkers on cooldown
+            if rebase_regression_cooldown_names.contains(coworker_name) {
+                continue;
+            }
+            // Skip coworkers without an active session
+            let working_dir = name_session_map
+                .get(coworker_name)
+                .and_then(|sid| sessions.get(sid))
+                .map(|rec| rec.working_dir.as_str())
+                .unwrap_or("");
+            if working_dir.is_empty() || !std::path::Path::new(working_dir).exists() {
+                continue;
+            }
+            let wd = working_dir.to_string();
+            let cw_name = coworker_name.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                super::pr::collect_rebase_regression_input(&wd, &cw_name)
+            })
+            .await;
+            match result {
+                Ok(Some(input)) => inputs.push(input),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        coworker = %coworker_name,
+                        error = %e,
+                        "Failed to collect rebase regression input during snapshot"
+                    );
+                }
+            }
+        }
+        inputs
+    };
+
     // ── Auth profile pool ─────────────────────────────────────────────────
     // Snapshot the session→profile mapping so pure decision functions
     // (check_for_usage_limits) can emit MarkProfileLimited effects without
@@ -1384,6 +1451,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             coworkers_with_open_prs,
             coworkers_with_merged_prs,
             merged_pr_numbers,
+            newly_merged_pr_numbers,
             ci_passed_pr_coworkers,
             review_feedback_pr_coworkers,
             open_prs_data,
@@ -1457,6 +1525,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         note_staleness_cooldown_channels,
         merge_rebase_nudge_cooldown_names,
         rebase_regression_cooldown_names,
+        rebase_regression_inputs,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1529,6 +1598,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        rebase_regression_inputs: Vec::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
