@@ -112,7 +112,12 @@ pub struct LaunchConfig {
     pub persisted_initial_prompt: Option<String>,
 }
 
-/// The shell command string and generated session ID (if fresh).
+/// The shell command string and any pre-assigned provider session ID.
+///
+/// Fresh Claude launches generate a stable session ID up front so Midtown can
+/// track the session before the CLI emits events. Codex's interactive CLI does
+/// not expose equivalent pre-assignment, so Codex headed launches always leave
+/// `session_id` as `None`.
 pub struct LaunchCommand {
     pub shell_command: String,
     pub session_id: Option<String>,
@@ -701,8 +706,12 @@ impl LaunchConfig {
     ///
     /// `project_name` is used to load sandbox configuration (allowed_paths).
     ///
-    /// Returns a `LaunchCommand` with the shell command and the session ID
-    /// (if a fresh session was created).
+    /// Returns a `LaunchCommand` with the shell command and any pre-assigned
+    /// provider session ID.
+    ///
+    /// Fresh Claude launches populate `LaunchCommand.session_id`; Codex
+    /// interactive launches cannot, because the Codex CLI does not accept a
+    /// caller-provided thread/session identifier.
     pub fn to_shell_command(
         &self,
         settings_file: &std::path::Path,
