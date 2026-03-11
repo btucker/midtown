@@ -623,14 +623,15 @@ let prevThreadId = null;
 
       <!-- Parent message as first item in stream -->
       {#if $threadData.parentMessage}
-        <MessageRow
-          msg={$threadData.parentMessage}
-          msgs={[$threadData.parentMessage]}
-          index={0}
-          senderClass="mt-1"
-          channelName={$threadData?.channelName}
-          class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
-        />
+          <MessageRow
+            msg={$threadData.parentMessage}
+            msgs={[$threadData.parentMessage]}
+            index={0}
+            senderClass="mt-1"
+            channelName={$threadData?.channelName}
+            showToolData={showInlineDiffs}
+            class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
+          />
 
         <!-- Separator with reply count -->
         <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
@@ -672,6 +673,7 @@ let prevThreadId = null;
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && forkOwner != null && msg.from === forkOwner}
             {forkParentLead}
+            showToolData={showInlineDiffs}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           />
         {/if}
@@ -786,6 +788,7 @@ let prevThreadId = null;
           index={0}
           senderClass="mt-1"
           channelName={$threadData?.channelName}
+          showToolData={showInlineDiffs}
           class={$threadData.parentMessage.auto_output ? 'auto-output' : ''}
         />
 
@@ -829,6 +832,7 @@ let prevThreadId = null;
             threadParentId={$threadData?.parentMessage?.id}
             isDedicatedSession={hasDedicatedSession && forkOwner != null && msg.from === forkOwner}
             {forkParentLead}
+            showToolData={showInlineDiffs}
             class="{msg.pending ? 'opacity-60' : ''} {msg.auto_output ? 'auto-output' : ''}"
           />
         {/if}
