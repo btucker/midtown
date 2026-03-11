@@ -618,7 +618,7 @@ function handlePaste(e) {
 		pendingFile = file;
 		return;
 	}
-	handleCodePaste(
+	const cursorPos = handleCodePaste(
 		e,
 		textareaElement,
 		() => inputText,
@@ -626,6 +626,12 @@ function handlePaste(e) {
 			inputText = t;
 		},
 	);
+	if (cursorPos !== false) {
+		tick().then(() => {
+			textareaElement.selectionStart = cursorPos;
+			textareaElement.selectionEnd = cursorPos;
+		});
+	}
 }
 
 function clearPendingFile() {

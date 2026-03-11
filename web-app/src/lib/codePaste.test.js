@@ -179,7 +179,7 @@ describe("handleCodePaste", () => {
 		expect(setText).not.toHaveBeenCalled();
 	});
 
-	test("returns true and calls preventDefault + setText for code", () => {
+	test("returns cursor position and calls preventDefault + setText for code", () => {
 		const code = `function greet(name) {
 	const msg = "Hello, " + name;
 	return msg;
@@ -190,7 +190,8 @@ describe("handleCodePaste", () => {
 		const setText = vi.fn();
 
 		const result = handleCodePaste(e, textarea, getText, setText);
-		expect(result).toBe(true);
+		expect(result).not.toBe(false);
+		expect(typeof result).toBe("number");
 		expect(e.preventDefault).toHaveBeenCalled();
 		expect(setText).toHaveBeenCalledTimes(1);
 		const newText = setText.mock.calls[0][0];
@@ -241,10 +242,37 @@ describe("handleCodePaste", () => {
 		const setText = vi.fn();
 
 		const result = handleCodePaste(e, textarea, getText, setText);
-		expect(result).toBe(true);
+		expect(result).not.toBe(false);
 		const newText = setText.mock.calls[0][0];
 		expect(newText.startsWith("before ")).toBe(true);
 		expect(newText.endsWith(" after")).toBe(true);
 		expect(newText).toContain("```");
+	});
+
+	test("returns correct cursor position after fenced block", () => {
+		const code = "const x = 1;";
+		const e = makeEvent(code);
+		const textarea = makeTextarea("", 0, 0);
+		const getText = () => "";
+		const setText = vi.fn();
+
+		const cursorPos = handleCodePaste(e, textarea, getText, setText);
+		const newText = setText.mock.calls[0][0];
+		// Cursor should be at end of the inserted fenced block
+		expect(cursorPos).toBe(newText.length);
+	});
+
+	test("returns correct cursor position when inserting mid-text", () => {
+		const code = "const x = 1;";
+		const e = makeEvent(code);
+		const existing = "before  after";
+		const textarea = makeTextarea(existing, 7, 7);
+		const getText = () => existing;
+		const setText = vi.fn();
+
+		const cursorPos = handleCodePaste(e, textarea, getText, setText);
+		const fenced = wrapInFences(code, null);
+		// Cursor should be at start offset + fenced block length
+		expect(cursorPos).toBe(7 + fenced.length);
 	});
 });

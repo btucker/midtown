@@ -439,7 +439,13 @@ let prevThreadId = null;
       pendingFile = file
       return
     }
-    handleCodePaste(e, textareaEl, () => replyText, (t) => { replyText = t })
+    const cursorPos = handleCodePaste(e, textareaEl, () => replyText, (t) => { replyText = t })
+    if (cursorPos !== false) {
+      tick().then(() => {
+        textareaEl.selectionStart = cursorPos
+        textareaEl.selectionEnd = cursorPos
+      })
+    }
   }
 
   function clearPendingFile() {

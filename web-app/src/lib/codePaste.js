@@ -86,7 +86,7 @@ export function detectCode(text) {
 		if (score >= 4) {
 			return { isCode: true, language: hljsLanguage };
 		}
-	} else if (nonEmptyLines.length <= 2) {
+	} else {
 		// Short text: require strong signal or single-line pattern match
 		if (STRONG_SINGLE_LINE.test(text) || score >= 6) {
 			return { isCode: true, language: hljsLanguage };
@@ -116,7 +116,8 @@ export function wrapInFences(text, language) {
  * @param {HTMLTextAreaElement} textareaElement - The textarea element
  * @param {() => string} getCurrentText - Returns the current textarea value
  * @param {(text: string) => void} setText - Sets the textarea value
- * @returns {boolean} Whether the paste was handled
+ * @returns {false | number} `false` if the paste was not handled, or the
+ *   cursor position that should be set after the DOM updates.
  */
 export function handleCodePaste(e, textareaElement, getCurrentText, setText) {
 	const text = e.clipboardData?.getData("text/plain");
@@ -135,12 +136,5 @@ export function handleCodePaste(e, textareaElement, getCurrentText, setText) {
 	const newText = current.slice(0, start) + fenced + current.slice(end);
 	setText(newText);
 
-	// Reposition cursor after the inserted fenced block.
-	const cursorPos = start + fenced.length;
-	queueMicrotask(() => {
-		textareaElement.selectionStart = cursorPos;
-		textareaElement.selectionEnd = cursorPos;
-	});
-
-	return true;
+	return start + fenced.length;
 }
