@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { groupTimelineToolRuns, groupToolRuns } from "./toolRunGrouping.js";
+import { groupTimelineToolRuns, groupToolRuns, isToolOnly } from "./toolRunGrouping.js";
+
+describe("isToolOnly", () => {
+	it("returns true for empty content with tool_data", () => {
+		expect(isToolOnly({ content: "", tool_data: [{ tool_name: "Bash" }] })).toBe(true);
+	});
+
+	it("returns true for null content with tool_data", () => {
+		expect(isToolOnly({ content: null, tool_data: [{ tool_name: "Read" }] })).toBe(true);
+	});
+
+	it("returns true for undefined content with tool_data", () => {
+		expect(isToolOnly({ content: undefined, tool_data: [{ tool_name: "Read" }] })).toBe(true);
+	});
+
+	it("returns true for whitespace-only content with tool_data", () => {
+		expect(isToolOnly({ content: "   \n\t  ", tool_data: [{ tool_name: "Bash" }] })).toBe(true);
+	});
+
+	it("returns false when content has text", () => {
+		expect(isToolOnly({ content: "Here are the results:", tool_data: [{ tool_name: "Bash" }] })).toBe(false);
+	});
+
+	it("returns false for empty tool_data array", () => {
+		expect(isToolOnly({ content: "", tool_data: [] })).toBe(false);
+	});
+
+	it("returns false for null tool_data", () => {
+		expect(isToolOnly({ content: "", tool_data: null })).toBe(false);
+	});
+
+	it("returns false for undefined tool_data", () => {
+		expect(isToolOnly({ content: "" })).toBe(false);
+	});
+
+	it("returns false for plain text message", () => {
+		expect(isToolOnly({ content: "Hello world" })).toBe(false);
+	});
+});
 
 function msg(id, content, toolData = null) {
 	return { id, content, tool_data: toolData, timestamp: new Date().toISOString() };

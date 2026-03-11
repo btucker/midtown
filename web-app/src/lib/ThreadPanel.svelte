@@ -21,7 +21,7 @@ let prevThreadId = null;
   import TaskRow from './TaskRow.svelte'
   import DiffView from './DiffView.svelte'
   import ToolRunSummary from './ToolRunSummary.svelte'
-  import { groupTimelineToolRuns } from './toolRunGrouping.js'
+  import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.js'
   import { clearMobileTextarea } from './mobileInput.js'
 
   // Thread panel resize state (desktop only)
@@ -322,6 +322,9 @@ let prevThreadId = null;
   let timelineMessages = $derived(mergedTimeline.filter((e) => e.type === 'message').map((e) => e.data))
   let groupedTimeline = $derived(groupTimelineToolRuns(mergedTimeline))
 
+  // Reply count excluding tool-only messages (tool runs are visual noise, not conversation)
+  let visibleReplyCount = $derived(($threadData?.messages ?? []).filter(m => !isToolOnly(m)).length)
+
   // Track viewport changes to know which panel is active
   onMount(() => {
     const mql = window.matchMedia('(min-width: 1024px)')
@@ -621,7 +624,7 @@ let prevThreadId = null;
         <!-- Separator with reply count -->
         <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
-          <span>{($threadData.messages?.length ?? 0) === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+          <span>{visibleReplyCount === 0 ? 'no replies yet' : visibleReplyCount === 1 ? '1 reply' : `${visibleReplyCount} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
         </div>
       {/if}
@@ -778,7 +781,7 @@ let prevThreadId = null;
         <!-- Separator with reply count -->
         <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
-          <span>{($threadData.messages?.length ?? 0) === 0 ? 'no replies yet' : $threadData.messages.length === 1 ? '1 reply' : `${$threadData.messages.length} replies`}</span>
+          <span>{visibleReplyCount === 0 ? 'no replies yet' : visibleReplyCount === 1 ? '1 reply' : `${visibleReplyCount} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
         </div>
       {/if}

@@ -65,9 +65,9 @@ let highlightedCommand = $derived(highlightBlock(command, "bash"));
 let outputLang = $derived(detectOutputLanguage(outputText));
 let highlightedOutput = $derived(highlightBlock(outputText, outputLang));
 
-// First-line preview for the preview state
-let firstLine = $derived(outputLines[0] || "");
-let highlightedFirstLine = $derived(highlightBlock(firstLine, outputLang));
+// 3-line preview for the preview state
+let previewText = $derived(outputLines.slice(0, 3).join("\n"));
+let highlightedPreview = $derived(highlightBlock(previewText, outputLang));
 </script>
 
 <div class="bash-block" class:bash-error={block.error}>
@@ -79,7 +79,7 @@ let highlightedFirstLine = $derived(highlightBlock(firstLine, outputLang));
 
   {#if hasOutput && displayState === 'preview'}
     <div class="bash-output bash-preview">
-      <pre>{@html highlightedFirstLine}</pre>
+      <pre>{@html highlightedPreview}</pre>
     </div>
   {:else if hasOutput && displayState === 'expanded'}
     <div class="bash-output">
@@ -160,7 +160,7 @@ let highlightedFirstLine = $derived(highlightBlock(firstLine, outputLang));
   }
 
   .bash-preview {
-    max-height: 1.45em;
+    max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
   }
@@ -171,8 +171,8 @@ let highlightedFirstLine = $derived(highlightBlock(firstLine, outputLang));
     bottom: 0;
     left: 0;
     right: 0;
-    height: 100%;
-    background: linear-gradient(to right, transparent 60%, hsl(var(--card)));
+    height: 1.4em;
+    background: linear-gradient(to bottom, transparent, hsl(var(--card)));
     pointer-events: none;
   }
 
