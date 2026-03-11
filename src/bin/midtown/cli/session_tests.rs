@@ -603,6 +603,11 @@ fn test_codex_attach_does_not_use_claude_system_prompt_flag() {
         "Codex attach should not use Claude-specific --append-system-prompt, got: {}",
         command
     );
+    assert!(
+        !command.contains(" --model "),
+        "Codex attach should preserve the resumed thread model instead of overriding it, got: {}",
+        command
+    );
 }
 
 #[test]

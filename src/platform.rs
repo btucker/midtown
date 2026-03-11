@@ -88,7 +88,7 @@ fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<Str
 /// Codex does not have a direct equivalent to Claude's `--dangerously-skip-permissions`,
 /// so Midtown relies on an external sandbox (when available) and tells Codex to bypass
 /// its own approval/sandbox layer to avoid double-prompting.
-fn build_codex_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<String> {
+fn build_codex_common_args(model: Option<&str>, additional_dirs: &[PathBuf]) -> Vec<String> {
     let mut args = vec!["--dangerously-bypass-approvals-and-sandbox".to_string()];
 
     for dir in additional_dirs {
@@ -98,8 +98,10 @@ fn build_codex_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<Stri
         }
     }
 
-    args.push("--model".to_string());
-    args.push(model.to_string());
+    if let Some(model) = model {
+        args.push("--model".to_string());
+        args.push(model.to_string());
+    }
 
     args
 }
@@ -302,18 +304,25 @@ pub fn build_codex_headless_args() -> Vec<String> {
 
 /// Build CLI args for a headed (interactive terminal) Codex session.
 ///
-/// Codex accepts developer instructions as a config override, so we inject
-/// Midtown's role prompt via `-c developer_instructions=<TOML string>`.
+/// Midtown injects the role prompt via `-c developer_instructions=<TOML string>`.
+/// Fresh sessions set `--model` explicitly, but resume flows intentionally omit
+/// `--model` so Codex keeps the saved thread's original model instead of being
+/// rewritten to Midtown role defaults during attach or `resume --last`.
+///
+/// Returns `(args, session_id)`. Codex's interactive CLI does not expose a way
+/// to pre-assign the eventual thread/session ID, so the second tuple element is
+/// always `None`.
 pub fn build_codex_headed_args(
     config: &LaunchConfig,
     system_prompt: &str,
     initial_prompt: Option<&str>,
 ) -> (Vec<String>, Option<String>) {
     let mut args = vec!["codex".to_string()];
-    args.extend(build_codex_common_args(
-        &config.model,
-        &config.additional_dirs,
-    ));
+    let model = match config.session_mode {
+        SessionMode::Fresh => Some(config.model.as_str()),
+        SessionMode::Resume | SessionMode::ResumeSession(_) => None,
+    };
+    args.extend(build_codex_common_args(model, &config.additional_dirs));
 
     if !system_prompt.is_empty() {
         let prompt_toml = toml::Value::String(system_prompt.to_string()).to_string();

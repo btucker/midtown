@@ -320,6 +320,26 @@ impl LaunchConfig {
         }
     }
 
+    fn resolve_codex_initial_prompt(
+        &self,
+        initial_prompt_file: Option<&std::path::Path>,
+    ) -> Option<String> {
+        if let Some(path) = initial_prompt_file {
+            match std::fs::read_to_string(path) {
+                Ok(prompt) => return Some(prompt),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to read Codex initial prompt file {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        self.initial_prompt.clone()
+    }
+
     /// Create a config for a standard coworker.
     ///
     /// Coworkers each have isolated task lists. The daemon bakes the task
@@ -671,9 +691,11 @@ impl LaunchConfig {
 
     /// Build the full shell command string for launching the configured provider in a terminal pane.
     ///
-    /// `settings_file` and `prompt_file` are pre-written files containing the
-    /// Claude settings JSON and system prompt markdown. `initial_prompt_file`
-    /// is the optional pre-written file containing the initial task/review prompt.
+    /// `settings_file`, `prompt_file`, and `initial_prompt_file` are provider
+    /// launch inputs. Claude/z.ai consume the files directly via `$(cat ...)`;
+    /// Codex reads `initial_prompt_file` eagerly and forwards its contents as
+    /// the final positional prompt argument because its interactive CLI does not
+    /// accept the same file-based prompt pattern.
     /// `primary_repo` is the project root directory, used to compute the
     /// filesystem sandbox profile (writable directories).
     ///
@@ -762,10 +784,11 @@ impl LaunchConfig {
             }
             crate::platform::Platform::Codex => {
                 let system_prompt = self.render_system_prompt(project_name);
+                let initial_prompt = self.resolve_codex_initial_prompt(initial_prompt_file);
                 let (cli_args, session_id) = crate::platform::build_codex_headed_args(
                     self,
                     &system_prompt,
-                    self.initial_prompt.as_deref(),
+                    initial_prompt.as_deref(),
                 );
                 let mut all_args = sandbox_prefix;
                 all_args.extend(cli_args);
@@ -1038,57 +1061,6 @@ mod tests {
             "Shell command should contain MIDTOWN_TASK_ID=42, got: {}",
             result.shell_command
         );
-    }
-
-    #[test]
-    fn test_shell_command_codex_fresh_uses_codex_binary() {
-        let mut config = LaunchConfig::coworker(
-            "park",
-            "myrepo",
-            SessionMode::Fresh,
-            Some("Investigate failing tests".to_string()),
-            None,
-        );
-        config.auth_provider = crate::auth::AuthProvider::Codex;
-        config.model = "gpt-5.3-codex".to_string();
-        let result = config.to_shell_command(
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.md"),
-            None,
-            std::path::Path::new("/tmp/test-repo"),
-            "midtown",
-        );
-        assert!(result.shell_command.contains(" codex "));
-        assert!(!result.shell_command.contains(" claude "));
-        assert!(
-            result
-                .shell_command
-                .contains("--dangerously-bypass-approvals-and-sandbox")
-        );
-        assert!(result.shell_command.contains("--model"));
-        assert!(result.shell_command.contains("gpt-5.3-codex"));
-        assert!(result.shell_command.contains("Investigate failing tests"));
-        assert!(result.session_id.is_none());
-    }
-
-    #[test]
-    fn test_shell_command_codex_resume_uses_resume_subcommand() {
-        let mut config = LaunchConfig::lead("myrepo", None);
-        config.auth_provider = crate::auth::AuthProvider::Codex;
-        config.model = "gpt-5.3-codex".to_string();
-        config.session_mode = SessionMode::ResumeSession("thread-123".to_string());
-        let result = config.to_shell_command(
-            std::path::Path::new("/tmp/settings.json"),
-            std::path::Path::new("/tmp/prompt.md"),
-            None,
-            std::path::Path::new("/tmp/test-repo"),
-            "midtown",
-        );
-        assert!(result.shell_command.contains(" codex "));
-        assert!(result.shell_command.contains(" resume "));
-        assert!(result.shell_command.contains("thread-123"));
-        assert!(result.shell_command.contains("developer_instructions="));
-        assert!(result.session_id.is_none());
     }
 
     #[test]

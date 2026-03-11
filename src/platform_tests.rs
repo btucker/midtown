@@ -43,7 +43,7 @@ fn test_binary_name_codex() {
 
 #[test]
 fn test_codex_common_args_include_bypass_and_model() {
-    let args = build_codex_common_args("gpt-5.3-codex", &[]);
+    let args = build_codex_common_args(Some("gpt-5.3-codex"), &[]);
     assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     assert!(args.contains(&"--model".to_string()));
     assert!(args.contains(&"gpt-5.3-codex".to_string()));
@@ -470,8 +470,10 @@ fn test_codex_headed_args_has_resume() {
     assert_eq!(session_id, None);
     assert_eq!(args[0], "codex");
     assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
-    assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"gpt-5.3-codex".to_string()));
+    assert!(
+        !args.contains(&"--model".to_string()),
+        "ResumeSession should not override the persisted Codex thread model"
+    );
     let resume_idx = args.iter().position(|arg| arg == "resume").unwrap();
     assert_eq!(args[resume_idx + 1], "thread-123");
     let config_idx = args.iter().position(|arg| arg == "-c").unwrap();
@@ -508,6 +510,36 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
 }
 
 #[test]
+fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
+    let config = LaunchConfig {
+        name: "lead".to_string(),
+        session_mode: SessionMode::Resume,
+        role: CoworkerRole::Lead,
+        initial_prompt: None,
+        additional_dirs: vec![],
+        pr_number: None,
+        working_dir: None,
+        model: "gpt-5.3-codex".to_string(),
+        channel: None,
+        auth_profile_dir: None,
+        auth_provider: AuthProvider::Codex,
+        escalation_target: None,
+        task_id: None,
+        persisted_initial_prompt: None,
+    };
+
+    let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
+
+    assert_eq!(session_id, None);
+    assert!(args.contains(&"resume".to_string()));
+    assert!(args.contains(&"--last".to_string()));
+    assert!(
+        !args.contains(&"--model".to_string()),
+        "resume --last should preserve the last session's saved model"
+    );
+}
+
+#[test]
 fn test_codex_headed_args_fresh_uses_positional_prompt() {
     let config = LaunchConfig {
         name: "park".to_string(),
@@ -530,6 +562,8 @@ fn test_codex_headed_args_fresh_uses_positional_prompt() {
     assert_eq!(args[0], "codex");
     assert!(args.contains(&"--add-dir".to_string()));
     assert!(args.contains(&"/tmp/repo2".to_string()));
+    assert!(args.contains(&"--model".to_string()));
+    assert!(args.contains(&"gpt-5.1-codex-mini".to_string()));
     assert!(
         !args.contains(&"resume".to_string()),
         "Fresh launches should not use the resume subcommand"
