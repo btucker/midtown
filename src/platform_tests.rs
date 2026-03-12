@@ -67,16 +67,14 @@ fn test_claude_common_args_always_has_model() {
     assert!(args.contains(&"opus".to_string()));
 }
 
+/// `--setting-sources` is NOT in common args — it's added by callers conditionally
+/// because fork sessions (`--resume --fork-session`) are incompatible with it.
 #[test]
-fn test_claude_common_args_always_has_setting_sources() {
+fn test_claude_common_args_does_not_include_setting_sources() {
     let args = build_claude_common_args("sonnet", &[]);
     assert!(
-        args.contains(&"--setting-sources".to_string()),
-        "Common args must always include --setting-sources"
-    );
-    assert!(
-        args.contains(&"project,local".to_string()),
-        "Setting sources must be project,local"
+        !args.contains(&"--setting-sources".to_string()),
+        "Common args must NOT include --setting-sources (callers add it conditionally)"
     );
 }
 
@@ -307,6 +305,7 @@ fn test_claude_headless_args_has_common_flags() {
     // Common flags should be present
     assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(args.contains(&"--model".to_string()));
+    // --setting-sources is added by build_claude_headless_args (not common), verified here
     assert!(args.contains(&"--setting-sources".to_string()));
 }
 
@@ -610,6 +609,39 @@ fn test_claude_headless_args_no_fork_session_without_flag() {
     assert!(
         !args.contains(&"--fork-session".to_string()),
         "--fork-session should NOT be present when fork_session is false"
+    );
+}
+
+/// Verify that fork sessions do NOT include `--setting-sources`, which is
+/// incompatible with `--resume --fork-session` in the Claude CLI.
+#[test]
+fn test_claude_headless_args_fork_session_skips_setting_sources() {
+    let config = HeadlessConfig {
+        resume_session_id: Some("session-abc".to_string()),
+        persist_session: true,
+        fork_session: true,
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+    assert!(
+        !args.contains(&"--setting-sources".to_string()),
+        "Fork sessions must NOT include --setting-sources (incompatible with --fork-session)"
+    );
+}
+
+/// Verify that normal (non-fork) resume sessions still include `--setting-sources`.
+#[test]
+fn test_claude_headless_args_normal_resume_has_setting_sources() {
+    let config = HeadlessConfig {
+        resume_session_id: Some("session-abc".to_string()),
+        persist_session: true,
+        fork_session: false,
+        ..test_headless_config()
+    };
+    let args = build_claude_headless_args(&config);
+    assert!(
+        args.contains(&"--setting-sources".to_string()),
+        "Normal resume sessions should include --setting-sources"
     );
 }
 
