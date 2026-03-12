@@ -5,7 +5,9 @@ import {
 	computeExpandedAfterTriangleClick,
 	computeVisibleDmChannels,
 	findPr,
+	getAllCompletedThreads,
 	getChannelCiStatus,
+	getChannelHasTrackedThreads,
 	getChannelPrs,
 	getChannelTaskCount,
 	getChannelThreads,
@@ -733,5 +735,111 @@ describe("getMostRecentToolCall", () => {
 		];
 		const result = getMostRecentToolCall(blocks);
 		expect(result).toEqual({ toolName: "Edit", callId: "c2", status: "InProgress" });
+	});
+});
+
+describe("getChannelThreads excludes completed threads", () => {
+	const tracked = {
+		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z" },
+		"completed-thread": { channelName: "web", subject: "Completed thread", lastActivity: "2026-03-04T11:00:00Z" },
+	};
+	const unreadCounts = {};
+	const taskThreadIds = new Set();
+	const completedTaskThreadIds = new Set(["completed-thread"]);
+
+	it("filters out completed threads from per-channel list", () => {
+		const result = getChannelThreads("web", tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
+		expect(result.threads).toHaveLength(1);
+		expect(result.threads[0].id).toBe("thread-1");
+	});
+
+	it("includes completed threads when completedTaskThreadIds is empty", () => {
+		const result = getChannelThreads("web", tracked, unreadCounts, taskThreadIds, new Set());
+		expect(result.threads).toHaveLength(2);
+	});
+});
+
+describe("getAllCompletedThreads", () => {
+	const tracked = {
+		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z" },
+		"completed-1": {
+			channelName: "web",
+			subject: "Done task A",
+			fullText: "Done task A full",
+			lastActivity: "2026-03-04T11:00:00Z",
+			replyCount: 5,
+		},
+		"completed-2": { channelName: "auth", subject: "Done task B", lastActivity: "2026-03-04T12:00:00Z" },
+		"task-thread": { channelName: "web", subject: "Active task thread", lastActivity: "2026-03-04T13:00:00Z" },
+	};
+	const unreadCounts = { "completed-1": 3 };
+	const taskThreadIds = new Set(["task-thread"]);
+	const completedTaskThreadIds = new Set(["completed-1", "completed-2"]);
+
+	it("returns only completed threads across all channels", () => {
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
+		expect(result).toHaveLength(2);
+		const ids = result.map((t) => t.id);
+		expect(ids).toContain("completed-1");
+		expect(ids).toContain("completed-2");
+	});
+
+	it("sorts by lastActivity newest first", () => {
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
+		expect(result[0].id).toBe("completed-2"); // 12:00
+		expect(result[1].id).toBe("completed-1"); // 11:00
+	});
+
+	it("includes channelName on each thread", () => {
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
+		const c1 = result.find((t) => t.id === "completed-1");
+		const c2 = result.find((t) => t.id === "completed-2");
+		expect(c1.channelName).toBe("web");
+		expect(c2.channelName).toBe("auth");
+	});
+
+	it("includes unread counts", () => {
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
+		const c1 = result.find((t) => t.id === "completed-1");
+		expect(c1.unread).toBe(3);
+	});
+
+	it("excludes active task-backed threads even if also in completedTaskThreadIds", () => {
+		// If a thread is in both sets, taskThreadIds takes priority (active task)
+		const bothSets = new Set(["task-thread", "completed-1", "completed-2"]);
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, bothSets);
+		const ids = result.map((t) => t.id);
+		expect(ids).not.toContain("task-thread");
+		expect(result).toHaveLength(2);
+	});
+
+	it("returns empty array when no completed threads exist", () => {
+		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, new Set());
+		expect(result).toEqual([]);
+	});
+});
+
+describe("getChannelHasTrackedThreads with completedTaskThreadIds", () => {
+	const tracked = {
+		"thread-1": { channelName: "web", subject: "Active thread" },
+		"completed-thread": { channelName: "web", subject: "Completed thread" },
+		"other-thread": { channelName: "auth", subject: "Other thread" },
+	};
+	const taskThreadIds = new Set();
+	const completedTaskThreadIds = new Set(["completed-thread"]);
+
+	it("returns true when channel has non-completed tracked threads", () => {
+		expect(getChannelHasTrackedThreads("web", tracked, taskThreadIds, completedTaskThreadIds)).toBe(true);
+	});
+
+	it("returns false when all channel threads are completed", () => {
+		const onlyCompleted = {
+			"completed-thread": { channelName: "web", subject: "Completed thread" },
+		};
+		expect(getChannelHasTrackedThreads("web", onlyCompleted, taskThreadIds, completedTaskThreadIds)).toBe(false);
+	});
+
+	it("returns true without completedTaskThreadIds (backward compatible)", () => {
+		expect(getChannelHasTrackedThreads("web", tracked, taskThreadIds)).toBe(true);
 	});
 });
