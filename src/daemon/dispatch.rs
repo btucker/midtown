@@ -1993,6 +1993,9 @@ fn dispatch_unowned_pending_tasks(
             continue;
         }
 
+        // For grouped names, the coworker may already be running — we nudge it.
+        // For freshly allocated names, this is always false (they were excluded from
+        // active_names during allocation), so they always take the spawn path.
         let already_running = snap
             .coworkers
             .active_names

@@ -48,10 +48,18 @@ pub(super) async fn handle_coworker_spawn(
         );
     }
 
-    // Pick a name for the coworker (excluding channel lead names to prevent collision)
+    // Pick a name for the coworker, excluding both channel lead names and active session
+    // names to prevent collision. A session may still be running after its coworker was
+    // cleaned up from CoworkerManager, so we also exclude names with live sessions.
+    let mut excluded_names = channel_lead_names;
+    for name in state.session_manager.list_names().await {
+        if state.session_manager.is_alive(&name).await {
+            excluded_names.insert(name.to_lowercase());
+        }
+    }
     let name = match state
         .coworkers
-        .next_available_name_excluding(&channel_lead_names)
+        .next_available_name_excluding(&excluded_names)
     {
         Some(n) => n,
         None => {
