@@ -21,11 +21,72 @@ use super::helpers::*;
 /// Remove shell escaping artifacts from channel messages.
 ///
 /// When Claude Code posts messages via its Bash tool, the LLM often escapes `!`
-/// as `\!` (to avoid bash history expansion). Since the Bash tool runs in
-/// non-interactive mode where history expansion is disabled, the backslash passes
-/// through literally. This function cleans up such artifacts.
+/// as `\!` (to avoid bash history expansion) and writes `\n`/`\t` expecting them
+/// to become real whitespace. Since bash double-quotes don't interpret `\n` or `\t`,
+/// these pass through as literal backslash sequences. This function cleans them up
+/// while preserving literal escapes inside backtick-delimited code spans and blocks.
 fn unescape_shell_artifacts(s: &str) -> String {
-    s.replace("\\!", "!")
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_code_block = false; // inside ``` ... ```
+    let mut in_inline_code = false; // inside ` ... `
+
+    while i < len {
+        // Check for ``` code block toggle
+        if i + 2 < len && chars[i] == '`' && chars[i + 1] == '`' && chars[i + 2] == '`' {
+            in_code_block = !in_code_block;
+            result.push('`');
+            result.push('`');
+            result.push('`');
+            i += 3;
+            continue;
+        }
+
+        // Check for ` inline code toggle (only outside code blocks)
+        if !in_code_block && chars[i] == '`' {
+            in_inline_code = !in_inline_code;
+            result.push('`');
+            i += 1;
+            continue;
+        }
+
+        // Inside code spans/blocks, pass through literally
+        if in_code_block || in_inline_code {
+            result.push(chars[i]);
+            i += 1;
+            continue;
+        }
+
+        // Outside code: handle backslash escapes
+        if chars[i] == '\\' && i + 1 < len {
+            match chars[i + 1] {
+                'n' => {
+                    result.push('\n');
+                    i += 2;
+                }
+                't' => {
+                    result.push('\t');
+                    i += 2;
+                }
+                '!' => {
+                    result.push('!');
+                    i += 2;
+                }
+                _ => {
+                    result.push(chars[i]);
+                    i += 1;
+                }
+            }
+            continue;
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
 }
 
 /// Extract PR number from a `[Review Note] PR #123: ...` message.
