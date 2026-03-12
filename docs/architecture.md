@@ -395,6 +395,8 @@ Channel reads span all `.jsonl` files in the history directory — date-named ar
 - `channel.rename` — Rename `channels/<old>/` to `channels/<new>/`; updates `task_channel`, `channel_lead_sessions`, and `sessions` in persistent state; shuts down the old channel lead session; returns an error if the old channel does not exist, the new name is invalid/already exists, or if renaming the project's main channel
 - `channel.list` — Return all channels, optionally including archived ones
 
+**Channel directory setting**: Each channel can have an optional working directory override stored in `channels/<name>/directory`. When set, channel leads and coworkers spawned for that channel use the subdirectory (relative to the repo root) as their session cwd instead of the worktree root. The setting is read via `read_channel_directory()` and applied to `LaunchConfig.cwd_subdir` at all channel lead spawn paths (initial creation, health-tick respawn, nudge resume/fresh, auth rotation). At spawn time (`spawn_coworker`), `cwd_subdir` is joined to the worktree root; if the resulting path doesn't exist, it falls back to the worktree root with a warning. The web API endpoints `GET/PUT /api/channels/{channel}/directory` manage the setting, with symlink-aware containment validation via `canonicalize()`.
+
 > Note: Channels are no longer auto-archived when all tasks complete. Archiving and unarchiving are explicit user actions via the CLI/RPC methods above.
 
 ## Channel Sync

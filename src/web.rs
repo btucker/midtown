@@ -438,6 +438,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/agents-md",
             get(api_channel_agents_md).put(api_channel_agents_md_update),
         )
+        .route(
+            "/api/channels/{channel}/directory",
+            get(api_channel_directory_get).put(api_channel_directory_put),
+        )
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -2894,6 +2898,121 @@ async fn api_channel_agents_md_update(
             error!("Failed to write AGENTS.md at {}: {e}", path.display());
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    }
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Get the channel directory setting for a channel.
+///
+/// Path: `GET /api/channels/{channel}/directory`
+///
+/// Returns JSON `{ "directory": "packages/auth" }` or `{ "directory": null }`.
+async fn api_channel_directory_get(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let directory = crate::paths::read_channel_directory(&state.config.dir_key, &channel);
+    Ok(Json(serde_json::json!({ "directory": directory })))
+}
+
+/// Request body for updating a channel's directory setting.
+#[derive(Debug, Deserialize)]
+struct UpdateChannelDirectoryRequest {
+    /// Relative subdirectory within the repo (e.g., "packages/auth").
+    /// Empty or null clears the setting.
+    directory: Option<String>,
+}
+
+/// Set or clear the channel directory setting.
+///
+/// Path: `PUT /api/channels/{channel}/directory`
+///
+/// Accepts JSON `{ "directory": "packages/auth" }` or `{ "directory": null }`.
+/// Returns 204 on success.
+async fn api_channel_directory_put(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Json(body): Json<UpdateChannelDirectoryRequest>,
+) -> Result<StatusCode, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Validate the directory value: no path traversal, must be relative
+    let directory = body
+        .directory
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+
+    if let Some(dir) = directory {
+        if dir.contains("..") || dir.starts_with('/') || dir.starts_with('\\') {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        // Validate the directory exists within the first repo path and doesn't
+        // escape via symlinks. canonicalize() resolves symlinks so we can check
+        // the real path stays within the repo root.
+        let repo_root = state
+            .all_repo_paths
+            .first()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let full_path = repo_root.join(dir);
+        if !full_path.is_dir() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let canonical_root = repo_root
+            .canonicalize()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+
+    let path = crate::paths::channel_directory_file(&state.config.dir_key, &channel);
+
+    if let Some(dir) = directory {
+        // Create parent directories and write the file
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                error!("Failed to create directories for {}: {e}", path.display());
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
+        std::fs::write(&path, dir).map_err(|e| {
+            error!(
+                "Failed to write channel directory at {}: {e}",
+                path.display()
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    } else {
+        // Delete the file if it exists
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| {
+                error!(
+                    "Failed to delete channel directory at {}: {e}",
+                    path.display()
+                );
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

@@ -834,6 +834,7 @@ pub(crate) fn build_attach_shell_command(
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let system_prompt = match &launch_config.role {

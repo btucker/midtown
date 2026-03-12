@@ -89,6 +89,7 @@ pub(super) async fn handle_coworker_spawn(
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     // Spawn via the headless path (creates worktree + headless session)

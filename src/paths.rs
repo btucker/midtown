@@ -27,6 +27,7 @@
 //!         │       ├── history/YYYY-MM-DD.jsonl # Rotated daily archives
 //!         │       ├── notes/                 # Channel lead knowledge files
 //!         │       ├── cursors/               # Per-agent read cursors
+//!         │       ├── directory              # Channel working directory override (optional)
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
 //!         ├── workflows/             # Named workflow definitions
@@ -1040,6 +1041,31 @@ pub fn agents_md_for_channel(channel: &str, project_root: &Path, repo: &str) -> 
     }
 
     None
+}
+
+/// Path to the channel directory setting file for a channel.
+///
+/// Stored at `~/.midtown/projects/<repo>/channels/<channel>/directory`.
+/// Contains a single line: the relative subdirectory within the repo
+/// (e.g., "packages/auth") that the channel lead should use as its working
+/// directory. When empty or absent, the channel lead uses the repo root.
+pub fn channel_directory_file(repo: &str, channel: &str) -> PathBuf {
+    projects_dir_for_repo(repo)
+        .join("channels")
+        .join(channel)
+        .join("directory")
+}
+
+/// Read the channel directory setting for a channel.
+///
+/// Returns `Some(subdir)` if the file exists and contains a non-empty value,
+/// `None` otherwise.
+pub fn read_channel_directory(repo: &str, channel: &str) -> Option<String> {
+    let path = channel_directory_file(repo, channel);
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Read the `AGENTS.md` content for a named workflow.

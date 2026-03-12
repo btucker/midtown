@@ -2300,13 +2300,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         wf_state_summary,
                     )
                     .await;
-                    let config = crate::launch::LaunchConfig::channel_lead(
+                    let mut config = crate::launch::LaunchConfig::channel_lead(
                         &name,
                         state.paths.dir_key(),
                         crate::launch::SessionMode::Fresh,
                         domain_context,
                         agents_md,
                     );
+                    config.cwd_subdir =
+                        crate::paths::read_channel_directory(state.paths.dir_key(), &name);
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
                             info!(
@@ -2673,6 +2675,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         .map(format_workflow_state_summary);
                     (wf, wfs)
                 };
+                let channel_directory =
+                    crate::paths::read_channel_directory(state.paths.dir_key(), &channel_name);
                 let (domain_context, agents_md) = load_channel_lead_context(
                     base_dir,
                     &channel_name,
@@ -2696,6 +2700,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     config.auth_provider,
                     &config.role,
                 );
+                config.cwd_subdir = channel_directory;
 
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
@@ -3203,6 +3208,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 agents_md.clone(),
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
+                            config.cwd_subdir = crate::paths::read_channel_directory(
+                                state.paths.dir_key(),
+                                &channel_name,
+                            );
 
                             match spawn_with_resume_fallback(
                                 state,
@@ -3283,6 +3292,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 agents_md,
                             );
                             config.initial_prompt = Some(reason.to_initial_prompt(&channel_name));
+                            config.cwd_subdir = crate::paths::read_channel_directory(
+                                state.paths.dir_key(),
+                                &channel_name,
+                            );
                             // Insert empty placeholder before spawning to guard against
                             // duplicate NudgeChannelLead effects in the same batch.
                             {

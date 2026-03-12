@@ -110,6 +110,12 @@ pub struct LaunchConfig {
     ///
     /// When `None`, `spawn_coworker` falls back to persisting `initial_prompt`.
     pub persisted_initial_prompt: Option<String>,
+    /// Subdirectory within the worktree to use as the session's working directory.
+    ///
+    /// When set, `spawn_coworker` appends this path to the worktree root for
+    /// the `HeadlessConfig::cwd`. Used by channel leads with `channel_directory`
+    /// configured, so they pick up subdirectory-specific CLAUDE.md instructions.
+    pub cwd_subdir: Option<String>,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -380,6 +386,7 @@ impl LaunchConfig {
             escalation_target: None,
             task_id,
             persisted_initial_prompt: None,
+            cwd_subdir: None,
         }
     }
 
@@ -424,6 +431,7 @@ impl LaunchConfig {
             escalation_target: None,
             task_id: None,
             persisted_initial_prompt: None,
+            cwd_subdir: None,
         }
     }
 
@@ -473,6 +481,7 @@ impl LaunchConfig {
                 escalation_target: None,
                 task_id: None,
                 persisted_initial_prompt: None,
+                cwd_subdir: None,
             }
         }
     }
@@ -530,6 +539,7 @@ impl LaunchConfig {
             escalation_target: None,
             task_id: None,
             persisted_initial_prompt: None,
+            cwd_subdir: None,
         }
     }
 
@@ -586,6 +596,7 @@ impl LaunchConfig {
             escalation_target: None,
             task_id: None,
             persisted_initial_prompt: None,
+            cwd_subdir: None,
         }
     }
 
@@ -655,7 +666,7 @@ impl LaunchConfig {
             model: self.model.clone(),
             system_prompt,
             json_schema: None,
-            cwd: None, // Set by caller (worktree path)
+            cwd: None, // Set by caller (worktree path, or subdirectory if cwd_subdir is set)
             project_name: Some(project_name.to_string()),
             max_budget_usd: None,
             allow_tools: true, // Coworkers need full tool access

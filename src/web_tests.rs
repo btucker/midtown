@@ -1701,3 +1701,150 @@ async fn test_agents_md_rejects_path_traversal() {
     .await;
     assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
 }
+
+// ── Channel directory API tests ──────────────────────────────────
+
+#[tokio::test]
+async fn test_channel_directory_get_empty() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let state = make_agents_md_state("test-dir", Vec::new());
+    let result = api_channel_directory_get(State(state), Path("auth".to_string()))
+        .await
+        .unwrap();
+
+    assert_eq!(result.0["directory"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn test_channel_directory_put_and_get() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    // Create a fake repo root with the target directory
+    let repo_root = tmp.path().join("repo");
+    std::fs::create_dir_all(repo_root.join("packages/auth")).unwrap();
+
+    let state = make_agents_md_state("test-dir", vec![repo_root]);
+
+    // PUT the directory setting
+    let result = api_channel_directory_put(
+        State(state.clone()),
+        Path("auth".to_string()),
+        Json(UpdateChannelDirectoryRequest {
+            directory: Some("packages/auth".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, StatusCode::NO_CONTENT);
+
+    // GET it back
+    let result = api_channel_directory_get(State(state), Path("auth".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(result.0["directory"], "packages/auth");
+}
+
+#[tokio::test]
+async fn test_channel_directory_put_clears_with_null() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo_root = tmp.path().join("repo");
+    std::fs::create_dir_all(repo_root.join("src")).unwrap();
+
+    let state = make_agents_md_state("test-dir", vec![repo_root]);
+
+    // Set a directory
+    api_channel_directory_put(
+        State(state.clone()),
+        Path("ops".to_string()),
+        Json(UpdateChannelDirectoryRequest {
+            directory: Some("src".to_string()),
+        }),
+    )
+    .await
+    .unwrap();
+
+    // Clear it
+    let result = api_channel_directory_put(
+        State(state.clone()),
+        Path("ops".to_string()),
+        Json(UpdateChannelDirectoryRequest { directory: None }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result, StatusCode::NO_CONTENT);
+
+    // Should be null again
+    let result = api_channel_directory_get(State(state), Path("ops".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(result.0["directory"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn test_channel_directory_rejects_path_traversal() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo_root = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo_root).unwrap();
+
+    let state = make_agents_md_state("test-dir", vec![repo_root]);
+
+    // Path traversal in channel name
+    let result = api_channel_directory_get(State(state.clone()), Path("../etc".to_string())).await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+
+    // Path traversal in directory value
+    let result = api_channel_directory_put(
+        State(state.clone()),
+        Path("auth".to_string()),
+        Json(UpdateChannelDirectoryRequest {
+            directory: Some("../../etc".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+
+    // Absolute path in directory value
+    let result = api_channel_directory_put(
+        State(state),
+        Path("auth".to_string()),
+        Json(UpdateChannelDirectoryRequest {
+            directory: Some("/etc/passwd".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_channel_directory_rejects_nonexistent_directory() {
+    use crate::paths::set_test_midtown_base_dir;
+    let tmp = tempfile::tempdir().unwrap();
+    let _guard = set_test_midtown_base_dir(tmp.path().to_path_buf());
+
+    let repo_root = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo_root).unwrap();
+
+    let state = make_agents_md_state("test-dir", vec![repo_root]);
+
+    // Try to set a directory that doesn't exist in the repo
+    let result = api_channel_directory_put(
+        State(state),
+        Path("auth".to_string()),
+        Json(UpdateChannelDirectoryRequest {
+            directory: Some("nonexistent/path".to_string()),
+        }),
+    )
+    .await;
+    assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
+}

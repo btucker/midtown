@@ -17,6 +17,7 @@ fn make_spawn(name: &str) -> Effect {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     })
 }
 
@@ -89,6 +90,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -113,6 +115,7 @@ fn make_assign_and_spawn(name: &str) -> Effect {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
     Effect::AssignAndSpawn {
         task_id: "1".to_string(),
@@ -177,6 +180,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let config2 = config1.clone();
@@ -287,6 +291,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let config_york = LaunchConfig {
@@ -304,6 +309,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     // Orphan recovery spawns amsterdam for task 123
@@ -424,6 +430,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
     config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
 
@@ -442,6 +449,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let spawn_session = Effect::SpawnSession {
