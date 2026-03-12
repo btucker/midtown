@@ -109,6 +109,11 @@ let initialMessageCounts = $state.raw({});
 // `ch in initialMessageCounts` stays false, causing each new message to
 // schedule another microtask with a higher len — so isNewMessage() returns
 // false for genuinely new messages (the animation bug).
+//
+// Note: Unlike the sibling renderStartIndex effect (which uses a version
+// counter to allow re-scheduling on channel switch), this effect uses a
+// simple synchronous guard because we only ever need the *first* snapshot
+// per channel — subsequent runs should be ignored entirely, not re-queued.
 let pendingInitialCounts = {};
 
 $effect(() => {

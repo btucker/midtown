@@ -182,6 +182,50 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		expect(counts.web).toBe(100);
 	});
 
+	it("isNewMessage returns false during microtask window via Infinity fallback", async () => {
+		const counts = {}; // initialMessageCounts (async)
+		const pendingCounts = {}; // synchronous shadow
+
+		function fixedEffectRun(ch, len) {
+			if (!(ch in pendingCounts) && len > 0) {
+				pendingCounts[ch] = len;
+				const snapshotLen = len;
+				queueMicrotask(() => {
+					counts[ch] = snapshotLen;
+				});
+			}
+		}
+
+		// Mirrors Channel.svelte's isNewMessage()
+		function isNewMessage(channelName, index) {
+			const threshold = counts[channelName] ?? Infinity;
+			return index >= threshold;
+		}
+
+		// Before any effect runs: no entry → Infinity fallback → all "old"
+		expect(isNewMessage("web", 0)).toBe(false);
+		expect(isNewMessage("web", 999)).toBe(false);
+
+		// History loads with 100 messages — guard fires, microtask queued
+		fixedEffectRun("web", 100);
+
+		// During microtask window: counts["web"] is still undefined
+		// isNewMessage should return false (Infinity fallback)
+		expect(isNewMessage("web", 100)).toBe(false);
+		expect(isNewMessage("web", 101)).toBe(false);
+
+		// New message arrives — guard blocks, snapshot stays at 100
+		fixedEffectRun("web", 101);
+
+		// After microtask drains: counts["web"] = 100
+		await new Promise((r) => queueMicrotask(r));
+
+		// Now messages at index >= 100 are "new" and should animate
+		expect(isNewMessage("web", 99)).toBe(false);
+		expect(isNewMessage("web", 100)).toBe(true);
+		expect(isNewMessage("web", 101)).toBe(true);
+	});
+
 	it("synchronous guard works correctly across channel switches", async () => {
 		const counts = {};
 		const pendingCounts = {};
