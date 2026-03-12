@@ -194,16 +194,24 @@ let prevThreadId = null;
       ?? ($threadData?.tasks?.[0]?.id != null ? `task-${$threadData.tasks[0].id}` : null)
   )
 
-  // Clear thinking and reset autoScroll when thread is closed or switched.
+  // Clear thinking, fork state, and reset autoScroll when thread is closed or switched.
+  // Fork state must be cleared here (not just in the ownership effect) because switching
+  // to a task-only thread (no parentMessage.id) would leave stale forkTimeout running.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
     untrack(() => {
       thinking = false
       autoScroll = true
+      forkPending = false
+      forkError = null
     })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
+    }
+    if (forkTimeout) {
+      clearTimeout(forkTimeout)
+      forkTimeout = null
     }
   })
 
