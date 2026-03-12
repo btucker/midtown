@@ -191,31 +191,24 @@ fn save_screenshot_locally_after_prefix() {
 }
 
 #[test]
-fn upload_to_github_fails_without_token() {
-    // Temporarily clear GitHub token env vars to test error handling
-    let saved_gh = std::env::var("GH_TOKEN").ok();
-    let saved_github = std::env::var("GITHUB_TOKEN").ok();
-
-    // We can't fully unset env vars safely in tests (concurrent test runs),
-    // but we can test the error message format when the function fails.
-    // The function will either fail due to missing token or missing repo,
-    // both of which are expected in a test environment.
+fn upload_to_github_fails_gracefully_in_test_env() {
+    // In test/CI environments, upload_to_github will fail due to missing token
+    // or missing GitHub repo context. We verify it returns Err (not a panic)
+    // and produces a meaningful error message.
+    //
+    // Note: We cannot safely unset GH_TOKEN/GITHUB_TOKEN because env vars are
+    // global state and concurrent test threads would race. The function exercises
+    // whichever error path triggers first in the current environment.
     let tmp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(tmp.path(), b"fake image data").unwrap();
 
     let result = super::upload_to_github(tmp.path(), "png");
-    // In CI/test environments, this will fail (no token or no repo) — that's expected.
-    // We just verify it returns an Err, not a panic.
     assert!(
         result.is_err(),
         "upload_to_github should fail gracefully in test environment"
     );
 
-    // Restore env vars
-    if let Some(val) = saved_gh {
-        unsafe { std::env::set_var("GH_TOKEN", val) };
-    }
-    if let Some(val) = saved_github {
-        unsafe { std::env::set_var("GITHUB_TOKEN", val) };
-    }
+    let err = result.unwrap_err();
+    // Should produce a human-readable error, not a raw panic or empty string
+    assert!(!err.is_empty(), "Error message should be non-empty");
 }

@@ -130,10 +130,8 @@ impl Drop for TempFileGuard {
 /// Take a screenshot of a URL using Playwright, save it locally, and return
 /// the `[Attached: /path]` markdown ready for channel posts.
 ///
-/// When `github` is true, returns `![screenshot](URL)` markdown suitable for
-/// embedding in GitHub PR descriptions. If `GlobalConfig` has `external_url` set,
-/// it is used as the base URL; otherwise the scheme (http/https) is derived from
-/// TLS settings and combined with localhost.
+/// When `github` is true, uploads the screenshot to GitHub's image hosting CDN
+/// and returns `![screenshot](URL)` markdown suitable for embedding in PR descriptions.
 ///
 /// Does not require a daemon connection — runs Playwright locally and saves
 /// the screenshot to the project's screenshots directory with a UUID filename.
@@ -194,13 +192,17 @@ pub fn handle_screenshot(
         return Err("Playwright did not produce a screenshot file".to_string());
     }
 
+    // Guard ensures temp file is cleaned up on all exit paths (including upload_to_github errors)
+    let _guard = TempFileGuard {
+        path: tmp_path.clone(),
+    };
+
     let repo = midtown::paths::detect_repo_name()
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
     if github {
         // Upload to GitHub's image hosting for PR-compatible URLs.
-        // Upload from the temp file before save_screenshot_locally cleans it up.
         let github_url = upload_to_github(&tmp_path, &ext)?;
         let alt = if before {
             "before"
@@ -352,18 +354,14 @@ fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, S
         .json()
         .map_err(|e| format!("Failed to parse GitHub upload response: {}", e))?;
 
-    // Try common response fields
+    // The response contains a "url" field with the displayable image URL
     if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
-        eprintln!("Screenshot uploaded to GitHub: {}", url);
-        return Ok(url.to_string());
-    }
-    if let Some(url) = body.get("asset_upload_url").and_then(|v| v.as_str()) {
         eprintln!("Screenshot uploaded to GitHub: {}", url);
         return Ok(url.to_string());
     }
 
     Err(format!(
-        "GitHub upload succeeded but response missing URL field: {}",
+        "GitHub upload succeeded but response missing 'url' field: {}",
         body
     ))
 }
