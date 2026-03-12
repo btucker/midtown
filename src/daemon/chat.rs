@@ -266,20 +266,12 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
             Duration::from_secs(3600),
         );
         if should_nudge_lead {
-            let thread_ctx =
-                msg.thread_parent_id
-                    .as_ref()
-                    .map(|parent_id| super::wake_reason::ThreadContext {
-                        parent_id: parent_id.clone(),
-                        channel_name: msg.channel_name().to_string(),
-                    });
+            // Use Nudge (not Mention) for @all: it's an undirected broadcast,
+            // not a directed mention. "said" framing matches what coworkers see.
             let nudge_effect = super::effects::Effect::NudgeChannelLead {
                 channel_name: state.default_channel_name().to_string(),
-                reason: super::wake_reason::WakeReason::Mention {
-                    from: msg.from.clone(),
-                    content: msg.content.clone(),
-                    msg_id: msg.thread_anchor_id().to_string(),
-                    thread_ctx,
+                reason: super::wake_reason::WakeReason::Nudge {
+                    message: nudge_text.clone(),
                 },
             };
             super::effects::execute_effects(vec![nudge_effect], state).await;

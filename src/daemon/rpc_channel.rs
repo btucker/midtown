@@ -523,20 +523,31 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
-            let thread_ctx =
-                thread_parent_id.map(|parent_id| crate::daemon::wake_reason::ThreadContext {
-                    parent_id: parent_id.to_string(),
-                    channel_name: channel_name.to_string(),
-                });
-
+            // Preserve the @{project_name} identifier so the lead knows which
+            // handle was mentioned (@lead vs @{project_name}).
+            let nudge_msg = if let Some(parent_id) = thread_parent_id {
+                format!(
+                    "{} mentioned @{} ({}): {}\n\nThis is a thread reply. To reply in the thread:\n  \
+                     midtown channel post \"...\" --thread {parent_id} --channel {channel_name}\n\
+                     To read recent thread context:\n  \
+                     midtown channel read --last 50 --channel {channel_name}",
+                    from,
+                    state.project_name,
+                    msg.thread_anchor_id(),
+                    summary
+                )
+            } else {
+                format!(
+                    "{} mentioned @{} ({}): {}",
+                    from,
+                    state.project_name,
+                    msg.thread_anchor_id(),
+                    summary
+                )
+            };
             let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
                 channel_name: state.default_channel_name().to_string(),
-                reason: crate::daemon::wake_reason::WakeReason::Mention {
-                    from: from.to_string(),
-                    content: summary.to_string(),
-                    msg_id: msg.thread_anchor_id().to_string(),
-                    thread_ctx,
-                },
+                reason: crate::daemon::wake_reason::WakeReason::Nudge { message: nudge_msg },
             };
             info!(
                 "Nudging Lead about @{} mention from {}",
