@@ -243,16 +243,11 @@ fn test_session_fork_spawn_failure_cleans_sentinel() {
 
     // If sentinel was NOT cleaned up, we'd get a success with "pending: true"
     // and "fork in progress" message. That would be a bug.
-    if response2["result"].is_object() {
-        let pending = response2["result"]["pending"].as_bool().unwrap_or(false);
-        assert!(
-            !pending,
-            "Second fork attempt should NOT return 'fork in progress' — sentinel was not cleaned up"
-        );
-    }
-    // The second attempt should either be an error (same spawn failure)
-    // or a success with already_exists=true (if somehow the first succeeded).
-    // It must NOT be a pending/in-progress response.
+    assert!(
+        response2["error"].is_object(),
+        "Second fork attempt should fail with spawn error, not return pending — sentinel was not cleaned up: {}",
+        response2
+    );
 }
 
 // ── session.fork_thread validation tests ────────────────────────────
@@ -464,7 +459,12 @@ fn test_session_fork_retry_after_failure_same_error() {
         })),
     );
     let r1 = response1.expect("Should receive first response");
-    let code1 = r1["error"]["code"].as_i64().unwrap();
+    r1["error"]
+        .as_object()
+        .expect("First response should be an error (spawn failure)");
+    let code1 = r1["error"]["code"]
+        .as_i64()
+        .expect("First error should have a numeric code");
 
     let response2 = fixture.rpc_call(
         "session.fork",
@@ -474,7 +474,12 @@ fn test_session_fork_retry_after_failure_same_error() {
         })),
     );
     let r2 = response2.expect("Should receive second response");
-    let code2 = r2["error"]["code"].as_i64().unwrap();
+    r2["error"]
+        .as_object()
+        .expect("Second response should be an error, not a success — sentinel was not cleaned up");
+    let code2 = r2["error"]["code"]
+        .as_i64()
+        .expect("Second error should have a numeric code");
 
     assert_eq!(
         code1, code2,
@@ -517,9 +522,9 @@ fn test_session_fork_thread_no_channel_lead() {
         .as_object()
         .expect("Should be an error (no channel lead registered)");
     let message = error["message"].as_str().unwrap_or("");
-    // The error should mention channel lead or session, not UUID validation
+    // The error should mention channel lead, not UUID validation
     assert!(
-        message.contains("channel lead") || message.contains("session"),
+        message.contains("channel lead"),
         "Error should mention missing channel lead, got: {}",
         message
     );
