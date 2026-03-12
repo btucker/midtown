@@ -886,6 +886,8 @@ export function forkThread(threadParentId, channelName, onError) {
 				channel: channelName,
 			}),
 		);
+	} else if (onError) {
+		onError("Not connected");
 	}
 }
 
@@ -901,6 +903,8 @@ export function unforkThread(threadParentId, channelName, onError) {
 				channel: channelName,
 			}),
 		);
+	} else if (onError) {
+		onError("Not connected");
 	}
 }
 

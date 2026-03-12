@@ -4,10 +4,12 @@ import {
 	closeThread,
 	fetchChannels,
 	fetchHistory,
+	forkThread,
 	handleUpdate,
 	pushNavState,
 	selectDm,
 	switchProject,
+	unforkThread,
 } from "./api.js";
 import {
 	activeChannel,
@@ -987,5 +989,30 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		const tracked = get(trackedThreads);
 		expect(tracked["ben-msg"]).toBeTruthy();
 		expect(tracked["ben-msg"].subject).toContain("custom name question");
+	});
+});
+
+describe("forkThread / unforkThread", () => {
+	// When no WebSocket is connected (ws === null, the default module state),
+	// these functions should call onError instead of silently dropping the request.
+
+	it("forkThread calls onError when WebSocket is not connected", () => {
+		const onError = vi.fn();
+		forkThread("thread-123", "web", onError);
+		expect(onError).toHaveBeenCalledWith(expect.stringContaining("onnect"));
+	});
+
+	it("unforkThread calls onError when WebSocket is not connected", () => {
+		const onError = vi.fn();
+		unforkThread("thread-123", "web", onError);
+		expect(onError).toHaveBeenCalledWith(expect.stringContaining("onnect"));
+	});
+
+	it("forkThread does not throw when no onError provided and WS disconnected", () => {
+		expect(() => forkThread("thread-123", "web")).not.toThrow();
+	});
+
+	it("unforkThread does not throw when no onError provided and WS disconnected", () => {
+		expect(() => unforkThread("thread-123", "web")).not.toThrow();
 	});
 });
