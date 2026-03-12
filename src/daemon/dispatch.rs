@@ -1962,10 +1962,17 @@ fn dispatch_unowned_pending_tasks(
         let coworker_name = if let Some(name) = grouped_name {
             name
         } else {
-            let channel_lead_names = snap.channel_lead_names();
+            let mut excluded_names = snap.channel_lead_names();
+            // Exclude all names with active sessions to prevent name collisions.
+            // CoworkerManager only knows about registered coworkers, but a session
+            // may still be running after its coworker was cleaned up from the manager.
+            // active_names (from WorldSnapshot) tracks all names with live sessions.
+            for name in &snap.coworkers.active_names {
+                excluded_names.insert(name.clone());
+            }
             let Some(name) = state
                 .coworkers
-                .next_available_name_excluding(&channel_lead_names)
+                .next_available_name_excluding(&excluded_names)
             else {
                 debug!("No available coworker slots for unowned task !{}", task.id);
                 break;
@@ -2556,3 +2563,7 @@ mod dispatch_session_tests;
 #[path = "dispatch_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "dispatch_name_collision_tests.rs"]
+#[cfg(test)]
+mod name_collision_tests;
