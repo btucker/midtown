@@ -386,7 +386,7 @@ Channel reads span all `.jsonl` files in the history directory — date-named ar
 
 **Channel RPC methods** (handled by `src/daemon/rpc_channel.rs`):
 - `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication, thread parent ID validation (rejects posts with a `thread_parent_id` that doesn't match any existing message, preventing invisible "black hole" messages)
-- `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, `thread`, and per-channel filtering)
+- `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, `thread`, `message`, `context`, and per-channel filtering)
 - `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
 - `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving the project's main channel
 - `channel.unarchive` — Rename `channels/<name>.archived/` back to `channels/<name>/`; returns an error if the channel is not archived or if another active channel of the same name exists

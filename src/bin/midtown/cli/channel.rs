@@ -37,9 +37,10 @@ pub enum ChannelCommand {
         #[arg(long = "thread")]
         thread_parent_id: Option<String>,
         /// Read a specific message by its UUID
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["all", "last", "since", "thread_parent_id"])]
         message: Option<String>,
-        /// Return N messages before and after the target message (requires --message)
+        /// Return N surrounding messages (N before + N after for regular messages;
+        /// N channel messages before + N thread replies for thread parents). Requires --message
         #[arg(short = 'C', long, requires = "message")]
         context: Option<usize>,
     },
