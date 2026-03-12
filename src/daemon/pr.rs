@@ -3387,6 +3387,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         if let Some(ref author) = pr_author {
             excluded_names.insert(author.clone());
         }
+        // Exclude all names with active sessions to prevent name collisions.
+        // CoworkerManager only knows about registered coworkers, but a session
+        // may still be running after its coworker was cleaned up from the manager.
+        // active_names (from WorldSnapshot) tracks all names with live sessions.
+        for name in active_names {
+            excluded_names.insert(name.clone());
+        }
 
         let reviewer_name = match state
             .coworkers
@@ -5745,3 +5752,7 @@ mod rebase_nudge_tests;
 #[path = "pr_diff_guard_tests.rs"]
 #[cfg(test)]
 mod diff_guard_tests;
+
+#[path = "pr_name_collision_tests.rs"]
+#[cfg(test)]
+mod name_collision_tests;

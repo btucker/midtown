@@ -372,6 +372,42 @@ impl SessionManager {
         *guard = hook;
     }
 
+    /// Insert a minimal test session entry (no real process) for unit testing.
+    /// The session will appear in `list_names()`. Use `set_test_is_alive_hook`
+    /// to control what `is_alive()` returns for this name.
+    #[cfg(test)]
+    pub(super) async fn insert_test_session(&self, name: &str, status: SessionStatus) {
+        let mut sessions = self.sessions.write().await;
+        let slot_id = uuid::Uuid::new_v4().to_string();
+        sessions.insert(
+            slot_id.clone(),
+            CoworkerSession {
+                session: None,
+                slot_id,
+                name: name.to_string(),
+                status,
+                started_at: chrono::Utc::now(),
+                session_id: None,
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                last_event_at: None,
+                has_usage_limit: false,
+                usage_limit_reset_at: None,
+                has_api_error: false,
+                has_auth_error: false,
+                has_running_subagent: false,
+                has_pending_tool: false,
+                has_pending_api_call: false,
+                has_tool_name_conflict: false,
+                is_resume: false,
+                initial_prompt: None,
+                output_log: None,
+                output_log_path: std::path::PathBuf::new(),
+            },
+        );
+    }
+
     fn is_session_live(cs: &CoworkerSession) -> bool {
         cs.session.is_some() && cs.status != SessionStatus::Stopped
     }
