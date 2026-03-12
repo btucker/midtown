@@ -209,7 +209,7 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           {/each}
         {/if}
         {#if showToolData && msg.tool_data?.length}
-          <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
+          <ToolDataBlocks blocks={msg.tool_data} />
         {/if}
       {/if}
     </div>
@@ -256,7 +256,7 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           {/each}
         {/if}
         {#if showToolData && msg.tool_data?.length}
-          <ToolDataBlocks blocks={msg.tool_data} timestamp={msg.timestamp} />
+          <ToolDataBlocks blocks={msg.tool_data} />
         {/if}
       {/if}
     </div>
