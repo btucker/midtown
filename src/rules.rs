@@ -50,8 +50,10 @@ fn hashset_contains_icase(set: &HashSet<String>, name: &str) -> bool {
 /// Unified cooldown tracker that replaces six separate mechanisms in DaemonState.
 ///
 /// Keys are `(rule_name, context_key)` pairs mapped to the [`Instant`] they
-/// were last recorded. Call [`check`](CooldownTracker::check) before firing
-/// and [`record`](CooldownTracker::record) after a successful fire.
+/// were last recorded. Prefer [`check_and_record`](CooldownTracker::check_and_record)
+/// to atomically test and claim a cooldown slot — using separate `check()` then
+/// `record()` calls introduces a TOCTOU window where concurrent callers can both
+/// see the cooldown as expired.
 ///
 /// Currently used in DaemonState's `cooldowns` field.
 #[derive(Debug, Default)]
@@ -1502,6 +1504,10 @@ mod rules_channel_lead_tests;
 #[cfg(test)]
 mod rules_idle_tests;
 
+#[path = "rules_cooldown_tests.rs"]
+#[cfg(test)]
+mod rules_cooldown_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1634,32 +1640,6 @@ mod tests {
         // york's entries should be cleared (check returns true = no cooldown active)
         assert!(tracker.check("compaction_recovery", "york", Duration::from_secs(60)));
         assert!(tracker.check("queued_prompt_recovery", "york", Duration::from_secs(60)));
-    }
-
-    /// Demonstrates the TOCTOU race with separate check()+record() calls.
-    ///
-    /// When two callers both check() before either records(), both see
-    /// the cooldown as expired and proceed — a duplicate action.
-    /// check_and_record() prevents this by atomically checking and recording.
-    #[test]
-    fn check_and_record_is_atomic_vs_separate_check_record() {
-        let tracker = CooldownTracker::new();
-        let duration = Duration::from_secs(60);
-
-        // Simulate TOCTOU with separate check()/record():
-        // Both "callers" check before either records.
-        let caller_a_sees = tracker.check("nudge", "msg-1", duration);
-        let caller_b_sees = tracker.check("nudge", "msg-1", duration);
-        // Both see true — race condition allows duplicate action
-        assert!(caller_a_sees, "caller A should see cooldown expired");
-        assert!(caller_b_sees, "caller B also sees expired (TOCTOU window)");
-
-        // Now verify check_and_record() prevents this:
-        let mut tracker2 = CooldownTracker::new();
-        let first = tracker2.check_and_record("nudge", "msg-1", duration);
-        let second = tracker2.check_and_record("nudge", "msg-1", duration);
-        assert!(first, "first call should succeed");
-        assert!(!second, "second call should be blocked (atomic)");
     }
 
     // -----------------------------------------------------------------------

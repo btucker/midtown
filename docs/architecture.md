@@ -401,7 +401,9 @@ Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the
 
 ## Nudge System
 
-Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
+Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`.
+
+**CooldownTracker atomicity**: Always use `check_and_record()` rather than separate `check()` then `record()` calls. Separate calls create a TOCTOU window where multiple callers can observe an expired cooldown before either records it, leading to duplicate actions. `check_and_record()` atomically tests and claims the slot via `&mut self`, preventing this race.
 
 - **Project Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`)
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
