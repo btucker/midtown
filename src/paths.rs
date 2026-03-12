@@ -27,6 +27,7 @@
 //!         │       ├── history/YYYY-MM-DD.jsonl # Rotated daily archives
 //!         │       ├── notes/                 # Channel lead knowledge files
 //!         │       ├── cursors/               # Per-agent read cursors
+//!         │       ├── directory              # Channel working directory override (optional)
 //!         │       ├── workflow.py            # Channel-specific workflow script (local, optional)
 //!         │       └── workflow-state.json    # Legacy (migrated to daemon-state.json on startup)
 //!         ├── workflows/             # Named workflow definitions

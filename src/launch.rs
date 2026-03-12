@@ -666,7 +666,7 @@ impl LaunchConfig {
             model: self.model.clone(),
             system_prompt,
             json_schema: None,
-            cwd: None, // Set by caller (worktree path)
+            cwd: None, // Set by caller (worktree path, or subdirectory if cwd_subdir is set)
             project_name: Some(project_name.to_string()),
             max_budget_usd: None,
             allow_tools: true, // Coworkers need full tool access

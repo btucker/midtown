@@ -1571,7 +1571,15 @@ impl DaemonState {
         // append it to the worktree root so the session runs in that subdirectory.
         if let Some(ref subdir) = launch_config.cwd_subdir {
             let sub_path = std::path::Path::new(&working_dir).join(subdir);
-            headless_config.cwd = Some(sub_path.to_string_lossy().to_string());
+            if sub_path.is_dir() {
+                headless_config.cwd = Some(sub_path.to_string_lossy().to_string());
+            } else {
+                warn!(
+                    "cwd_subdir '{}' does not exist under '{}', falling back to worktree root",
+                    subdir, working_dir
+                );
+                headless_config.cwd = Some(working_dir.clone());
+            }
         } else {
             headless_config.cwd = Some(working_dir.clone());
         }

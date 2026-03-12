@@ -2963,12 +2963,25 @@ async fn api_channel_directory_put(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        // Validate the directory exists within the first repo path
-        if let Some(repo_root) = state.all_repo_paths.first() {
-            let full_path = repo_root.join(dir);
-            if !full_path.is_dir() {
-                return Err(StatusCode::BAD_REQUEST);
-            }
+        // Validate the directory exists within the first repo path and doesn't
+        // escape via symlinks. canonicalize() resolves symlinks so we can check
+        // the real path stays within the repo root.
+        let repo_root = state
+            .all_repo_paths
+            .first()
+            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        let full_path = repo_root.join(dir);
+        if !full_path.is_dir() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let canonical_root = repo_root
+            .canonicalize()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(StatusCode::BAD_REQUEST);
         }
     }
 

@@ -488,6 +488,8 @@ pub(super) async fn handle_auth_switch(
                     );
                     (String::new(), None)
                 });
+                let channel_directory =
+                    crate::paths::read_channel_directory(state.paths.dir_key(), &channel_name);
                 let mut channel_lead = crate::launch::LaunchConfig::channel_lead(
                     channel_name,
                     state.paths.dir_key(),
@@ -500,6 +502,7 @@ pub(super) async fn handle_auth_switch(
                     agents_md,
                 );
                 channel_lead.model = coworker.model.clone();
+                channel_lead.cwd_subdir = channel_directory;
                 channel_lead
             }
             _ if resume_compatible => {
