@@ -20,8 +20,9 @@ pub struct ThreadContext {
 impl ThreadContext {
     /// Format the standard thread reply instructions appended to nudge messages.
     ///
-    /// Includes the `--thread` flag for posting, `--last 50` for reading context,
-    /// and a reminder to keep text output brief to avoid duplicate top-level messages.
+    /// Includes the `--thread` flag for both posting and reading thread context,
+    /// `--last 50` for limiting message count, and a reminder to keep text output
+    /// brief to avoid duplicate top-level messages.
     pub fn reply_instructions(&self) -> String {
         format!(
             "This is a thread reply. To reply in the thread:\n  \
