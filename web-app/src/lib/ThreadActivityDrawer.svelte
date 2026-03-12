@@ -16,7 +16,7 @@
  * dots and tool blocks render inline in the message stream instead.
  */
 
-import { onDestroy } from "svelte";
+import { untrack } from "svelte";
 import { slide } from "svelte/transition";
 import { getForkOwnerColor } from "./avenue-colors.js";
 import { threadForkOwners } from "./store.js";
@@ -78,37 +78,58 @@ let merged = $derived.by(() => {
 	return out;
 });
 
-// Interval: record completion timestamps; move items to `expired` after AGE_OUT_MS.
-const intervalId = setInterval(() => {
+// Phase 1: stamp newly completed items reactively (runs before DOM update when merged changes)
+$effect.pre(() => {
 	const now = Date.now();
-	let changedCompleted = false;
-	let changedExpired = false;
-	const newCompleted = new Map(completedAt);
-	const newExpired = new Set(expired);
-
-	// Phase 1: stamp newly completed items
+	let changed = false;
+	const current = untrack(() => completedAt);
+	const newCompleted = new Map(current);
 	for (const entry of merged) {
 		if (entry.status !== null && entry.block.call_id && !newCompleted.has(entry.block.call_id)) {
 			newCompleted.set(entry.block.call_id, now);
-			changedCompleted = true;
+			changed = true;
+		}
+	}
+	if (changed) completedAt = newCompleted;
+});
+
+// Phase 2: expire completed items after AGE_OUT_MS (skip when expanded)
+$effect(() => {
+	if (expanded) return;
+
+	const currentCompleted = completedAt;
+	if (currentCompleted.size === 0) return;
+
+	const currentExpired = untrack(() => expired);
+	const now = Date.now();
+	let soonest = Infinity;
+	const toExpire = [];
+
+	for (const [id, ts] of currentCompleted) {
+		if (currentExpired.has(id)) continue;
+		const age = now - ts;
+		if (age >= AGE_OUT_MS) {
+			toExpire.push(id);
+		} else {
+			soonest = Math.min(soonest, AGE_OUT_MS - age);
 		}
 	}
 
-	// Phase 2: expire stale items (skip when expanded)
-	if (!expanded) {
-		for (const [id, ts] of newCompleted) {
-			if (!newExpired.has(id) && now - ts >= AGE_OUT_MS) {
-				newExpired.add(id);
-				changedExpired = true;
-			}
-		}
+	if (toExpire.length > 0) {
+		const newExpired = new Set(currentExpired);
+		for (const id of toExpire) newExpired.add(id);
+		expired = newExpired;
 	}
 
-	if (changedCompleted) completedAt = newCompleted;
-	if (changedExpired) expired = newExpired;
-}, 500);
-
-onDestroy(() => clearInterval(intervalId));
+	// Schedule a re-check for the next item to expire
+	if (soonest < Infinity) {
+		const tid = setTimeout(() => {
+			// Re-trigger this effect by touching completedAt
+			completedAt = new Map(completedAt);
+		}, soonest);
+		return () => clearTimeout(tid);
+	}
+});
 
 // Visible list: exclude expired items, cap at MAX_VISIBLE newest
 let visibleItems = $derived(merged.filter((entry) => !expired.has(entry.block.call_id)).slice(-MAX_VISIBLE));
