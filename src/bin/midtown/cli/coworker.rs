@@ -198,54 +198,37 @@ pub fn handle_screenshot(
         .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
     let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
 
-    let (webserver_scheme, external_url) = if github {
-        let config = midtown::config::GlobalConfig::load();
-        let scheme = if config.webserver.tls_cert.is_some() && config.webserver.tls_key.is_some() {
-            Some("https")
+    if github {
+        // Upload to GitHub's image hosting for PR-compatible URLs.
+        // Upload from the temp file before save_screenshot_locally cleans it up.
+        let github_url = upload_to_github(&tmp_path, &ext)?;
+        let alt = if before {
+            "before"
+        } else if after {
+            "after"
         } else {
-            Some("http")
+            "screenshot"
         };
-        (scheme, config.webserver.external_url.clone())
+        // Still save locally for backup/channel reference
+        let _ = save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir);
+        Ok(Response::message(format!("![{}]({})", alt, github_url)))
     } else {
-        (None, None)
-    };
-
-    let url_config = webserver_scheme.map(|scheme| ScreenshotUrlConfig {
-        scheme,
-        repo: &repo,
-        external_url: external_url.as_deref(),
-    });
-
-    save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir, url_config)
-}
-
-/// Parameters for constructing screenshot URLs in GitHub-compatible markdown.
-///
-/// Bundles the URL-construction concerns: the webserver scheme, repo name for
-/// the API path, and an optional external URL that overrides localhost.
-pub(crate) struct ScreenshotUrlConfig<'a> {
-    pub scheme: &'a str,
-    pub repo: &'a str,
-    pub external_url: Option<&'a str>,
+        save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir)
+    }
 }
 
 /// Save a screenshot to the given screenshots directory and return
-/// the `[Attached: /path]` markdown (or `![screenshot](URL)` when `url_config` is set).
+/// the `[Attached: /path]` markdown.
 ///
 /// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
 /// exit paths (success, early error return, or panic). Generates a UUID-based
 /// filename and copies the screenshot to the provided directory.
-///
-/// When `url_config` is `Some`, returns GitHub-compatible markdown image syntax
-/// using the webserver's screenshot endpoint. If `external_url` is set in the config,
-/// it is used as the base URL instead of constructing from localhost.
 pub(crate) fn save_screenshot_locally(
     tmp_path: &std::path::Path,
     ext: &str,
     before: bool,
     after: bool,
     screenshots_dir: &std::path::Path,
-    url_config: Option<ScreenshotUrlConfig<'_>>,
 ) -> Result<Response, String> {
     // Guard ensures temp file is cleaned up on all exit paths (including early returns)
     let _guard = TempFileGuard {
@@ -271,36 +254,136 @@ pub(crate) fn save_screenshot_locally(
 
     eprintln!("Screenshot saved: {}", dest_path.display());
 
-    if let Some(config) = url_config {
-        // Encode characters unsafe in URL path segments while preserving - . _ ~
-        const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-            .remove(b'-')
-            .remove(b'.')
-            .remove(b'_')
-            .remove(b'~');
-        let encoded_repo = percent_encoding::utf8_percent_encode(config.repo, PATH_SEGMENT);
-        let base = if let Some(ext_url) = config.external_url {
-            ext_url.trim_end_matches('/').to_string()
-        } else {
-            let port = midtown::webserver::DEFAULT_WEBSERVER_PORT;
-            format!("{}://localhost:{}", config.scheme, port)
-        };
-        let url = format!(
-            "{}/api/projects/{}/screenshots/{}",
-            base, encoded_repo, filename
-        );
-        let alt = if before {
-            "before"
-        } else if after {
-            "after"
-        } else {
-            "screenshot"
-        };
-        Ok(Response::message(format!("![{}]({})", alt, url)))
-    } else {
-        let attached = format!("[Attached: {}]", dest_path.display());
-        Ok(Response::message(attached))
+    let attached = format!("[Attached: {}]", dest_path.display());
+    Ok(Response::message(attached))
+}
+
+/// Upload a screenshot to GitHub's image hosting and return the permanent URL.
+///
+/// Uses the undocumented `uploads.github.com` endpoint that GitHub's web UI
+/// uses when images are pasted into issue/PR comment boxes. Returns a
+/// `user-images.githubusercontent.com` URL that renders in PR descriptions
+/// without any infrastructure dependency.
+///
+/// Requires `GH_TOKEN` in the environment (set by the daemon via `gh auth token`).
+/// Falls back to running `gh auth token` if the env var is not set.
+fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, String> {
+    // Get GitHub token
+    let token = std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .or_else(|_| {
+            // Fall back to `gh auth token`
+            std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .output()
+                .map_err(|_| std::env::VarError::NotPresent)
+                .and_then(|output| {
+                    if output.status.success() {
+                        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if token.is_empty() {
+                            Err(std::env::VarError::NotPresent)
+                        } else {
+                            Ok(token)
+                        }
+                    } else {
+                        Err(std::env::VarError::NotPresent)
+                    }
+                })
+        })
+        .map_err(|_| "No GitHub token found. Set GH_TOKEN or run `gh auth login`.".to_string())?;
+
+    // Get repo owner/name
+    let repo_full_name = get_github_repo_name().ok_or(
+        "Could not determine GitHub repository. Run from a git repo with a GitHub remote.",
+    )?;
+
+    // Read the image file
+    let image_data =
+        std::fs::read(image_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+
+    let content_type = match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+
+    let filename = image_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("screenshot.png")
+        .to_string();
+
+    eprintln!("Uploading screenshot to GitHub...");
+
+    // Build multipart form
+    let file_part = reqwest::blocking::multipart::Part::bytes(image_data)
+        .file_name(filename)
+        .mime_str(content_type)
+        .map_err(|e| format!("Failed to build multipart form: {}", e))?;
+
+    let form = reqwest::blocking::multipart::Form::new().part("file", file_part);
+
+    let upload_url = format!(
+        "https://uploads.github.com/repos/{}/issues/import/images",
+        repo_full_name
+    );
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post(&upload_url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/json")
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Failed to upload to GitHub: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(format!("GitHub image upload failed ({}): {}", status, body));
     }
+
+    // Parse the response to extract the URL
+    // GitHub returns JSON like: {"url": "https://user-images.githubusercontent.com/..."}
+    // or for the authenticated-uploads endpoint: {"asset_upload_url": "...", ...}
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|e| format!("Failed to parse GitHub upload response: {}", e))?;
+
+    // Try common response fields
+    if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
+        eprintln!("Screenshot uploaded to GitHub: {}", url);
+        return Ok(url.to_string());
+    }
+    if let Some(url) = body.get("asset_upload_url").and_then(|v| v.as_str()) {
+        eprintln!("Screenshot uploaded to GitHub: {}", url);
+        return Ok(url.to_string());
+    }
+
+    Err(format!(
+        "GitHub upload succeeded but response missing URL field: {}",
+        body
+    ))
+}
+
+/// Get the GitHub repo name (owner/repo) from the current directory.
+fn get_github_repo_name() -> Option<String> {
+    std::process::Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "-q",
+            ".nameWithOwner",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Boot a headed (interactive terminal) coworker session for a task.
