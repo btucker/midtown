@@ -8,7 +8,7 @@ let prevThreadId = null;
 
 <script>
   import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
-  import { sendMessage, closeThread, forkThread, unforkThread, openTaskThread, selectDm } from './api.js'
+  import { sendMessage, closeThread, forkThread, unforkThread, clearErrorCallback, openTaskThread, selectDm } from './api.js'
   import { handleCodePaste } from './codePaste.js'
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
@@ -141,14 +141,21 @@ let prevThreadId = null;
       : null
   )
   let forkPending = $state(false)
+  let forkErrorCallbackId = $state(null)
 
-  // Clear forkPending when ownership state updates.
+  // Clear forkPending and stale error callback when ownership state updates (success path).
   $effect(() => {
     if ($threadData?.parentMessage?.id) {
       const _ownership = $threadOwnership[$threadData.parentMessage.id]
       untrack(() => {
         forkPending = false
         if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
+        // Clear the error callback registered by forkThread/unforkThread so it
+        // doesn't fire on the next unrelated server error.
+        if (forkErrorCallbackId != null) {
+          clearErrorCallback(forkErrorCallbackId)
+          forkErrorCallbackId = null
+        }
       })
     }
   })
@@ -165,6 +172,7 @@ let prevThreadId = null;
       if (!forkPending) return // Timeout already handled this request
       if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
       forkPending = false
+      forkErrorCallbackId = null
       forkError = msg
       // Auto-clear error after 5 seconds
       setTimeout(() => { forkError = null }, 5000)
@@ -179,9 +187,9 @@ let prevThreadId = null;
       }
     }, 10000)
     if (hasDedicatedSession) {
-      unforkThread($threadData.parentMessage.id, $threadData.channelName, onError)
+      forkErrorCallbackId = unforkThread($threadData.parentMessage.id, $threadData.channelName, onError)
     } else {
-      forkThread($threadData.parentMessage.id, $threadData.channelName, onError)
+      forkErrorCallbackId = forkThread($threadData.parentMessage.id, $threadData.channelName, onError)
     }
   }
 

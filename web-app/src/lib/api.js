@@ -876,9 +876,10 @@ export function sendAnswer(coworkerName, answer) {
 
 // Create a dedicated session for a thread (fork).
 // If onError is provided, it will be called with the error message on failure.
+// Returns the error callback ID (or undefined) so callers can clear it on success.
 export function forkThread(threadParentId, channelName, onError) {
 	if (ws && ws.readyState === WebSocket.OPEN) {
-		if (onError) onNextError(onError);
+		const errorId = onError ? onNextError(onError) : undefined;
 		ws.send(
 			JSON.stringify({
 				type: "fork_thread",
@@ -886,6 +887,7 @@ export function forkThread(threadParentId, channelName, onError) {
 				channel: channelName,
 			}),
 		);
+		return errorId;
 	} else if (onError) {
 		onError("Not connected");
 	}
@@ -893,9 +895,10 @@ export function forkThread(threadParentId, channelName, onError) {
 
 // Return a thread to the channel lead (kill dedicated session).
 // If onError is provided, it will be called with the error message on failure.
+// Returns the error callback ID (or undefined) so callers can clear it on success.
 export function unforkThread(threadParentId, channelName, onError) {
 	if (ws && ws.readyState === WebSocket.OPEN) {
-		if (onError) onNextError(onError);
+		const errorId = onError ? onNextError(onError) : undefined;
 		ws.send(
 			JSON.stringify({
 				type: "unfork_thread",
@@ -903,6 +906,7 @@ export function unforkThread(threadParentId, channelName, onError) {
 				channel: channelName,
 			}),
 		);
+		return errorId;
 	} else if (onError) {
 		onError("Not connected");
 	}
