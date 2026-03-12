@@ -162,6 +162,7 @@ let prevThreadId = null;
     forkError = null
     if (forkTimeout) clearTimeout(forkTimeout)
     const onError = (msg) => {
+      if (!forkPending) return // Timeout already handled this request
       if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
       forkPending = false
       forkError = msg
