@@ -1605,8 +1605,8 @@ fn effects_for_fired_reminders(
 /// Check for stale worktrees that can be cleaned up.
 ///
 /// Worktrees are considered stale if:
-/// - They have a `completed_at` timestamp (task completed or PR merged)
-/// - The completion was more than `retention_period` ago
+/// - They are older than `retention_period`, based on `completed_at` when set,
+///   otherwise `created_at` (abandoned worktree fallback)
 /// - They are not currently bound to an active coworker
 ///
 /// Returns `CleanupStaleWorktree` effects for each stale worktree.
@@ -1619,17 +1619,6 @@ pub(super) fn check_for_stale_worktrees(
     let mut effects = Vec::new();
 
     for (_, assignment) in worktree_registry.all_assignments().iter() {
-        // Skip if not completed
-        let Some(completed_at) = assignment.completed_at else {
-            continue;
-        };
-
-        // Skip if within retention period
-        let age = now.signed_duration_since(completed_at);
-        if age < retention_period {
-            continue;
-        }
-
         // Skip if actively in use
         if let Some(ref coworker) = assignment.current_coworker
             && active_coworkers.contains(coworker)
@@ -1637,10 +1626,19 @@ pub(super) fn check_for_stale_worktrees(
             continue;
         }
 
+        // Use completion age when available. For abandoned worktrees where
+        // completed_at was never set, fall back to created_at age.
+        let age =
+            now.signed_duration_since(assignment.completed_at.unwrap_or(assignment.created_at));
+        if age < retention_period {
+            continue;
+        }
+
         debug!(
-            "Worktree {} is stale (completed {}h ago), scheduling cleanup",
+            "Worktree {} is stale (age {}h, completed_at={}), scheduling cleanup",
             assignment.worktree_id,
-            age.num_hours()
+            age.num_hours(),
+            assignment.completed_at.is_some()
         );
 
         // Schedule cleanup (message posting happens in effects.rs when cleanup executes)

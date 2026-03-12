@@ -1811,6 +1811,44 @@ async fn test_cleanup_dead_coworker_without_session_id_clears_binding() {
     }
 }
 
+/// cleanup_dead_coworker_state should set completed_at on the worktree assignment
+/// when unbinding a dead coworker. Without this, abandoned worktrees linger in the
+/// registry forever because check_for_stale_worktrees requires completed_at.
+#[tokio::test]
+async fn test_cleanup_dead_coworker_sets_completed_at_on_worktree() {
+    let (state, _tmp, _guard) = make_cleanup_test_state();
+    let worktree_id = "task-2247-fix-cleanup".to_string();
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: worktree_id.clone(),
+                branch_name: worktree_id.clone(),
+                task_id: Some("2247".to_string()),
+                current_coworker: Some("riverside".to_string()),
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .expect("register worktree");
+    }
+
+    state.cleanup_dead_coworker_state("riverside").await;
+
+    {
+        let ps = state.persistent_state.lock().await;
+        let assignment = ps
+            .worktree_registry
+            .get(&worktree_id)
+            .expect("worktree should still exist in registry");
+        assert!(
+            assignment.completed_at.is_some(),
+            "completed_at should be set when dead coworker's worktree is unbound"
+        );
+    }
+}
+
 // ============================================================================
 // NamePool + session registry tests
 // ============================================================================

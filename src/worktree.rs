@@ -656,6 +656,7 @@ impl WorktreeManager {
             .flatten()
             .filter(|e| e.path().is_dir())
             .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+            .filter(|name| name != "lead")
             .filter(|name| !registered_ids.contains(name))
             .collect()
     }
@@ -1201,6 +1202,19 @@ mod tests {
             .expect("update lead worktree (noop)");
         assert_eq!(path, path2);
         assert_eq!(git_head_commit(&path), head);
+    }
+
+    #[test]
+    fn test_find_orphaned_task_worktrees_excludes_lead() {
+        let (manager, _temp_dir) = create_test_repo();
+        let base = manager.task_worktrees_base().to_path_buf();
+
+        std::fs::create_dir_all(base.join("lead")).expect("create lead dir");
+        std::fs::create_dir_all(base.join("task-1-registered")).expect("create registered dir");
+        std::fs::create_dir_all(base.join("task-2-orphan")).expect("create orphan dir");
+
+        let orphans = manager.find_orphaned_task_worktrees(&["task-1-registered".to_string()]);
+        assert_eq!(orphans, vec!["task-2-orphan".to_string()]);
     }
 
     fn git_head_commit(dir: &Path) -> String {

@@ -4192,3 +4192,97 @@ fn ensure_channel_leads_alive_respawns_after_cooldown_cleared() {
         other => panic!("expected RespawnChannelLead, got {:?}", other),
     }
 }
+
+// ── Worktree cleanup: abandoned worktrees without completed_at ──────────
+
+/// Worktrees created long ago with no `completed_at` and no active coworker
+/// should be cleaned up as abandoned. This is the catch-all for the gap where
+/// `completed_at` is never set (review worktrees, abandoned tasks, etc.).
+#[test]
+fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
+    use std::collections::HashSet;
+
+    let mut registry = crate::worktree_registry::WorktreeRegistry::new();
+
+    // Abandoned review worktree: no completed_at, no coworker, created 48h ago
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "review-pr-100".to_string(),
+            branch_name: "review-pr-100".to_string(),
+            task_id: None,
+            current_coworker: None,
+            pr_number: Some(100),
+            created_at: chrono::Utc::now() - chrono::Duration::hours(48),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Abandoned task worktree: no completed_at, no coworker, created 48h ago
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-50-old-work".to_string(),
+            branch_name: "task-50-old-work".to_string(),
+            task_id: Some("50".to_string()),
+            current_coworker: None,
+            pr_number: None,
+            created_at: chrono::Utc::now() - chrono::Duration::hours(48),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Recent worktree without completed_at: should NOT be cleaned up
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-51-new-work".to_string(),
+            branch_name: "task-51-new-work".to_string(),
+            task_id: Some("51".to_string()),
+            current_coworker: None,
+            pr_number: None,
+            created_at: chrono::Utc::now() - chrono::Duration::hours(2),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Active worktree without completed_at: bound to active coworker, should NOT be cleaned up
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-52-active".to_string(),
+            branch_name: "task-52-active".to_string(),
+            task_id: Some("52".to_string()),
+            current_coworker: Some("park".to_string()),
+            pr_number: None,
+            created_at: chrono::Utc::now() - chrono::Duration::hours(48),
+            completed_at: None,
+        })
+        .unwrap();
+
+    let mut active_coworkers = HashSet::new();
+    active_coworkers.insert("park".to_string());
+    let retention = chrono::Duration::hours(24);
+
+    let effects = check_for_stale_worktrees(&registry, &active_coworkers, retention);
+
+    // Should clean up the two abandoned worktrees (review-pr-100 and task-50-old-work)
+    assert_eq!(
+        effects.len(),
+        2,
+        "should clean up 2 abandoned worktrees without completed_at, got: {:?}",
+        effects
+    );
+
+    let cleaned_ids: HashSet<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::CleanupStaleWorktree { worktree_id } => Some(worktree_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        cleaned_ids.contains("review-pr-100"),
+        "should clean up review worktree"
+    );
+    assert!(
+        cleaned_ids.contains("task-50-old-work"),
+        "should clean up abandoned task worktree"
+    );
+}
