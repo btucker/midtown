@@ -523,27 +523,26 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
-            let base = format!(
-                "{} mentioned @{} ({}): {}",
-                from,
-                state.project_name,
-                msg.thread_anchor_id(),
-                summary
-            );
-            let nudge_msg = if let Some(parent_id) = thread_parent_id {
-                let ctx = crate::daemon::wake_reason::ThreadContext {
+            let thread_ctx =
+                thread_parent_id.map(|parent_id| crate::daemon::wake_reason::ThreadContext {
                     parent_id: parent_id.to_string(),
                     channel_name: channel_name.to_string(),
-                };
-                format!("{base}\n\n{}", ctx.reply_instructions())
-            } else {
-                base
+                });
+
+            let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
+                channel_name: state.default_channel_name().to_string(),
+                reason: crate::daemon::wake_reason::WakeReason::Mention {
+                    from: from.to_string(),
+                    content: summary.to_string(),
+                    msg_id: msg.thread_anchor_id().to_string(),
+                    thread_ctx,
+                },
             };
             info!(
                 "Nudging Lead about @{} mention from {}",
                 state.project_name, from
             );
-            state.nudge_lead(&nudge_msg).await;
+            crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
         }
     }
 

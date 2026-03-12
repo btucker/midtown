@@ -78,6 +78,8 @@ pub enum WakeReason {
         from: String,
         content: String,
         msg_id: String,
+        /// Thread context when the mention is in a thread reply.
+        thread_ctx: Option<ThreadContext>,
     },
     /// Generic nudge (freeform message).
     Nudge { message: String },
@@ -220,8 +222,20 @@ impl WakeReason {
                 from,
                 content,
                 msg_id,
+                thread_ctx,
             } => {
-                format!("{from} mentioned you ({msg_id}): {content}")
+                let base = format!("{from} mentioned you ({msg_id}): {content}");
+                if let Some(ctx) = thread_ctx {
+                    format!(
+                        "{base}\n\nThis is a thread reply. To reply in the thread:\n  \
+                         midtown channel post \"...\" --thread {} --channel {}\n\
+                         To read recent thread context:\n  \
+                         midtown channel read --last 50 --channel {}",
+                        ctx.parent_id, ctx.channel_name, ctx.channel_name
+                    )
+                } else {
+                    base
+                }
             }
             Self::Nudge { message } => message.clone(),
             Self::DmFromUser {

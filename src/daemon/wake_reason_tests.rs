@@ -304,6 +304,7 @@ fn sender_returns_from_for_mention() {
         from: "lexington".to_string(),
         content: "check this".to_string(),
         msg_id: "msg-1".to_string(),
+        thread_ctx: None,
     };
     assert_eq!(reason.sender(), "lexington");
 }
@@ -365,7 +366,8 @@ fn already_in_dm_channel_only_for_dm_from_user() {
         !WakeReason::Mention {
             from: "lex".into(),
             content: "c".into(),
-            msg_id: "m".into()
+            msg_id: "m".into(),
+            thread_ctx: None,
         }
         .already_in_dm_channel()
     );
@@ -407,6 +409,55 @@ fn user_message_thread_reply_nudge_includes_instructions() {
     assert!(
         msg.contains("text output auto-posts"),
         "thread reply nudge should include output suppression reminder"
+    );
+}
+
+#[test]
+fn mention_without_thread_ctx_formats_simple_message() {
+    let reason = WakeReason::Mention {
+        from: "broadway".to_string(),
+        content: "check the auth flow".to_string(),
+        msg_id: "msg-mention-001".to_string(),
+        thread_ctx: None,
+    };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("broadway mentioned you (msg-mention-001): check the auth flow"),
+        "should format as simple mention"
+    );
+    assert!(
+        !msg.contains("thread reply"),
+        "non-thread mention should not include thread instructions"
+    );
+}
+
+#[test]
+fn mention_with_thread_ctx_includes_thread_instructions() {
+    let reason = WakeReason::Mention {
+        from: "broadway".to_string(),
+        content: "check the auth flow".to_string(),
+        msg_id: "msg-mention-002".to_string(),
+        thread_ctx: Some(ThreadContext {
+            parent_id: "parent-thread-uuid".to_string(),
+            channel_name: "daemon-core".to_string(),
+        }),
+    };
+    let msg = reason.to_nudge_message();
+    assert!(
+        msg.contains("broadway mentioned you"),
+        "should contain mention attribution"
+    );
+    assert!(
+        msg.contains("--thread parent-thread-uuid"),
+        "thread reply mention should include --thread instruction"
+    );
+    assert!(
+        msg.contains("--channel daemon-core"),
+        "thread reply mention should include --channel instruction"
+    );
+    assert!(
+        msg.contains("This is a thread reply"),
+        "thread reply mention should indicate it's a thread reply"
     );
 }
 
@@ -453,7 +504,8 @@ fn nudge_type_returns_correct_variant_names() {
         WakeReason::Mention {
             from: "lex".into(),
             content: "c".into(),
-            msg_id: "m".into()
+            msg_id: "m".into(),
+            thread_ctx: None,
         }
         .nudge_type(),
         "mention"
