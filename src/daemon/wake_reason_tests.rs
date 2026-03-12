@@ -183,9 +183,15 @@ fn review_assigned_nudge_uses_rich_template() {
         msg.contains("Resume reviewing PR #42"),
         "ReviewAssigned should use the full reviewer-resume template, not a one-liner"
     );
+    // Posting instructions are in the system prompt, not the resume nudge
     assert!(
-        msg.contains("midtown pr review post --pr 42"),
-        "ReviewAssigned should include review post instructions from the template"
+        msg.contains("system prompt"),
+        "ReviewAssigned should reference the system prompt for behavioral instructions"
+    );
+    // Resume should carry actionable content: the code review skill invocation
+    assert!(
+        msg.contains("code-review"),
+        "ReviewAssigned should include the code-review skill invocation"
     );
 }
 
