@@ -181,11 +181,16 @@ pub fn reviewer_launch_prompt(
     pr_number: u64,
     restart_count: u32,
     platform: crate::auth::AuthProvider,
+    escalation_target: Option<&str>,
 ) -> String {
     let invocation = code_review_invocation_for_platform(platform, Some(pr_number));
 
+    let escalation_line = escalation_target
+        .map(|target| format!("\n\nAddress review notes to @{target} in the channel."))
+        .unwrap_or_default();
+
     if restart_count == 0 {
-        format!("Review PR #{pr_number} — {invocation}")
+        format!("Review PR #{pr_number} — {invocation}{escalation_line}")
     } else {
         format!(
             "Review PR #{pr_number} — {invocation}\n\n\
@@ -200,7 +205,8 @@ pub fn reviewer_launch_prompt(
              select(.body | test(\"midtown:\") | not)] | last | .url' | grep -o '[0-9]*$')\n\
              # Then update it instead of posting new\n\
              ```\n\
-             The review worktree (review-pr-{pr_number}) may already have the PR checked out.",
+             The review worktree (review-pr-{pr_number}) may already have the PR checked out.\
+             {escalation_line}",
         )
     }
 }

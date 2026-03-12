@@ -3461,6 +3461,23 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             && channel_lead_names.contains(channel_name)
         {
             config.escalation_target = Some(channel_name.clone());
+            // Belt-and-suspenders: regenerate the initial prompt with the escalation
+            // target so the reviewer knows who to address even if the system prompt
+            // substitution fails.
+            config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                pr_number,
+                0,
+                auth_provider,
+                Some(channel_name),
+            ));
+        } else if config.channel.is_some() {
+            // Channel exists but no channel lead registered — log for diagnosis.
+            warn!(
+                "PR #{}: task has channel {:?} but no channel lead registered; \
+                 reviewer escalation_target falls back to project name",
+                pr_number,
+                config.channel.as_deref().unwrap_or("?")
+            );
         }
 
         effects.push(Effect::EnsureWorktree {
