@@ -101,7 +101,7 @@ function handleDescriptionClick(e) {
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></span>
+          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
@@ -113,7 +113,7 @@ function handleDescriptionClick(e) {
             title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
             onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}
-          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></span>
+          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" style="transform: scaleX(-1)" /></span></span>
         {/if}
       </div>
     {/if}
@@ -161,7 +161,7 @@ function handleDescriptionClick(e) {
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="#F2EBDA" /></span></span>
+          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
@@ -173,7 +173,7 @@ function handleDescriptionClick(e) {
             title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
             onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}
-          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="#F2EBDA" style="transform: scaleX(-1)" /></span></span>
+          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" style="transform: scaleX(-1)" /></span></span>
         {/if}
       </div>
     {/if}
