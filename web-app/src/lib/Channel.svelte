@@ -103,6 +103,13 @@ let hasMoreAbove = $derived(renderStartIndex > 0);
 // Messages at or above this index are "new" and get the slide-up animation.
 // We use $state.raw so mutations don't trigger full reactive updates.
 let initialMessageCounts = $state.raw({});
+// Synchronous shadow: prevents re-entrant effect runs from bumping the
+// snapshot count when new messages arrive before the deferred write fires.
+// Without this, queueMicrotask creates a window where the guard
+// `ch in initialMessageCounts` stays false, causing each new message to
+// schedule another microtask with a higher len — so isNewMessage() returns
+// false for genuinely new messages (the animation bug).
+let pendingInitialCounts = {};
 
 $effect(() => {
 	// Reactive on both $activeChannel and channelMessages.length.
@@ -112,10 +119,12 @@ $effect(() => {
 	// then history loads and every message animates as "new".
 	const ch = $activeChannel;
 	const len = channelMessages.length;
-	if (!(ch in initialMessageCounts) && len > 0) {
+	if (!(ch in pendingInitialCounts) && len > 0) {
+		pendingInitialCounts[ch] = len;
+		const snapshotLen = len;
 		// Defer state write to avoid state_unsafe_mutation during derived evaluation
 		queueMicrotask(() => {
-			initialMessageCounts = { ...initialMessageCounts, [ch]: len };
+			initialMessageCounts = { ...initialMessageCounts, [ch]: snapshotLen };
 		});
 	}
 });

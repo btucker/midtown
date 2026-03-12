@@ -113,3 +113,101 @@ describe("deferred state write pattern — version counter", () => {
 		expect(renderStartIndex).toBe(50);
 	});
 });
+
+describe("initialMessageCounts — synchronous guard prevents race condition", () => {
+	/**
+	 * Reproduces the bug where initialMessageCounts gets a too-high snapshot
+	 * when messages arrive between effect run and microtask execution.
+	 *
+	 * The BROKEN pattern (no synchronous guard):
+	 *   if (!(ch in counts) && len > 0) {
+	 *     queueMicrotask(() => { counts[ch] = len })
+	 *   }
+	 * Re-entrant runs see the guard as false (deferred write hasn't fired),
+	 * so they schedule additional microtasks with higher len values.
+	 */
+	it("BUG: without synchronous guard, new messages bump the snapshot count", async () => {
+		const counts = {};
+
+		// Simulate the broken pattern: guard checks `counts` which is updated async
+		function brokenEffectRun(ch, len) {
+			if (!(ch in counts) && len > 0) {
+				queueMicrotask(() => {
+					counts[ch] = len;
+				});
+			}
+		}
+
+		// History loads with 100 messages
+		brokenEffectRun("web", 100);
+
+		// New message arrives before microtask fires — guard still passes!
+		brokenEffectRun("web", 101);
+
+		// Another new message
+		brokenEffectRun("web", 102);
+
+		await new Promise((r) => queueMicrotask(r));
+
+		// BUG: count is 102, not 100. Messages 100-101 won't animate.
+		expect(counts.web).toBe(102);
+	});
+
+	it("FIXED: synchronous guard captures first snapshot, ignores subsequent runs", async () => {
+		const counts = {};
+		const pendingCounts = {}; // synchronous shadow — the fix
+
+		function fixedEffectRun(ch, len) {
+			if (!(ch in pendingCounts) && len > 0) {
+				pendingCounts[ch] = len; // synchronous guard
+				const snapshotLen = len;
+				queueMicrotask(() => {
+					counts[ch] = snapshotLen;
+				});
+			}
+		}
+
+		// History loads with 100 messages
+		fixedEffectRun("web", 100);
+
+		// New message arrives before microtask fires — guard now blocks!
+		fixedEffectRun("web", 101);
+
+		// Another new message
+		fixedEffectRun("web", 102);
+
+		await new Promise((r) => queueMicrotask(r));
+
+		// FIXED: count is 100. Messages 100+ correctly animate.
+		expect(counts.web).toBe(100);
+	});
+
+	it("synchronous guard works correctly across channel switches", async () => {
+		const counts = {};
+		const pendingCounts = {};
+
+		function fixedEffectRun(ch, len) {
+			if (!(ch in pendingCounts) && len > 0) {
+				pendingCounts[ch] = len;
+				const snapshotLen = len;
+				queueMicrotask(() => {
+					counts[ch] = snapshotLen;
+				});
+			}
+		}
+
+		// Visit channel A
+		fixedEffectRun("web", 50);
+
+		// Switch to channel B
+		fixedEffectRun("infra", 30);
+
+		// New message on B before microtask
+		fixedEffectRun("infra", 31);
+
+		await new Promise((r) => queueMicrotask(r));
+
+		expect(counts.web).toBe(50);
+		expect(counts.infra).toBe(30);
+	});
+});
