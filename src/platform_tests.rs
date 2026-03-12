@@ -660,3 +660,80 @@ fn test_claude_headless_args_fork_session_ignored_for_fresh() {
         "--fork-session should not appear for fresh (non-resume) sessions"
     );
 }
+
+/// Simulate the two-step fork launch and verify args differ between steps.
+///
+/// Step 1 (fork): `--resume <parent> --fork-session --session-id <uuid>`,
+///   NO `--setting-sources`, NO `--settings`.
+/// Step 2 (resume): `--resume <fork-session-id>`, WITH `--setting-sources`,
+///   NO `--fork-session`, NO `--session-id`.
+///
+/// This mirrors `spawn_fork()` in sessions.rs where the fork process is
+/// killed after step 1 and relaunched with modified config for step 2.
+#[test]
+fn test_two_step_fork_launch_args_differ() {
+    let parent_session_id = "parent-session-abc";
+    let fork_session_id = "fork-uuid-12345678";
+
+    // Step 1: fork config (fork_session=true, resume parent, pre-assigned session_id)
+    let step1_config = HeadlessConfig {
+        resume_session_id: Some(parent_session_id.to_string()),
+        fork_session: true,
+        session_id: Some(fork_session_id.to_string()),
+        persist_session: true,
+        settings_path: Some("/tmp/settings.json".to_string()),
+        ..test_headless_config()
+    };
+    let step1_args = build_claude_headless_args(&step1_config);
+
+    // Step 2: resume config (fork_session=false, resume fork session, no session_id)
+    let step2_config = HeadlessConfig {
+        resume_session_id: Some(fork_session_id.to_string()),
+        fork_session: false,
+        session_id: None,
+        persist_session: true,
+        settings_path: Some("/tmp/settings.json".to_string()),
+        ..test_headless_config()
+    };
+    let step2_args = build_claude_headless_args(&step2_config);
+
+    // Step 1 assertions
+    assert!(
+        step1_args.contains(&"--fork-session".to_string()),
+        "Step 1 must have --fork-session"
+    );
+    assert!(
+        step1_args.contains(&"--session-id".to_string()),
+        "Step 1 must have --session-id for pre-assigned UUID"
+    );
+    assert!(
+        !step1_args.contains(&"--setting-sources".to_string()),
+        "Step 1 must NOT have --setting-sources (incompatible with --fork-session)"
+    );
+    assert!(
+        !step1_args.contains(&"--settings".to_string()),
+        "Step 1 must NOT have --settings (resume mode skips it)"
+    );
+    assert!(
+        step1_args.contains(&parent_session_id.to_string()),
+        "Step 1 resumes the PARENT session"
+    );
+
+    // Step 2 assertions
+    assert!(
+        !step2_args.contains(&"--fork-session".to_string()),
+        "Step 2 must NOT have --fork-session (normal resume)"
+    );
+    assert!(
+        step2_args.contains(&"--setting-sources".to_string()),
+        "Step 2 MUST have --setting-sources (safe for normal resume)"
+    );
+    assert!(
+        !step2_args.contains(&"--session-id".to_string()),
+        "Step 2 must NOT have --session-id (resuming known session)"
+    );
+    assert!(
+        step2_args.contains(&fork_session_id.to_string()),
+        "Step 2 resumes the FORK session (not the parent)"
+    );
+}

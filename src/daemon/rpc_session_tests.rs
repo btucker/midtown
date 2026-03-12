@@ -1552,6 +1552,169 @@ fn test_build_fork_config_skips_settings_path_for_codex() {
 }
 
 // ============================================================================
+// build_fork_config HeadlessConfig field verification
+// ============================================================================
+
+/// `build_fork_config` must set `fork_session: true` in HeadlessConfig.
+///
+/// This flag tells `build_claude_headless_args` to add `--fork-session` and
+/// skip `--setting-sources` (step 1 of the two-step launch). Without it,
+/// the fork would be launched as a normal resume and fail with a CLI
+/// incompatibility error.
+#[test]
+fn test_build_fork_config_sets_fork_session_flag() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, config) = build_fork_config(
+        "thread-fork-flag-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        config.fork_session,
+        "HeadlessConfig.fork_session must be true for fork sessions"
+    );
+}
+
+/// `build_fork_config` sets `MIDTOWN_BOUND_THREAD_ID` env var to the thread ID.
+///
+/// This env var is read by the fork session's system prompt to know which
+/// thread it's bound to. Without it, the fork cannot route its output to
+/// the correct thread.
+#[test]
+fn test_build_fork_config_sets_bound_thread_env() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let thread_id = "a1b2c3d4-thread-binding-test";
+    let (_fork_name, config) = build_fork_config(
+        thread_id,
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    let bound_thread = config
+        .env
+        .get("MIDTOWN_BOUND_THREAD_ID")
+        .expect("MIDTOWN_BOUND_THREAD_ID should be set in fork env");
+    assert_eq!(
+        bound_thread, thread_id,
+        "MIDTOWN_BOUND_THREAD_ID should match the thread_parent_id"
+    );
+}
+
+/// `build_fork_config` sets `resume_session_id` to the calling session's ID.
+///
+/// The fork is created by resuming the parent session with `--fork-session`,
+/// so `resume_session_id` must point to the calling (parent) session.
+#[test]
+fn test_build_fork_config_sets_resume_session_id() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let calling_session = "parent-session-abc123";
+    let (_fork_name, config) = build_fork_config(
+        "thread-resume-test",
+        calling_session,
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert_eq!(
+        config.resume_session_id.as_deref(),
+        Some(calling_session),
+        "resume_session_id should be set to the calling session ID"
+    );
+}
+
+/// `build_fork_config` pre-assigns a UUID session_id for Claude provider.
+///
+/// Claude/Zai fork sessions don't emit system/init events, so the daemon
+/// must know the session ID at spawn time. A pre-assigned UUID ensures
+/// session-based lookups work immediately.
+#[test]
+fn test_build_fork_config_pre_assigns_session_id_for_claude() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, config) = build_fork_config(
+        "thread-sid-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        config.session_id.is_some(),
+        "Claude fork should have a pre-assigned session_id"
+    );
+    // Verify it looks like a UUID (contains hyphens, reasonable length)
+    let sid = config.session_id.unwrap();
+    assert!(
+        sid.contains('-') && sid.len() >= 32,
+        "Pre-assigned session_id should be a UUID, got: {}",
+        sid
+    );
+}
+
+/// `build_fork_config` does NOT pre-assign session_id for Codex provider.
+///
+/// Codex uses thread-based IDs discovered via the init event, not
+/// pre-assigned UUIDs. Setting session_id would conflict with Codex's
+/// thread model.
+#[test]
+fn test_build_fork_config_no_session_id_for_codex() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, config) = build_fork_config(
+        "thread-codex-sid-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Codex,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        config.session_id.is_none(),
+        "Codex fork should NOT have a pre-assigned session_id"
+    );
+}
+
+// ============================================================================
 // Fork thread_parent_id UUID validation tests
 // ============================================================================
 
