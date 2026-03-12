@@ -20,17 +20,17 @@ pub struct ThreadContext {
 impl ThreadContext {
     /// Format the standard thread reply instructions appended to nudge messages.
     ///
-    /// Includes the `--thread` flag for posting, `--thread` for reading context,
+    /// Includes the `--thread` flag for posting, `--last 50` for reading context,
     /// and a reminder to keep text output brief to avoid duplicate top-level messages.
     pub fn reply_instructions(&self) -> String {
         format!(
             "This is a thread reply. To reply in the thread:\n  \
              midtown channel post \"...\" --thread {} --channel {}\n\
              To read recent thread context:\n  \
-             midtown channel read --thread {} --channel {}\n\n\
+             midtown channel read --last 50 --channel {}\n\n\
              IMPORTANT: Keep text output brief or omit it — text output auto-posts as a \
              top-level message, producing a duplicate alongside your --thread reply.",
-            self.parent_id, self.channel_name, self.parent_id, self.channel_name
+            self.parent_id, self.channel_name, self.channel_name
         )
     }
 }
