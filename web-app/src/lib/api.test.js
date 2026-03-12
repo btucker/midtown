@@ -1,11 +1,13 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	clearErrorCallback,
 	closeThread,
 	fetchChannels,
 	fetchHistory,
 	forkThread,
 	handleUpdate,
+	onNextError,
 	pushNavState,
 	selectDm,
 	switchProject,
@@ -1014,5 +1016,63 @@ describe("forkThread / unforkThread", () => {
 
 	it("unforkThread does not throw when no onError provided and WS disconnected", () => {
 		expect(() => unforkThread("thread-123", "web")).not.toThrow();
+	});
+});
+
+describe("onNextError callback leak on success path", () => {
+	it("caller can clear error callback on success to prevent stale firing", () => {
+		// Simulates the fixed flow: forkThread registers an onError callback
+		// via onNextError. When the fork succeeds (thread_ownership update arrives),
+		// the caller clears the callback using the returned ID.
+		const onError = vi.fn();
+		const callbackId = onNextError(onError);
+
+		// Simulate success: thread_ownership update arrives
+		handleUpdate({
+			type: "thread_ownership",
+			data: { thread_parent_id: "thread-1", has_dedicated_session: true, owner: "web-discuss-ab12" },
+		});
+
+		// Caller clears the callback on success (this is what ThreadPanel now does)
+		clearErrorCallback(callbackId);
+
+		// An unrelated error arrives — the stale callback must NOT fire
+		handleUpdate({
+			type: "error",
+			data: { message: "unrelated error from different operation" },
+		});
+
+		expect(onError).not.toHaveBeenCalled();
+	});
+
+	it("clearErrorCallback prevents a registered callback from firing on subsequent errors", () => {
+		// Test the lower-level API: onNextError returns an ID,
+		// clearErrorCallback removes it, so a subsequent error doesn't fire the callback.
+		const onError = vi.fn();
+		const id = onNextError(onError);
+
+		// Simulate success — caller clears the callback
+		clearErrorCallback(id);
+
+		// Now an unrelated error arrives
+		handleUpdate({
+			type: "error",
+			data: { message: "some error" },
+		});
+
+		expect(onError).not.toHaveBeenCalled();
+	});
+
+	it("error callback fires correctly when an actual error occurs (no success)", () => {
+		const onError = vi.fn();
+		onNextError(onError);
+
+		// Error arrives before any success — callback should fire
+		handleUpdate({
+			type: "error",
+			data: { message: "fork failed: no channel lead" },
+		});
+
+		expect(onError).toHaveBeenCalledWith("fork failed: no channel lead");
 	});
 });
