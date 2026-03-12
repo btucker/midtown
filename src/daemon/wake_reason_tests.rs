@@ -572,9 +572,9 @@ fn user_message_thread_reply_initial_prompt_includes_instructions() {
 }
 
 #[test]
-fn reply_instructions_channel_read_uses_valid_cli_flags() {
-    // Regression: reply_instructions() previously generated `channel read --thread`
-    // but `channel read` only supports --all, --last, --since, --channel (not --thread).
+fn reply_instructions_channel_read_includes_thread_flag() {
+    // The `channel read` command in reply_instructions must include --thread
+    // so the lead/fork reads the THREAD context, not the main channel.
     let ctx = ThreadContext {
         parent_id: "parent-123".to_string(),
         channel_name: "ops".to_string(),
@@ -587,14 +587,13 @@ fn reply_instructions_channel_read_uses_valid_cli_flags() {
         .find(|l| l.contains("channel read"))
         .expect("reply_instructions should contain a channel read command");
 
-    // Valid flags for `channel read`: --all, --last, --since, --channel
-    // Must NOT contain --thread (that's a `channel post` flag)
+    // Must contain --thread <parent_id> to read thread context, not main channel
     assert!(
-        !read_cmd.contains("--thread"),
-        "channel read command must not use --thread (only valid on channel post): {read_cmd}"
+        read_cmd.contains("--thread parent-123"),
+        "channel read command must include --thread <parent_id>: {read_cmd}"
     );
     assert!(
-        read_cmd.contains("--last"),
-        "channel read command should use --last for reading context: {read_cmd}"
+        read_cmd.contains("--channel ops"),
+        "channel read command should include --channel: {read_cmd}"
     );
 }

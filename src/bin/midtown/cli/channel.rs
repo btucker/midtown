@@ -33,6 +33,9 @@ pub enum ChannelCommand {
         /// Channel to read from (defaults to MIDTOWN_CHANNEL env var or main channel)
         #[arg(long)]
         channel: Option<String>,
+        /// Read only messages in a thread (specify parent message ID)
+        #[arg(long = "thread")]
+        thread_parent_id: Option<String>,
     },
     /// Create a new channel
     Create {
@@ -96,7 +99,14 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             last,
             since,
             channel,
-        } => client.channel_read(*all, last.as_ref(), since.as_deref(), channel.as_deref()),
+            thread_parent_id,
+        } => client.channel_read(
+            *all,
+            last.as_ref(),
+            since.as_deref(),
+            channel.as_deref(),
+            thread_parent_id.as_deref(),
+        ),
         ChannelCommand::Create { name } => client.channel_create(name),
         ChannelCommand::Archive { name } => client.channel_archive(name),
         ChannelCommand::Unarchive { name } => client.channel_unarchive(name),
