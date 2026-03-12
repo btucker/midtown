@@ -7,37 +7,10 @@
  *   oldString — the text that was replaced
  *   newString — the replacement text
  */
-import { highlightLine } from "./highlighting.js";
+import { getLanguage, highlightLine } from "./highlighting.js";
 
 let { filePath, oldString, newString, bare = false } = $props();
 let expanded = $state(false);
-
-const EXT_TO_LANG = {
-	rs: "rust",
-	js: "javascript",
-	jsx: "javascript",
-	ts: "typescript",
-	tsx: "typescript",
-	py: "python",
-	sh: "bash",
-	bash: "bash",
-	zsh: "bash",
-	json: "json",
-	toml: "toml",
-	yaml: "yaml",
-	yml: "yaml",
-	css: "css",
-	svelte: "xml",
-	html: "xml",
-	xml: "xml",
-	md: "xml",
-};
-
-function getLanguage(path) {
-	if (!path) return null;
-	const ext = path.split(".").pop()?.toLowerCase();
-	return ext ? EXT_TO_LANG[ext] || null : null;
-}
 
 let lang = $derived(getLanguage(filePath));
 let oldLines = $derived((oldString || "").split("\n"));

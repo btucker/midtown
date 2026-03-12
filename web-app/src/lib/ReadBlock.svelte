@@ -9,38 +9,11 @@
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  */
-import { highlightLine } from "./highlighting.js";
+import { escapeHtml, getLanguage, highlightBlock } from "./highlighting.js";
 
 let { block } = $props();
 
 let expanded = $state(false);
-
-const EXT_TO_LANG = {
-	rs: "rust",
-	js: "javascript",
-	jsx: "javascript",
-	ts: "typescript",
-	tsx: "typescript",
-	py: "python",
-	sh: "bash",
-	bash: "bash",
-	zsh: "bash",
-	json: "json",
-	toml: "toml",
-	yaml: "yaml",
-	yml: "yaml",
-	css: "css",
-	svelte: "xml",
-	html: "xml",
-	xml: "xml",
-	md: "xml",
-};
-
-function getLanguage(path) {
-	if (!path) return null;
-	const ext = path.split(".").pop()?.toLowerCase();
-	return ext ? EXT_TO_LANG[ext] || null : null;
-}
 
 let filePath = $derived(block.input?.file_path || "unknown");
 let lang = $derived(getLanguage(filePath));
@@ -49,7 +22,7 @@ let lang = $derived(getLanguage(filePath));
 let parsedLines = $derived.by(() => {
 	if (!block.output) return [];
 	const raw = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
-	return raw
+	const lines = raw
 		.split("\n")
 		.filter((l) => l.length > 0)
 		.map((line) => {
@@ -57,9 +30,21 @@ let parsedLines = $derived.by(() => {
 			if (match) {
 				return { num: match[1], content: match[2] };
 			}
-			// Fallback for lines that don't match (e.g. system messages)
 			return { num: "", content: line };
 		});
+
+	// For error state, escape HTML without syntax highlighting
+	if (block.error) {
+		return lines.map((l) => ({ ...l, html: escapeHtml(l.content) }));
+	}
+
+	// Highlight the full block to preserve multi-line token context,
+	// then split back into individual lines
+	const fullText = lines.map((l) => l.content).join("\n");
+	const highlightedHtml = highlightBlock(fullText, lang);
+	const highlightedLines = highlightedHtml.split("\n");
+
+	return lines.map((l, i) => ({ ...l, html: highlightedLines[i] || escapeHtml(l.content) }));
 });
 
 let totalLines = $derived(parsedLines.length);
@@ -76,7 +61,7 @@ let shortPath = $derived.by(() => {
 
 <div class="read-block" class:read-error={block.error}>
   <button class="read-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
-    <span class="read-chevron">{expanded || !isLong ? '▾' : '▸'}</span>
+    <span class="read-chevron">{expanded ? '▾' : '▸'}</span>
     <span class="read-label">Read</span>
     <span class="read-path" title={filePath}>{shortPath}</span>
     <span class="read-stats">{totalLines} lines</span>
@@ -90,7 +75,7 @@ let shortPath = $derived.by(() => {
       {#each previewLines as line}
         <div class="read-line">
           <span class="read-line-num">{line.num}</span>
-          <span class="read-line-content">{@html highlightLine(line.content, lang)}</span>
+          <span class="read-line-content">{@html line.html}</span>
         </div>
       {/each}
     </div>
@@ -99,7 +84,7 @@ let shortPath = $derived.by(() => {
       {#each parsedLines as line}
         <div class="read-line">
           <span class="read-line-num">{line.num}</span>
-          <span class="read-line-content">{@html highlightLine(line.content, lang)}</span>
+          <span class="read-line-content">{@html line.html}</span>
         </div>
       {/each}
     </div>
