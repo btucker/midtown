@@ -2,58 +2,37 @@
 /**
  * EditBlock — renders an Edit tool call with a collapsible header and DiffView.
  *
+ * Starts in 'preview' state. Click to expand/collapse.
+ * No auto-collapse — ToolRunSummary handles the time-based collapse.
+ *
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  *           input.file_path — path being edited
  *           input.old_string — text that was replaced
  *           input.new_string — replacement text
- *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
  */
 import DiffView from "./DiffView.svelte";
-import { createAutoCollapse } from "./useAutoCollapse.js";
 
-let { block, timestamp = null } = $props();
+let { block } = $props();
+
+let expanded = $state(false);
 
 let filePath = $derived(block.input?.file_path || "unknown");
 let oldString = $derived(block.input?.old_string || "");
 let newString = $derived(block.input?.new_string || "");
-
-let displayState = $state("collapsed");
-let userOverride = $state(false);
-
-const ac = $derived.by(() => createAutoCollapse(timestamp));
-
-$effect.pre(() => {
-	if (!userOverride) displayState = ac.initial;
-});
-
-$effect(() => {
-	if (userOverride) return;
-	const currentAc = ac;
-	currentAc.startTimer(() => {
-		displayState = "collapsed";
-	});
-	return () => currentAc.clearTimer();
-});
-
-function toggle() {
-	userOverride = true;
-	ac.clearTimer();
-	displayState = displayState === "expanded" ? "collapsed" : "expanded";
-}
 </script>
 
 <div class="edit-block">
-  <button class="edit-header" onclick={toggle} aria-expanded={displayState === 'expanded'}>
-    <span class="edit-chevron">{displayState === 'expanded' ? '▾' : '▸'}</span>
+  <button class="edit-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
+    <span class="edit-chevron">{expanded ? '▾' : '▸'}</span>
     <span class="edit-path">Edit {filePath}</span>
   </button>
 
-  {#if displayState === 'preview'}
+  {#if !expanded}
     <div class="edit-preview">
       <DiffView {filePath} {oldString} {newString} bare />
     </div>
-  {:else if displayState === 'expanded'}
+  {:else}
     <DiffView {filePath} {oldString} {newString} bare />
   {/if}
 </div>

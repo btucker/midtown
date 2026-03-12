@@ -2,52 +2,30 @@
 /**
  * TodoBlock — renders a TodoWrite tool call as a checkbox list.
  *
+ * Starts expanded (showing all todos). Click header to collapse to summary.
+ * No auto-collapse — ToolRunSummary handles the time-based collapse.
+ *
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  *           input.todos — array of { content, status }
- *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
  */
-import { createAutoCollapse } from "./useAutoCollapse.js";
+let { block } = $props();
 
-let { block, timestamp = null } = $props();
+let collapsed = $state(false);
 
 let todos = $derived(block.input?.todos || []);
 let doneCount = $derived(todos.filter((t) => t.status === "completed").length);
 let totalCount = $derived(todos.length);
 let summaryText = $derived(`Todos (${doneCount}/${totalCount} done)`);
-
-let displayState = $state("collapsed");
-let userOverride = $state(false);
-
-const ac = $derived.by(() => createAutoCollapse(timestamp));
-
-$effect.pre(() => {
-	if (!userOverride) displayState = ac.initial;
-});
-
-$effect(() => {
-	if (userOverride) return;
-	const currentAc = ac;
-	currentAc.startTimer(() => {
-		displayState = "collapsed";
-	});
-	return () => currentAc.clearTimer();
-});
-
-function toggle() {
-	userOverride = true;
-	ac.clearTimer();
-	displayState = displayState === "expanded" ? "collapsed" : "expanded";
-}
 </script>
 
 {#if todos.length > 0}
   <div class="todo-block">
-    <button class="todo-header" onclick={toggle} aria-expanded={displayState !== 'collapsed'}>
-      <span class="todo-chevron">{displayState === 'collapsed' ? '▸' : '▾'}</span>
-      <span>{displayState === 'collapsed' ? summaryText : 'Todos'}</span>
+    <button class="todo-header" onclick={() => collapsed = !collapsed} aria-expanded={!collapsed}>
+      <span class="todo-chevron">{collapsed ? '▸' : '▾'}</span>
+      <span>{collapsed ? summaryText : 'Todos'}</span>
     </button>
-    {#if displayState !== 'collapsed'}
+    {#if !collapsed}
       <ul class="todo-list">
         {#each todos as todo}
           <li class="todo-item" class:todo-done={todo.status === 'completed'}>

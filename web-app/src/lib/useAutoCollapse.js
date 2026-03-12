@@ -1,4 +1,4 @@
-export const DEFAULT_COLLAPSE_DELAY_MS = 30_000;
+export const DEFAULT_COLLAPSE_DELAY_MS = 10_000;
 
 /**
  * Compute the initial display state based on message age.

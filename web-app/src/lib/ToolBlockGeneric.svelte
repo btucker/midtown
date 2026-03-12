@@ -3,40 +3,17 @@
  * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
  *
  * Shows the tool name as a header with a collapsible JSON view of input/output.
- * Auto-collapses after 30s: preview (3 lines) → collapsed (header only).
+ * Starts in 'preview' state (3-line output preview). Click to expand/collapse.
+ * No auto-collapse — ToolRunSummary handles the time-based collapse.
  *
  * Props:
- *   block     — ToolBlock { tool_name, input, output, error }
- *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
+ *   block — ToolBlock { tool_name, input, output, error }
  */
 import { highlightBlock } from "./highlighting.js";
-import { createAutoCollapse } from "./useAutoCollapse.js";
 
-let { block, timestamp = null } = $props();
+let { block } = $props();
 
-let displayState = $state("collapsed");
-let userOverride = $state(false);
-
-const ac = $derived.by(() => createAutoCollapse(timestamp));
-
-$effect.pre(() => {
-	if (!userOverride) displayState = ac.initial;
-});
-
-$effect(() => {
-	if (userOverride) return;
-	const currentAc = ac;
-	currentAc.startTimer(() => {
-		displayState = "collapsed";
-	});
-	return () => currentAc.clearTimer();
-});
-
-function toggle() {
-	userOverride = true;
-	ac.clearTimer();
-	displayState = displayState === "expanded" ? "collapsed" : "expanded";
-}
+let expanded = $state(false);
 
 let summary = $derived.by(() => {
 	const inp = block.input;
@@ -65,19 +42,19 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
 </script>
 
 <div class="tool-generic" class:tool-error={block.error}>
-  <button class="tool-header" onclick={toggle} aria-expanded={displayState === 'expanded'}>
-    <span class="tool-chevron">{displayState === 'expanded' ? '▾' : '▸'}</span>
+  <button class="tool-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
+    <span class="tool-chevron">{expanded ? '▾' : '▸'}</span>
     <span class="tool-name">{summary}</span>
     {#if block.error}
       <span class="tool-error-badge">error</span>
     {/if}
   </button>
 
-  {#if displayState === 'preview' && block.output}
+  {#if !expanded && block.output}
     <div class="tool-body tool-preview">
       <pre>{@html highlightedOutputPreview}</pre>
     </div>
-  {:else if displayState === 'expanded'}
+  {:else if expanded}
     <div class="tool-body">
       <pre>{@html highlightedInput}</pre>
       {#if block.output}

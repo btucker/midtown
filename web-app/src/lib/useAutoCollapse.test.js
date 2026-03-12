@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { computeInitialState, createAutoCollapse } from "./useAutoCollapse.js";
+import { computeInitialState, createAutoCollapse, DEFAULT_COLLAPSE_DELAY_MS } from "./useAutoCollapse.js";
+
+describe("DEFAULT_COLLAPSE_DELAY_MS", () => {
+	it("is 10 seconds", () => {
+		expect(DEFAULT_COLLAPSE_DELAY_MS).toBe(10_000);
+	});
+});
 
 describe("computeInitialState", () => {
-	it("returns 'collapsed' when message is older than 30s", () => {
-		const old = new Date(Date.now() - 60_000).toISOString();
+	it("returns 'collapsed' when message is older than 10s", () => {
+		const old = new Date(Date.now() - 15_000).toISOString();
 		expect(computeInitialState(old)).toBe("collapsed");
 	});
 
-	it("returns 'preview' when message is newer than 30s", () => {
+	it("returns 'preview' when message is newer than 10s", () => {
 		const recent = new Date(Date.now() - 5_000).toISOString();
 		expect(computeInitialState(recent)).toBe("preview");
 	});
@@ -25,7 +31,7 @@ describe("computeInitialState", () => {
 
 describe("computeInitialState with custom delay", () => {
 	it("uses custom delay when provided", () => {
-		const ts = new Date(Date.now() - 45_000).toISOString();
+		const ts = new Date(Date.now() - 15_000).toISOString();
 		expect(computeInitialState(ts)).toBe("collapsed");
 		expect(computeInitialState(ts, Date.now(), 60_000)).toBe("preview");
 	});
@@ -45,22 +51,22 @@ describe("createAutoCollapse", () => {
 	});
 
 	it("returns collapsed with null timeoutMs for old messages", () => {
-		const old = new Date(Date.now() - 60_000).toISOString();
+		const old = new Date(Date.now() - 15_000).toISOString();
 		const ac = createAutoCollapse(old);
 		expect(ac.initial).toBe("collapsed");
 		expect(ac.timeoutMs).toBeNull();
 	});
 
 	it("returns preview with positive timeoutMs for recent messages", () => {
-		const recent = new Date(Date.now() - 5_000).toISOString();
+		const recent = new Date(Date.now() - 3_000).toISOString();
 		const ac = createAutoCollapse(recent);
 		expect(ac.initial).toBe("preview");
 		expect(ac.timeoutMs).toBeGreaterThan(0);
-		expect(ac.timeoutMs).toBeLessThanOrEqual(25_000);
+		expect(ac.timeoutMs).toBeLessThanOrEqual(7_000);
 	});
 
 	it("startTimer fires callback after timeout", () => {
-		const recent = new Date(Date.now() - 5_000).toISOString();
+		const recent = new Date(Date.now() - 3_000).toISOString();
 		const ac = createAutoCollapse(recent);
 		const cb = vi.fn();
 		ac.startTimer(cb);
@@ -70,7 +76,7 @@ describe("createAutoCollapse", () => {
 	});
 
 	it("clearTimer prevents callback from firing", () => {
-		const recent = new Date(Date.now() - 5_000).toISOString();
+		const recent = new Date(Date.now() - 3_000).toISOString();
 		const ac = createAutoCollapse(recent);
 		const cb = vi.fn();
 		ac.startTimer(cb);
@@ -80,7 +86,7 @@ describe("createAutoCollapse", () => {
 	});
 
 	it("startTimer is a no-op when already collapsed", () => {
-		const old = new Date(Date.now() - 60_000).toISOString();
+		const old = new Date(Date.now() - 15_000).toISOString();
 		const ac = createAutoCollapse(old);
 		const cb = vi.fn();
 		ac.startTimer(cb);

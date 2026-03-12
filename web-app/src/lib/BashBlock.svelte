@@ -1,39 +1,18 @@
 <script>
 /**
- * BashBlock — renders a Bash tool call with command + auto-collapsing output.
+ * BashBlock — renders a Bash tool call with command + collapsible output.
+ *
+ * Starts in 'preview' state (3-line output preview). Click to expand/collapse.
+ * No auto-collapse — ToolRunSummary handles the time-based collapse.
  *
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
- *   timestamp — ISO 8601 timestamp of the parent message (for auto-collapse)
  */
 import { highlightBlock } from "./highlighting.js";
-import { createAutoCollapse } from "./useAutoCollapse.js";
 
-let { block, timestamp = null } = $props();
+let { block } = $props();
 
-let displayState = $state("collapsed");
-let userOverride = $state(false);
-
-const ac = $derived.by(() => createAutoCollapse(timestamp));
-
-$effect.pre(() => {
-	if (!userOverride) displayState = ac.initial;
-});
-
-$effect(() => {
-	if (userOverride) return;
-	const currentAc = ac;
-	currentAc.startTimer(() => {
-		displayState = "collapsed";
-	});
-	return () => currentAc.clearTimer();
-});
-
-function toggle() {
-	userOverride = true;
-	ac.clearTimer();
-	displayState = displayState === "expanded" ? "collapsed" : "expanded";
-}
+let expanded = $state(false);
 
 let command = $derived(block.input?.command || "");
 let outputText = $derived.by(() => {
@@ -68,20 +47,21 @@ let highlightedOutput = $derived(highlightBlock(outputText, outputLang));
 // 3-line preview for the preview state
 let previewText = $derived(outputLines.slice(0, 3).join("\n"));
 let highlightedPreview = $derived(highlightBlock(previewText, outputLang));
+let isLong = $derived(outputLines.length > 3);
 </script>
 
 <div class="bash-block" class:bash-error={block.error}>
-  <button class="bash-header" onclick={toggle} aria-expanded={displayState === 'expanded'}>
-    <span class="bash-chevron">{displayState === 'expanded' ? '▾' : '▸'}</span>
+  <button class="bash-header" onclick={() => expanded = !expanded} aria-expanded={expanded}>
+    <span class="bash-chevron">{expanded ? '▾' : '▸'}</span>
     <span class="bash-prompt">$</span>
     <span class="bash-command">{@html highlightedCommand}</span>
   </button>
 
-  {#if hasOutput && displayState === 'preview'}
+  {#if hasOutput && !expanded && isLong}
     <div class="bash-output bash-preview">
       <pre>{@html highlightedPreview}</pre>
     </div>
-  {:else if hasOutput && displayState === 'expanded'}
+  {:else if hasOutput && (expanded || !isLong)}
     <div class="bash-output">
       <pre>{@html highlightedOutput}</pre>
     </div>
