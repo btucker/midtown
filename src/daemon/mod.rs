@@ -709,10 +709,11 @@ pub(crate) struct DaemonState {
     /// thread — avoids acquiring the async `persistent_state` lock on the channel
     /// post hot path.
     ///
-    /// Populated in three places:
+    /// Populated in four places:
     /// 1. `handle_session_fork` — when a fork is created
     /// 2. `SpawnSession` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
     /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
+    /// 4. `spawn_coworker()` — for non-reviewer coworkers with a `bound_thread_id`
     ///
     /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
     pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
@@ -1736,7 +1737,11 @@ impl DaemonState {
                 },
             );
             // Populate fork_bound_threads so channel posts auto-route to the task thread.
-            if let Some(ref tid) = bound_thread_id {
+            // Skip reviewers: they have their own respawn path (decide_dead_reviewer_respawns)
+            // and adding them here would cause fork crash recovery to misconfigure them.
+            if let Some(ref tid) = bound_thread_id
+                && !is_reviewer
+            {
                 self.fork_bound_threads
                     .lock()
                     .unwrap()
