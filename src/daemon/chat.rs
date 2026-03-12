@@ -70,13 +70,16 @@ pub(super) async fn chat_monitor_loop(
                                         let msg_lower = msg.content.to_lowercase();
                                         let lead_mention = format!("@{}", state.project_name).to_lowercase();
                                         if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
-                                            let nudge_text = format!(
-                                                "{} ({}): {}",
-                                                msg.from,
-                                                msg.thread_anchor_id(),
-                                                msg.content
-                                            );
-                                            state.nudge_lead(&nudge_text).await;
+                                            let effect = super::effects::Effect::NudgeChannelLead {
+                                                channel_name: state.default_channel_name().to_string(),
+                                                reason: super::wake_reason::WakeReason::Mention {
+                                                    from: msg.from.clone(),
+                                                    content: msg.content.clone(),
+                                                    msg_id: msg.thread_anchor_id().to_string(),
+                                                    thread_ctx: None,
+                                                },
+                                            };
+                                            super::effects::execute_effects(vec![effect], &state).await;
                                             info!(
                                                 "Nudged lead about @{} mention in {} message",
                                                 state.project_name,
@@ -90,6 +93,7 @@ pub(super) async fn chat_monitor_loop(
                                                     from: msg.from.clone(),
                                                     content: msg.content.clone(),
                                                     msg_id: msg.thread_anchor_id().to_string(),
+                                                    thread_ctx: None,
                                                 },
                                             };
                                             super::effects::execute_effects(vec![effect], &state).await;
@@ -262,7 +266,15 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
             Duration::from_secs(3600),
         );
         if should_nudge_lead {
-            state.nudge_lead(&nudge_text).await;
+            // Use Nudge (not Mention) for @all: it's an undirected broadcast,
+            // not a directed mention. "said" framing matches what coworkers see.
+            let nudge_effect = super::effects::Effect::NudgeChannelLead {
+                channel_name: state.default_channel_name().to_string(),
+                reason: super::wake_reason::WakeReason::Nudge {
+                    message: nudge_text.clone(),
+                },
+            };
+            super::effects::execute_effects(vec![nudge_effect], state).await;
             info!("Nudged lead for @all from {}", msg.from);
         }
     }
