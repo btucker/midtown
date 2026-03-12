@@ -1011,34 +1011,8 @@ pub(super) async fn handle_channel_read(
             }
         };
 
-        let messages_json: Vec<serde_json::Value> = result_messages
-            .iter()
-            .map(|m| {
-                let mut obj = serde_json::json!({
-                    "from": m.from,
-                    "message": m.content,
-                    "timestamp": m.timestamp.to_rfc3339(),
-                    "msg_type": m.message_type.wire_name(),
-                });
-                if let Some(ref parent_id) = m.thread_parent_id {
-                    obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
-                }
-                if let Some(ref nudge_type) = m.nudge_type {
-                    obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
-                }
-                if let Some(ref tool_data) = m.tool_data {
-                    obj["tool_data"] = serde_json::to_value(tool_data)
-                        .expect("ToolBlock serialization is infallible");
-                }
-                if let Some(ref provider) = m.provider {
-                    obj["provider"] = serde_json::Value::String(provider.clone());
-                }
-                if let Some(ref tool_use_id) = m.tool_use_id {
-                    obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
-                }
-                obj
-            })
-            .collect();
+        let messages_json: Vec<serde_json::Value> =
+            result_messages.iter().map(|m| message_to_json(m)).collect();
 
         return Response::success(
             id,
@@ -1176,34 +1150,7 @@ pub(super) async fn handle_channel_read(
         }
     };
 
-    let messages_json: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| {
-            let mut obj = serde_json::json!({
-                "from": m.from,
-                "message": m.content,
-                "timestamp": m.timestamp.to_rfc3339(),
-                "msg_type": m.message_type.wire_name(),
-            });
-            if let Some(ref parent_id) = m.thread_parent_id {
-                obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
-            }
-            if let Some(ref nudge_type) = m.nudge_type {
-                obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
-            }
-            if let Some(ref tool_data) = m.tool_data {
-                obj["tool_data"] =
-                    serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
-            }
-            if let Some(ref provider) = m.provider {
-                obj["provider"] = serde_json::Value::String(provider.clone());
-            }
-            if let Some(ref tool_use_id) = m.tool_use_id {
-                obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
-            }
-            obj
-        })
-        .collect();
+    let messages_json: Vec<serde_json::Value> = messages.iter().map(message_to_json).collect();
 
     Response::success(
         id,
@@ -1211,6 +1158,33 @@ pub(super) async fn handle_channel_read(
             "messages": messages_json,
         }),
     )
+}
+
+fn message_to_json(m: &crate::message::Message) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "id": m.id,
+        "from": m.from,
+        "message": m.content,
+        "timestamp": m.timestamp.to_rfc3339(),
+        "msg_type": m.message_type.wire_name(),
+    });
+    if let Some(ref parent_id) = m.thread_parent_id {
+        obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
+    }
+    if let Some(ref nudge_type) = m.nudge_type {
+        obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
+    }
+    if let Some(ref tool_data) = m.tool_data {
+        obj["tool_data"] =
+            serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
+    }
+    if let Some(ref provider) = m.provider {
+        obj["provider"] = serde_json::Value::String(provider.clone());
+    }
+    if let Some(ref tool_use_id) = m.tool_use_id {
+        obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
+    }
+    obj
 }
 
 pub(crate) fn build_topic_thread_nudge_effect(

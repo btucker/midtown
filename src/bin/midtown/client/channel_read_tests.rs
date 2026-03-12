@@ -20,7 +20,7 @@ fn build_channel_read_params(
     channel: Option<&str>,
     thread: Option<&str>,
     message: Option<&str>,
-    context: Option<&usize>,
+    context: Option<usize>,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({ "all": all });
     if let Some(n) = last {
@@ -166,9 +166,7 @@ fn channel_read_message_param_omitted_when_none() {
 
 #[test]
 fn channel_read_context_param_included() {
-    let ctx = 3_usize;
-    let params =
-        build_channel_read_params(false, None, None, None, None, Some("abc-123"), Some(&ctx));
+    let params = build_channel_read_params(false, None, None, None, None, Some("abc-123"), Some(3));
     assert_eq!(
         params["context"].as_u64(),
         Some(3),

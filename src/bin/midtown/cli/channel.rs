@@ -115,7 +115,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             channel.as_deref(),
             thread_parent_id.as_deref(),
             message.as_deref(),
-            context.as_ref(),
+            *context,
         ),
         ChannelCommand::Create { name } => client.channel_create(name),
         ChannelCommand::Archive { name } => client.channel_archive(name),

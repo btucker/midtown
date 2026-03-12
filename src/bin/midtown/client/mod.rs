@@ -306,7 +306,7 @@ impl DaemonClient {
         channel: Option<&str>,
         thread: Option<&str>,
         message: Option<&str>,
-        context: Option<&usize>,
+        context: Option<usize>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "all": all });
         if let Some(n) = last {
