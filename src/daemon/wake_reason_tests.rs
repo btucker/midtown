@@ -400,6 +400,14 @@ fn user_message_thread_reply_nudge_includes_instructions() {
         msg.contains("This is a thread reply"),
         "thread reply nudge should indicate it's a thread reply"
     );
+    assert!(
+        msg.contains("channel read --thread parent-msg-uuid"),
+        "thread reply nudge should use --thread for channel read"
+    );
+    assert!(
+        msg.contains("text output auto-posts"),
+        "thread reply nudge should include output suppression reminder"
+    );
 }
 
 #[test]

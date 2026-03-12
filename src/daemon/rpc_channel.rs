@@ -523,25 +523,21 @@ pub(super) async fn handle_channel_post(
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 
+            let base = format!(
+                "{} mentioned @{} ({}): {}",
+                from,
+                state.project_name,
+                msg.thread_anchor_id(),
+                summary
+            );
             let nudge_msg = if let Some(parent_id) = thread_parent_id {
-                format!(
-                    "{} mentioned @{} ({}): {}\n\nThis is a thread reply. To reply in the thread:\n  \
-                     midtown channel post \"...\" --thread {parent_id} --channel {channel_name}\n\
-                     To read recent thread context:\n  \
-                     midtown channel read --last 50 --channel {channel_name}",
-                    from,
-                    state.project_name,
-                    msg.thread_anchor_id(),
-                    summary
-                )
+                let ctx = crate::daemon::wake_reason::ThreadContext {
+                    parent_id: parent_id.to_string(),
+                    channel_name: channel_name.to_string(),
+                };
+                format!("{base}\n\n{}", ctx.reply_instructions())
             } else {
-                format!(
-                    "{} mentioned @{} ({}): {}",
-                    from,
-                    state.project_name,
-                    msg.thread_anchor_id(),
-                    summary
-                )
+                base
             };
             info!(
                 "Nudging Lead about @{} mention from {}",

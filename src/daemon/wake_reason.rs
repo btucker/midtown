@@ -17,6 +17,24 @@ pub struct ThreadContext {
     pub channel_name: String,
 }
 
+impl ThreadContext {
+    /// Format the standard thread reply instructions appended to nudge messages.
+    ///
+    /// Includes the `--thread` flag for posting, `--thread` for reading context,
+    /// and a reminder to keep text output brief to avoid duplicate top-level messages.
+    pub fn reply_instructions(&self) -> String {
+        format!(
+            "This is a thread reply. To reply in the thread:\n  \
+             midtown channel post \"...\" --thread {} --channel {}\n\
+             To read recent thread context:\n  \
+             midtown channel read --thread {} --channel {}\n\n\
+             IMPORTANT: Keep text output brief or omit it — text output auto-posts as a \
+             top-level message, producing a duplicate alongside your --thread reply.",
+            self.parent_id, self.channel_name, self.parent_id, self.channel_name
+        )
+    }
+}
+
 /// Why a session is being woken up.
 #[derive(Debug, Clone)]
 pub enum WakeReason {
@@ -138,14 +156,7 @@ impl WakeReason {
                 thread_ctx,
             } => {
                 if let Some(ctx) = thread_ctx {
-                    format!(
-                        "user ({msg_id}): {content}\n\n\
-                         This is a thread reply. To reply in the thread:\n  \
-                         midtown channel post \"...\" --thread {} --channel {}\n\
-                         To read recent thread context:\n  \
-                         midtown channel read --last 50 --channel {}",
-                        ctx.parent_id, ctx.channel_name, ctx.channel_name
-                    )
+                    format!("user ({msg_id}): {content}\n\n{}", ctx.reply_instructions())
                 } else {
                     format!("user ({msg_id}): {content}")
                 }
@@ -245,13 +256,7 @@ impl WakeReason {
                 ..
             } => {
                 let thread_section = if let Some(ctx) = thread_ctx {
-                    format!(
-                        "\n\nThis is a thread reply. To reply in the thread:\n  \
-                         midtown channel post \"...\" --thread {} --channel {}\n\
-                         To read recent thread context:\n  \
-                         midtown channel read --last 50 --channel {}",
-                        ctx.parent_id, ctx.channel_name, ctx.channel_name
-                    )
+                    format!("\n\n{}", ctx.reply_instructions())
                 } else {
                     String::new()
                 };

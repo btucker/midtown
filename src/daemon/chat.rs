@@ -313,13 +313,11 @@ fn render_thread_context(msg: &Message) -> String {
     );
 
     if let Some(parent_id) = &msg.thread_parent_id {
-        let channel = msg.channel_name();
-        format!(
-            "{base}\n\nThis is a thread reply. To reply in the thread:\n  \
-             midtown channel post \"...\" --thread {parent_id} --channel {channel}\n\
-             To read recent thread context:\n  \
-             midtown channel read --last 50 --channel {channel}"
-        )
+        let ctx = super::wake_reason::ThreadContext {
+            parent_id: parent_id.clone(),
+            channel_name: msg.channel_name().to_string(),
+        };
+        format!("{base}\n\n{}", ctx.reply_instructions())
     } else {
         base
     }
