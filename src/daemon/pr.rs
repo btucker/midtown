@@ -881,6 +881,44 @@ async fn decide_and_build_pr_issue_effects(
     new_effects
 }
 
+#[allow(clippy::too_many_arguments)]
+/// Shared single-issue pipeline gate: cooldown check + decision/effect build.
+///
+/// `process_pr_issue_nudges` and `collect_green_with_feedback_effects` both
+/// run this same sequence once they identify an owner + issue for a PR.
+async fn maybe_decide_pr_issue_effects(
+    owner: &str,
+    pf: &PrFields<'_>,
+    issue_type: PrIssueType,
+    review_content: Option<&str>,
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+) -> Vec<Effect> {
+    let should_nudge = {
+        let tracker = state.pr_issue_tracker.lock().await;
+        tracker.should_nudge(pf.number, issue_type)
+    };
+
+    if !should_nudge {
+        return Vec::new();
+    }
+
+    decide_and_build_pr_issue_effects(
+        owner,
+        pf.number,
+        pf.title,
+        issue_type,
+        review_content,
+        snap,
+        state,
+        active_coworkers,
+        idle_coworkers,
+    )
+    .await
+}
+
 /// Process per-PR issue detection and generate nudge effects.
 ///
 /// For each non-draft PR: resolves the owner, detects actionable issues (merge
@@ -943,15 +981,6 @@ async fn process_pr_issue_nudges(
         };
 
         for issue_type in issues {
-            let should_nudge = {
-                let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pf.number, issue_type)
-            };
-
-            if !should_nudge {
-                continue;
-            }
-
             let review_content = match issue_type {
                 PrIssueType::ChangesRequested | PrIssueType::Approved => {
                     fetch_review_content(pf.number).await
@@ -960,10 +989,9 @@ async fn process_pr_issue_nudges(
             };
 
             effects.extend(
-                decide_and_build_pr_issue_effects(
+                maybe_decide_pr_issue_effects(
                     &owner,
-                    pf.number,
-                    pf.title,
+                    &pf,
                     issue_type,
                     review_content.as_deref(),
                     snap,
@@ -1424,15 +1452,6 @@ async fn collect_green_with_feedback_effects(
             }
         }
 
-        // Check cooldown to avoid spamming
-        let should_nudge = {
-            let tracker = state.pr_issue_tracker.lock().await;
-            tracker.should_nudge(pr_number, PrIssueType::GreenWithFeedback)
-        };
-        if !should_nudge {
-            continue;
-        }
-
         // Use pre-fetched review content (fetched at the top of poll_prs_for_issues
         // to keep this function free of I/O — CLAUDE.md: "Decision functions are pure").
         let review_content = pre_fetched_review_content
@@ -1440,10 +1459,9 @@ async fn collect_green_with_feedback_effects(
             .map(|s| s.as_str());
 
         effects.extend(
-            decide_and_build_pr_issue_effects(
+            maybe_decide_pr_issue_effects(
                 &owner,
-                pr_number,
-                pf.title,
+                &pf,
                 PrIssueType::GreenWithFeedback,
                 review_content,
                 snap,

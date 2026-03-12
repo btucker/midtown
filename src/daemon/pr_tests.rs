@@ -820,6 +820,101 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     );
 }
 
+#[tokio::test]
+async fn test_maybe_decide_pr_issue_effects_skips_when_cooldown_active() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let snap = minimal_snapshot_for_test();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let pr = json!({
+        "number": 4242,
+        "headRefName": "york/fix-auth",
+        "title": "Fix auth bug",
+        "body": "<!-- midtown: york -->",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+    });
+    let pf = PrFields::from_json(&pr);
+
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pf.number, PrIssueType::CiFailed);
+    }
+
+    let effects = maybe_decide_pr_issue_effects(
+        "york",
+        &pf,
+        PrIssueType::CiFailed,
+        None,
+        &snap,
+        &state,
+        &[],
+        &[],
+    )
+    .await;
+
+    assert!(
+        effects.is_empty(),
+        "Cooldown gate should skip decision/effect build when nudge is still active"
+    );
+}
+
+#[tokio::test]
+async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+    use std::collections::{HashMap, HashSet};
+
+    let pr_number = 5151u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "york/fix-ci",
+        "title": "Fix CI flake [Midtown !5151]",
+        "body": "<!-- midtown: york -->",
+        "isDraft": false,
+        "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+        "reviewDecision": "CHANGES_REQUESTED",
+    });
+
+    let snap = minimal_snapshot_for_test();
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_nudge(pr_number, PrIssueType::GreenWithFeedback);
+        assert!(
+            tracker.has_nudge(pr_number, PrIssueType::GreenWithFeedback),
+            "Precondition: GreenWithFeedback nudge should exist before collection"
+        );
+    }
+
+    let reviewed_prs: HashSet<u64> = [pr_number].into_iter().collect();
+    let effects = collect_green_with_feedback_effects(
+        &snap,
+        &state,
+        &[pr],
+        &reviewed_prs,
+        &[], // owner is inactive
+        &["york".to_string()],
+        &HashMap::new(),
+    )
+    .await;
+
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        assert!(
+            !tracker.has_nudge(pr_number, PrIssueType::GreenWithFeedback),
+            "Collector should clear stale GreenWithFeedback cooldown when owner is inactive"
+        );
+    }
+
+    assert!(
+        !effects.is_empty(),
+        "After cooldown clear, green-with-feedback PR should proceed through shared decision pipeline"
+    );
+}
+
 /// Bug: After a daemon restart, worktree_branch_owners is empty because
 /// current_coworker is None for all worktree assignments. This causes
 /// collect_reviewer_effects_with_source to skip all PRs as "orphaned"
