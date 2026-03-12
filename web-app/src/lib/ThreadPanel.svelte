@@ -146,22 +146,38 @@ let prevThreadId = null;
   $effect(() => {
     if ($threadData?.parentMessage?.id) {
       const _ownership = $threadOwnership[$threadData.parentMessage.id]
-      untrack(() => { forkPending = false })
+      untrack(() => {
+        forkPending = false
+        if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
+      })
     }
   })
 
   let forkError = $state(null)
+  let forkTimeout = null
 
   function handleForkToggle() {
     if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
     forkPending = true
     forkError = null
+    if (forkTimeout) clearTimeout(forkTimeout)
     const onError = (msg) => {
+      if (!forkPending) return // Timeout already handled this request
+      if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
       forkPending = false
       forkError = msg
       // Auto-clear error after 5 seconds
       setTimeout(() => { forkError = null }, 5000)
     }
+    // Safety net: if no ownership update arrives within 10s, auto-clear pending state
+    forkTimeout = setTimeout(() => {
+      forkTimeout = null
+      if (forkPending) {
+        forkPending = false
+        forkError = 'Request timed out'
+        setTimeout(() => { forkError = null }, 5000)
+      }
+    }, 10000)
     if (hasDedicatedSession) {
       unforkThread($threadData.parentMessage.id, $threadData.channelName, onError)
     } else {
@@ -179,16 +195,24 @@ let prevThreadId = null;
       ?? ($threadData?.tasks?.[0]?.id != null ? `task-${$threadData.tasks[0].id}` : null)
   )
 
-  // Clear thinking and reset autoScroll when thread is closed or switched.
+  // Clear thinking, fork state, and reset autoScroll when thread is closed or switched.
+  // Fork state must be cleared here (not just in the ownership effect) because switching
+  // to a task-only thread (no parentMessage.id) would leave stale forkTimeout running.
   $effect(() => {
     currentThreadId // track dependency — re-runs only when thread identity changes
     untrack(() => {
       thinking = false
       autoScroll = true
+      forkPending = false
+      forkError = null
     })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
+    }
+    if (forkTimeout) {
+      clearTimeout(forkTimeout)
+      forkTimeout = null
     }
   })
 
@@ -250,6 +274,10 @@ let prevThreadId = null;
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
       thinkingTimeout = null
+    }
+    if (forkTimeout) {
+      clearTimeout(forkTimeout)
+      forkTimeout = null
     }
   })
 
@@ -585,14 +613,14 @@ let prevThreadId = null;
             class="px-2 py-1 text-[0.72rem] rounded-md border transition-all duration-150 {hasDedicatedSession ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
             onclick={handleForkToggle}
             disabled={forkPending}
-            title={hasDedicatedSession ? 'Return this thread to the channel lead' : 'Create a dedicated session for this thread'}
+            title={hasDedicatedSession ? 'End the dedicated fork session for this thread' : 'Fork the channel lead to dedicate a session to this thread'}
           >
             {#if forkPending}
               ...
             {:else if hasDedicatedSession}
-              Return to main
+              End fork
             {:else}
-              Dedicate session
+              Fork lead
             {/if}
           </button>
         {/if}
@@ -752,14 +780,14 @@ let prevThreadId = null;
           class="px-2 py-1 text-[0.72rem] rounded-md border transition-all duration-150 {hasDedicatedSession ? 'border-destructive/40 text-destructive hover:bg-destructive/10' : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground'}"
           onclick={handleForkToggle}
           disabled={forkPending}
-          title={hasDedicatedSession ? 'Return this thread to the channel lead' : 'Create a dedicated session for this thread'}
+          title={hasDedicatedSession ? 'End the dedicated fork session for this thread' : 'Fork the channel lead to dedicate a session to this thread'}
         >
           {#if forkPending}
             ...
           {:else if hasDedicatedSession}
-            Return to main
+            End fork
           {:else}
-            Dedicate session
+            Fork lead
           {/if}
         </button>
       {/if}
