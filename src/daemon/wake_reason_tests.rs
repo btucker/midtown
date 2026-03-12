@@ -400,6 +400,14 @@ fn user_message_thread_reply_nudge_includes_instructions() {
         msg.contains("This is a thread reply"),
         "thread reply nudge should indicate it's a thread reply"
     );
+    assert!(
+        msg.contains("channel read --last 50"),
+        "thread reply nudge should use --last 50 for channel read"
+    );
+    assert!(
+        msg.contains("text output auto-posts"),
+        "thread reply nudge should include output suppression reminder"
+    );
 }
 
 #[test]
@@ -506,5 +514,33 @@ fn user_message_thread_reply_initial_prompt_includes_instructions() {
     assert!(
         prompt.contains("--channel auth-refactor"),
         "thread reply initial prompt should include --channel instruction"
+    );
+}
+
+#[test]
+fn reply_instructions_channel_read_uses_valid_cli_flags() {
+    // Regression: reply_instructions() previously generated `channel read --thread`
+    // but `channel read` only supports --all, --last, --since, --channel (not --thread).
+    let ctx = ThreadContext {
+        parent_id: "parent-123".to_string(),
+        channel_name: "ops".to_string(),
+    };
+    let instructions = ctx.reply_instructions();
+
+    // Extract the `channel read` command from the instructions
+    let read_cmd = instructions
+        .lines()
+        .find(|l| l.contains("channel read"))
+        .expect("reply_instructions should contain a channel read command");
+
+    // Valid flags for `channel read`: --all, --last, --since, --channel
+    // Must NOT contain --thread (that's a `channel post` flag)
+    assert!(
+        !read_cmd.contains("--thread"),
+        "channel read command must not use --thread (only valid on channel post): {read_cmd}"
+    );
+    assert!(
+        read_cmd.contains("--last"),
+        "channel read command should use --last for reading context: {read_cmd}"
     );
 }
