@@ -1,6 +1,7 @@
 <script>
 import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
+import { filterChannelPosts } from "./toolRunGrouping.js";
 import { createAutoCollapse } from "./useAutoCollapse.js";
 
 const TOOL_RUN_DELAY_MS = 10_000;
@@ -40,6 +41,23 @@ $effect(() => {
 	return () => currentAc.clearTimer();
 });
 
+// Filter out 'midtown channel post' blocks from expanded view — they're redundant
+// since the posted message already appears in the channel.
+// Preserves original indexes so MessageRow gets the correct position in allMessages.
+let visibleEntries = $derived.by(() =>
+	messages
+		.map((msg, i) => {
+			const filtered = filterChannelPosts(msg.tool_data);
+			if (filtered.length === msg.tool_data?.length) return { msg, origIndex: i };
+			if (filtered.length === 0) return null;
+			return { msg: { ...msg, tool_data: filtered }, origIndex: i };
+		})
+		.filter(Boolean),
+);
+
+// Use visible tool count (after filtering channel posts) instead of raw toolCount
+let visibleToolCount = $derived(visibleEntries.reduce((sum, entry) => sum + (entry.msg.tool_data?.length || 0), 0));
+
 function toggle() {
 	userOverride = true;
 	ac.clearTimer();
@@ -55,7 +73,7 @@ function toggle() {
 		out:fade={{ duration: mounted ? 100 : 0 }}
 	>
 		<span class="tool-run-icon">▸</span>
-		<span class="tool-run-text">{toolCount} tools used</span>
+		<span class="tool-run-text">{visibleToolCount} {visibleToolCount === 1 ? 'tool' : 'tools'} used</span>
 	</button>
 {:else}
 	<div
@@ -65,16 +83,16 @@ function toggle() {
 	>
 		<button class="tool-run-summary tool-run-expanded-header" onclick={toggle}>
 			<span class="tool-run-icon">▾</span>
-			<span class="tool-run-text">{toolCount} tools used</span>
+			<span class="tool-run-text">{visibleToolCount} {visibleToolCount === 1 ? 'tool' : 'tools'} used</span>
 		</button>
-		{#each messages as msg, i}
+		{#each visibleEntries as entry}
 			<MessageRow
-				{msg}
+				msg={entry.msg}
 				msgs={allMessages}
-				index={startIndex + i}
+				index={startIndex + entry.origIndex}
 				senderClass="mt-1"
 				{channelName}
-				currentTask={currentTasks[msg.from?.toLowerCase()]}
+				currentTask={currentTasks[entry.msg.from?.toLowerCase()]}
 				{showToolData}
 			/>
 		{/each}
