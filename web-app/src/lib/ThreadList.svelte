@@ -140,7 +140,7 @@ function handleDismiss(e, threadId) {
   }
 
   .completed-check {
-    width: 2px;
+    width: 14px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
