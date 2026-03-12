@@ -897,30 +897,21 @@ pub(crate) fn build_attach_shell_command(
         .collect::<Vec<_>>()
         .join(" ");
 
-    let bin_command = midtown::config::get_bin_command();
-    let wrapped_attach_cmd = format!(
-        "{} headed-wrapper run-agent --session {} --provider {} --cwd {} -- sh -lc {}",
-        shell_quote(&bin_command),
-        shell_quote(name),
-        provider.as_str(),
-        shell_quote(cwd),
-        shell_quote(&provider_cmd),
-    );
+    // Direct exec: run the provider CLI directly with inherited stdio.
+    // No PTY wrapper — the process gets the real terminal.
+    let attach_cmd = format!("sh -lc {}", shell_quote(&provider_cmd));
 
     if options.include_detach {
+        let bin_command = midtown::config::get_bin_command();
         let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
         Ok(format!(
             "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
             env_parts.join(" "),
-            wrapped_attach_cmd,
+            attach_cmd,
             detach_cmd
         ))
     } else {
-        Ok(format!(
-            "export {}; {}",
-            env_parts.join(" "),
-            wrapped_attach_cmd,
-        ))
+        Ok(format!("export {}; {}", env_parts.join(" "), attach_cmd,))
     }
 }
 
