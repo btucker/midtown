@@ -128,7 +128,9 @@ $effect(() => {
 let prevRenderChannel = null;
 let renderVersion = 0; // version counter to discard stale microtasks
 // Shadow of renderStartIndex set synchronously so the "only fires once"
-// guard works even before the deferred write executes.
+// guard works even before the deferred write executes. Also updated by the
+// scroll-to-message effect to prevent the guard from misfiring after a
+// search navigation clears.
 let pendingRenderStartIndex = 0;
 $effect(() => {
 	const ch = $activeChannel;
@@ -564,11 +566,16 @@ $effect(() => {
 
 	// Cancel any pending window-positioning microtask so it can't overwrite
 	// the renderStartIndex we're about to set.
-	++renderVersion;
+	const version = ++renderVersion;
 
 	// Ensure the target is within the render window
 	const needsExpansion = targetIndex < renderStartIndex;
 	const newStart = needsExpansion ? Math.max(0, targetIndex - 10) : renderStartIndex;
+
+	// Always update pendingRenderStartIndex so the window-positioning effect's
+	// "only fires once" guard (pendingRenderStartIndex === 0) doesn't misfire
+	// after the target is cleared and new messages arrive.
+	pendingRenderStartIndex = newStart;
 
 	// Disable auto-scroll so the auto-scroll effect doesn't fight us
 	untrack(() => {
@@ -578,12 +585,14 @@ $effect(() => {
 	// Use queueMicrotask to avoid state_unsafe_mutation, then tick() for DOM.
 	// Nesting tick() inside the microtask ensures it resolves AFTER the
 	// renderStartIndex update is applied, so the target element exists in the DOM.
+	// Guard with renderVersion so rapid re-fires only execute the latest microtask.
 	queueMicrotask(() => {
+		if (version !== renderVersion) return;
 		if (needsExpansion) {
 			renderStartIndex = newStart;
-			pendingRenderStartIndex = newStart;
 		}
 		tick().then(() => {
+			if (version !== renderVersion) return;
 			const el = scrollAreaViewport?.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`);
 			if (el) {
 				el.scrollIntoView({ behavior: "smooth", block: "center" });
