@@ -90,5 +90,41 @@ export function highlightBlock(code, lang) {
 	}
 }
 
+/**
+ * Map file extensions to highlight.js language names.
+ * Kept in sync with the languages registered above.
+ */
+export const EXT_TO_LANG = {
+	rs: "rust",
+	js: "javascript",
+	jsx: "javascript",
+	ts: "typescript",
+	tsx: "typescript",
+	py: "python",
+	sh: "bash",
+	bash: "bash",
+	zsh: "bash",
+	json: "json",
+	toml: "toml",
+	yaml: "yaml",
+	yml: "yaml",
+	css: "css",
+	svelte: "xml",
+	html: "xml",
+	xml: "xml",
+	md: "xml",
+};
+
+/**
+ * Get the highlight.js language name for a file path based on its extension.
+ * @param {string} path - File path
+ * @returns {string|null} Language name or null if unknown
+ */
+export function getLanguage(path) {
+	if (!path) return null;
+	const ext = path.split(".").pop()?.toLowerCase();
+	return ext ? EXT_TO_LANG[ext] || null : null;
+}
+
 // Export the configured hljs instance for advanced use cases
 export { hljs };
