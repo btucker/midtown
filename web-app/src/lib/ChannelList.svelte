@@ -1,11 +1,22 @@
 <script>
 import ArchiveIcon from "@lucide/svelte/icons/archive";
+import Check from "@lucide/svelte/icons/check";
+import X from "@lucide/svelte/icons/x";
 import { SvelteSet } from "svelte/reactivity";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
-import { closeThread, fetchChannels, fetchHistory, getApiBase, pushNavState } from "./api.js";
+import {
+	closeThread,
+	dismissThread,
+	fetchChannels,
+	fetchHistory,
+	getApiBase,
+	openThread,
+	pushNavState,
+} from "./api.js";
 import {
 	computeExpandedAfterChannelNameClick,
 	computeVisibleDmChannels,
+	getAllCompletedThreads,
 	getChannelCiStatus,
 	getChannelHasActiveTasks,
 	getChannelHasTrackedThreads,
@@ -64,7 +75,7 @@ $: if (
 	$activeChannel &&
 	!expandedChannels.has($activeChannel) &&
 	(getChannelHasActiveTasks($activeChannel, $kanbanData) ||
-		getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds))
+		getChannelHasTrackedThreads($activeChannel, $trackedThreads, taskThreadIds, completedTaskThreadIds))
 ) {
 	expandedChannels.add($activeChannel);
 }
@@ -103,6 +114,14 @@ $: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
 	visitedDms,
 }).length;
 
+// Completed threads across all channels (for "Needs Attention" section)
+$: completedThreads = getAllCompletedThreads(
+	$trackedThreads,
+	$threadUnreadCounts,
+	taskThreadIds,
+	completedTaskThreadIds,
+);
+
 function selectChannel(channelName) {
 	// Switch channel immediately for instant UI response (non-blocking).
 	// Previously this was async and awaited fetchHistory, which blocked the UI
@@ -125,6 +144,7 @@ function selectChannel(channelName) {
 	const next = computeExpandedAfterChannelNameClick(channelName, expandedChannels, $activeChannel, $kanbanData, {
 		trackedThreads: $trackedThreads,
 		taskThreadIds,
+		completedTaskThreadIds,
 	});
 	if (next.has(channelName)) {
 		expandedChannels.add(channelName);
@@ -142,6 +162,26 @@ function selectChannel(channelName) {
 	// when the store was empty, but that caused stale/incomplete data when a few
 	// WS messages had arrived but the full history was never loaded.
 	fetchHistory(channelName);
+}
+
+function handleCompletedThreadClick(thread) {
+	sidebar.setOpenMobile(false);
+	// Switch to the thread's channel so the thread panel has proper context
+	if ($activeChannel !== thread.channelName) {
+		activeChannel.set(thread.channelName);
+		pushNavState({ channel: thread.channelName });
+		fetchHistory(thread.channelName);
+	}
+	// Find the parent message in the channel's message store, or create a stub
+	const channelMsgs = $messagesByChannel[thread.channelName] || [];
+	const parentMsg = channelMsgs.find((m) => m.id === thread.id);
+	const msg = parentMsg || { id: thread.id, from: "", content: thread.subject || "" };
+	openThread(msg, thread.channelName);
+}
+
+function handleCompletedThreadDismiss(e, threadId) {
+	e.stopPropagation();
+	dismissThread(threadId);
 }
 
 function formatChannelName(name) {
@@ -276,13 +316,47 @@ function handleKeyDown(event) {
     </div>
   {/if}
 
+  {#if completedThreads.length > 0}
+    <div class="px-3 pt-2 pb-1">
+      <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs Attention</div>
+    </div>
+    <div class="needs-attention-list">
+      {#each completedThreads as thread}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="completed-thread-row"
+          role="button"
+          tabindex="0"
+          title={thread.fullText}
+          data-testid="needs-attention-thread"
+          onclick={() => handleCompletedThreadClick(thread)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleCompletedThreadClick(thread) }}
+        >
+          <span class="completed-check-icon"><Check size={10} /></span>
+          <div class="completed-thread-content">
+            <span class="completed-thread-subject">{thread.subject}</span>
+            <span class="completed-thread-channel">#{thread.channelName}</span>
+          </div>
+          <button
+            class="completed-dismiss-btn"
+            title="Dismiss"
+            data-testid="needs-attention-dismiss"
+            onclick={(e) => handleCompletedThreadDismiss(e, thread.id)}
+          >
+            <X size={10} />
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
   {#each regularChannels as channel}
     {@const counts = getChannelTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const isActive = $activeChannel === channel.name}
     {@const isExpanded = expandedChannels.has(channel.name)}
     {@const hasActiveTasks = counts.inProgress > 0 || counts.pending > 0}
-    {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds)}
+    {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds, completedTaskThreadIds)}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
@@ -447,6 +521,92 @@ function handleKeyDown(event) {
     flex-shrink: 0;
     background: hsl(var(--accent-teal));
     opacity: 0.8;
+  }
+
+  /* Needs Attention section */
+  .needs-attention-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 2px 8px 8px;
+  }
+
+  .completed-thread-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px 3px 0;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.1s;
+    text-align: left;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    line-height: 1.3;
+    color: hsl(var(--accent-green, 145 40% 38%) / 0.8);
+  }
+
+  .completed-thread-row:hover {
+    background: hsl(var(--sidebar-accent));
+  }
+
+  .completed-check-icon {
+    width: 14px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: hsl(var(--accent-green, 145 40% 38%));
+  }
+
+  .completed-thread-content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .completed-thread-subject {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .completed-thread-channel {
+    flex-shrink: 0;
+    font-size: 0.6rem;
+    color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  .completed-dismiss-btn {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: hsl(var(--muted-foreground) / 0.4);
+    opacity: 0;
+    transition: opacity 0.1s, color 0.1s, background 0.1s;
+  }
+
+  .completed-thread-row:hover .completed-dismiss-btn {
+    opacity: 1;
+  }
+
+  .completed-dismiss-btn:hover {
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--sidebar-accent));
   }
 
 </style>

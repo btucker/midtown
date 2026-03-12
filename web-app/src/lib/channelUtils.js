@@ -145,7 +145,7 @@ export function computeExpandedAfterTriangleClick(channelName, expandedChannels)
  * - Re-clicking the already-active channel: toggle expand/collapse.
  * Returns a new Set; does not mutate the input.
  *
- * @param {object} opts - Optional { trackedThreads, taskThreadIds } for thread-aware expansion
+ * @param {object} opts - Optional { trackedThreads, taskThreadIds, completedTaskThreadIds } for thread-aware expansion
  */
 export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban, opts = {}) {
 	const next = new Set(expandedChannels);
@@ -159,7 +159,7 @@ export function computeExpandedAfterChannelNameClick(channelName, expandedChanne
 		const hasTasks = getChannelHasActiveTasks(channelName, kanban);
 		const hasThreads =
 			opts.trackedThreads && opts.taskThreadIds
-				? getChannelHasTrackedThreads(channelName, opts.trackedThreads, opts.taskThreadIds)
+				? getChannelHasTrackedThreads(channelName, opts.trackedThreads, opts.taskThreadIds, opts.completedTaskThreadIds)
 				: false;
 		if (hasTasks || hasThreads) {
 			next.add(channelName);
@@ -217,14 +217,14 @@ export function getCompletedTaskThreadIds(kanban) {
  * Get tracked threads for a channel, sorted by lastActivity (newest first).
  * Pure function — filters out active task-backed threads and returns their IDs
  * in `toClean` for the caller to handle cleanup separately (e.g. in a $effect).
- * Completed task threads are kept but marked with `completed: true`.
+ * Completed task threads are excluded (they appear in the needs-attention section instead).
  *
  * @param {string} channelName
  * @param {object} tracked - $trackedThreads store value
  * @param {object} unreadCounts - $threadUnreadCounts store value
  * @param {Set} taskThreadIds - from getTaskThreadIds() (active tasks)
  * @param {Set} completedTaskThreadIds - from getCompletedTaskThreadIds()
- * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread, completed}>, toClean: string[] }}
+ * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread}>, toClean: string[] }}
  */
 export function getChannelThreads(
 	channelName,
@@ -241,6 +241,8 @@ export function getChannelThreads(
 			toClean.push(id);
 			continue;
 		}
+		// Completed threads are shown in the needs-attention section, not per-channel
+		if (completedTaskThreadIds.has(id)) continue;
 		threads.push({
 			id,
 			subject: entry.subject,
@@ -248,7 +250,6 @@ export function getChannelThreads(
 			lastActivity: entry.lastActivity,
 			replyCount: entry.replyCount || 0,
 			unread: unreadCounts[id] || 0,
-			completed: completedTaskThreadIds.has(id),
 		});
 	}
 	threads.sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""));
@@ -256,11 +257,44 @@ export function getChannelThreads(
 }
 
 /**
- * Returns true if a channel has any tracked threads that aren't task-backed.
+ * Get all completed threads across all channels, sorted by lastActivity (newest first).
+ * These are threads whose parent task has been completed — they appear in the
+ * "needs attention" sidebar section instead of their channel's thread list.
+ *
+ * @param {object} tracked - $trackedThreads store value
+ * @param {object} unreadCounts - $threadUnreadCounts store value
+ * @param {Set} taskThreadIds - from getTaskThreadIds() (active tasks)
+ * @param {Set} completedTaskThreadIds - from getCompletedTaskThreadIds()
+ * @returns {Array<{id, subject, fullText, lastActivity, replyCount, unread, channelName}>}
  */
-export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds) {
+export function getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds) {
+	const threads = [];
 	for (const [id, entry] of Object.entries(tracked)) {
-		if (entry.channelName === channelName && !taskThreadIds.has(id)) return true;
+		// Skip active task-backed threads
+		if (taskThreadIds.has(id)) continue;
+		// Only include completed threads
+		if (!completedTaskThreadIds.has(id)) continue;
+		threads.push({
+			id,
+			subject: entry.subject,
+			fullText: entry.fullText || entry.subject,
+			lastActivity: entry.lastActivity,
+			replyCount: entry.replyCount || 0,
+			unread: unreadCounts[id] || 0,
+			channelName: entry.channelName,
+		});
+	}
+	threads.sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""));
+	return threads;
+}
+
+/**
+ * Returns true if a channel has any tracked threads that aren't task-backed
+ * and aren't completed (completed threads appear in needs-attention instead).
+ */
+export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds, completedTaskThreadIds = new Set()) {
+	for (const [id, entry] of Object.entries(tracked)) {
+		if (entry.channelName === channelName && !taskThreadIds.has(id) && !completedTaskThreadIds.has(id)) return true;
 	}
 	return false;
 }

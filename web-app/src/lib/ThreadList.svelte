@@ -1,5 +1,4 @@
 <script>
-import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
 import { dismissThread, openThread } from "./api.js";
@@ -52,12 +51,10 @@ function handleDismiss(e, threadId) {
 <div class="thread-list" data-testid="thread-list">
   {#each channelThreads as thread}
     {@const hasUnread = thread.unread > 0}
-    {@const isCompleted = thread.completed}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="thread-row"
       class:unread={hasUnread}
-      class:completed={isCompleted}
       role="button"
       tabindex="0"
       data-testid="sidebar-thread-row"
@@ -66,11 +63,7 @@ function handleDismiss(e, threadId) {
       onclick={() => handleClick(thread)}
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick(thread) }}
     >
-      {#if isCompleted}
-        <span class="completed-check" title="Task completed"><Check size={10} /></span>
-      {:else}
-        <span class="accent-line" class:accent-unread={hasUnread}></span>
-      {/if}
+      <span class="accent-line" class:accent-unread={hasUnread}></span>
       <div class="thread-content">
         <span class="thread-subject" data-testid="sidebar-thread-subject">{thread.subject}</span>
         {#if hasUnread}
@@ -123,10 +116,6 @@ function handleDismiss(e, threadId) {
     color: hsl(var(--sidebar-foreground));
   }
 
-  .thread-row.completed {
-    color: hsl(var(--accent-green, 145 40% 38%) / 0.8);
-  }
-
   .accent-line {
     width: 2px;
     align-self: stretch;
@@ -137,15 +126,6 @@ function handleDismiss(e, threadId) {
 
   .accent-unread {
     background: hsl(var(--accent-teal));
-  }
-
-  .completed-check {
-    width: 14px;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: hsl(var(--accent-green, 145 40% 38%));
   }
 
   .thread-content {
