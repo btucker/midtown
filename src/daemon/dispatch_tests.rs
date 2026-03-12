@@ -4502,6 +4502,33 @@ fn test_build_task_completion_effects_falls_back_to_pr_title() {
 }
 
 #[test]
+fn test_build_task_completion_effects_routes_to_task_channel() {
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint [Midtown #42]",
+        123,
+        "myrepo",
+        Some("proj-auth".to_string()),
+        None,
+    );
+
+    // PostToChannel should carry the task's channel
+    let post = effects
+        .iter()
+        .find(|e| matches!(e, Effect::PostToChannel { .. }))
+        .expect("Should have a PostToChannel effect");
+    match post {
+        Effect::PostToChannel { channel, .. } => {
+            assert_eq!(
+                channel.as_deref(),
+                Some("proj-auth"),
+                "PostToChannel should route to the task's channel"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn test_build_task_completion_effects_no_workflow_event_without_channel() {
     let effects = build_task_completion_effects(
         "feat: Add auth endpoint [Midtown #42]",
