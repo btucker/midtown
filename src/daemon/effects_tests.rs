@@ -2462,14 +2462,14 @@ async fn test_post_insight_dedup_before_suppression_ordering() {
     );
 }
 
-/// When task_thread_id is set but task_channel is None (inconsistent state),
-/// the insight should post as a top-level message, NOT create a cross-channel
-/// thread reference.
+/// When task_thread_id is set but task_channel is None, the task lives in the
+/// default channel (created without --channel). The insight should thread under
+/// the task announcement in the default channel.
 #[tokio::test]
-async fn test_post_insight_no_cross_channel_thread_when_task_channel_missing() {
+async fn test_post_insight_threads_in_default_channel_when_task_channel_is_none() {
     let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
 
-    let stale_thread_id = "stale-thread-from-old-channel";
+    let thread_id = "announcement-in-default-channel";
 
     {
         let mut ps = state.persistent_state.lock().await;
@@ -2484,12 +2484,12 @@ async fn test_post_insight_no_cross_channel_thread_when_task_channel_missing() {
                 ..Default::default()
             },
         );
-        // Deliberately NOT setting task_channel
+        // Deliberately NOT setting task_channel — task lives in default channel
         ps.task_thread_id
-            .insert("50".to_string(), stale_thread_id.to_string());
+            .insert("50".to_string(), thread_id.to_string());
     }
 
-    super::post_insight(&state, "coworker1", "Orphaned thread insight").await;
+    super::post_insight(&state, "coworker1", "Default channel threaded insight").await;
 
     let default_ch = state.channel_router.default_channel_name().to_string();
     let messages = read_channel_messages(&temp_dir, &default_ch);
@@ -2498,13 +2498,13 @@ async fn test_post_insight_no_cross_channel_thread_when_task_channel_missing() {
         .find(|m| {
             m["content"]
                 .as_str()
-                .is_some_and(|c| c.contains("Orphaned thread insight"))
+                .is_some_and(|c| c.contains("Default channel threaded insight"))
         })
         .expect("insight should be posted to default channel");
-    assert!(
-        line.get("thread_parent_id").is_none() || line["thread_parent_id"].is_null(),
-        "insight should NOT have thread_parent_id when task_channel is missing \
-         (prevents cross-channel thread reference)"
+    assert_eq!(
+        line["thread_parent_id"].as_str(),
+        Some(thread_id),
+        "insight should thread under the task announcement in the default channel"
     );
 }
 
@@ -2620,6 +2620,51 @@ async fn test_post_insight_routes_to_task_thread() {
         line["thread_parent_id"].as_str(),
         Some(thread_parent_id),
         "insight should be threaded under the task announcement"
+    );
+}
+
+/// When a task has no task_channel (created without --channel), the insight
+/// should still thread under the task announcement in the default channel.
+#[tokio::test]
+async fn test_post_insight_threads_when_task_channel_is_none() {
+    let (state, temp_dir, _guard) = make_insight_test_state("testrepo");
+
+    let thread_parent_id = "announcement-msg-uuid-99";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                current_name: Some("coworker1".to_string()),
+                coworker_type: "dev".to_string(),
+                task_id: Some("99".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        // Deliberately NOT setting task_channel — simulates task created without --channel
+        ps.task_thread_id
+            .insert("99".to_string(), thread_parent_id.to_string());
+    }
+
+    super::post_insight(&state, "coworker1", "Insight with no task channel").await;
+
+    let default_channel = state.channel_router.default_channel_name();
+    let messages = read_channel_messages(&temp_dir, default_channel);
+    let line = messages
+        .iter()
+        .find(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("Insight with no task channel"))
+        })
+        .expect("insight should be posted to default channel");
+    assert_eq!(
+        line["thread_parent_id"].as_str(),
+        Some(thread_parent_id),
+        "insight should be threaded under the task announcement even when task_channel is None"
     );
 }
 
