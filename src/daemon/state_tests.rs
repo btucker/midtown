@@ -1213,3 +1213,48 @@ fn test_channel_workflows_unassign() {
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
     assert!(!loaded.channel_workflows.contains_key("proj-auth"));
 }
+
+// ── resolve_bound_thread_id tests ────────────────────────────────────────────
+//
+// These tests verify DaemonPersistentState::resolve_bound_thread_id(), which
+// looks up a task_id in task_thread_id to find the bound thread for a coworker.
+// spawn_coworker() should call this to bind reviewers to their task thread —
+// mirroring the SpawnSession effect path in effects.rs:2786-2798.
+
+/// When task_id maps to an entry in task_thread_id, resolve returns the thread.
+#[test]
+fn test_resolve_bound_thread_id_found() {
+    let mut ps = DaemonPersistentState::default();
+    ps.task_thread_id
+        .insert("42".to_string(), "thread-announce-42".to_string());
+
+    assert_eq!(
+        ps.resolve_bound_thread_id(Some("42")),
+        Some("thread-announce-42".to_string()),
+        "Should resolve task_id to bound thread from task_thread_id"
+    );
+}
+
+/// When task_id is None, resolve returns None.
+#[test]
+fn test_resolve_bound_thread_id_none_task() {
+    let ps = DaemonPersistentState::default();
+
+    assert_eq!(
+        ps.resolve_bound_thread_id(None),
+        None,
+        "Should return None when task_id is None"
+    );
+}
+
+/// When task_id has no entry in task_thread_id, resolve returns None.
+#[test]
+fn test_resolve_bound_thread_id_missing_mapping() {
+    let ps = DaemonPersistentState::default();
+
+    assert_eq!(
+        ps.resolve_bound_thread_id(Some("99")),
+        None,
+        "Should return None when task_id has no thread mapping"
+    );
+}

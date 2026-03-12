@@ -2786,7 +2786,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             // Look up task_thread_id so coworker posts route to the
                             // task's thread. This is set either explicitly via --thread-id
                             // or auto-defaulted to the task announcement message ID.
-                            let bound_thread_id = ps.task_thread_id.get(&task_id).cloned();
+                            let bound_thread_id = ps.resolve_bound_thread_id(Some(&task_id));
                             // Populate in-memory cache so handle_channel_post can auto-tag
                             // the coworker's posts without touching persistent state.
                             if let Some(ref tid) = bound_thread_id {
