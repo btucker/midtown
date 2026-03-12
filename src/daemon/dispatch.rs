@@ -17,6 +17,56 @@ use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
+// Spawn callback helpers
+// ============================================================================
+
+/// Standard spawn-failure callback: record cooldown, reset task to pending, post to ops.
+fn spawn_failure_effects(
+    cooldown_key: impl Into<String>,
+    task_id: impl Into<String>,
+    dir_key: impl Into<String>,
+    message: impl Into<String>,
+) -> Vec<Effect> {
+    vec![
+        Effect::RecordCooldown {
+            category: "spawn_failure".to_string(),
+            key: cooldown_key.into(),
+        },
+        Effect::ResetTaskToPending {
+            task_id: task_id.into(),
+            dir_key: dir_key.into(),
+        },
+        Effect::post_to_ops(message),
+    ]
+}
+
+/// Common spawn-success effects: assign task, bind worktree, broadcast status, post to ops.
+fn spawn_success_effects(
+    coworker: impl Into<String>,
+    task_id: impl Into<String>,
+    worktree_id: impl Into<String>,
+    message: impl Into<String>,
+) -> Vec<Effect> {
+    let coworker = coworker.into();
+    vec![
+        Effect::RecordTaskAssignment {
+            coworker: coworker.clone(),
+            task_id: task_id.into(),
+        },
+        Effect::BindCoworkerToWorktree {
+            worktree_id: worktree_id.into(),
+            coworker: coworker.clone(),
+        },
+        Effect::BroadcastCoworkerUpdate {
+            name: coworker,
+            status: "running".to_string(),
+            current_task: None,
+        },
+        Effect::post_to_ops(message),
+    ]
+}
+
+// ============================================================================
 // Worktree setup helpers
 // ============================================================================
 
@@ -426,50 +476,38 @@ where
         config.channel = channel.clone();
         config.apply_task_model(&snap.task_model_map, &recovery.task_id);
 
-        let on_success = vec![
-            Effect::RecordTaskAssignment {
-                coworker: recovery.owner.clone(),
-                task_id: recovery.task_id.clone(),
-            },
-            Effect::BindCoworkerToWorktree {
-                worktree_id: wt.worktree_id,
-                coworker: recovery.owner.clone(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: recovery.owner.clone(),
-                status: "running".to_string(),
-                current_task: None,
-            },
+        let mut on_success = spawn_success_effects(
+            recovery.owner.clone(),
+            recovery.task_id.clone(),
+            wt.worktree_id,
+            format!(
+                "♻️ Resumed session {} for orphaned task !{} (coworker {})",
+                record.session_id, recovery.task_id, recovery.owner
+            ),
+        );
+        on_success.insert(
+            on_success.len() - 1,
             Effect::RecordCooldown {
                 category: "orphan_spawn".to_string(),
                 key: "global".to_string(),
             },
-            Effect::post_to_ops(format!(
-                "♻️ Resumed session {} for orphaned task !{} (coworker {})",
-                record.session_id, recovery.task_id, recovery.owner
-            )),
-        ];
+        );
 
         let mut effects = wt.pre_spawn_effects;
         effects.push(Effect::SpawnCoworkerWithCallbacks {
             config,
             on_success,
-            on_failure: vec![
-                Effect::RecordCooldown {
-                    category: "spawn_failure".to_string(),
-                    key: recovery.owner.clone(),
-                },
-                Effect::ResetTaskToPending {
-                    task_id: recovery.task_id.clone(),
-                    dir_key: snap.dir_key.clone(),
-                },
-                Effect::post_to_ops(format!(
+            on_failure: spawn_failure_effects(
+                recovery.owner.clone(),
+                recovery.task_id.clone(),
+                snap.dir_key.clone(),
+                format!(
                     "🔄 Task !{} reset to pending - session resume for {} failed (backing off for {}s)",
                     recovery.task_id,
                     recovery.owner,
                     SPAWN_FAILURE_COOLDOWN.as_secs()
-                )),
-            ],
+                ),
+            ),
         });
 
         return effects;
@@ -501,50 +539,38 @@ where
     let mut pre_spawn = wt.pre_spawn_effects;
 
     // Post-spawn success effects
-    let on_success = vec![
-        Effect::RecordTaskAssignment {
-            coworker: recovery.owner.clone(),
-            task_id: recovery.task_id.clone(),
-        },
-        Effect::BindCoworkerToWorktree {
-            worktree_id: wt.worktree_id,
-            coworker: recovery.owner.clone(),
-        },
-        Effect::BroadcastCoworkerUpdate {
-            name: recovery.owner.clone(),
-            status: "running".to_string(),
-            current_task: None,
-        },
+    let mut on_success = spawn_success_effects(
+        recovery.owner.clone(),
+        recovery.task_id.clone(),
+        wt.worktree_id,
+        format!(
+            "♻️ Recovered coworker {} for orphaned task !{}",
+            recovery.owner, recovery.task_id
+        ),
+    );
+    on_success.insert(
+        on_success.len() - 1,
         Effect::RecordCooldown {
             category: "orphan_spawn".to_string(),
             key: "global".to_string(),
         },
-        Effect::post_to_ops(format!(
-            "♻️ Recovered coworker {} for orphaned task !{}",
-            recovery.owner, recovery.task_id
-        )),
-    ];
+    );
 
     // EnsureWorktree + RegisterWorktreeAssignment run first, then spawn
     pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
         config,
         on_success,
-        on_failure: vec![
-            Effect::RecordCooldown {
-                category: "spawn_failure".to_string(),
-                key: recovery.owner.clone(),
-            },
-            Effect::ResetTaskToPending {
-                task_id: recovery.task_id.clone(),
-                dir_key: snap.dir_key.clone(),
-            },
-            Effect::post_to_ops(format!(
+        on_failure: spawn_failure_effects(
+            recovery.owner.clone(),
+            recovery.task_id.clone(),
+            snap.dir_key.clone(),
+            format!(
                 "🔄 Task !{} reset to pending - {} could not be respawned (backing off for {}s)",
                 recovery.task_id,
                 recovery.owner,
                 SPAWN_FAILURE_COOLDOWN.as_secs()
-            )),
-        ],
+            ),
+        ),
     });
     pre_spawn
 }
@@ -774,61 +800,56 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
 
         config.apply_task_model(&snap.task_model_map, task_id);
 
-        let on_success = vec![
-            Effect::RecordTaskAssignment {
-                coworker: coworker_name.to_string(),
-                task_id: task_id.clone(),
-            },
-            Effect::BindCoworkerToWorktree {
-                worktree_id: wt.worktree_id,
-                coworker: coworker_name.to_string(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: coworker_name.to_string(),
-                status: "running".to_string(),
-                current_task: None,
-            },
+        let mut on_success = spawn_success_effects(
+            coworker_name.to_string(),
+            task_id.clone(),
+            wt.worktree_id,
+            format!(
+                "Session dispatch: recovered task !{} via session {} (coworker {})",
+                task_id, record.session_id, coworker_name
+            ),
+        );
+        let insert_pos = on_success.len() - 1;
+        on_success.insert(
+            insert_pos,
             Effect::RecordCooldown {
                 category: "session_dispatch".to_string(),
                 key: "global".to_string(),
             },
-            // Per-session-id cooldown: prevents re-recovery on the next tick even if the
-            // session dies quickly. The recently_recovered_session_ids snapshot field checks
-            // this cooldown and skips recovery while it's active (see !1709 fix).
+        );
+        // Per-session-id cooldown: prevents re-recovery on the next tick even if the
+        // session dies quickly. The recently_recovered_session_ids snapshot field checks
+        // this cooldown and skips recovery while it's active (see !1709 fix).
+        on_success.insert(
+            insert_pos + 1,
             Effect::RecordCooldown {
                 category: "session_recovered".to_string(),
                 key: record.session_id.clone(),
             },
-            Effect::post_to_ops(format!(
-                "Session dispatch: recovered task !{} via session {} (coworker {})",
-                task_id, record.session_id, coworker_name
-            )),
-        ];
+        );
 
         // Prepend worktree setup effects (EnsureWorktree + optional registration)
         let mut pre_spawn = wt.pre_spawn_effects;
         pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
             config,
             on_success,
-            on_failure: vec![
-                Effect::ClearSessionForTask {
+            on_failure: {
+                let mut v = vec![Effect::ClearSessionForTask {
                     task_id: task_id.clone(),
-                },
-                Effect::RecordCooldown {
-                    category: "spawn_failure".to_string(),
-                    key: coworker_name.to_string(),
-                },
-                Effect::ResetTaskToPending {
-                    task_id: task_id.clone(),
-                    dir_key: snap.dir_key.clone(),
-                },
-                Effect::post_to_ops(format!(
-                    "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
-                    task_id,
-                    coworker_name,
-                    SPAWN_FAILURE_COOLDOWN.as_secs()
-                )),
-            ],
+                }];
+                v.extend(spawn_failure_effects(
+                    coworker_name.to_string(),
+                    task_id.clone(),
+                    snap.dir_key.clone(),
+                    format!(
+                        "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
+                        task_id,
+                        coworker_name,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                ));
+                v
+            },
         });
         effects.extend(pre_spawn);
 
@@ -960,50 +981,38 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     let mut pre_spawn = wt.pre_spawn_effects;
 
     // Post-spawn success effects
-    let on_success = vec![
-        Effect::RecordTaskAssignment {
-            coworker: recovery.owner.clone(),
-            task_id: recovery.task_id.clone(),
-        },
-        Effect::BindCoworkerToWorktree {
-            worktree_id: wt.worktree_id,
-            coworker: recovery.owner.clone(),
-        },
-        Effect::BroadcastCoworkerUpdate {
-            name: recovery.owner.clone(),
-            status: "running".to_string(),
-            current_task: None,
-        },
+    let mut on_success = spawn_success_effects(
+        recovery.owner.clone(),
+        recovery.task_id.clone(),
+        wt.worktree_id,
+        format!(
+            "Session dispatch: fresh spawn for orphaned task !{} (coworker {})",
+            recovery.task_id, recovery.owner
+        ),
+    );
+    on_success.insert(
+        on_success.len() - 1,
         Effect::RecordCooldown {
             category: "session_dispatch".to_string(),
             key: "global".to_string(),
         },
-        Effect::post_to_ops(format!(
-            "Session dispatch: fresh spawn for orphaned task !{} (coworker {})",
-            recovery.task_id, recovery.owner
-        )),
-    ];
+    );
 
     // EnsureWorktree + RegisterWorktreeAssignment run first, then spawn
     pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
         config,
         on_success,
-        on_failure: vec![
-            Effect::RecordCooldown {
-                category: "spawn_failure".to_string(),
-                key: recovery.owner.clone(),
-            },
-            Effect::ResetTaskToPending {
-                task_id: recovery.task_id.clone(),
-                dir_key: snap.dir_key.clone(),
-            },
-            Effect::post_to_ops(format!(
+        on_failure: spawn_failure_effects(
+            recovery.owner.clone(),
+            recovery.task_id.clone(),
+            snap.dir_key.clone(),
+            format!(
                 "Task !{} reset to pending - {} could not be spawned (backing off for {}s)",
                 recovery.task_id,
                 recovery.owner,
                 SPAWN_FAILURE_COOLDOWN.as_secs()
-            )),
-        ],
+            ),
+        ),
     });
     effects.extend(pre_spawn);
 
@@ -1502,43 +1511,25 @@ fn dispatch_owned_pending_tasks(
                 // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
                 // can track this spawn across ticks and prevent duplicate spawns if
                 // the spawn takes longer than one tick interval to complete.
-                let on_success = vec![
-                    Effect::RecordTaskAssignment {
-                        coworker: o.clone(),
-                        task_id: tid.clone(),
-                    },
-                    Effect::BindCoworkerToWorktree {
-                        worktree_id: wt.worktree_id,
-                        coworker: o.clone(),
-                    },
-                    Effect::BroadcastCoworkerUpdate {
-                        name: o.clone(),
-                        status: "running".to_string(),
-                        current_task: None,
-                    },
-                    Effect::post_to_ops(daemon_messages::called_in_pending_task(
-                        o,
-                        &tid.to_string(),
-                    )),
-                ];
+                let on_success = spawn_success_effects(
+                    o.clone(),
+                    tid.clone(),
+                    wt.worktree_id,
+                    daemon_messages::called_in_pending_task(o, &tid.to_string()),
+                );
 
                 effects.push(Effect::SpawnCoworkerWithCallbacks {
                     config,
                     on_success,
-                    on_failure: vec![
-                        Effect::RecordCooldown {
-                            category: "spawn_failure".to_string(),
-                            key: o.clone(),
-                        },
-                        Effect::ResetTaskToPending {
-                            task_id: tid.clone(),
-                            dir_key: snap.dir_key.clone(),
-                        },
-                        Effect::post_to_ops(format!(
+                    on_failure: spawn_failure_effects(
+                        o.clone(),
+                        tid.clone(),
+                        snap.dir_key.clone(),
+                        format!(
                             "⚠️ Spawn failed for pending task !{} (coworker {}) — backing off for {}s",
                             tid, o, SPAWN_FAILURE_COOLDOWN.as_secs()
-                        )),
-                    ],
+                        ),
+                    ),
                 });
 
                 coworkers_dispatched_this_tick.insert(o.to_lowercase());
@@ -2021,22 +2012,17 @@ fn dispatch_unowned_pending_tasks(
                 dir_key: snap.dir_key.clone(),
                 config,
                 on_success,
-                on_failure: vec![
-                    Effect::RecordCooldown {
-                        category: "spawn_failure".to_string(),
-                        key: coworker_name.clone(),
-                    },
-                    Effect::ResetTaskToPending {
-                        task_id: task.id.clone(),
-                        dir_key: snap.dir_key.clone(),
-                    },
-                    Effect::post_to_ops(format!(
+                on_failure: spawn_failure_effects(
+                    coworker_name.clone(),
+                    task.id.clone(),
+                    snap.dir_key.clone(),
+                    format!(
                         "⚠️ Spawn failed for task !{} (coworker {}) — backing off for {}s",
                         task.id,
                         coworker_name,
                         SPAWN_FAILURE_COOLDOWN.as_secs()
-                    )),
-                ],
+                    ),
+                ),
             });
             spawns_queued_this_tick += 1;
         }
