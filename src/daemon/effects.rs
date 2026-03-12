@@ -1099,6 +1099,41 @@ async fn clear_stale_task_session_binding(
     cleared
 }
 
+/// Fire-and-forget worktree directory removal + ops channel notification.
+///
+/// Shared by `CleanupMergedWorktree` and `CleanupStaleWorktree` effect handlers.
+/// The caller is responsible for removing the assignment from the registry first;
+/// this function only handles the filesystem cleanup and ops message.
+async fn cleanup_worktree_and_notify(
+    state: &DaemonState,
+    assignment: &crate::worktree_registry::WorktreeAssignment,
+    context: &str,
+) {
+    let wt_mgr = state.coworkers.worktree_manager().clone();
+    let wt_id = assignment.worktree_id.clone();
+    let context_owned = context.to_string();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
+            warn!("Failed to remove worktree {}: {}", wt_id, e);
+        } else {
+            info!("Cleaned up worktree {} ({})", wt_id, context_owned);
+        }
+    });
+    let task_ref = assignment
+        .task_id
+        .as_ref()
+        .map(|id| format!(" (task !{})", id))
+        .unwrap_or_default();
+    let mut msg = Message::system(format!(
+        "🧹 Cleaned up worktree {} ({}){}",
+        assignment.worktree_id, context, task_ref
+    ));
+    msg.channel = Some(OPS_CHANNEL.to_string());
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post worktree cleanup message: {}", e);
+    }
+}
+
 /// Execute a list of effects against the daemon state.
 ///
 /// This is the imperative shell — the only place where side effects happen.
@@ -2008,35 +2043,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     removed
                 };
                 if let Some(assignment) = removed {
-                    // Fire-and-forget: worktree directory removal runs git operations
-                    // that can block for a long time with many branches. Registry is
-                    // already updated above, so the state is consistent even if the
-                    // filesystem cleanup is still running.
-                    let wt_mgr = state.coworkers.worktree_manager().clone();
-                    let wt_id = assignment.worktree_id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
-                            warn!("Failed to remove task worktree {}: {}", wt_id, e);
-                        } else {
-                            info!(
-                                "Cleaned up task worktree {} (PR #{} merged)",
-                                wt_id, pr_number
-                            );
-                        }
-                    });
-                    // Post to ops channel so the team sees what was cleaned up
-                    let task_ref = assignment
-                        .task_id
-                        .map(|id| format!(" (task !{})", id))
-                        .unwrap_or_default();
-                    let mut msg = Message::system(format!(
-                        "🧹 Cleaned up worktree {} after PR #{} merged{}",
-                        assignment.worktree_id, pr_number, task_ref
-                    ));
-                    msg.channel = Some(OPS_CHANNEL.to_string());
-                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                        warn!("Failed to post worktree cleanup message: {}", e);
-                    }
+                    cleanup_worktree_and_notify(
+                        state,
+                        &assignment,
+                        &format!("after PR #{} merged", pr_number),
+                    )
+                    .await;
                 } else {
                     debug!(
                         "No worktree registered for PR #{} (branch: {}), skipping cleanup",
@@ -2060,33 +2072,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     removed
                 };
                 if let Some(assignment) = removed {
-                    // Fire-and-forget: directory removal runs slow git operations.
-                    // Registry is already updated above.
-                    let wt_mgr = state.coworkers.worktree_manager().clone();
-                    let wt_id = assignment.worktree_id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
-                            warn!("Failed to remove stale worktree {}: {}", wt_id, e);
-                        } else {
-                            info!(
-                                "Cleaned up stale worktree {} (retention period expired)",
-                                wt_id
-                            );
-                        }
-                    });
-                    // Post to ops channel so the team sees what was cleaned up
-                    let task_ref = assignment
-                        .task_id
-                        .map(|id| format!(" (task !{})", id))
-                        .unwrap_or_default();
-                    let mut msg = Message::system(format!(
-                        "🧹 Cleaned up stale worktree {} (retention period expired){}",
-                        assignment.worktree_id, task_ref
-                    ));
-                    msg.channel = Some(OPS_CHANNEL.to_string());
-                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                        warn!("Failed to post worktree cleanup message: {}", e);
-                    }
+                    cleanup_worktree_and_notify(state, &assignment, "retention period expired")
+                        .await;
                 } else {
                     debug!(
                         "Worktree {} not found in registry, skipping cleanup",

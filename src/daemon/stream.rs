@@ -117,22 +117,7 @@ pub fn process_lead_output(
 
     // Main lead → posts to main channel.
     if let Some(lead_events) = events.get(main_lead_session_name) {
-        let trimmed = extract_assistant_text(lead_events).trim().to_string();
-        if !trimmed.is_empty() {
-            effects.push(Effect::PostToChannel {
-                sender: main_lead_session_name.to_string(),
-                message: trimmed,
-                channel: None,
-                auto_output: true,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            });
-        }
-        append_tool_data_effects(
+        push_lead_output_effects(
             &mut effects,
             lead_events,
             main_lead_session_name.to_string(),
@@ -143,22 +128,7 @@ pub fn process_lead_output(
     // Channel leads → each posts to its respective topic channel.
     for channel_name in channel_lead_sessions.keys() {
         if let Some(cl_events) = events.get(channel_name.as_str()) {
-            let trimmed = extract_assistant_text(cl_events).trim().to_string();
-            if !trimmed.is_empty() {
-                effects.push(Effect::PostToChannel {
-                    sender: channel_name.clone(),
-                    message: trimmed,
-                    channel: Some(channel_name.clone()),
-                    auto_output: true,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                });
-            }
-            append_tool_data_effects(
+            push_lead_output_effects(
                 &mut effects,
                 cl_events,
                 channel_name.clone(),
@@ -170,22 +140,7 @@ pub fn process_lead_output(
     // Forked channel leads → posts to the channel they were inherited from.
     for (fork_name, channel_name) in fork_bound_channels {
         if let Some(fork_events) = events.get(fork_name.as_str()) {
-            let trimmed = extract_assistant_text(fork_events).trim().to_string();
-            if !trimmed.is_empty() {
-                effects.push(Effect::PostToChannel {
-                    sender: fork_name.clone(),
-                    message: trimmed,
-                    channel: Some(channel_name.clone()),
-                    auto_output: true,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                });
-            }
-            append_tool_data_effects(
+            push_lead_output_effects(
                 &mut effects,
                 fork_events,
                 fork_name.clone(),
@@ -195,6 +150,32 @@ pub fn process_lead_output(
     }
 
     effects
+}
+
+/// Shared helper: extract text and tool data from a session's events, pushing
+/// PostToChannel effects for both. Used by each branch of `process_lead_output`.
+fn push_lead_output_effects(
+    effects: &mut Vec<Effect>,
+    session_events: &[StreamEvent],
+    sender: String,
+    channel: Option<String>,
+) {
+    let trimmed = extract_assistant_text(session_events).trim().to_string();
+    if !trimmed.is_empty() {
+        effects.push(Effect::PostToChannel {
+            sender: sender.clone(),
+            message: trimmed,
+            channel: channel.clone(),
+            auto_output: true,
+            message_type: None,
+            nudge_type: None,
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+        });
+    }
+    append_tool_data_effects(effects, session_events, sender, channel);
 }
 
 /// Create PostToChannel effects carrying `tool_data` for topic channel messages.
