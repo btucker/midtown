@@ -479,8 +479,18 @@ async fn test_channel_read_with_channel_parameter() {
     let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
 
     // Reading from the topic channel should return only the topic message
-    let response =
-        handle_channel_read(999.into(), true, None, None, Some("auth"), None, &state).await;
+    let response = handle_channel_read(
+        999.into(),
+        true,
+        None,
+        None,
+        Some("auth"),
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -571,7 +581,8 @@ async fn test_channel_read_includes_thread_parent_id() {
     )
     .await;
 
-    let response = handle_channel_read(999.into(), true, None, None, None, None, &state).await;
+    let response =
+        handle_channel_read(999.into(), true, None, None, None, None, None, None, &state).await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -603,7 +614,18 @@ async fn test_channel_read_with_last_parameter() {
     }
 
     // Request last 3 messages
-    let response = handle_channel_read(999.into(), false, Some(3), None, None, None, &state).await;
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        Some(3),
+        None,
+        None,
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
 
     // Verify we got exactly 3 messages
     assert!(response.error.is_none(), "channel.read should succeed");
@@ -2838,6 +2860,8 @@ async fn test_channel_read_with_thread_filter() {
         None,
         None,
         Some(&parent_id),
+        None,
+        None,
         &state,
     )
     .await;
@@ -2905,6 +2929,8 @@ async fn test_channel_read_thread_with_last() {
         None,
         None,
         Some(&parent_id),
+        None,
+        None,
         &state,
     )
     .await;
@@ -2967,6 +2993,8 @@ async fn test_channel_read_thread_with_last_filters_before_truncating() {
         None,
         None,
         Some(&parent_id),
+        None,
+        None,
         &state,
     )
     .await;
@@ -2987,4 +3015,283 @@ async fn test_channel_read_thread_with_last_filters_before_truncating() {
             .contains("Parent message"),
         "First message should be the parent"
     );
+}
+
+/// Helper: post a message and return its ID.
+async fn post_and_get_id(
+    state: &DaemonState,
+    from: &str,
+    content: &str,
+    channel: Option<&str>,
+    thread_parent_id: Option<&str>,
+) -> String {
+    let _r = handle_channel_post(
+        999_i64.into(),
+        from,
+        content,
+        channel,
+        thread_parent_id,
+        state,
+    )
+    .await;
+    let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
+    let ch = state.channel_router.get_channel(channel_name).unwrap();
+    let messages = ch.read_all().unwrap();
+    messages.last().unwrap().id.clone()
+}
+
+#[tokio::test]
+async fn test_channel_read_message_returns_single_message() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-single");
+
+    let _id1 = post_and_get_id(&state, "alice", "Message 1", None, None).await;
+    let id2 = post_and_get_id(&state, "bob", "Message 2", None, None).await;
+    let _id3 = post_and_get_id(&state, "carol", "Message 3", None, None).await;
+
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(&id2),
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "Expected 1 message");
+    assert!(
+        messages[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Message 2"),
+        "Should return the requested message"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_read_message_not_found() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-not-found");
+
+    let _id1 = post_and_get_id(&state, "alice", "Message 1", None, None).await;
+
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some("nonexistent-uuid"),
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(
+        response.error.is_some(),
+        "Should return error for nonexistent message"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_read_message_with_context_top_level() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-ctx-top");
+
+    let _id1 = post_and_get_id(&state, "alice", "Msg 1", None, None).await;
+    let _id2 = post_and_get_id(&state, "bob", "Msg 2", None, None).await;
+    let id3 = post_and_get_id(&state, "carol", "Msg 3", None, None).await;
+    let _id4 = post_and_get_id(&state, "dave", "Msg 4", None, None).await;
+    let _id5 = post_and_get_id(&state, "eve", "Msg 5", None, None).await;
+
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(&id3),
+        Some(1),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Expected 3 messages (1 before + target + 1 after)"
+    );
+    assert!(messages[0]["message"].as_str().unwrap().contains("Msg 2"));
+    assert!(messages[1]["message"].as_str().unwrap().contains("Msg 3"));
+    assert!(messages[2]["message"].as_str().unwrap().contains("Msg 4"));
+}
+
+#[tokio::test]
+async fn test_channel_read_message_with_context_thread_reply() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-ctx-thread-reply");
+
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Post 5 thread replies
+    let mut reply_ids = Vec::new();
+    for i in 1..=5 {
+        let id = post_and_get_id(
+            &state,
+            "york",
+            &format!("Reply {i}"),
+            None,
+            Some(&parent_id),
+        )
+        .await;
+        reply_ids.push(id);
+    }
+
+    // Read reply 3 (index 2) with context=1
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(&reply_ids[2]),
+        Some(1),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Expected 3 messages (reply 2, reply 3, reply 4)"
+    );
+    assert!(messages[0]["message"].as_str().unwrap().contains("Reply 2"));
+    assert!(messages[1]["message"].as_str().unwrap().contains("Reply 3"));
+    assert!(messages[2]["message"].as_str().unwrap().contains("Reply 4"));
+}
+
+#[tokio::test]
+async fn test_channel_read_message_with_context_thread_parent() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-ctx-thread-parent");
+
+    // Post 3 channel messages before the thread parent
+    let _id1 = post_and_get_id(&state, "alice", "Before 1", None, None).await;
+    let _id2 = post_and_get_id(&state, "bob", "Before 2", None, None).await;
+    let _id3 = post_and_get_id(&state, "carol", "Before 3", None, None).await;
+
+    // Post the thread parent
+    let parent_id = post_and_get_id(&state, "dave", "Thread parent", None, None).await;
+
+    // Post 3 thread replies
+    for i in 1..=3 {
+        let _r = post_and_get_id(
+            &state,
+            "eve",
+            &format!("Thread reply {i}"),
+            None,
+            Some(&parent_id),
+        )
+        .await;
+    }
+
+    // Read the parent with context=2
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(&parent_id),
+        Some(2),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    // Should be: Before 2, Before 3, Thread parent, Thread reply 1, Thread reply 2
+    assert_eq!(
+        messages.len(),
+        5,
+        "Expected 5 messages (2 before + parent + 2 replies)"
+    );
+    assert!(
+        messages[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Before 2")
+    );
+    assert!(
+        messages[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Before 3")
+    );
+    assert!(
+        messages[2]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thread parent")
+    );
+    assert!(
+        messages[3]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thread reply 1")
+    );
+    assert!(
+        messages[4]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thread reply 2")
+    );
+}
+
+#[tokio::test]
+async fn test_channel_read_message_with_context_at_edges() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-read-message-ctx-edges");
+
+    let id1 = post_and_get_id(&state, "alice", "Msg 1", None, None).await;
+    let _id2 = post_and_get_id(&state, "bob", "Msg 2", None, None).await;
+    let _id3 = post_and_get_id(&state, "carol", "Msg 3", None, None).await;
+
+    // Read the first message with context=5 (more than available)
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        None,
+        Some(&id1),
+        Some(5),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Should return all 3 messages without panic"
+    );
+    assert!(messages[0]["message"].as_str().unwrap().contains("Msg 1"));
+    assert!(messages[1]["message"].as_str().unwrap().contains("Msg 2"));
+    assert!(messages[2]["message"].as_str().unwrap().contains("Msg 3"));
 }
