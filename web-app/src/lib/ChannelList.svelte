@@ -286,7 +286,7 @@ function handleKeyDown(event) {
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
-      <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+      <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         <button
           class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
@@ -367,7 +367,7 @@ function handleKeyDown(event) {
         {@const isActive = $activeChannel === channel.name}
         {@const hasUnread = channel.unread > 0}
         <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
-          <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+          <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
             <button
               class="flex items-center flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
               aria-label="Open DM with {channel.name.replace(/^dm-/, '')}"
