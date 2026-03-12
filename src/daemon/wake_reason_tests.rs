@@ -188,6 +188,11 @@ fn review_assigned_nudge_uses_rich_template() {
         msg.contains("system prompt"),
         "ReviewAssigned should reference the system prompt for behavioral instructions"
     );
+    // Resume should carry actionable content: the code review skill invocation
+    assert!(
+        msg.contains("code-review"),
+        "ReviewAssigned should include the code-review skill invocation"
+    );
 }
 
 #[test]

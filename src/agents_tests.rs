@@ -154,6 +154,11 @@ fn test_reviewer_resume_prompt_substitutes_pr_number() {
         prompt.contains("system prompt"),
         "Resume prompt should reference the system prompt for behavioral instructions"
     );
+    // Resume should carry actionable content: the code review skill invocation
+    assert!(
+        prompt.contains("/code-review:code-review"),
+        "Resume prompt should contain the code-review skill invocation"
+    );
     assert!(
         !prompt.contains("{pr_number}"),
         "Reviewer resume prompt should not contain unreplaced {{pr_number}} placeholders"
@@ -264,12 +269,12 @@ fn test_reviewer_prompts_use_daemon_review_post() {
         "Daemon handles frontmatter now — reviewer system prompt should not contain MIDTOWN FRONTMATTER REQUIREMENT"
     );
 
-    // Instead, reviewer prompts should instruct using `midtown pr review post`
+    // Instead, the system prompt should instruct using `midtown pr review post`
     assert!(
         system_prompt.contains("midtown pr review post"),
         "Reviewer system prompt should instruct using `midtown pr review post`"
     );
-    // Resume prompt no longer duplicates posting instructions — they're in the system prompt
+    // Resume prompt references system prompt instead of duplicating posting instructions
     assert!(
         resume_prompt.contains("system prompt"),
         "Reviewer resume prompt should reference the system prompt for posting instructions"
