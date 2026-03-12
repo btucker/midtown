@@ -19,6 +19,8 @@ fn build_channel_read_params(
     since: Option<&str>,
     channel: Option<&str>,
     thread: Option<&str>,
+    message: Option<&str>,
+    context: Option<usize>,
 ) -> serde_json::Value {
     let mut params = serde_json::json!({ "all": all });
     if let Some(n) = last {
@@ -36,12 +38,18 @@ fn build_channel_read_params(
     if let Some(parent_id) = thread {
         params["thread"] = serde_json::json!(parent_id);
     }
+    if let Some(msg_id) = message {
+        params["message"] = serde_json::json!(msg_id);
+    }
+    if let Some(n) = context {
+        params["context"] = serde_json::json!(n);
+    }
     params
 }
 
 #[test]
 fn channel_read_explicit_channel_sets_param() {
-    let params = build_channel_read_params(false, None, None, Some("ops"), None);
+    let params = build_channel_read_params(false, None, None, Some("ops"), None, None, None);
     assert_eq!(
         params["channel"].as_str(),
         Some("ops"),
@@ -53,7 +61,7 @@ fn channel_read_explicit_channel_sets_param() {
 fn channel_read_no_channel_no_env_omits_param() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
-    let params = build_channel_read_params(false, None, None, None, None);
+    let params = build_channel_read_params(false, None, None, None, None, None, None);
     assert!(
         params.get("channel").is_none(),
         "No --channel and no MIDTOWN_CHANNEL should omit the channel param"
@@ -64,7 +72,7 @@ fn channel_read_no_channel_no_env_omits_param() {
 fn channel_read_env_var_used_when_no_explicit_channel() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("MIDTOWN_CHANNEL", "infra") };
-    let params = build_channel_read_params(false, None, None, None, None);
+    let params = build_channel_read_params(false, None, None, None, None, None, None);
     unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
     assert_eq!(
         params["channel"].as_str(),
@@ -77,7 +85,7 @@ fn channel_read_env_var_used_when_no_explicit_channel() {
 fn channel_read_explicit_channel_overrides_env_var() {
     let _guard = ENV_MUTEX.lock().unwrap();
     unsafe { std::env::set_var("MIDTOWN_CHANNEL", "main") };
-    let params = build_channel_read_params(false, None, None, Some("ops"), None);
+    let params = build_channel_read_params(false, None, None, Some("ops"), None, None, None);
     unsafe { std::env::remove_var("MIDTOWN_CHANNEL") };
     assert_eq!(
         params["channel"].as_str(),
@@ -88,7 +96,7 @@ fn channel_read_explicit_channel_overrides_env_var() {
 
 #[test]
 fn channel_read_all_flag_included_in_params() {
-    let params = build_channel_read_params(true, None, None, Some("ops"), None);
+    let params = build_channel_read_params(true, None, None, Some("ops"), None, None, None);
     assert_eq!(params["all"].as_bool(), Some(true));
     assert_eq!(params["channel"].as_str(), Some("ops"));
 }
@@ -96,7 +104,15 @@ fn channel_read_all_flag_included_in_params() {
 #[test]
 fn channel_read_last_and_since_params_included() {
     let last = 10_usize;
-    let params = build_channel_read_params(false, Some(&last), Some("5m"), Some("ops"), None);
+    let params = build_channel_read_params(
+        false,
+        Some(&last),
+        Some("5m"),
+        Some("ops"),
+        None,
+        None,
+        None,
+    );
     assert_eq!(params["last"].as_u64(), Some(10));
     assert_eq!(params["since"].as_str(), Some("5m"));
     assert_eq!(params["channel"].as_str(), Some("ops"));
@@ -104,7 +120,15 @@ fn channel_read_last_and_since_params_included() {
 
 #[test]
 fn channel_read_thread_param_included() {
-    let params = build_channel_read_params(false, None, None, Some("ops"), Some("parent-abc"));
+    let params = build_channel_read_params(
+        false,
+        None,
+        None,
+        Some("ops"),
+        Some("parent-abc"),
+        None,
+        None,
+    );
     assert_eq!(
         params["thread"].as_str(),
         Some("parent-abc"),
@@ -114,9 +138,47 @@ fn channel_read_thread_param_included() {
 
 #[test]
 fn channel_read_thread_param_omitted_when_none() {
-    let params = build_channel_read_params(false, None, None, Some("ops"), None);
+    let params = build_channel_read_params(false, None, None, Some("ops"), None, None, None);
     assert!(
         params.get("thread").is_none(),
         "No --thread should omit the thread param"
+    );
+}
+
+#[test]
+fn channel_read_message_param_included() {
+    let params = build_channel_read_params(false, None, None, None, None, Some("abc-123"), None);
+    assert_eq!(
+        params["message"].as_str(),
+        Some("abc-123"),
+        "--message flag should set params[\"message\"]"
+    );
+}
+
+#[test]
+fn channel_read_message_param_omitted_when_none() {
+    let params = build_channel_read_params(false, None, None, None, None, None, None);
+    assert!(
+        params.get("message").is_none(),
+        "No --message should omit the message param"
+    );
+}
+
+#[test]
+fn channel_read_context_param_included() {
+    let params = build_channel_read_params(false, None, None, None, None, Some("abc-123"), Some(3));
+    assert_eq!(
+        params["context"].as_u64(),
+        Some(3),
+        "--context flag should set params[\"context\"]"
+    );
+}
+
+#[test]
+fn channel_read_context_param_omitted_when_none() {
+    let params = build_channel_read_params(false, None, None, None, None, None, None);
+    assert!(
+        params.get("context").is_none(),
+        "No --context should omit the context param"
     );
 }

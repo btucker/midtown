@@ -36,6 +36,13 @@ pub enum ChannelCommand {
         /// Read only messages in a thread (specify parent message ID)
         #[arg(long = "thread")]
         thread_parent_id: Option<String>,
+        /// Read a specific message by its UUID
+        #[arg(long, conflicts_with_all = ["all", "last", "since", "thread_parent_id"])]
+        message: Option<String>,
+        /// Return N surrounding messages (N before + N after for regular messages;
+        /// N channel messages before + N thread replies for thread parents). Requires --message
+        #[arg(short = 'C', long, requires = "message")]
+        context: Option<usize>,
     },
     /// Create a new channel
     Create {
@@ -100,12 +107,16 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             since,
             channel,
             thread_parent_id,
+            message,
+            context,
         } => client.channel_read(
             *all,
             last.as_ref(),
             since.as_deref(),
             channel.as_deref(),
             thread_parent_id.as_deref(),
+            message.as_deref(),
+            *context,
         ),
         ChannelCommand::Create { name } => client.channel_create(name),
         ChannelCommand::Archive { name } => client.channel_archive(name),

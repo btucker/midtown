@@ -92,6 +92,8 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown channel post <msg> --thread <msg-id>` | Post in a specific thread |
 | `midtown channel read` | Read recent messages |
 | `midtown channel read --thread <msg-id>` | Read messages in a specific thread |
+| `midtown channel read --message <uuid>` | Read a specific message by UUID |
+| `midtown channel read --message <uuid> -C <N>` | Read a message with N surrounding context messages |
 | `midtown channel create <name>` | Create a new topic channel |
 | `midtown channel unarchive <name>` | Restore an archived channel |
 | `midtown channel rename <old> <new>` | Rename a channel |

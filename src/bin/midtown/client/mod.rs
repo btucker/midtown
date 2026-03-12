@@ -297,6 +297,7 @@ impl DaemonClient {
         self.send("channel.post", Some(params))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn channel_read(
         &self,
         all: bool,
@@ -304,6 +305,8 @@ impl DaemonClient {
         since: Option<&str>,
         channel: Option<&str>,
         thread: Option<&str>,
+        message: Option<&str>,
+        context: Option<usize>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "all": all });
         if let Some(n) = last {
@@ -321,6 +324,12 @@ impl DaemonClient {
         }
         if let Some(parent_id) = thread {
             params["thread"] = serde_json::json!(parent_id);
+        }
+        if let Some(msg_id) = message {
+            params["message"] = serde_json::json!(msg_id);
+        }
+        if let Some(n) = context {
+            params["context"] = serde_json::json!(n);
         }
         self.send("channel.read", Some(params))
     }

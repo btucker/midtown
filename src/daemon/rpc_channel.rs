@@ -951,6 +951,7 @@ pub(super) fn handle_channel_list(
 /// Accepts an optional `channel` parameter to read from a topic channel.
 /// If not provided, defaults to the main channel. Respects `MIDTOWN_CHANNEL`
 /// when called via the CLI client.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_channel_read(
     id: RequestId,
     all: bool,
@@ -958,11 +959,13 @@ pub(super) async fn handle_channel_read(
     since: Option<&str>,
     channel: Option<&str>,
     thread: Option<&str>,
+    message: Option<&str>,
+    context: Option<usize>,
     state: &DaemonState,
 ) -> Response {
     info!(
-        "channel.read called with all={}, last={:?}, since={:?}, channel={:?}, thread={:?}",
-        all, last, since, channel, thread
+        "channel.read called with all={}, last={:?}, since={:?}, channel={:?}, thread={:?}, message={:?}, context={:?}",
+        all, last, since, channel, thread, message, context
     );
 
     // Read from the specified channel, or fall back to the default (main) channel.
@@ -988,6 +991,97 @@ pub(super) async fn handle_channel_read(
             }
         },
     };
+
+    // When --message is specified, find that specific message and optionally
+    // return context around it, then early-return.
+    if let Some(msg_id) = message {
+        let all_msgs = match target_channel.read_all_async().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!("Failed to read channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        };
+
+        let target_pos = match all_msgs.iter().position(|m| m.id == msg_id) {
+            Some(pos) => pos,
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(-32602, format!("Message not found: {}", msg_id)),
+                );
+            }
+        };
+
+        let target_msg = &all_msgs[target_pos];
+        let context_n = context.unwrap_or(0);
+
+        let result_messages: Vec<&crate::message::Message> = if context_n == 0 {
+            vec![target_msg]
+        } else if target_msg.thread_parent_id.is_some() {
+            // Thread reply: context within the same thread
+            let parent_id = target_msg.thread_parent_id.as_deref().unwrap();
+            let thread_msgs: Vec<&crate::message::Message> = all_msgs
+                .iter()
+                .filter(|m| m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id))
+                .collect();
+            let thread_pos = thread_msgs.iter().position(|m| m.id == msg_id).unwrap_or(0);
+            let start = thread_pos.saturating_sub(context_n);
+            let end = (thread_pos + context_n + 1).min(thread_msgs.len());
+            thread_msgs[start..end].to_vec()
+        } else {
+            // Check if this is a thread parent (other messages reference it)
+            let is_thread_parent = all_msgs
+                .iter()
+                .any(|m| m.thread_parent_id.as_deref() == Some(msg_id));
+            if is_thread_parent {
+                // Thread parent: N channel messages before + parent + N thread replies after
+                let channel_msgs: Vec<&crate::message::Message> = all_msgs
+                    .iter()
+                    .filter(|m| m.thread_parent_id.is_none())
+                    .collect();
+                let channel_pos = channel_msgs
+                    .iter()
+                    .position(|m| m.id == msg_id)
+                    .unwrap_or(0);
+                let start = channel_pos.saturating_sub(context_n);
+                let before: Vec<&crate::message::Message> =
+                    channel_msgs[start..channel_pos].to_vec();
+
+                let thread_replies: Vec<&crate::message::Message> = all_msgs
+                    .iter()
+                    .filter(|m| m.thread_parent_id.as_deref() == Some(msg_id))
+                    .collect();
+                let after: Vec<&crate::message::Message> =
+                    thread_replies[..context_n.min(thread_replies.len())].to_vec();
+
+                let mut result = before;
+                result.push(target_msg);
+                result.extend(after);
+                result
+            } else {
+                // Regular top-level message: context among top-level messages only
+                let top_level: Vec<&crate::message::Message> = all_msgs
+                    .iter()
+                    .filter(|m| m.thread_parent_id.is_none())
+                    .collect();
+                let top_pos = top_level.iter().position(|m| m.id == msg_id).unwrap_or(0);
+                let start = top_pos.saturating_sub(context_n);
+                let end = (top_pos + context_n + 1).min(top_level.len());
+                top_level[start..end].to_vec()
+            }
+        };
+
+        let messages_json: Vec<serde_json::Value> =
+            result_messages.iter().map(|m| message_to_json(m)).collect();
+
+        return Response::success(
+            id,
+            serde_json::json!({
+                "messages": messages_json,
+            }),
+        );
+    }
 
     // When --thread is specified, read all messages first and filter by thread
     // BEFORE applying --last/--since truncation. Otherwise, --last N takes the
@@ -1117,34 +1211,7 @@ pub(super) async fn handle_channel_read(
         }
     };
 
-    let messages_json: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| {
-            let mut obj = serde_json::json!({
-                "from": m.from,
-                "message": m.content,
-                "timestamp": m.timestamp.to_rfc3339(),
-                "msg_type": m.message_type.wire_name(),
-            });
-            if let Some(ref parent_id) = m.thread_parent_id {
-                obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
-            }
-            if let Some(ref nudge_type) = m.nudge_type {
-                obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
-            }
-            if let Some(ref tool_data) = m.tool_data {
-                obj["tool_data"] =
-                    serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
-            }
-            if let Some(ref provider) = m.provider {
-                obj["provider"] = serde_json::Value::String(provider.clone());
-            }
-            if let Some(ref tool_use_id) = m.tool_use_id {
-                obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
-            }
-            obj
-        })
-        .collect();
+    let messages_json: Vec<serde_json::Value> = messages.iter().map(message_to_json).collect();
 
     Response::success(
         id,
@@ -1152,6 +1219,33 @@ pub(super) async fn handle_channel_read(
             "messages": messages_json,
         }),
     )
+}
+
+fn message_to_json(m: &crate::message::Message) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "id": m.id,
+        "from": m.from,
+        "message": m.content,
+        "timestamp": m.timestamp.to_rfc3339(),
+        "msg_type": m.message_type.wire_name(),
+    });
+    if let Some(ref parent_id) = m.thread_parent_id {
+        obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
+    }
+    if let Some(ref nudge_type) = m.nudge_type {
+        obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
+    }
+    if let Some(ref tool_data) = m.tool_data {
+        obj["tool_data"] =
+            serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
+    }
+    if let Some(ref provider) = m.provider {
+        obj["provider"] = serde_json::Value::String(provider.clone());
+    }
+    if let Some(ref tool_use_id) = m.tool_use_id {
+        obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
+    }
+    obj
 }
 
 pub(crate) fn build_topic_thread_nudge_effect(
