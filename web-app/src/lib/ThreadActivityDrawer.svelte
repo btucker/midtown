@@ -78,8 +78,10 @@ let merged = $derived.by(() => {
 	return out;
 });
 
-// Phase 1: stamp newly completed items reactively (runs before DOM update when merged changes)
+// Phase 1: stamp newly completed items reactively (runs before DOM update when merged changes).
+// Skip when inlineMode — the drawer doesn't render tool items, so age-out is a no-op.
 $effect.pre(() => {
+	if (inlineMode) return;
 	const now = Date.now();
 	let changed = false;
 	const current = untrack(() => completedAt);
@@ -93,9 +95,9 @@ $effect.pre(() => {
 	if (changed) completedAt = newCompleted;
 });
 
-// Phase 2: expire completed items after AGE_OUT_MS (skip when expanded)
+// Phase 2: expire completed items after AGE_OUT_MS (skip when expanded or inlineMode)
 $effect(() => {
-	if (expanded) return;
+	if (expanded || inlineMode) return;
 
 	const currentCompleted = completedAt;
 	if (currentCompleted.size === 0) return;
