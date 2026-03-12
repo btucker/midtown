@@ -166,6 +166,9 @@ function selectChannel(channelName) {
 
 function handleCompletedThreadClick(thread) {
 	sidebar.setOpenMobile(false);
+	// Close any existing thread panel before switching channels to avoid
+	// stale thread state and double browser-history entries (matches selectChannel behavior).
+	closeThread({ pushState: false });
 	// Switch to the thread's channel so the thread panel has proper context
 	if ($activeChannel !== thread.channelName) {
 		activeChannel.set(thread.channelName);
