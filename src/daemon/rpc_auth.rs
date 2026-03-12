@@ -417,6 +417,22 @@ pub(super) async fn handle_auth_switch(
                     {
                         if channel_lead_names.contains(&channel) {
                             reviewer.escalation_target = Some(channel.clone());
+                            // Belt-and-suspenders: regenerate the initial prompt with the
+                            // escalation target so the reviewer knows who to address even
+                            // if the system prompt substitution fails.
+                            reviewer.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                                pr_number,
+                                0,
+                                target_provider,
+                                Some(&channel),
+                            ));
+                        } else {
+                            warn!(
+                                "Auth rotation for reviewer {}: task has channel {:?} but no \
+                                 channel lead registered; reviewer escalation_target falls back \
+                                 to project name",
+                                coworker.name, channel
+                            );
                         }
                         reviewer.channel = Some(channel);
                     }

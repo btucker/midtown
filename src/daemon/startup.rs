@@ -675,6 +675,24 @@ pub async fn recover_from_session_records(
                 && channel_lead_names.contains(channel_name)
             {
                 config.escalation_target = Some(channel_name.clone());
+                // Belt-and-suspenders: regenerate the initial prompt with the escalation
+                // target so the reviewer knows who to address even if the system prompt
+                // substitution fails.
+                if let Some(pr_number) = config.pr_number {
+                    config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                        pr_number,
+                        0,
+                        config.auth_provider,
+                        Some(channel_name),
+                    ));
+                }
+            } else if config.channel.is_some() {
+                warn!(
+                    "Recovered reviewer {}: task has channel {:?} but no channel lead registered; \
+                     reviewer escalation_target falls back to project name",
+                    name,
+                    config.channel.as_deref().unwrap_or("?")
+                );
             }
         }
         config.model =
