@@ -133,6 +133,14 @@ let pendingRenderStartIndex = 0;
 $effect(() => {
 	const ch = $activeChannel;
 	const len = channelMessages.length;
+
+	// If a search target is pending, skip window repositioning — the
+	// scroll-to-message effect will position the window around the target.
+	if (untrack(() => $channelTargetMsgId)) {
+		if (ch !== prevRenderChannel) prevRenderChannel = ch;
+		return;
+	}
+
 	if (ch !== prevRenderChannel) {
 		// Channel switch — position at tail using current message count.
 		prevRenderChannel = ch;
@@ -554,29 +562,36 @@ $effect(() => {
 	const targetIndex = channelMessages.findIndex((m) => m.id === targetId);
 	if (targetIndex === -1) return;
 
+	// Cancel any pending window-positioning microtask so it can't overwrite
+	// the renderStartIndex we're about to set.
+	++renderVersion;
+
 	// Ensure the target is within the render window
-	if (targetIndex < renderStartIndex) {
-		// Expand window to include the target message (with some padding above)
-		const newStart = Math.max(0, targetIndex - 10);
-		queueMicrotask(() => {
-			renderStartIndex = newStart;
-		});
-	}
+	const needsExpansion = targetIndex < renderStartIndex;
+	const newStart = needsExpansion ? Math.max(0, targetIndex - 10) : renderStartIndex;
 
 	// Disable auto-scroll so the auto-scroll effect doesn't fight us
 	untrack(() => {
 		autoScroll = false;
 	});
 
-	// Wait for DOM to update, then scroll to and highlight the element
-	tick().then(() => {
-		const el = scrollAreaViewport?.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`);
-		if (el) {
-			el.scrollIntoView({ behavior: "smooth", block: "center" });
-			el.classList.add("deep-link-highlight");
-			setTimeout(() => el.classList.remove("deep-link-highlight"), 2000);
+	// Use queueMicrotask to avoid state_unsafe_mutation, then tick() for DOM.
+	// Nesting tick() inside the microtask ensures it resolves AFTER the
+	// renderStartIndex update is applied, so the target element exists in the DOM.
+	queueMicrotask(() => {
+		if (needsExpansion) {
+			renderStartIndex = newStart;
+			pendingRenderStartIndex = newStart;
 		}
-		untrack(() => channelTargetMsgId.set(null));
+		tick().then(() => {
+			const el = scrollAreaViewport?.querySelector(`[data-msg-id="${CSS.escape(targetId)}"]`);
+			if (el) {
+				el.scrollIntoView({ behavior: "smooth", block: "center" });
+				el.classList.add("deep-link-highlight");
+				setTimeout(() => el.classList.remove("deep-link-highlight"), 2000);
+			}
+			channelTargetMsgId.set(null);
+		});
 	});
 });
 
