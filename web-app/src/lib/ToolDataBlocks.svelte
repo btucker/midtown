@@ -7,6 +7,7 @@
  */
 import BashBlock from "./BashBlock.svelte";
 import EditBlock from "./EditBlock.svelte";
+import ReadBlock from "./ReadBlock.svelte";
 import TodoBlock from "./TodoBlock.svelte";
 import ToolBlockGeneric from "./ToolBlockGeneric.svelte";
 
@@ -18,6 +19,8 @@ let { blocks } = $props();
     <BashBlock {block} />
   {:else if block.tool_name === 'Edit'}
     <EditBlock {block} />
+  {:else if block.tool_name === 'Read'}
+    <ReadBlock {block} />
   {:else if block.tool_name === 'TodoWrite'}
     <TodoBlock {block} />
   {:else}
