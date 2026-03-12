@@ -42,6 +42,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -303,6 +304,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -336,6 +338,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
+        cwd_subdir: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -367,5 +370,25 @@ fn test_to_headless_config_reviewer_escalation_target() {
             .system_prompt
             .contains("@daemon-core [Review Note]"),
         "With escalation_target, review notes should @mention channel lead"
+    );
+}
+
+#[test]
+fn test_channel_lead_cwd_subdir_defaults_to_none() {
+    let config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "", None);
+    assert!(
+        config.cwd_subdir.is_none(),
+        "Channel lead should have no cwd_subdir by default"
+    );
+}
+
+#[test]
+fn test_channel_lead_cwd_subdir_can_be_set() {
+    let mut config = LaunchConfig::channel_lead("auth", "myrepo", SessionMode::Fresh, "", None);
+    config.cwd_subdir = Some("packages/auth".to_string());
+    assert_eq!(
+        config.cwd_subdir.as_deref(),
+        Some("packages/auth"),
+        "cwd_subdir should be settable on channel lead config"
     );
 }

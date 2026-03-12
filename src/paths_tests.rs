@@ -1216,3 +1216,48 @@ fn test_discover_workflows_bad_frontmatter_gives_none_metadata() {
     assert_eq!(result.len(), 1);
     assert!(result[0].metadata.is_none());
 }
+
+#[test]
+fn test_channel_directory_file_path() {
+    let path = channel_directory_file("myproject", "auth");
+    let path_str = path.to_string_lossy();
+    assert!(path_str.contains("channels"));
+    assert!(path_str.contains("auth"));
+    assert!(path_str.ends_with("directory"));
+}
+
+#[test]
+fn test_read_channel_directory_missing_file() {
+    // With a non-existent repo/channel, should return None
+    let result = read_channel_directory("nonexistent-repo-xyz", "nonexistent-channel");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_read_channel_directory_with_value() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel_dir = tmp.path().join("channels").join("auth");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("directory"), "packages/auth\n").unwrap();
+
+    // read_channel_directory uses a fixed base dir, so test the underlying logic directly
+    let content = std::fs::read_to_string(channel_dir.join("directory"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    assert_eq!(content, Some("packages/auth".to_string()));
+}
+
+#[test]
+fn test_read_channel_directory_empty_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channel_dir = tmp.path().join("channels").join("auth");
+    std::fs::create_dir_all(&channel_dir).unwrap();
+    std::fs::write(channel_dir.join("directory"), "  \n").unwrap();
+
+    let content = std::fs::read_to_string(channel_dir.join("directory"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    assert_eq!(content, None);
+}

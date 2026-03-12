@@ -1567,7 +1567,14 @@ impl DaemonState {
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config(&self.paths);
-        headless_config.cwd = Some(working_dir.clone());
+        // Apply cwd_subdir: if a subdirectory is configured (e.g., channel_directory),
+        // append it to the worktree root so the session runs in that subdirectory.
+        if let Some(ref subdir) = launch_config.cwd_subdir {
+            let sub_path = std::path::Path::new(&working_dir).join(subdir);
+            headless_config.cwd = Some(sub_path.to_string_lossy().to_string());
+        } else {
+            headless_config.cwd = Some(working_dir.clone());
+        }
 
         // Write role-appropriate settings file for Claude-platform sessions.
         // Codex currently has no settings file equivalent.
