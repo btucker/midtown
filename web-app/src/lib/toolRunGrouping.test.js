@@ -185,6 +185,40 @@ describe("groupToolRuns", () => {
 	});
 });
 
+describe("filterChannelPosts — visible tool count", () => {
+	it("visible count excludes channel post blocks", () => {
+		// Simulates a tool run with 2 tools: 1 channel post + 1 Read
+		const messages = [
+			{
+				id: "1",
+				content: "",
+				tool_data: [
+					{ tool_name: "Bash", input: { command: 'midtown channel post "hello" --task 42' } },
+					{ tool_name: "Read", input: { file_path: "test.js" } },
+				],
+				timestamp: "2026-01-01T00:00:00Z",
+			},
+		];
+
+		// Raw toolCount from groupToolRuns includes the channel post
+		const groups = groupToolRuns(messages);
+		expect(groups[0].toolCount).toBe(2);
+
+		// Visible count after filtering should be 1
+		const visibleToolCount = messages.reduce((sum, m) => sum + filterChannelPosts(m.tool_data).length, 0);
+		expect(visibleToolCount).toBe(1);
+	});
+
+	it("visible count is 0 when all blocks are channel posts", () => {
+		const toolData = [
+			{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } },
+			{ tool_name: "Bash", input: { command: 'midtown channel post "bye"' } },
+		];
+		const visibleCount = filterChannelPosts(toolData).length;
+		expect(visibleCount).toBe(0);
+	});
+});
+
 // Helpers for timeline entries
 function timelineMsg(id, content, toolData = null) {
 	return {

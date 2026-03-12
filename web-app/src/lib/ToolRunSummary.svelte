@@ -55,6 +55,9 @@ let visibleEntries = $derived.by(() =>
 		.filter(Boolean),
 );
 
+// Use visible tool count (after filtering channel posts) instead of raw toolCount
+let visibleToolCount = $derived(visibleEntries.reduce((sum, entry) => sum + (entry.msg.tool_data?.length || 0), 0));
+
 function toggle() {
 	userOverride = true;
 	ac.clearTimer();
@@ -70,7 +73,7 @@ function toggle() {
 		out:fade={{ duration: mounted ? 100 : 0 }}
 	>
 		<span class="tool-run-icon">▸</span>
-		<span class="tool-run-text">{toolCount} {toolCount === 1 ? 'tool' : 'tools'} used</span>
+		<span class="tool-run-text">{visibleToolCount} {visibleToolCount === 1 ? 'tool' : 'tools'} used</span>
 	</button>
 {:else}
 	<div
@@ -80,7 +83,7 @@ function toggle() {
 	>
 		<button class="tool-run-summary tool-run-expanded-header" onclick={toggle}>
 			<span class="tool-run-icon">▾</span>
-			<span class="tool-run-text">{toolCount} {toolCount === 1 ? 'tool' : 'tools'} used</span>
+			<span class="tool-run-text">{visibleToolCount} {visibleToolCount === 1 ? 'tool' : 'tools'} used</span>
 		</button>
 		{#each visibleEntries as entry}
 			<MessageRow
