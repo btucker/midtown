@@ -928,7 +928,64 @@ pub(super) async fn handle_channel_read(
         },
     };
 
-    let messages = if let Some(n) = last {
+    // When --thread is specified, read all messages first and filter by thread
+    // BEFORE applying --last/--since truncation. Otherwise, --last N takes the
+    // last N messages from the whole channel and the subsequent thread filter
+    // could discard all of them on busy channels.
+    let all_messages: Vec<crate::message::Message> = if thread.is_some() {
+        match target_channel.read_all_async().await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!("Failed to read channel: {}", e);
+                return Response::error(id, RpcError::new(-32603, e.to_string()));
+            }
+        }
+    } else {
+        Vec::new() // unused when thread is None
+    };
+
+    // Apply thread filter first when present.
+    let thread_filtered: Option<Vec<crate::message::Message>> = thread.map(|parent_id| {
+        all_messages
+            .into_iter()
+            .filter(|m| m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id))
+            .collect()
+    });
+
+    let messages = if let Some(filtered) = thread_filtered {
+        // Thread filter was applied — now apply --last/--since to the filtered set.
+        if let Some(n) = last {
+            let total = filtered.len();
+            if total > n {
+                filtered.into_iter().skip(total - n).collect()
+            } else {
+                filtered
+            }
+        } else if let Some(duration_str) = since {
+            let duration = match parse_duration(duration_str) {
+                Some(d) => d,
+                None => {
+                    return Response::error(
+                        id,
+                        RpcError::new(
+                            -32602,
+                            format!(
+                                "Invalid duration format: '{}'. Use format like '5m', '1h', '30s'",
+                                duration_str
+                            ),
+                        ),
+                    );
+                }
+            };
+            let cutoff = chrono::Utc::now() - chrono::Duration::from_std(duration).unwrap();
+            filtered
+                .into_iter()
+                .filter(|m| m.timestamp >= cutoff)
+                .collect()
+        } else {
+            filtered
+        }
+    } else if let Some(n) = last {
         // Use --last flag: read last N messages
         info!("Reading last {} messages", n);
         match target_channel.read_last_n_messages_async(n).await {
@@ -997,16 +1054,6 @@ pub(super) async fn handle_channel_read(
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
             }
         }
-    };
-
-    // Apply thread filter: keep only the parent message and its replies.
-    let messages = if let Some(parent_id) = thread {
-        messages
-            .into_iter()
-            .filter(|m| m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id))
-            .collect()
-    } else {
-        messages
     };
 
     let messages_json: Vec<serde_json::Value> = messages

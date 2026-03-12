@@ -2919,3 +2919,72 @@ async fn test_channel_read_thread_with_last() {
         messages.len()
     );
 }
+
+/// Regression: --thread + --last must filter by thread BEFORE truncating.
+/// Previously, --last N took the last N messages from the whole channel and
+/// then filtered by thread, returning zero results when unrelated traffic
+/// exceeded the window.
+#[tokio::test]
+async fn test_channel_read_thread_with_last_filters_before_truncating() {
+    let (state, _tmp, _guard) =
+        make_test_state("midtown-test-channel-read-thread-last-before-trunc");
+
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Post 2 thread replies
+    for i in 1..=2 {
+        let _r = handle_channel_post(
+            i.into(),
+            "york",
+            &format!("Thread reply {i}"),
+            None,
+            Some(&parent_id),
+            &state,
+        )
+        .await;
+    }
+
+    // Flood the channel with 30 unrelated top-level messages (more than --last 10)
+    for i in 1..=30 {
+        let _r = handle_channel_post(
+            (100 + i).into(),
+            "park",
+            &format!("Unrelated noise {i}"),
+            None,
+            None,
+            &state,
+        )
+        .await;
+    }
+
+    // Read with --last 10 --thread: should return all 3 thread messages
+    // (parent + 2 replies), NOT zero because the 30 noise messages pushed
+    // thread messages out of the last-10 window.
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        Some(10),
+        None,
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Expected 3 thread messages (parent + 2 replies) even with --last 10, got {}",
+        messages.len()
+    );
+    assert!(
+        messages[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Parent message"),
+        "First message should be the parent"
+    );
+}
