@@ -4484,8 +4484,13 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
         .unwrap_or_else(|| state.channel_router.default_channel_name());
 
     // Only use the task thread if the final channel matches the task's channel.
-    let resolved_thread_id =
-        task_thread_id.filter(|_| task_channel.as_deref() == Some(channel_name));
+    // When task_channel is None, the insight routes to the default channel —
+    // which is also where the task announcement lives, so threading is correct.
+    let resolved_thread_id = task_thread_id.filter(|_| {
+        task_channel
+            .as_ref()
+            .is_none_or(|ch| ch.as_str() == channel_name)
+    });
 
     let insight_content = format!("💡 {}", insight);
     let msg = if let Some(ref thread_id) = resolved_thread_id {
