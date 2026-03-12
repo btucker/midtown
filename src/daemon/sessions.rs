@@ -630,13 +630,14 @@ impl SessionManager {
 
         // Register in the sessions map so the event loop picks it up.
         let mut sessions = self.sessions.write().await;
-        let cs = CoworkerSession::new(
+        let mut cs = CoworkerSession::new(
             slot_id.clone(),
             name.to_string(),
             session,
             &self.repo_name,
             Some(fork_session_id.clone()),
         );
+        cs.is_resume = config.resume_session_id.is_some();
         sessions.insert(slot_id, cs);
 
         info!(

@@ -1233,32 +1233,29 @@ async fn try_lazy_fork_respawn(
         auth_provider,
         is_channel_lead,
         initial_prompt,
+        old_session_id: Some(fork_sid.to_string()),
     };
     crate::daemon::effects::execute_effects(vec![respawn_effect], state).await;
 
-    // Re-read topic_sessions — respawn_fork updates it with the new session_id.
-    // If the session_id changed, respawn succeeded. If it's the same (or gone),
-    // respawn failed.
+    // Re-read topic_sessions — respawn_fork updates it with the session_id on
+    // success, or removes the entry on failure. When resuming an old session, the
+    // ID may be the same as fork_sid (successful resume keeps the original ID),
+    // so we check for existence rather than ID change.
     let new_session_id = state
         .topic_sessions
         .lock()
         .unwrap()
         .get(thread_parent_id)
-        .filter(|s| s.as_str() != "pending" && s.as_str() != fork_sid)
+        .filter(|s| s.as_str() != "pending")
         .cloned();
 
     if new_session_id.is_none() {
-        // Respawn failed — clean up stale entry so future messages fall back
-        // to channel lead instead of trying to nudge a dead session.
+        // Respawn failed (respawn_fork already removed the stale entry) —
+        // future messages will fall back to channel lead.
         warn!(
             "channel.post: fork respawn failed for thread {} — falling back to channel lead",
             thread_parent_id
         );
-        state
-            .topic_sessions
-            .lock()
-            .unwrap()
-            .remove(thread_parent_id);
     }
 
     new_session_id

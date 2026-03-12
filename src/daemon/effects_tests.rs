@@ -1960,6 +1960,7 @@ fn test_respawn_fork_effect_carries_initial_prompt() {
         auth_provider: crate::auth::AuthProvider::Claude,
         is_channel_lead: true,
         initial_prompt: Some("Investigate the auth bug in the login flow".to_string()),
+        old_session_id: None,
     };
 
     // Verify the initial_prompt is preserved through pattern matching
@@ -1986,12 +1987,39 @@ fn test_respawn_fork_effect_without_initial_prompt() {
         auth_provider: crate::auth::AuthProvider::Claude,
         is_channel_lead: false,
         initial_prompt: None,
+        old_session_id: None,
     };
 
     if let Effect::RespawnFork { initial_prompt, .. } = &effect {
         assert!(
             initial_prompt.is_none(),
             "RespawnFork without preserved context should have None initial_prompt"
+        );
+    } else {
+        panic!("Expected RespawnFork variant");
+    }
+}
+
+/// When `RespawnFork` carries an `old_session_id`, the effect should preserve it
+/// so crash recovery can attempt to resume the fork's previous session.
+#[test]
+fn test_respawn_fork_effect_carries_old_session_id() {
+    let effect = Effect::RespawnFork {
+        fork_name: "fork-investigate-auth".to_string(),
+        thread_parent_id: "msg-abc123".to_string(),
+        channel: Some("daemon-core".to_string()),
+        working_dir: Some("/tmp/worktree".to_string()),
+        auth_provider: crate::auth::AuthProvider::Claude,
+        is_channel_lead: true,
+        initial_prompt: Some("Investigate the auth bug".to_string()),
+        old_session_id: Some("old-fork-sess-123".to_string()),
+    };
+
+    if let Effect::RespawnFork { old_session_id, .. } = &effect {
+        assert_eq!(
+            old_session_id.as_deref(),
+            Some("old-fork-sess-123"),
+            "RespawnFork should carry the old session ID for resume"
         );
     } else {
         panic!("Expected RespawnFork variant");

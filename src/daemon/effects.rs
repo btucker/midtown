@@ -722,9 +722,10 @@ pub enum Effect {
 
     /// Respawn a dead fork session bound to a thread.
     ///
-    /// Spawns a fresh fork session (no parent resume) with the same thread binding,
-    /// channel, and working directory as the original fork. Updates `topic_sessions`
-    /// with the new session ID and creates a `SessionRecord` for the new fork.
+    /// When `old_session_id` is provided, attempts to resume the fork's previous
+    /// session (preserving conversation history). Falls back to spawning a fresh
+    /// session if resume fails. Re-establishes the topic_sessions and reverse-map
+    /// bindings so the thread continues routing to the fork.
     ///
     /// This is the fork counterpart to `SpawnCoworker` for task-based crash recovery.
     /// Fork sessions are thread-bound (not task-bound), so they need a separate
@@ -740,6 +741,10 @@ pub enum Effect {
         /// When present, crash recovery resends this instead of generic framing,
         /// so the respawned fork retains context about what it was supposed to do.
         initial_prompt: Option<String>,
+        /// The fork's previous session ID. When provided, crash recovery attempts
+        /// to resume this session (preserving conversation history) before falling
+        /// back to a fresh spawn.
+        old_session_id: Option<String>,
     },
 }
 
@@ -3467,6 +3472,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 auth_provider,
                 is_channel_lead,
                 initial_prompt,
+                old_session_id,
             } => {
                 respawn_fork(
                     state,
@@ -3477,6 +3483,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     auth_provider,
                     is_channel_lead,
                     initial_prompt.as_deref(),
+                    old_session_id.as_deref(),
                 )
                 .await;
             }
@@ -4149,9 +4156,10 @@ fn auto_detach_suffix_message(
 
 /// Respawn a dead fork session bound to a thread.
 ///
-/// Builds a fresh fork HeadlessConfig (no parent resume), spawns it via
-/// SessionManager, and re-establishes the topic_sessions and reverse-map
-/// bindings so the thread continues routing to the new fork.
+/// When `old_session_id` is provided, attempts to resume the fork's previous
+/// session (preserving conversation history). Falls back to spawning a fresh
+/// session if resume fails. Re-establishes the topic_sessions and reverse-map
+/// bindings so the thread continues routing to the fork.
 #[allow(clippy::too_many_arguments)]
 async fn respawn_fork(
     state: &DaemonState,
@@ -4162,9 +4170,10 @@ async fn respawn_fork(
     auth_provider: crate::auth::AuthProvider,
     is_channel_lead: bool,
     initial_prompt: Option<&str>,
+    old_session_id: Option<&str>,
 ) {
-    // Build a fork config. We pass an empty calling_session_id and override
-    // resume_session_id to None — crash recovery spawns fresh, not from parent.
+    // Build a fork config. We pass an empty calling_session_id — the resume
+    // logic below decides whether to resume or spawn fresh.
     // Use name_override (not fork_name_hint) to reuse the exact original name,
     // keeping cooldown keys stable and HeadlessConfig identity consistent.
     let (name, mut headless_config) = super::rpc_session::build_fork_config(
@@ -4179,18 +4188,73 @@ async fn respawn_fork(
         state.paths.dir_key(),
         Some(fork_name), // reuse exact original fork name
     );
-    headless_config.resume_session_id = None; // Fresh session, don't resume from parent
 
-    // Spawn the fork
-    let fork_session_id = match state
-        .session_manager
-        .spawn_fork(&name, headless_config)
-        .await
-    {
-        Ok(sid) => sid,
-        Err(e) => {
-            warn!("Failed to respawn fork {}: {}", fork_name, e);
-            return;
+    // Try to resume the old fork session, fall back to fresh spawn.
+    // Track whether resume succeeded so we can tailor the nudge message.
+    let mut was_resumed = false;
+    let fork_session_id = if let Some(old_sid) = old_session_id {
+        // Resume the fork's own session — plain resume, not a fork.
+        // Don't pre-assign session_id: it's meant for fresh sessions only,
+        // and Codex rejects it outright. Let spawn_fork discover the session
+        // ID from the init event instead.
+        let mut resume_config = headless_config.clone();
+        resume_config.resume_session_id = Some(old_sid.to_string());
+        resume_config.fork_session = false;
+
+        match state.session_manager.spawn_fork(&name, resume_config).await {
+            Ok(sid) => {
+                info!(
+                    "Resumed fork {} with old session {} (crash recovery)",
+                    fork_name, old_sid
+                );
+                was_resumed = true;
+                sid
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to resume fork {} (session {}): {} — falling back to fresh spawn",
+                    fork_name, old_sid, e
+                );
+                // Fall back to fresh spawn
+                headless_config.resume_session_id = None;
+                match state
+                    .session_manager
+                    .spawn_fork(&name, headless_config)
+                    .await
+                {
+                    Ok(sid) => sid,
+                    Err(e) => {
+                        warn!("Failed to respawn fork {}: {}", fork_name, e);
+                        // Remove topic_sessions entry so caller knows respawn failed
+                        state
+                            .topic_sessions
+                            .lock()
+                            .unwrap()
+                            .remove(thread_parent_id);
+                        return;
+                    }
+                }
+            }
+        }
+    } else {
+        // No old session — fresh spawn (original behavior)
+        headless_config.resume_session_id = None;
+        match state
+            .session_manager
+            .spawn_fork(&name, headless_config)
+            .await
+        {
+            Ok(sid) => sid,
+            Err(e) => {
+                warn!("Failed to respawn fork {}: {}", fork_name, e);
+                // Remove topic_sessions entry so caller knows respawn failed
+                state
+                    .topic_sessions
+                    .lock()
+                    .unwrap()
+                    .remove(thread_parent_id);
+                return;
+            }
         }
     };
 
@@ -4291,10 +4355,13 @@ async fn respawn_fork(
     // Without this, the fork session sits idle forever with no initial prompt
     // (same issue as the original fork creation path — see rpc_session.rs).
     //
-    // Priority: preserved initial_prompt (from the original fork) > generic framing.
-    // This ensures crash-recovered forks retain context about their original task
-    // instead of getting confused by generic "crash recovery" framing.
-    let nudge_message = if let Some(prompt) = initial_prompt {
+    // When we successfully resumed the old session, send a simpler nudge since
+    // the session already has its full conversation context. For fresh spawns,
+    // use the original initial_prompt or generic framing.
+    let nudge_message = if was_resumed {
+        // Session already has its full conversation context — just tell it to continue
+        Some("Session resumed after crash recovery. Continue where you left off.".to_string())
+    } else if let Some(prompt) = initial_prompt {
         Some(format!(
             "{}\n\n(This is a crash recovery session — the previous fork for this thread exited unexpectedly.)",
             prompt
