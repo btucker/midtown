@@ -55,7 +55,7 @@ pub fn build_snippet(content: &str, query: &str, context_chars: usize) -> String
 
     let pos = match lower_content.find(&lower_query) {
         Some(p) => p,
-        None => return truncate_str(content, context_chars * 2),
+        None => return crate::daemon::helpers::truncate_str(content, context_chars * 2),
     };
 
     let start = pos.saturating_sub(context_chars);
@@ -95,10 +95,6 @@ fn snap_to_char_boundary(s: &str, offset: usize, forward: bool) -> usize {
             .find(|&i| s.is_char_boundary(i))
             .unwrap_or(0)
     }
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    crate::daemon::helpers::truncate_str(s, max_len)
 }
 
 /// Extract channel name from a JSONL file path.
