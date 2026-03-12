@@ -149,9 +149,11 @@ fn test_reviewer_prompt_substitutes_pr_number() {
 fn test_reviewer_resume_prompt_substitutes_pr_number() {
     let prompt = reviewer_resume_prompt(99, AuthProvider::Claude);
     assert!(prompt.contains("Resume reviewing PR #99"));
-    // Daemon posts the placeholder, reviewer uses `midtown pr review post`
-    assert!(prompt.contains("midtown pr review post --pr 99"));
-    assert!(prompt.contains("PR #99 repeats"));
+    // Posting/refactor instructions are in the system prompt, not duplicated here
+    assert!(
+        prompt.contains("system prompt"),
+        "Resume prompt should reference the system prompt for behavioral instructions"
+    );
     assert!(
         !prompt.contains("{pr_number}"),
         "Reviewer resume prompt should not contain unreplaced {{pr_number}} placeholders"
@@ -189,11 +191,12 @@ fn test_reviewer_prompt_codex_invocation() {
 }
 
 #[test]
-fn test_reviewer_resume_prompt_contains_task_verification() {
+fn test_reviewer_resume_prompt_references_system_prompt() {
     let prompt = reviewer_resume_prompt(1, AuthProvider::Claude);
+    // Task verification is now in the system prompt; resume just references it
     assert!(
-        prompt.contains("TASK DESCRIPTION VERIFICATION"),
-        "Reviewer resume prompt should contain TASK DESCRIPTION VERIFICATION section"
+        prompt.contains("system prompt"),
+        "Reviewer resume prompt should reference the system prompt for task verification"
     );
     assert!(
         prompt.contains("/code-review:code-review"),
@@ -266,9 +269,10 @@ fn test_reviewer_prompts_use_daemon_review_post() {
         system_prompt.contains("midtown pr review post"),
         "Reviewer system prompt should instruct using `midtown pr review post`"
     );
+    // Resume prompt no longer duplicates posting instructions — they're in the system prompt
     assert!(
-        resume_prompt.contains("midtown pr review post"),
-        "Reviewer resume prompt should instruct using `midtown pr review post`"
+        resume_prompt.contains("system prompt"),
+        "Reviewer resume prompt should reference the system prompt for posting instructions"
     );
 }
 
