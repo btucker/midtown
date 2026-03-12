@@ -525,19 +525,12 @@ pub(super) async fn handle_channel_post(
                     .unwrap()
                     .contains_key(&state.project_name.to_lowercase());
             if lead_is_dead {
-                let should_expedite = {
-                    let cooldowns = state.cooldowns.lock().unwrap();
-                    cooldowns.check(
-                        "lead_dead_expedite",
-                        &state.project_name,
-                        Duration::from_secs(30),
-                    )
-                };
+                let should_expedite = state.cooldowns.lock().unwrap().check_and_record(
+                    "lead_dead_expedite",
+                    &state.project_name,
+                    Duration::from_secs(30),
+                );
                 if should_expedite {
-                    {
-                        let mut cooldowns = state.cooldowns.lock().unwrap();
-                        cooldowns.record("lead_dead_expedite", &state.project_name);
-                    }
                     info!("Lead is dead — expediting respawn on user message");
                     state.expedite_lead_respawn_on_user_message().await;
                 }
@@ -568,19 +561,14 @@ pub(super) async fn handle_channel_post(
         && is_coworker_sender(from, &state.project_name)
         && (content_lower.contains("@lead") || content_lower.contains(&project_mention))
     {
-        // Use CooldownTracker to avoid duplicate nudges (expires after 1 hour)
-        let should_nudge = {
-            let cooldowns = state.cooldowns.lock().unwrap();
-            cooldowns.check("lead_mention", &msg.id, Duration::from_secs(3600))
-        };
+        // Use CooldownTracker atomically to avoid duplicate nudges (expires after 1 hour)
+        let should_nudge = state.cooldowns.lock().unwrap().check_and_record(
+            "lead_mention",
+            &msg.id,
+            Duration::from_secs(3600),
+        );
 
         if should_nudge {
-            // Record that we're nudging for this message
-            {
-                let mut cooldowns = state.cooldowns.lock().unwrap();
-                cooldowns.record("lead_mention", &msg.id);
-            }
-
             // Truncate message for nudge (max 100 chars)
             let summary = truncate_str(&content, 100);
 

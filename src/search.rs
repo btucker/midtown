@@ -98,12 +98,7 @@ fn snap_to_char_boundary(s: &str, offset: usize, forward: bool) -> usize {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let end = snap_to_char_boundary(s, max_len, false);
-        format!("{}...", &s[..end])
-    }
+    crate::daemon::helpers::truncate_str(s, max_len)
 }
 
 /// Extract channel name from a JSONL file path.
