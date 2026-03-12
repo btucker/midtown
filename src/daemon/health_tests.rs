@@ -117,6 +117,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -137,6 +138,8 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -281,6 +284,7 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -302,6 +306,8 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -477,6 +483,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -494,6 +501,8 @@ fn test_check_for_usage_limits_with_reset_time() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -596,6 +605,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -613,6 +623,8 @@ fn test_check_for_usage_limits_already_scheduled() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -750,6 +762,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -767,6 +780,8 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     }
 }
@@ -1674,6 +1689,7 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -1691,6 +1707,8 @@ fn test_idle_shutdown_emits_shutdown_session_when_mapping_exists() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 
@@ -1801,6 +1819,7 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -1818,6 +1837,8 @@ fn test_idle_shutdown_falls_back_to_shutdown_coworker_without_mapping() {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
     };
 

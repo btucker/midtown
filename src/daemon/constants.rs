@@ -281,6 +281,12 @@ pub(super) const REBASE_REGRESSION_COOLDOWN: Duration =
 /// This prevents spam while ensuring notes get reviewed eventually.
 pub(super) const NOTE_STALENESS_NUDGE_COOLDOWN_SECS: u64 = 86400;
 
+/// Cooldown between channel lead worktree freshness nudges (10 minutes).
+///
+/// After nudging a channel lead that their worktree is behind origin/main,
+/// wait before nudging again. This gives the lead time to update.
+pub(super) const LEAD_WORKTREE_FRESHNESS_COOLDOWN: Duration = Duration::from_secs(600);
+
 /// All valid coworker names for @mention detection.
 pub(super) const COWORKER_NAMES: &[&str] = &[
     "lexington",
