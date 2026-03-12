@@ -158,9 +158,12 @@ impl WakeReason {
                 thread_ctx,
             } => {
                 if let Some(ctx) = thread_ctx {
-                    format!("user ({msg_id}): {content}\n\n{}", ctx.reply_instructions())
+                    format!(
+                        "user (channel-msg-id: {msg_id}): {content}\n\n{}",
+                        ctx.reply_instructions()
+                    )
                 } else {
-                    format!("user ({msg_id}): {content}")
+                    format!("user (channel-msg-id: {msg_id}): {content}")
                 }
             }
             Self::InsightPosted {
@@ -224,7 +227,7 @@ impl WakeReason {
                 msg_id,
                 thread_ctx,
             } => {
-                let base = format!("{from} mentioned you ({msg_id}): {content}");
+                let base = format!("{from} mentioned you (channel-msg-id: {msg_id}): {content}");
                 if let Some(ctx) = thread_ctx {
                     format!("{base}\n\n{}", ctx.reply_instructions())
                 } else {
@@ -238,7 +241,7 @@ impl WakeReason {
                 coworker_name,
             } => {
                 format!(
-                    "user ({msg_id}): {content}\n\n\
+                    "user (channel-msg-id: {msg_id}): {content}\n\n\
                      Reply with: midtown channel post \"...\" --channel dm-{coworker_name}"
                 )
             }

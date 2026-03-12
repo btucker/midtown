@@ -168,9 +168,9 @@ async fn test_user_message_queues_headed_lead_nudge() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].kind, "nudge_text");
     assert!(
-        messages[0].text.starts_with("user (")
+        messages[0].text.starts_with("user (channel-msg-id: ")
             && messages[0].text.ends_with("): please check this"),
-        "nudge text should be 'user (<id>): please check this', got: {}",
+        "nudge text should be 'user (channel-msg-id: <id>): please check this', got: {}",
         messages[0].text
     );
     assert!(messages[0].submit);
@@ -205,7 +205,7 @@ async fn test_user_at_project_name_queues_single_nudge() {
     );
     assert_eq!(messages[0].kind, "nudge_text");
     assert!(
-        messages[0].text.starts_with("user ("),
+        messages[0].text.starts_with("user (channel-msg-id: "),
         "expected user-message nudge format, got: {}",
         messages[0].text
     );
@@ -354,8 +354,9 @@ async fn test_user_message_to_main_channel_nudges_lead() {
         "Main lead should be nudged for main channel user messages"
     );
     assert!(
-        messages[0].text.starts_with("user (") && messages[0].text.ends_with("): hello main"),
-        "nudge text should be 'user (<id>): hello main', got: {}",
+        messages[0].text.starts_with("user (channel-msg-id: ")
+            && messages[0].text.ends_with("): hello main"),
+        "nudge text should be 'user (channel-msg-id: <id>): hello main', got: {}",
         messages[0].text
     );
 }
@@ -397,9 +398,9 @@ async fn test_user_message_with_coworker_mention_still_nudges_lead() {
         "Lead should be nudged even when user @mentions a coworker"
     );
     assert!(
-        messages[0].text.starts_with("user (")
+        messages[0].text.starts_with("user (channel-msg-id: ")
             && messages[0].text.ends_with("): @york can you check this?"),
-        "nudge text should be 'user (<id>): @york can you check this?', got: {}",
+        "nudge text should be 'user (channel-msg-id: <id>): @york can you check this?', got: {}",
         messages[0].text
     );
 }
@@ -850,7 +851,9 @@ async fn test_user_thread_reply_nudge_uses_parent_id() {
     // would cause the lead to create a nested reply invisible to the user.
     // The nudge also includes --thread/--channel instructions after the message preview.
     assert!(
-        messages[0].text.contains(&format!("user ({})", parent_id)),
+        messages[0]
+            .text
+            .contains(&format!("user (channel-msg-id: {})", parent_id)),
         "nudge for thread reply should use parent_id, got: {}",
         messages[0].text
     );
@@ -1478,7 +1481,7 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
 async fn test_topic_sessions_dedup_returns_existing() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-sessions-dedup");
 
-    let thread_id = "thread-dedup-uuid";
+    let thread_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     let first_fork = "fork-session-first";
 
     // Pre-populate topic_sessions as if a fork already exists for this thread.

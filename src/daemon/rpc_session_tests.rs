@@ -749,7 +749,7 @@ async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
 async fn test_handle_session_fork_already_exists_response() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let thread_id = "thread-rpc-already-exists";
+    let thread_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     let existing_sid = "rpc-existing-session-xyz".to_string();
     state
         .topic_sessions
@@ -787,7 +787,7 @@ async fn test_handle_session_fork_already_exists_response() {
 async fn test_handle_session_fork_returns_pending_during_spawn_window() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let thread_id = "thread-rpc-pending-fork";
+    let thread_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
     state
         .topic_sessions
         .lock()
@@ -889,7 +889,7 @@ async fn test_create_fork_session_falls_back_to_repo_name() {
 async fn test_handle_session_fork_existing_does_not_nudge() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let thread_id = "thread-existing-no-nudge";
+    let thread_id = "c3d4e5f6-a7b8-9012-cdef-123456789012";
     let existing_sid = "existing-session-no-nudge".to_string();
     state
         .topic_sessions
@@ -924,7 +924,7 @@ async fn test_handle_session_fork_existing_does_not_nudge() {
 async fn test_handle_session_fork_with_initial_message() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let thread_id = "thread-initial-msg-test";
+    let thread_id = "d4e5f6a7-b8c9-0123-defa-234567890123";
     let calling_session_id = "lead-session-for-initial-msg";
 
     // Insert a channel lead session so the fork attempt goes through
@@ -1298,7 +1298,13 @@ async fn test_fork_thread_stale_session_self_heals() {
     }
 
     // First call: should detect stale session and clean up the mapping
-    let resp1 = handle_session_fork_thread(1_i64.into(), "thread-1", channel, &state).await;
+    let resp1 = handle_session_fork_thread(
+        1_i64.into(),
+        "e5f6a7b8-c9d0-1234-efab-345678901234",
+        channel,
+        &state,
+    )
+    .await;
     let json1: serde_json::Value = serde_json::to_value(&resp1).unwrap();
     assert!(
         json1.get("error").is_some(),
@@ -1312,7 +1318,13 @@ async fn test_fork_thread_stale_session_self_heals() {
     );
 
     // Second call: should return "No channel lead session" (self-healed)
-    let resp2 = handle_session_fork_thread(2_i64.into(), "thread-1", channel, &state).await;
+    let resp2 = handle_session_fork_thread(
+        2_i64.into(),
+        "e5f6a7b8-c9d0-1234-efab-345678901234",
+        channel,
+        &state,
+    )
+    .await;
     let json2: serde_json::Value = serde_json::to_value(&resp2).unwrap();
     assert!(
         json2.get("error").is_some(),
@@ -1332,7 +1344,13 @@ async fn test_fork_thread_stale_session_self_heals() {
 async fn test_fork_thread_no_channel_lead() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let resp = handle_session_fork_thread(1_i64.into(), "thread-1", "nonexistent", &state).await;
+    let resp = handle_session_fork_thread(
+        1_i64.into(),
+        "f6a7b8c9-d0e1-2345-fabc-456789012345",
+        "nonexistent",
+        &state,
+    )
+    .await;
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
     assert!(json.get("error").is_some());
     let msg = json["error"]["message"].as_str().unwrap_or("");
@@ -1530,5 +1548,131 @@ fn test_build_fork_config_skips_settings_path_for_codex() {
     assert!(
         headless_config.settings_path.is_none(),
         "Codex forks must have settings_path = None to avoid codex_launch_plan_from_config rejection"
+    );
+}
+
+// ============================================================================
+// Fork thread_parent_id UUID validation tests
+// ============================================================================
+
+/// `handle_session_fork` rejects Claude API message IDs (non-UUID strings).
+/// This prevents leads from accidentally creating forks bound to non-existent
+/// threads when they confuse Claude API IDs with channel message UUIDs.
+#[tokio::test]
+async fn test_handle_session_fork_rejects_non_uuid_thread_id() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Claude API message ID format
+    let resp = handle_session_fork(
+        RequestId::Number(100),
+        "msg_01JPxyz123abc",
+        "any-caller",
+        None,
+        None,
+        &state,
+    )
+    .await;
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should reject Claude API message ID"
+    );
+    let msg = json["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("Invalid thread_parent_id"),
+        "Error should mention invalid thread_parent_id, got: {}",
+        msg
+    );
+    assert!(
+        msg.contains("channel message UUID"),
+        "Error should suggest using channel message UUID, got: {}",
+        msg
+    );
+}
+
+/// `handle_session_fork` accepts valid UUID thread IDs.
+#[tokio::test]
+async fn test_handle_session_fork_accepts_valid_uuid() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let valid_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+    // Pre-populate topic_sessions so the fork returns "already exists"
+    // without needing to spawn a real session.
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(valid_uuid.to_string(), "existing-session".to_string());
+
+    let resp = handle_session_fork(
+        RequestId::Number(101),
+        valid_uuid,
+        "any-caller",
+        None,
+        None,
+        &state,
+    )
+    .await;
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_none(),
+        "Should accept valid UUID thread ID, got error: {:?}",
+        json.get("error")
+    );
+}
+
+/// `handle_session_fork` rejects various non-UUID strings.
+#[tokio::test]
+async fn test_handle_session_fork_rejects_various_non_uuid_formats() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let invalid_ids = [
+        "msg_01JPxyz123abc", // Claude API message ID
+        "not-a-uuid",        // arbitrary string
+        "12345",             // numeric
+        "",                  // empty (won't reach here due to require_str! but defensive)
+        "tool_use_abc123",   // tool use ID
+    ];
+
+    for invalid_id in &invalid_ids {
+        if invalid_id.is_empty() {
+            continue; // skip empty — handled by require_str!
+        }
+        let resp = handle_session_fork(
+            RequestId::Number(200),
+            invalid_id,
+            "any-caller",
+            None,
+            None,
+            &state,
+        )
+        .await;
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.get("error").is_some(),
+            "Should reject non-UUID '{}', got: {:?}",
+            invalid_id,
+            json.get("result")
+        );
+    }
+}
+
+/// `handle_session_fork_thread` rejects non-UUID thread IDs.
+#[tokio::test]
+async fn test_handle_session_fork_thread_rejects_non_uuid() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let resp = handle_session_fork_thread(1_i64.into(), "msg_01JPxyz123abc", "web", &state).await;
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should reject Claude API message ID in fork_thread"
+    );
+    let msg = json["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("Invalid thread_parent_id"),
+        "Error should mention invalid thread_parent_id, got: {}",
+        msg
     );
 }

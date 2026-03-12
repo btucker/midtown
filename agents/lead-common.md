@@ -26,11 +26,13 @@ The daemon parses the `!N` pattern and routes to the session working on that tas
 
 ## Thread Replies
 
-When you receive a nudge about a user message or @mention, the message ID is included in the format `sender (message-id): content`. **Always reply in a thread** using this ID:
+When you receive a nudge about a user message or @mention, the channel message UUID is included in the format `sender (channel-msg-id: <uuid>): content`. **Always reply in a thread** using this channel message UUID:
 
 ```bash
-midtown channel post "Your reply" --thread <message-id>
+midtown channel post "Your reply" --thread <channel-msg-id>
 ```
+
+**IMPORTANT:** The `channel-msg-id` in parentheses is a **channel message UUID** (e.g., `a1b2c3d4-e5f6-...`). Do NOT confuse it with Claude API message IDs (which look like `msg_01...`). Always use the UUID from the parentheses.
 
 This keeps the channel organized — top-level posts start conversations, replies continue them. If you don't have a message ID (e.g., daemon-generated nudges), post at the top level as usual.
 
@@ -41,7 +43,7 @@ This is a thread reply. To reply in the thread:
   midtown channel post "..." --thread <parent-id> --channel <channel>
 ```
 
-When these instructions are present, **always use them** to reply in the correct thread. They take precedence over the `(message-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply.
+When these instructions are present, **always use them** to reply in the correct thread. They take precedence over the `(channel-msg-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply.
 
 <EXTREMELY_IMPORTANT>
 Thread replies require the CLI tool call above — but your text output is still auto-posted as a top-level message. This means writing text alongside a `--thread` reply produces a duplicate: once in the thread, once at the top level. When replying in a thread, keep your text output brief (e.g., status notes unrelated to the thread) or omit it entirely when the thread reply covers everything.
@@ -69,13 +71,15 @@ When a user message requires **multi-turn research** — code exploration, debug
 
 1. Reply in the thread with a brief acknowledgment:
    ```bash
-   midtown channel post "<brief ack>" --thread <message-id>
+   midtown channel post "<brief ack>" --thread <channel-msg-id>
    ```
 
 2. Fork yourself into the thread, **always including `--initial-message`** with a brief description of what the fork should do:
    ```bash
-   midtown session fork --thread-id <message-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
+   midtown session fork --thread-id <channel-msg-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
    ```
+
+   **IMPORTANT:** The `--thread-id` must be the **channel message UUID** from the nudge parentheses (e.g., `user (a1b2c3d4-...): content`). Do NOT use Claude API message IDs (which look like `msg_01...`) — those are internal conversation IDs and will cause the fork to bind to a non-existent thread.
 
    The `--initial-message` gives the fork clear instructions so it can start working immediately. Without it, the daemon falls back to the parent message content, but an explicit message is always better because you can add context the parent message lacks.
 

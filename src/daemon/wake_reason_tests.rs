@@ -422,7 +422,9 @@ fn mention_without_thread_ctx_formats_simple_message() {
     };
     let msg = reason.to_nudge_message();
     assert!(
-        msg.contains("broadway mentioned you (msg-mention-001): check the auth flow"),
+        msg.contains(
+            "broadway mentioned you (channel-msg-id: msg-mention-001): check the auth flow"
+        ),
         "should format as simple mention"
     );
     assert!(
