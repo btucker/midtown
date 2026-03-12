@@ -22,6 +22,9 @@ cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
 REVIEW_EOF
 
 midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
+
+# Cross-post review to the task thread so the team sees it inline
+midtown channel post "$(cat /tmp/review-{pr_number}.md)" --task {task_id}
 ```
 
 **IMPORTANT**: Do NOT include `<!-- midtown: {name} -->` frontmatter or the Midtown footer in your review content. The daemon adds these automatically.

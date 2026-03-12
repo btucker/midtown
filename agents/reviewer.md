@@ -52,6 +52,9 @@ cat > /tmp/review-{pr_number}.md << 'REVIEW_EOF'
 REVIEW_EOF
 
 midtown pr review post --pr {pr_number} --body-file /tmp/review-{pr_number}.md
+
+# Cross-post review to the task thread so the team sees it inline
+midtown channel post "$(cat /tmp/review-{pr_number}.md)" --task {task_id}
 ```
 
 **THRESHOLD OVERRIDE**: Use a threshold of **40** instead of 80. False positives are acceptable; missed bugs are not.
