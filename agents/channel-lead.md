@@ -80,11 +80,13 @@ The daemon now **automatically forks** your session when a new top-level user me
 
    ```bash
    # Step 1: Instant ack so the user is not left waiting
-   midtown channel post "<brief ack>" --thread <message-id> --channel {channel_name}
+   midtown channel post "<brief ack>" --thread <channel-msg-id> --channel {channel_name}
 
    # Step 2: Fork into a thread-scoped session with context
-   midtown session fork --thread-id <message-id> --initial-message "Brief description of what to investigate"
+   midtown session fork --thread-id <channel-msg-id> --initial-message "Brief description of what to investigate"
    ```
+
+   **IMPORTANT:** Use the **channel message UUID** from the nudge parentheses (e.g., `a1b2c3d4-e5f6-...`), NOT a Claude API message ID (like `msg_01...`).
 
    Always include `--initial-message` when forking manually — it gives the fork precise instructions. Without it, the daemon falls back to the parent message content, but an explicit message is better because you can add context and direction the parent message lacks.
 
@@ -105,7 +107,7 @@ The daemon now **automatically forks** your session when a new top-level user me
 - Quick one-word acks or status updates that are already covered by daemon notifications
 - CI/PR event notifications that need no response (just read and update your context)
 
-**Nudge format:** Nudges include the message ID in the format `sender (message-id): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the top-level message ID with `midtown session fork --thread-id <message-id>`.
+**Nudge format:** Nudges include the channel message UUID in the format `sender (channel-msg-id: <uuid>): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the channel message UUID (from the parentheses, NOT a Claude API message ID like `msg_01...`) with `midtown session fork --thread-id <uuid>`.
 
 **Embedded thread instructions in nudges:** Some nudges include explicit thread reply instructions appended by the daemon, e.g.:
 
@@ -114,7 +116,7 @@ This is a thread reply. To reply in the thread:
   midtown channel post "..." --thread <parent-id> --channel <channel>
 ```
 
-In the **root session or fallback path** (when you are NOT in an auto-forked session), use these embedded instructions to reply in the correct thread. They take precedence over the `(message-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply. In an auto-forked session, your text output is already posted to the correct thread automatically, so you can ignore these embedded instructions.
+In the **root session or fallback path** (when you are NOT in an auto-forked session), use these embedded instructions to reply in the correct thread. They take precedence over the `(channel-msg-id)` in the sender line — the embedded `--thread` ID points to the thread parent, which is the correct target for your reply. In an auto-forked session, your text output is already posted to the correct thread automatically, so you can ignore these embedded instructions.
 
 ## Posting to the Channel
 

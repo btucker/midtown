@@ -1521,6 +1521,24 @@ pub(super) async fn handle_session_fork(
     initial_message: Option<&str>,
     state: &DaemonState,
 ) -> crate::rpc::Response {
+    // Validate thread_parent_id is a UUID — reject Claude API message IDs
+    // (e.g., "msg_01...") which would silently create a fork bound to a
+    // non-existent thread.
+    if uuid::Uuid::parse_str(thread_parent_id).is_err() {
+        return crate::rpc::Response::error(
+            id,
+            crate::rpc::RpcError::new(
+                -32602,
+                format!(
+                    "Invalid thread_parent_id '{}': expected a channel message UUID \
+                     (e.g., 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'). \
+                     This looks like a Claude API message ID — use the channel message UUID \
+                     from the nudge parentheses instead.",
+                    thread_parent_id
+                ),
+            ),
+        );
+    }
     match create_fork_session(
         thread_parent_id,
         calling_session_id,
@@ -1708,6 +1726,19 @@ pub(super) async fn handle_session_fork_thread(
     channel: &str,
     state: &DaemonState,
 ) -> Response {
+    // Validate thread_parent_id is a UUID
+    if uuid::Uuid::parse_str(thread_parent_id).is_err() {
+        return Response::error(
+            id,
+            crate::rpc::RpcError::new(
+                -32602,
+                format!(
+                    "Invalid thread_parent_id '{}': expected a channel message UUID.",
+                    thread_parent_id
+                ),
+            ),
+        );
+    }
     // Resolve channel lead session ID from persistent state
     let lead_session_id = {
         let ps = state.persistent_state.lock().await;
