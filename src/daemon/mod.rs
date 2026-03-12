@@ -4071,18 +4071,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     base
                                 }
                             };
-                            fork_respawn_effects.push(effects::Effect::PostToChannel {
-                                sender: "midtown".to_string(),
-                                message: respawn_message,
-                                channel: Some(constants::OPS_CHANNEL.to_string()),
-                                auto_output: false,
-                            message_type: None,
-                            nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                            });
+                            fork_respawn_effects
+                                .push(effects::Effect::post_to_ops(respawn_message));
                         } else {
                             // Max retry limit reached — stop respawning and clean up.
                             warn!(
@@ -4125,18 +4115,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                     base
                                 }
                             };
-                            fork_respawn_effects.push(effects::Effect::PostToChannel {
-                                sender: "midtown".to_string(),
-                                message: giving_up_message,
-                                channel: Some(constants::OPS_CHANNEL.to_string()),
-                                auto_output: false,
-                                message_type: None,
-                                nudge_type: None,
-                                tool_data: None,
-                                provider: None,
-                                tool_use_id: None,
-                                parent_tool_use_id: None,
-                            });
+                            fork_respawn_effects
+                                .push(effects::Effect::post_to_ops(giving_up_message));
                         }
                         } else {
                             debug!("Fork respawn cooldown active for {}", name);

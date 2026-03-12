@@ -525,18 +525,10 @@ pub(super) async fn handle_coworker_report_state(
                                 }
                             }
                         }
-                        let completion_effects = vec![effects::Effect::PostToChannel {
-                            sender: "midtown".to_string(),
-                            message: format!("✅ Task !{} completed by {} (no PR)", tid, name),
-                            channel: Some(OPS_CHANNEL.to_string()),
-                            auto_output: false,
-                            message_type: None,
-                            nudge_type: None,
-                            tool_data: None,
-                            provider: None,
-                            tool_use_id: None,
-                            parent_tool_use_id: None,
-                        }];
+                        let completion_effects = vec![effects::Effect::post_to_ops(format!(
+                            "✅ Task !{} completed by {} (no PR)",
+                            tid, name
+                        ))];
                         effects::execute_effects(completion_effects, state).await;
                     }
                 }

@@ -176,21 +176,10 @@ pub fn check_and_shutdown_idle_coworkers(snap: &snapshot::WorldSnapshot) -> Vec<
                     name, pr
                 );
                 // Don't shutdown - post a warning to the ops channel so the team knows
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
-                        name, pr
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                });
+                effects.push(Effect::post_to_ops(format!(
+                    "⚠️ Reviewer {} is idle but hasn't posted review for PR #{} yet",
+                    name, pr
+                )));
                 false
             }
         } else if snap.pr.coworkers_with_merged_prs.contains(name) {
@@ -315,23 +304,12 @@ pub(super) async fn check_and_restart_stuck_coworkers(
                 )
             };
             if should_escalate {
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "⚠️ Task !{} has been stuck-restarted {} times in {} minutes. Auto-restarts paused; manual intervention required.",
-                        restart.task_id,
-                        MAX_TASK_RESTARTS,
-                        TASK_RESTART_WINDOW.as_secs() / 60
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                });
+                effects.push(Effect::post_to_ops(format!(
+                    "⚠️ Task !{} has been stuck-restarted {} times in {} minutes. Auto-restarts paused; manual intervention required.",
+                    restart.task_id,
+                    MAX_TASK_RESTARTS,
+                    TASK_RESTART_WINDOW.as_secs() / 60
+                )));
                 effects.push(Effect::nudge_channel_lead(
                     &snap.project_name,
                     format!(
@@ -580,22 +558,11 @@ pub fn check_and_restart_stuck_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<
             name, pr_number, restart_count
         );
 
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🚨 Reviewer {} is stuck on PR #{} after {} restart attempts. \
-                 Manual intervention needed — the reviewer keeps getting stuck on this PR.",
-                name, pr_number, restart_count
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "🚨 Reviewer {} is stuck on PR #{} after {} restart attempts. \
+             Manual intervention needed — the reviewer keeps getting stuck on this PR.",
+            name, pr_number, restart_count
+        )));
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
             format!(
@@ -677,24 +644,10 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             "exited without completing the review",
         ));
 
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🔄 Respawning reviewer {} for PR #{} — exited without posting review (attempt {}/{})",
-                restart.name,
-                restart.pr_number,
-                new_restart_count,
-                MAX_REVIEWER_RESTARTS,
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-        message_type: None,
-        nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "🔄 Respawning reviewer {} for PR #{} — exited without posting review (attempt {}/{})",
+            restart.name, restart.pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+        )));
     }
 
     for escalation in escalations {
@@ -703,22 +656,11 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             escalation.name, escalation.pr_number, escalation.restart_count
         );
 
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "@ops PR #{} has hit max reviewer restarts — needs manual intervention. \
-                 Reviewer {} exited without posting a review {} times.",
-                escalation.pr_number, escalation.name, escalation.restart_count,
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "@ops PR #{} has hit max reviewer restarts — needs manual intervention. \
+             Reviewer {} exited without posting a review {} times.",
+            escalation.pr_number, escalation.name, escalation.restart_count,
+        )));
         effects.push(Effect::nudge_channel_lead(
             &snap.project_name,
             format!(
@@ -809,18 +751,7 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     let mut effects = vec![
         Effect::SetUsageLimitNudge { at: nudge_time },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message,
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
+        Effect::post_to_ops(message),
     ];
 
     // Mark pool profiles for ALL usage-limited coworkers, not just the first.
@@ -875,21 +806,10 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
             eligible_session_ids.len()
         );
 
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🔔 Usage limit expired — nudging {} running sessions to resume work",
-                eligible_session_ids.len()
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "🔔 Usage limit expired — nudging {} running sessions to resume work",
+            eligible_session_ids.len()
+        )));
 
         for session_id in eligible_session_ids {
             effects.push(Effect::nudge_session(session_id, "continue"));
@@ -992,21 +912,7 @@ pub(super) fn check_and_handle_auth_errors(
             names_str
         );
 
-        effects.insert(
-            0,
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: message.clone(),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            },
-        );
+        effects.insert(0, Effect::post_to_ops(message.clone()));
 
         // Nudge the lead so the user sees this immediately
         effects.push(Effect::nudge_channel_lead(&snap.default_channel, message));
@@ -1095,22 +1001,11 @@ pub(super) fn check_and_nudge_api_errors(
             .collect();
         effects.insert(
             0,
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
-                    affected_count,
-                    names.join(", ")
-                ),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-            message_type: None,
-            nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-            },
+            Effect::post_to_ops(format!(
+                "⚠️ Widespread API errors affecting {} coworkers: {}. Will periodically nudge to retry.",
+                affected_count,
+                names.join(", ")
+            )),
         );
     }
 
@@ -1165,21 +1060,10 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             }
             effects.push(Effect::SpawnCoworker(config));
         }
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "🔧 Coworker {} hit an unrecoverable session error — clearing saved session ID and restarting fresh",
-                name
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-        message_type: None,
-        nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "🔧 Coworker {} hit an unrecoverable session error — clearing saved session ID and restarting fresh",
+            name
+        )));
     }
 
     effects
@@ -1263,21 +1147,10 @@ pub(super) async fn check_and_respawn_dead_processes(
             category: "process_respawn".to_string(),
             key: respawn.name.clone(),
         });
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "💀 Coworker {} process died (exit {}) — restarting for task !{}",
-                respawn.name, respawn.exit_code, respawn.task_id
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_ops(format!(
+            "💀 Coworker {} process died (exit {}) — restarting for task !{}",
+            respawn.name, respawn.exit_code, respawn.task_id
+        )));
     }
 
     effects
@@ -1476,18 +1349,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     );
 
     vec![
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: "Restarting lead session for a fresh context.".to_string(),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
+        Effect::post_to_ops("Restarting lead session for a fresh context."),
         Effect::ShutdownCoworker {
             name: lead.name.clone(),
             message: "Time for a fresh session. Restarting now — will be back shortly.".to_string(),
@@ -1576,18 +1438,7 @@ fn effects_for_fired_reminders(
             "\u{23f0} Reminder ({}): {}",
             reminder.trigger, reminder.message
         );
-        effects.push(Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: message.clone(),
-            channel: None,
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        });
+        effects.push(Effect::post_to_channel("midtown", message.clone(), None));
         effects.push(Effect::nudge_channel_lead(default_channel, message));
         fired_ids.push(reminder.id.clone());
     }
@@ -1885,21 +1736,10 @@ fn build_reviewer_respawn_effects(
         },
     ];
 
-    let on_failure = vec![Effect::PostToChannel {
-        sender: "midtown".to_string(),
-        message: format!(
-            "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
-            name, pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
-        ),
-        channel: Some(OPS_CHANNEL.to_string()),
-        auto_output: false,
-        message_type: None,
-        nudge_type: None,
-        tool_data: None,
-        provider: None,
-        tool_use_id: None,
-        parent_tool_use_id: None,
-    }];
+    let on_failure = vec![Effect::post_to_ops(format!(
+        "⚠️ Failed to respawn reviewer {} for PR #{} (attempt {}/{})",
+        name, pr_number, new_restart_count, MAX_REVIEWER_RESTARTS,
+    ))];
 
     effects.push(Effect::SpawnCoworkerWithCallbacks {
         config,

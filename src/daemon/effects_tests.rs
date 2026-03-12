@@ -2979,3 +2979,72 @@ fn format_workflow_state_summary_null() {
     let result = super::format_workflow_state_summary(&state);
     assert!(result.contains("No active workflow state"));
 }
+
+#[test]
+fn test_post_to_channel_constructor() {
+    let effect = Effect::post_to_channel("alice", "hello world", Some("general".to_string()));
+    match effect {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            auto_output,
+            message_type,
+            nudge_type,
+            tool_data,
+            provider,
+            tool_use_id,
+            parent_tool_use_id,
+        } => {
+            assert_eq!(sender, "alice");
+            assert_eq!(message, "hello world");
+            assert_eq!(channel, Some("general".to_string()));
+            assert!(!auto_output);
+            assert!(message_type.is_none());
+            assert!(nudge_type.is_none());
+            assert!(tool_data.is_none());
+            assert!(provider.is_none());
+            assert!(tool_use_id.is_none());
+            assert!(parent_tool_use_id.is_none());
+        }
+        _ => panic!("expected PostToChannel variant"),
+    }
+
+    // Also verify None channel works
+    let effect = Effect::post_to_channel("bob", "test", None);
+    match effect {
+        Effect::PostToChannel { channel, .. } => assert!(channel.is_none()),
+        _ => panic!("expected PostToChannel variant"),
+    }
+}
+
+#[test]
+fn test_post_to_ops_constructor() {
+    let effect = Effect::post_to_ops("system update");
+    match effect {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            auto_output,
+            message_type,
+            nudge_type,
+            tool_data,
+            provider,
+            tool_use_id,
+            parent_tool_use_id,
+        } => {
+            assert_eq!(sender, "midtown");
+            assert_eq!(message, "system update");
+            assert_eq!(channel, Some("ops".to_string()));
+            assert!(!auto_output);
+            assert!(message_type.is_none());
+            assert!(nudge_type.is_none());
+            assert!(tool_data.is_none());
+            assert!(provider.is_none());
+            assert!(tool_use_id.is_none());
+            assert!(parent_tool_use_id.is_none());
+        }
+        _ => panic!("expected PostToChannel variant"),
+    }
+}

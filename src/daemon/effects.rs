@@ -829,6 +829,41 @@ impl Effect {
             on_success,
         }
     }
+
+    /// Convenience: post a message to a channel with sensible defaults.
+    ///
+    /// Creates a `PostToChannel` with `auto_output: false` and all optional
+    /// fields set to `None`. Use the full form when you need `auto_output`,
+    /// `message_type`, `nudge_type`, `tool_data`, `provider`, or thread IDs.
+    pub fn post_to_channel(
+        sender: impl Into<String>,
+        message: impl Into<String>,
+        channel: Option<String>,
+    ) -> Self {
+        Self::PostToChannel {
+            sender: sender.into(),
+            message: message.into(),
+            channel,
+            auto_output: false,
+            message_type: None,
+            nudge_type: None,
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+        }
+    }
+
+    /// Convenience: post a message to the ops channel as "midtown".
+    ///
+    /// Shorthand for `post_to_channel("midtown", message, Some("ops"))`.
+    pub fn post_to_ops(message: impl Into<String>) -> Self {
+        Self::post_to_channel(
+            "midtown",
+            message,
+            Some(super::constants::OPS_CHANNEL.to_string()),
+        )
+    }
 }
 
 /// Returns true if a non-completed task already exists for the given PR number.

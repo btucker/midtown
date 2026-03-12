@@ -4949,3 +4949,51 @@ fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_spawn_failure_effects() {
+    let effects = spawn_failure_effects("worker-1", "task-42", "my-project", "spawn failed msg");
+    assert_eq!(effects.len(), 3);
+    assert!(matches!(
+        &effects[0],
+        Effect::RecordCooldown { category, key }
+            if category == "spawn_failure" && key == "worker-1"
+    ));
+    assert!(matches!(
+        &effects[1],
+        Effect::ResetTaskToPending { task_id, dir_key }
+            if task_id == "task-42" && dir_key == "my-project"
+    ));
+    assert!(matches!(
+        &effects[2],
+        Effect::PostToChannel { sender, message, .. }
+            if sender == "midtown" && message.contains("spawn failed msg")
+    ));
+}
+
+#[test]
+fn test_spawn_success_effects() {
+    let effects =
+        spawn_success_effects("worker-1", "task-42", "wt-branch-slug", "spawn success msg");
+    assert_eq!(effects.len(), 4);
+    assert!(matches!(
+        &effects[0],
+        Effect::RecordTaskAssignment { coworker, task_id }
+            if coworker == "worker-1" && task_id == "task-42"
+    ));
+    assert!(matches!(
+        &effects[1],
+        Effect::BindCoworkerToWorktree { worktree_id, coworker }
+            if worktree_id == "wt-branch-slug" && coworker == "worker-1"
+    ));
+    assert!(matches!(
+        &effects[2],
+        Effect::BroadcastCoworkerUpdate { name, status, current_task }
+            if name == "worker-1" && status == "running" && current_task.is_none()
+    ));
+    assert!(matches!(
+        &effects[3],
+        Effect::PostToChannel { sender, message, .. }
+            if sender == "midtown" && message.contains("spawn success msg")
+    ));
+}
