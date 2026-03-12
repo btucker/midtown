@@ -3997,6 +3997,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 auth_provider,
                                 is_channel_lead,
                                 initial_prompt,
+                                old_session_id: session_id_for_cleanup.clone(),
                             });
                             fork_respawn_effects.push(effects::Effect::RecordCooldown {
                                 category: "process_respawn".to_string(),

@@ -1233,6 +1233,7 @@ async fn try_lazy_fork_respawn(
         auth_provider,
         is_channel_lead,
         initial_prompt,
+        old_session_id: Some(fork_sid.to_string()),
     };
     crate::daemon::effects::execute_effects(vec![respawn_effect], state).await;
 
