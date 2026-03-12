@@ -896,11 +896,12 @@ pub(super) async fn handle_channel_read(
     last: Option<usize>,
     since: Option<&str>,
     channel: Option<&str>,
+    thread: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     info!(
-        "channel.read called with all={}, last={:?}, since={:?}, channel={:?}",
-        all, last, since, channel
+        "channel.read called with all={}, last={:?}, since={:?}, channel={:?}, thread={:?}",
+        all, last, since, channel, thread
     );
 
     // Read from the specified channel, or fall back to the default (main) channel.
@@ -996,6 +997,16 @@ pub(super) async fn handle_channel_read(
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
             }
         }
+    };
+
+    // Apply thread filter: keep only the parent message and its replies.
+    let messages = if let Some(parent_id) = thread {
+        messages
+            .into_iter()
+            .filter(|m| m.id == parent_id || m.thread_parent_id.as_deref() == Some(parent_id))
+            .collect()
+    } else {
+        messages
     };
 
     let messages_json: Vec<serde_json::Value> = messages

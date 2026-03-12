@@ -303,6 +303,7 @@ impl DaemonClient {
         last: Option<&usize>,
         since: Option<&str>,
         channel: Option<&str>,
+        thread: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "all": all });
         if let Some(n) = last {
@@ -317,6 +318,9 @@ impl DaemonClient {
             .or_else(|| std::env::var("MIDTOWN_CHANNEL").ok());
         if let Some(ch) = resolved_channel {
             params["channel"] = serde_json::json!(ch);
+        }
+        if let Some(parent_id) = thread {
+            params["thread"] = serde_json::json!(parent_id);
         }
         self.send("channel.read", Some(params))
     }

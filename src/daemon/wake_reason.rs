@@ -27,10 +27,10 @@ impl ThreadContext {
             "This is a thread reply. To reply in the thread:\n  \
              midtown channel post \"...\" --thread {} --channel {}\n\
              To read recent thread context:\n  \
-             midtown channel read --last 50 --channel {}\n\n\
+             midtown channel read --last 50 --thread {} --channel {}\n\n\
              IMPORTANT: Keep text output brief or omit it — text output auto-posts as a \
              top-level message, producing a duplicate alongside your --thread reply.",
-            self.parent_id, self.channel_name, self.channel_name
+            self.parent_id, self.channel_name, self.parent_id, self.channel_name
         )
     }
 }

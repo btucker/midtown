@@ -479,7 +479,8 @@ async fn test_channel_read_with_channel_parameter() {
     let _r = handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
 
     // Reading from the topic channel should return only the topic message
-    let response = handle_channel_read(999.into(), true, None, None, Some("auth"), &state).await;
+    let response =
+        handle_channel_read(999.into(), true, None, None, Some("auth"), None, &state).await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -570,7 +571,7 @@ async fn test_channel_read_includes_thread_parent_id() {
     )
     .await;
 
-    let response = handle_channel_read(999.into(), true, None, None, None, &state).await;
+    let response = handle_channel_read(999.into(), true, None, None, None, None, &state).await;
 
     assert!(response.error.is_none(), "channel.read should succeed");
     let result = response.result.unwrap();
@@ -602,7 +603,7 @@ async fn test_channel_read_with_last_parameter() {
     }
 
     // Request last 3 messages
-    let response = handle_channel_read(999.into(), false, Some(3), None, None, &state).await;
+    let response = handle_channel_read(999.into(), false, Some(3), None, None, None, &state).await;
 
     // Verify we got exactly 3 messages
     assert!(response.error.is_none(), "channel.read should succeed");
@@ -2785,4 +2786,136 @@ async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
             sender
         );
     }
+}
+
+/// Verify that channel.read with a `thread` parameter returns only messages
+/// belonging to that thread (the parent message + its replies).
+#[tokio::test]
+async fn test_channel_read_with_thread_filter() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-thread");
+
+    // Post a parent message
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Post a thread reply
+    let _r = handle_channel_post(
+        1_i64.into(),
+        "york",
+        "Thread reply 1",
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    // Post a top-level message (NOT in the thread)
+    let _r = handle_channel_post(
+        2_i64.into(),
+        "park",
+        "Top-level unrelated",
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    // Post another thread reply
+    let _r = handle_channel_post(
+        3_i64.into(),
+        "york",
+        "Thread reply 2",
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    // Read with --thread filter: should return parent + 2 replies = 3 messages
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        None,
+        None,
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Expected 3 messages (parent + 2 replies), got {}",
+        messages.len()
+    );
+
+    // Verify the messages are the parent and thread replies (not the unrelated top-level)
+    assert!(
+        messages[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Parent message"),
+        "First message should be the parent"
+    );
+    assert!(
+        messages[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thread reply 1"),
+        "Second message should be thread reply 1"
+    );
+    assert!(
+        messages[2]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Thread reply 2"),
+        "Third message should be thread reply 2"
+    );
+}
+
+/// Verify that channel.read with --thread and --last correctly limits the
+/// number of thread messages returned.
+#[tokio::test]
+async fn test_channel_read_thread_with_last() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-channel-read-thread-last");
+
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Post 5 thread replies
+    for i in 1..=5 {
+        let _r = handle_channel_post(
+            i.into(),
+            "york",
+            &format!("Thread reply {i}"),
+            None,
+            Some(&parent_id),
+            &state,
+        )
+        .await;
+    }
+
+    // Read thread with --last 3: should return last 3 of the thread (parent + 5 replies = 6 total)
+    let response = handle_channel_read(
+        999.into(),
+        false,
+        Some(3),
+        None,
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+    assert_eq!(
+        messages.len(),
+        3,
+        "Expected 3 messages with --last 3, got {}",
+        messages.len()
+    );
 }
