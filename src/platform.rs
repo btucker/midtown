@@ -57,10 +57,13 @@ impl Platform {
 /// Always produces:
 /// - `--dangerously-skip-permissions`
 /// - `--model <model>`
-/// - `--setting-sources project,local`
 ///
 /// Conditionally adds:
 /// - `--add-dir` (for each additional directory)
+///
+/// Note: `--setting-sources` is NOT included here. It must be added by callers
+/// that need it. Fork sessions (`--resume --fork-session`) are incompatible with
+/// `--setting-sources`, so callers must decide based on their session type.
 fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<String> {
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
 
@@ -71,10 +74,6 @@ fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<Str
             args.push(d.to_string());
         }
     }
-
-    // Setting sources — unconditional for all sessions
-    args.push("--setting-sources".to_string());
-    args.push("project,local".to_string());
 
     // Model selection
     args.push("--model".to_string());
@@ -113,11 +112,15 @@ fn build_codex_common_args(model: Option<&str>, additional_dirs: &[PathBuf]) -> 
 /// handles sandbox prefix + binary separately.
 ///
 /// Fresh sessions get: `-p`, `--append-system-prompt`, `--json-schema`,
-///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources` (from common).
+///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources`.
 ///
-/// Resume sessions get: `--resume <id>` and skip `--settings`/`--setting-sources`
-///   to avoid "Tool names must be unique" errors. Fork-resume sessions additionally
-///   get `--session-id <uuid>` so the daemon can register them without waiting for init.
+/// Resume sessions get: `--resume <id>`, `--setting-sources`, and skip `--settings`
+///   to avoid "Tool names must be unique" errors.
+///
+/// Fork-resume sessions get: `--resume <id>`, `--fork-session`, `--session-id <uuid>`,
+///   and skip both `--settings` and `--setting-sources` (the latter is incompatible
+///   with `--fork-session`). The two-step fork in `spawn_fork()` handles re-launching
+///   with full args after the fork is created.
 ///
 /// Both modes may include `--disallowedTools` (comma-separated) for hard tool
 /// restrictions that the LLM cannot bypass (e.g., channel lead code-edit blocks).
@@ -145,11 +148,21 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     } = config;
 
     let is_resume = resume_session_id.is_some();
+    let is_fork = is_resume && *fork_session;
 
     let mut args = build_claude_common_args(
         model,
         &[], // headless sessions don't use additional_dirs
     );
+
+    // Setting sources — skip for fork sessions because --setting-sources is
+    // incompatible with --resume --fork-session in the Claude CLI. The two-step
+    // fork process in spawn_fork() handles this: fork first with minimal args,
+    // then respawn as a normal resume where --setting-sources is safe.
+    if !is_fork {
+        args.push("--setting-sources".to_string());
+        args.push("project,local".to_string());
+    }
 
     if is_resume {
         // Resume mode: --resume <id>, no -p flag, no system prompt/schema
@@ -250,6 +263,10 @@ pub fn build_claude_headed_args(
         &config.model,
         &config.additional_dirs,
     ));
+
+    // Setting sources — always included for headed (interactive) sessions
+    args.push("--setting-sources".to_string());
+    args.push("project,local".to_string());
 
     // Session mode — exactly one of these
     let session_id = match &config.session_mode {
