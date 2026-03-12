@@ -106,9 +106,60 @@ fn test_unescape_shell_artifacts_no_escapes() {
 
 #[test]
 fn test_unescape_shell_artifacts_preserves_other_backslashes() {
+    // \t gets converted to tab, but other backslash sequences like \f are preserved
     assert_eq!(
-        unescape_shell_artifacts("path\\to\\file and \\!"),
-        "path\\to\\file and !"
+        unescape_shell_artifacts("path\\ffile and \\!"),
+        "path\\ffile and !"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_newline() {
+    assert_eq!(
+        unescape_shell_artifacts("line one\\n\\nline two"),
+        "line one\n\nline two"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_tab() {
+    assert_eq!(
+        unescape_shell_artifacts("col1\\tcol2\\tcol3"),
+        "col1\tcol2\tcol3"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_mixed_escapes() {
+    assert_eq!(
+        unescape_shell_artifacts("Hello\\! Here's the update:\\n\\n- item one\\n- item two"),
+        "Hello! Here's the update:\n\n- item one\n- item two"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_preserves_backtick_content() {
+    // Literal \n inside backticks should be preserved
+    assert_eq!(
+        unescape_shell_artifacts("Use `\\n` for newlines"),
+        "Use `\\n` for newlines"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_preserves_code_block_content() {
+    // Literal \n inside code blocks should be preserved
+    assert_eq!(
+        unescape_shell_artifacts("Example:\\n```\\ncode\\n```\\nDone"),
+        "Example:\n```\\ncode\\n```\nDone"
+    );
+}
+
+#[test]
+fn test_unescape_shell_artifacts_preserves_inline_code_with_tabs() {
+    assert_eq!(
+        unescape_shell_artifacts("Use `\\t` for tabs\\nin your code"),
+        "Use `\\t` for tabs\nin your code"
     );
 }
 
