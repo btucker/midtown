@@ -210,7 +210,7 @@ function selectProject(project) {
 
 <svelte:head>
   <title>Midtown</title>
-  <meta name="theme-color" content={$theme === 'dark' ? '#1A232D' : '#FCFBF7'} />
+  <meta name="theme-color" content={$theme === 'dark' ? '#1A232D' : '#F8F7F0'} />
 </svelte:head>
 
 <div class="app-container flex h-dvh w-full overflow-hidden bg-background text-foreground">
