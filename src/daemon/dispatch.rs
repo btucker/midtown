@@ -159,7 +159,7 @@ fn task_completed_effects(
         Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: channel_message,
-            channel: None,
+            channel: channel.clone(),
             auto_output: false,
             message_type: None,
             nudge_type: None,
