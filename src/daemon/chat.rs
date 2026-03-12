@@ -365,50 +365,23 @@ fn mention_action_to_effects(
             );
             vec![Effect::SpawnCoworkerWithCallbacks {
                 config,
-                on_success: vec![Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!("Called in {} in response to @mention", name),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                }],
-                on_failure: vec![Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!("Failed to call in {} for @mention", name),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                }],
+                on_success: vec![Effect::post_to_ops(format!(
+                    "Called in {} in response to @mention",
+                    name
+                ))],
+                on_failure: vec![Effect::post_to_ops(format!(
+                    "Failed to call in {} for @mention",
+                    name
+                ))],
             }]
         }
         crate::rules::MentionAction::Skip { ref reason } => {
             debug!("{}", reason);
             if reason.contains("dev limit") {
-                vec![Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "Cannot call in {} for @mention: dev coworkers limit reached",
-                        coworker_name
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                }]
+                vec![Effect::post_to_ops(format!(
+                    "Cannot call in {} for @mention: dev coworkers limit reached",
+                    coworker_name
+                ))]
             } else {
                 vec![]
             }
