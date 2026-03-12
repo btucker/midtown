@@ -3,7 +3,7 @@ import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
 import { createAutoCollapse } from "./useAutoCollapse.js";
 
-const TOOL_RUN_DELAY_MS = 60_000;
+const TOOL_RUN_DELAY_MS = 10_000;
 
 let {
 	messages,
