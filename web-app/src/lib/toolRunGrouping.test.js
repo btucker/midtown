@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { groupTimelineToolRuns, groupToolRuns, isToolOnly } from "./toolRunGrouping.js";
+import {
+	filterChannelPosts,
+	groupTimelineToolRuns,
+	groupToolRuns,
+	isChannelPostBlock,
+	isToolOnly,
+} from "./toolRunGrouping.js";
 
 describe("isToolOnly", () => {
 	it("returns true for empty content with tool_data", () => {
@@ -39,6 +45,67 @@ describe("isToolOnly", () => {
 	});
 });
 
+describe("isChannelPostBlock", () => {
+	it("returns true for midtown channel post Bash block", () => {
+		expect(
+			isChannelPostBlock({
+				tool_name: "Bash",
+				input: { command: 'midtown channel post "hello" --task 42' },
+			}),
+		).toBe(true);
+	});
+
+	it("returns false for non-channel-post Bash block", () => {
+		expect(
+			isChannelPostBlock({
+				tool_name: "Bash",
+				input: { command: "cargo test" },
+			}),
+		).toBe(false);
+	});
+
+	it("returns false for non-Bash tool", () => {
+		expect(
+			isChannelPostBlock({
+				tool_name: "Read",
+				input: { file_path: "/tmp/test.txt" },
+			}),
+		).toBe(false);
+	});
+
+	it("returns false when input is missing", () => {
+		expect(isChannelPostBlock({ tool_name: "Bash" })).toBe(false);
+	});
+});
+
+describe("filterChannelPosts", () => {
+	it("removes channel post blocks", () => {
+		const blocks = [
+			{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } },
+			{ tool_name: "Read", input: { file_path: "test.js" } },
+		];
+		expect(filterChannelPosts(blocks)).toEqual([blocks[1]]);
+	});
+
+	it("returns empty array when all blocks are channel posts", () => {
+		const blocks = [{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } }];
+		expect(filterChannelPosts(blocks)).toEqual([]);
+	});
+
+	it("returns all blocks when none are channel posts", () => {
+		const blocks = [
+			{ tool_name: "Bash", input: { command: "cargo test" } },
+			{ tool_name: "Read", input: { file_path: "test.js" } },
+		];
+		expect(filterChannelPosts(blocks)).toEqual(blocks);
+	});
+
+	it("handles null/undefined input", () => {
+		expect(filterChannelPosts(null)).toEqual([]);
+		expect(filterChannelPosts(undefined)).toEqual([]);
+	});
+});
+
 function msg(id, content, toolData = null) {
 	return { id, content, tool_data: toolData, timestamp: new Date().toISOString() };
 }
@@ -74,10 +141,13 @@ describe("groupToolRuns", () => {
 		expect(groups[0].toolCount).toBe(4);
 	});
 
-	it("does not create a run from a single tool message", () => {
+	it("creates a run from a single tool message", () => {
 		const msgs = [toolMsg("1", ["Bash"])];
 		const groups = groupToolRuns(msgs);
-		expect(groups).toEqual([{ type: "message", message: msgs[0] }]);
+		expect(groups).toHaveLength(1);
+		expect(groups[0].type).toBe("tool-run");
+		expect(groups[0].messages).toEqual(msgs);
+		expect(groups[0].toolCount).toBe(1);
 	});
 
 	it("breaks runs on text messages", () => {
@@ -167,20 +237,24 @@ describe("groupTimelineToolRuns", () => {
 		expect(groups[0].entries).toEqual(entries);
 	});
 
-	it("does not group a single tool-only entry", () => {
+	it("groups a single tool-only entry into a run", () => {
 		const entries = [timelineToolMsg("1", ["Bash"])];
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(1);
-		expect(groups[0].type).toBe("message");
+		expect(groups[0].type).toBe("tool-run");
+		expect(groups[0].toolCount).toBe(1);
+		expect(groups[0].entries).toEqual(entries);
 	});
 
 	it("edit entries break tool runs", () => {
 		const entries = [timelineToolMsg("1", ["Bash"]), timelineEdit("e1"), timelineToolMsg("2", ["Read"])];
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(3);
-		expect(groups[0].type).toBe("message"); // single tool, not grouped
+		expect(groups[0].type).toBe("tool-run"); // single tool, still grouped
+		expect(groups[0].toolCount).toBe(1);
 		expect(groups[1].type).toBe("edit");
-		expect(groups[2].type).toBe("message"); // single tool, not grouped
+		expect(groups[2].type).toBe("tool-run"); // single tool, still grouped
+		expect(groups[2].toolCount).toBe(1);
 	});
 
 	it("text messages break tool runs", () => {
