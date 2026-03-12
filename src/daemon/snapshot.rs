@@ -110,6 +110,11 @@ impl Default for ProcessHealth {
     }
 }
 
+/// Default value for `default_branch` when deserializing from older snapshots.
+fn default_branch_name() -> String {
+    "main".to_string()
+}
+
 /// Default value for `lead_session_refresh_interval_secs` when deserializing from older snapshots.
 fn default_lead_refresh_interval() -> u64 {
     crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS
@@ -439,6 +444,10 @@ pub struct WorldSnapshot {
     /// to determine if a PR is authored by the lead (repo owner).
     #[serde(default)]
     pub repo_owner: Option<String>,
+    /// Default branch name (e.g., "main" or "master"). Used by pure decision
+    /// functions to construct nudge messages with the correct branch reference.
+    #[serde(default = "default_branch_name")]
+    pub default_branch: String,
 
     // ── Dispatch cooldown state ──────────────────────────────────────────
     /// Whether the orphan spawn global cooldown is currently active.
@@ -471,8 +480,9 @@ pub struct WorldSnapshot {
     pub rebase_regression_cooldown_names: HashSet<String>,
 
     /// Channel lead worktrees that are behind `origin/main`.
-    /// Populated during snapshot collection by comparing `git rev-parse HEAD`
-    /// with `git rev-parse origin/main` in each channel lead's working directory.
+    /// Populated during snapshot collection using `git merge-base --is-ancestor`
+    /// to check if each channel lead's worktree is behind `origin/<default_branch>`.
+    /// Results are cached to avoid running git fetch on every tick.
     #[serde(default)]
     pub stale_channel_lead_worktrees: HashSet<String>,
 
@@ -1358,8 +1368,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
 
     // ── Channel lead worktree staleness ─────────────────────────────────
-    // Run a single `git fetch origin main` in the project root, then compare
-    // HEAD vs origin/main in each channel lead's worktree directory.
+    // Check if channel lead worktrees are behind origin/<default_branch>.
+    // Uses merge-base ancestry check; results are cached for ~25s.
     let stale_channel_lead_worktrees: HashSet<String> =
         collect_stale_channel_lead_worktrees(state, &channel_lead_sessions, &sessions).await;
 
@@ -1479,6 +1489,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         dir_key,
         project_name,
         default_channel,
+        default_branch: state.default_branch.clone(),
         repo_owner,
         topic_sessions,
         sessions,
@@ -1553,6 +1564,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
         default_channel: "test-repo".to_string(),
+        default_branch: "main".to_string(),
         repo_owner: None,
         topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
@@ -1650,11 +1662,18 @@ pub(crate) fn build_reviewer_pr_assignments(
         .collect()
 }
 
-/// Collect channel lead worktrees that are behind `origin/main`.
+/// How long to cache worktree freshness results before re-running git fetch.
+const WORKTREE_FRESHNESS_CACHE_SECS: u64 = 25;
+
+/// Collect channel lead worktrees that are behind `origin/<default_branch>`.
 ///
-/// Runs a single `git fetch origin main --quiet` in the project root, then
-/// for each channel lead session, compares `git rev-parse HEAD` with
-/// `git rev-parse origin/main` in the session's working directory.
+/// Runs a single `git fetch origin <branch> --quiet` in the project root, then
+/// for each channel lead session, uses `git merge-base --is-ancestor` to check
+/// whether HEAD is behind `origin/<branch>`.
+///
+/// Results are cached for [`WORKTREE_FRESHNESS_CACHE_SECS`] to avoid running
+/// git fetch on every tick (snapshot collection runs for both SessionMonitorTick
+/// at ~30s and TaskDispatchTick at ~5s).
 ///
 /// Returns the set of channel names whose worktrees are behind.
 async fn collect_stale_channel_lead_worktrees(
@@ -1666,23 +1685,52 @@ async fn collect_stale_channel_lead_worktrees(
         return HashSet::new();
     }
 
-    // Run a single git fetch in the project root to update origin/main refs.
+    // Check cache — return cached result if fresh enough.
+    {
+        let cache = state.worktree_freshness_cache.lock().unwrap();
+        if let Some((timestamp, ref cached_result)) = *cache
+            && timestamp.elapsed().as_secs() < WORKTREE_FRESHNESS_CACHE_SECS
+        {
+            return cached_result.clone();
+        }
+    }
+
+    // Run a single git fetch in the project root to update origin/<branch> refs.
     let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
     if project_root.as_os_str().is_empty() || !project_root.exists() {
         return HashSet::new();
     }
 
-    let fetch_result = tokio::process::Command::new("git")
-        .args(["fetch", "origin", "main", "--quiet"])
-        .current_dir(&project_root)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await;
+    let default_branch = &state.default_branch;
+    let origin_ref = format!("origin/{}", default_branch);
 
-    if fetch_result.is_err() || !fetch_result.unwrap().success() {
-        tracing::debug!("git fetch origin main failed — skipping worktree freshness check");
-        return HashSet::new();
+    let fetch_result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new("git")
+            .args(["fetch", "origin", default_branch, "--quiet"])
+            .current_dir(&project_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status(),
+    )
+    .await;
+
+    match fetch_result {
+        Ok(Ok(status)) if status.success() => {}
+        Ok(Ok(_)) | Ok(Err(_)) => {
+            tracing::debug!(
+                "git fetch origin {} failed — skipping worktree freshness check",
+                default_branch
+            );
+            return HashSet::new();
+        }
+        Err(_) => {
+            tracing::debug!(
+                "git fetch origin {} timed out — skipping worktree freshness check",
+                default_branch
+            );
+            return HashSet::new();
+        }
     }
 
     let mut stale = HashSet::new();
@@ -1703,43 +1751,39 @@ async fn collect_stale_channel_lead_worktrees(
             continue;
         }
 
-        // Get HEAD commit in the worktree
-        let head_output = tokio::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(wd)
-            .output()
-            .await;
+        // Use merge-base --is-ancestor to check if HEAD is behind origin/<branch>.
+        // This correctly handles ahead/diverged worktrees — only truly behind
+        // worktrees (where origin/<branch> is NOT an ancestor of HEAD) are flagged.
+        let ancestor_output = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::process::Command::new("git")
+                .args(["merge-base", "--is-ancestor", &origin_ref, "HEAD"])
+                .current_dir(wd)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status(),
+        )
+        .await;
 
-        let head_sha = match head_output {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
-            }
-            _ => continue,
+        let is_up_to_date = match ancestor_output {
+            Ok(Ok(status)) => status.success(),
+            _ => continue, // timeout or error — skip this worktree
         };
 
-        // Get origin/main commit in the worktree
-        let origin_output = tokio::process::Command::new("git")
-            .args(["rev-parse", "origin/main"])
-            .current_dir(wd)
-            .output()
-            .await;
-
-        let origin_sha = match origin_output {
-            Ok(out) if out.status.success() => {
-                String::from_utf8_lossy(&out.stdout).trim().to_string()
-            }
-            _ => continue,
-        };
-
-        if head_sha != origin_sha {
+        if !is_up_to_date {
             tracing::debug!(
-                "Channel lead '{}' worktree is stale (HEAD={}, origin/main={})",
+                "Channel lead '{}' worktree is behind {} (merge-base check failed)",
                 channel_name,
-                &head_sha[..8.min(head_sha.len())],
-                &origin_sha[..8.min(origin_sha.len())]
+                origin_ref
             );
             stale.insert(channel_name.clone());
         }
+    }
+
+    // Update cache.
+    {
+        let mut cache = state.worktree_freshness_cache.lock().unwrap();
+        *cache = Some((std::time::Instant::now(), stale.clone()));
     }
 
     stale

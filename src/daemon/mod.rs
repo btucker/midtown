@@ -614,6 +614,13 @@ pub(crate) struct DaemonState {
     /// to "exactly-once" semantics.
     rpc_response_cache:
         Mutex<HashMap<crate::rpc::RequestId, (crate::rpc::Response, std::time::Instant)>>,
+    /// Cached result of channel lead worktree freshness checks.
+    ///
+    /// The freshness check runs `git fetch` + `git rev-parse` which is expensive.
+    /// Since `collect_world_snapshot()` is called for both `SessionMonitorTick` (~30s)
+    /// and `TaskDispatchTick` (~5s), we cache the result for 25s to avoid running
+    /// git fetch on every tick.
+    worktree_freshness_cache: std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
     ///
     /// Stores the PR GraphQL response (open PRs, merged PRs, repos) keyed by a
@@ -1447,6 +1454,7 @@ impl DaemonState {
             stuck_task_restart_history: std::sync::Mutex::new(HashMap::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             fork_respawn_counts: std::sync::Mutex::new(HashMap::new()),
+            worktree_freshness_cache: std::sync::Mutex::new(None),
             headless_health: std::sync::RwLock::new(HashMap::new()),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),

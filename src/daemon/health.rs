@@ -1965,8 +1965,9 @@ pub fn check_for_stale_notes(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 /// cooldown, emits a `NudgeChannelLead` effect telling the lead to update
 /// their worktree, plus a `RecordCooldown` to prevent spamming.
 ///
-/// Pure function — no I/O. Staleness data is pre-computed during snapshot
-/// collection; cooldown state is pre-evaluated into the snapshot.
+/// Decision function — no async I/O or mutation. Staleness data is pre-computed
+/// during snapshot collection; cooldown state is pre-evaluated into the snapshot.
+/// (Uses `info!()` for logging, consistent with other health decision functions.)
 pub fn check_channel_lead_worktree_freshness(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -1979,14 +1980,18 @@ pub fn check_channel_lead_worktree_freshness(snap: &snapshot::WorldSnapshot) -> 
             continue;
         }
 
+        let branch = &snap.default_branch;
         info!(
-            "Channel lead '{}' worktree is behind origin/main — nudging to update",
-            channel_name
+            "Channel lead '{}' worktree is behind origin/{} — nudging to update",
+            channel_name, branch
         );
 
         effects.push(Effect::nudge_channel_lead(
             channel_name.clone(),
-            "Your worktree is behind origin/main. Run: `git fetch origin && git checkout --detach origin/main`",
+            format!(
+                "Your worktree is behind origin/{}. Run: `git fetch origin && git checkout --detach origin/{}`",
+                branch, branch
+            ),
         ));
         effects.push(Effect::RecordCooldown {
             category: "lead_worktree_freshness".to_string(),
