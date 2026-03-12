@@ -470,6 +470,18 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub rebase_regression_cooldown_names: HashSet<String>,
 
+    /// Channel lead worktrees that are behind `origin/main`.
+    /// Populated during snapshot collection by comparing `git rev-parse HEAD`
+    /// with `git rev-parse origin/main` in each channel lead's working directory.
+    #[serde(default)]
+    pub stale_channel_lead_worktrees: HashSet<String>,
+
+    /// Channels recently nudged about stale worktrees.
+    /// Pre-evaluated from `state.cooldowns` (category `"lead_worktree_freshness"`)
+    /// so `check_channel_lead_worktree_freshness` stays pure.
+    #[serde(default)]
+    pub lead_worktree_freshness_cooldown_channels: HashSet<String>,
+
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
     /// by session ID) so decision functions stay pure.
@@ -1264,6 +1276,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // Pre-evaluate lead worktree freshness cooldowns for all channels with leads
+    let lead_worktree_freshness_cooldown_channels: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        channel_lead_sessions
+            .keys()
+            .filter(|ch| {
+                !cooldowns.check(
+                    "lead_worktree_freshness",
+                    ch,
+                    crate::daemon::constants::LEAD_WORKTREE_FRESHNESS_COOLDOWN,
+                )
+            })
+            .cloned()
+            .collect()
+    };
+
     // ── Fork / topic sessions ───────────────────────────────────────────
     let topic_sessions: HashMap<String, String> = {
         let ts = state.topic_sessions.lock().unwrap();
@@ -1328,6 +1356,12 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         })
         .map(|(session_id, _)| session_id.clone())
         .collect();
+
+    // ── Channel lead worktree staleness ─────────────────────────────────
+    // Run a single `git fetch origin main` in the project root, then compare
+    // HEAD vs origin/main in each channel lead's worktree directory.
+    let stale_channel_lead_worktrees: HashSet<String> =
+        collect_stale_channel_lead_worktrees(state, &channel_lead_sessions, &sessions).await;
 
     // ── Auth profile pool ─────────────────────────────────────────────────
     // Snapshot the session→profile mapping so pure decision functions
@@ -1457,6 +1491,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         note_staleness_cooldown_channels,
         merge_rebase_nudge_cooldown_names,
         rebase_regression_cooldown_names,
+        stale_channel_lead_worktrees,
+        lead_worktree_freshness_cooldown_channels,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1529,6 +1565,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
+        stale_channel_lead_worktrees: HashSet::new(),
+        lead_worktree_freshness_cooldown_channels: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
@@ -1610,6 +1648,101 @@ pub(crate) fn build_reviewer_pr_assignments(
         .into_iter()
         .map(|(reviewer, (pr, _))| (reviewer, pr))
         .collect()
+}
+
+/// Collect channel lead worktrees that are behind `origin/main`.
+///
+/// Runs a single `git fetch origin main --quiet` in the project root, then
+/// for each channel lead session, compares `git rev-parse HEAD` with
+/// `git rev-parse origin/main` in the session's working directory.
+///
+/// Returns the set of channel names whose worktrees are behind.
+async fn collect_stale_channel_lead_worktrees(
+    state: &DaemonState,
+    channel_lead_sessions: &HashMap<String, String>,
+    sessions: &HashMap<String, crate::daemon::state::SessionRecord>,
+) -> HashSet<String> {
+    if channel_lead_sessions.is_empty() {
+        return HashSet::new();
+    }
+
+    // Run a single git fetch in the project root to update origin/main refs.
+    let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
+    if project_root.as_os_str().is_empty() || !project_root.exists() {
+        return HashSet::new();
+    }
+
+    let fetch_result = tokio::process::Command::new("git")
+        .args(["fetch", "origin", "main", "--quiet"])
+        .current_dir(&project_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+
+    if fetch_result.is_err() || !fetch_result.unwrap().success() {
+        tracing::debug!("git fetch origin main failed — skipping worktree freshness check");
+        return HashSet::new();
+    }
+
+    let mut stale = HashSet::new();
+
+    for (channel_name, session_id) in channel_lead_sessions {
+        let record = match sessions.get(session_id) {
+            Some(r) => r,
+            None => continue,
+        };
+
+        let working_dir = &record.working_dir;
+        if working_dir.is_empty() {
+            continue;
+        }
+
+        let wd = std::path::Path::new(working_dir);
+        if !wd.exists() {
+            continue;
+        }
+
+        // Get HEAD commit in the worktree
+        let head_output = tokio::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(wd)
+            .output()
+            .await;
+
+        let head_sha = match head_output {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+            _ => continue,
+        };
+
+        // Get origin/main commit in the worktree
+        let origin_output = tokio::process::Command::new("git")
+            .args(["rev-parse", "origin/main"])
+            .current_dir(wd)
+            .output()
+            .await;
+
+        let origin_sha = match origin_output {
+            Ok(out) if out.status.success() => {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            }
+            _ => continue,
+        };
+
+        if head_sha != origin_sha {
+            tracing::debug!(
+                "Channel lead '{}' worktree is stale (HEAD={}, origin/main={})",
+                channel_name,
+                &head_sha[..8.min(head_sha.len())],
+                &origin_sha[..8.min(origin_sha.len())]
+            );
+            stale.insert(channel_name.clone());
+        }
+    }
+
+    stale
 }
 
 #[path = "snapshot_tests.rs"]
