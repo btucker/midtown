@@ -626,7 +626,7 @@ fn test_coworker_prompt_uses_task_flag_for_threading() {
 #[test]
 fn test_reviewer_launch_prompt_first_attempt_is_simple() {
     // restart_count=0: first attempt — simple "Review PR #N" command, no context
-    let prompt = reviewer_launch_prompt(99, 0, AuthProvider::Claude);
+    let prompt = reviewer_launch_prompt(99, 0, AuthProvider::Claude, None);
     assert!(
         prompt.contains("/code-review:code-review 99"),
         "First attempt should include the code-review slash command"
@@ -644,7 +644,7 @@ fn test_reviewer_launch_prompt_first_attempt_is_simple() {
 #[test]
 fn test_reviewer_launch_prompt_restart_includes_context() {
     // restart_count>0: respawn — should include context about previous attempt
-    let prompt = reviewer_launch_prompt(42, 1, AuthProvider::Claude);
+    let prompt = reviewer_launch_prompt(42, 1, AuthProvider::Claude, None);
     assert!(
         prompt.contains("/code-review:code-review 42"),
         "Respawn should still include the code-review slash command"
@@ -665,7 +665,7 @@ fn test_reviewer_launch_prompt_restart_includes_context() {
 
 #[test]
 fn test_reviewer_launch_prompt_codex_invocation() {
-    let prompt = reviewer_launch_prompt(42, 0, AuthProvider::Codex);
+    let prompt = reviewer_launch_prompt(42, 0, AuthProvider::Codex, None);
     assert!(
         prompt.contains("use the code-review skill to review PR #42"),
         "Codex reviewer launch prompt should mention code-review skill command"
@@ -673,6 +673,45 @@ fn test_reviewer_launch_prompt_codex_invocation() {
     assert!(
         !prompt.contains("/code-review"),
         "Codex launch prompt should avoid slash command"
+    );
+}
+
+// ── Reviewer launch prompt escalation target tests ──────────────
+
+#[test]
+fn test_reviewer_launch_prompt_includes_escalation_target() {
+    // When an escalation target is provided, the initial prompt should
+    // explicitly tell the reviewer who to address review notes to.
+    let prompt = reviewer_launch_prompt(42, 0, AuthProvider::Claude, Some("web"));
+    assert!(
+        prompt.contains("@web"),
+        "Launch prompt should mention the escalation target: got: {}",
+        prompt
+    );
+}
+
+#[test]
+fn test_reviewer_launch_prompt_no_escalation_target() {
+    // When no escalation target is provided, the prompt should NOT contain
+    // an "Address review notes to" line — the system prompt handles the fallback.
+    let prompt = reviewer_launch_prompt(42, 0, AuthProvider::Claude, None);
+    assert!(
+        !prompt.contains("Address review notes"),
+        "Without escalation target, prompt should not mention escalation"
+    );
+}
+
+#[test]
+fn test_reviewer_launch_prompt_restart_includes_escalation_target() {
+    // Escalation target should also appear in restart prompts
+    let prompt = reviewer_launch_prompt(42, 1, AuthProvider::Claude, Some("daemon-core"));
+    assert!(
+        prompt.contains("@daemon-core"),
+        "Restart prompt should include escalation target"
+    );
+    assert!(
+        prompt.contains("NOTE (Restart #1)"),
+        "Restart prompt should still have restart context"
     );
 }
 

@@ -1843,6 +1843,21 @@ fn build_reviewer_respawn_effects(
         let lead_names = snap.channel_lead_names();
         if lead_names.contains(channel_name) {
             config.escalation_target = Some(channel_name.clone());
+            // Belt-and-suspenders: regenerate the initial prompt with the escalation
+            // target so the reviewer knows who to address even if the system prompt
+            // substitution fails.
+            config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                pr_number,
+                new_restart_count,
+                reviewer_provider,
+                Some(channel_name),
+            ));
+        } else {
+            warn!(
+                "PR #{}: task has channel {:?} but no channel lead registered; \
+                 reviewer escalation_target falls back to project name",
+                pr_number, channel_name
+            );
         }
     }
 

@@ -412,6 +412,7 @@ impl LaunchConfig {
                 pr_number,
                 restart_count,
                 auth_provider,
+                None,
             )),
             additional_dirs: vec![],
             pr_number: Some(pr_number),
