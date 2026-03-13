@@ -22,12 +22,16 @@ use super::{effects, snapshot};
 // ============================================================================
 
 /// Handle coworker.spawn RPC method.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_coworker_spawn(
     id: RequestId,
     state: &DaemonState,
     resume: bool,
     prompt: Option<String>,
     provider: crate::auth::AuthProvider,
+    agent: Option<String>,
+    channel: Option<String>,
+    thread: Option<String>,
 ) -> Response {
     // Check dev coworkers limit (reserve slots for reviewers)
     let channel_lead_names = {
@@ -73,6 +77,46 @@ pub(super) async fn handle_coworker_spawn(
         }
     };
 
+    // Load agent definition if --agent was provided
+    let agent_def = if let Some(ref agent_name) = agent {
+        match crate::agent_definition::load_agent_definition(agent_name) {
+            Ok(def) => {
+                info!(
+                    "Loaded agent definition '{}' from {}",
+                    def.name,
+                    def.source_path.display()
+                );
+                Some(def)
+            }
+            Err(e) => {
+                return Response::error(id, RpcError::new(-32602, e));
+            }
+        }
+    } else {
+        None
+    };
+
+    // Build initial prompt: prepend agent system prompt if present
+    let effective_prompt = match (&agent_def, &prompt) {
+        (Some(def), Some(p)) => Some(format!(
+            "## Agent Instructions\n\n{}\n\n---\n\n{}",
+            def.system_prompt, p
+        )),
+        (Some(def), None) => Some(format!("## Agent Instructions\n\n{}", def.system_prompt)),
+        (None, p) => p.clone(),
+    };
+
+    // Resolve auth_provider: if the agent definition specifies a model,
+    // infer the correct provider from the model alias (e.g., "opus" → Claude).
+    // Without this, spawn_coworker() silently normalizes the model to match
+    // the passed-in provider, defeating the agent definition's model intent.
+    // (Same pattern as PR #1988 fix for reviewer resume.)
+    let effective_provider = agent_def
+        .as_ref()
+        .and_then(|d| d.model.as_deref())
+        .and_then(super::helpers::provider_for_model_alias)
+        .unwrap_or(provider);
+
     // Build headless launch config
     let config = crate::launch::LaunchConfig {
         name,
@@ -82,18 +126,23 @@ pub(super) async fn handle_coworker_spawn(
             crate::launch::SessionMode::Fresh
         },
         role: crate::launch::CoworkerRole::Coworker,
-        initial_prompt: prompt,
+        initial_prompt: effective_prompt,
         additional_dirs: vec![],
         pr_number: None,
         working_dir: None,
-        model: super::helpers::resolve_model_for_role(
-            state.paths.dir_key(),
-            provider,
-            &crate::launch::CoworkerRole::Coworker,
-        ),
-        channel: None,
+        model: agent_def
+            .as_ref()
+            .and_then(|d| d.model.clone())
+            .unwrap_or_else(|| {
+                super::helpers::resolve_model_for_role(
+                    state.paths.dir_key(),
+                    effective_provider,
+                    &crate::launch::CoworkerRole::Coworker,
+                )
+            }),
+        channel: channel.clone(),
         auth_profile_dir: None,
-        auth_provider: provider, // Resolved by spawn_coworker()
+        auth_provider: effective_provider,
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,
@@ -105,6 +154,34 @@ pub(super) async fn handle_coworker_spawn(
         Ok(_) => {
             info!("Spawned coworker: {}", config.name);
             state.broadcast_coworker_update(&config.name, "running", None);
+
+            // Register thread binding so the coworker's channel posts
+            // are automatically routed to the specified thread.
+            if let Some(ref tid) = thread {
+                // In-memory binding for immediate routing
+                state
+                    .fork_bound_threads
+                    .lock()
+                    .unwrap()
+                    .insert(config.name.clone(), tid.clone());
+
+                // Persist to SessionRecord so the binding survives daemon restarts.
+                // spawn_coworker() resolves bound_thread_id from task metadata, but
+                // call-in with --thread has no task — we set it directly here.
+                {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps
+                        .sessions
+                        .values_mut()
+                        .find(|r| r.current_name.as_deref() == Some(&config.name))
+                    {
+                        record.bound_thread_id = Some(tid.clone());
+                    }
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                        warn!("Failed to save bound_thread_id for {}: {}", config.name, e);
+                    }
+                }
+            }
 
             Response::success(
                 id,

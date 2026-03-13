@@ -180,6 +180,17 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 
 **Pool management API**: The web UI can toggle profiles in and out of the coworker pool via `POST /api/auth/pool-toggle` (REST) or the `auth.pool-toggle` RPC method. Request: `{ profile, enabled, provider? }`. When `enabled=true`, the profile is added to `execution.coworker_profiles` in project config (validates that the profile exists first). When `enabled=false`, it is removed. If `coworker_profiles` is unset (`None`) and `enabled=false`, the config is not modified — this avoids creating an explicit empty list that would shadow inherited global pool entries. After mutation, an ops-channel broadcast notifies WebSocket clients of the change.
 
+### Agent Definitions (`src/agent_definition.rs`)
+
+The `coworker call-in` command supports `--agent <name>` to load agent definitions from markdown files with YAML frontmatter, following Claude Code's agent definition format:
+
+- **Search paths** (in order): `.claude/agents/{name}.md` (project-level), `~/.claude/agents/{name}.md` (user-level)
+- **Frontmatter fields**: `name`, `description`, `model` (all optional — `name` falls back to filename)
+- **Body**: Used as the agent's system prompt, prepended to the coworker's initial prompt under `## Agent Instructions`
+- **Model override**: If the agent specifies `model`, it overrides the default provider-resolved model (subject to downstream normalization by `normalize_model_for_provider_role`)
+
+Additional call-in flags: `--channel <name>` sets `LaunchConfig.channel` for message routing; `--thread <id>` registers a `fork_bound_threads` binding so the coworker's posts auto-route to the specified thread.
+
 ## Prompt Architecture
 
 Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.

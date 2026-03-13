@@ -391,12 +391,24 @@ impl DaemonClient {
         resume: bool,
         prompt: Option<&str>,
         provider: midtown::auth::AuthProvider,
+        agent: Option<&str>,
+        channel: Option<&str>,
+        thread: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "resume": resume });
         if let Some(p) = prompt {
             params["prompt"] = serde_json::json!(p);
         }
         params["provider"] = serde_json::json!(provider.as_str());
+        if let Some(a) = agent {
+            params["agent"] = serde_json::json!(a);
+        }
+        if let Some(c) = channel {
+            params["channel"] = serde_json::json!(c);
+        }
+        if let Some(t) = thread {
+            params["thread"] = serde_json::json!(t);
+        }
         self.send("coworker.spawn", Some(params))
     }
 

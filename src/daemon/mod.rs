@@ -716,11 +716,12 @@ pub(crate) struct DaemonState {
     /// thread — avoids acquiring the async `persistent_state` lock on the channel
     /// post hot path.
     ///
-    /// Populated in four places:
+    /// Populated in five places:
     /// 1. `handle_session_fork` — when a fork is created
     /// 2. `SpawnSession` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
     /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
     /// 4. `spawn_coworker()` — for non-reviewer coworkers with a `bound_thread_id`
+    /// 5. `handle_coworker_spawn` (`rpc_coworker.rs`) — when `--thread` is passed to call-in
     ///
     /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
     pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,

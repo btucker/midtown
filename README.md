@@ -100,7 +100,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown channel archive <name>` | Archive a channel |
 | `midtown lead [--channel <name>]` | Boot a headed (interactive) lead session |
 | `midtown coworker [--task <id>]` | Boot a headed coworker session (picks task interactively if no `--task`) |
-| `midtown coworker call-in` | Call in a new headless coworker via the daemon |
+| `midtown coworker call-in [--agent <name>] [--channel <name>] [--thread <id>]` | Call in a new headless coworker via the daemon |
 | `midtown coworker list` | List all coworkers |
 | `midtown coworker screenshot <url>` | Capture a screenshot with Playwright and upload it (supports `--before`/`--after`/`--github`) |
 | `midtown session view <target>` | View a session's recent output with rich ANSI rendering |
