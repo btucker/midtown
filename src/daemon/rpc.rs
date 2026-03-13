@@ -204,30 +204,45 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     let request_id_for_cache = request.id.clone();
     let request_method = request.method.clone();
 
-    // Methods that must bypass the RPC idempotency cache fall into two categories:
+    // Whitelist of methods eligible for RPC idempotency caching.
     //
-    // 1. Read methods with their own domain-specific caching (prs.status,
-    //    coworkers.status) — the idempotency cache would shadow their own TTL caches
-    //    because the web server reuses id=1 for repeated polls.
+    // Only pure read-only methods that do NOT have their own domain-specific
+    // caching belong here. Everything else (mutating methods, methods with
+    // their own cache) must be excluded to avoid two problems:
     //
-    // 2. Mutating methods (auth.switch, auth.pool-toggle) — the web layer sends id=1
-    //    for every call, so two successive requests with different params (e.g., enable
-    //    then disable within 60s) would share the same cache key and the second call
-    //    would incorrectly return the first call's cached response without executing.
-    let skip_rpc_cache = matches!(
+    // 1. The web layer sends id=1 for every call, so two successive mutating
+    //    requests within 60s would share the same cache key and the second
+    //    call would return a stale cached response instead of executing.
+    //
+    // 2. Methods with domain-specific caching (prs.status, coworkers.status)
+    //    would have their own TTL logic shadowed by this cache.
+    //
+    // Using a whitelist (rather than a skip-list) ensures new methods default
+    // to uncached, which is always safe.
+    let use_rpc_cache = matches!(
         request_method.as_str(),
-        "prs.status"
-            | "coworkers.status"
-            | "auth.switch"
-            | "auth.pool-toggle"
-            | "pr.review"
-            | "pr.review-post"
-            | "pr.merge"
-            | "pr.allow"
+        "ping"
+            | "version"
+            | "status"
+            | "snapshot"
+            | "channel.read"
+            | "channel.list"
+            | "task.metadata"
+            | "reminder.list"
+            | "workflow.list"
+            | "workflow.get_state"
+            | "session.resolve"
+            | "session.list"
+            | "session.view"
+            | "session.thread_ownership"
+            | "coworker.list"
+            | "coworker.view"
+            | "coworker.questions"
+            | "pr.list-external"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
-    if !skip_rpc_cache {
+    if use_rpc_cache {
         let now = std::time::Instant::now();
         let cache = state.rpc_response_cache.lock().await;
         if let Some((cached_response, timestamp)) = cache.get(&request_id_for_cache)
@@ -249,7 +264,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
     // Methods with domain-specific caching (e.g., prs.status) are excluded.
-    if !skip_rpc_cache && !response.is_error() {
+    if use_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(
             request_id_for_cache,

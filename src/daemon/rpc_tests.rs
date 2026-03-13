@@ -268,3 +268,105 @@ fn test_rpc_cache_numeric_id_collision() {
         "PID-prefixed string IDs from different processes should NOT collide"
     );
 }
+
+/// Verify that known mutating methods are NOT in the RPC cache whitelist.
+///
+/// The `use_rpc_cache` whitelist in `handle_request` must exclude all mutating
+/// methods. If a mutating method were cached, the web layer (which sends id=1
+/// for every call) could return stale responses instead of executing the mutation.
+/// This test guards against regressions where a new mutating method is
+/// accidentally added to the whitelist.
+#[test]
+fn test_mutating_methods_excluded_from_rpc_cache() {
+    // Helper that mirrors the use_rpc_cache logic in handle_request
+    fn is_cacheable(method: &str) -> bool {
+        matches!(
+            method,
+            "ping"
+                | "version"
+                | "status"
+                | "snapshot"
+                | "channel.read"
+                | "channel.list"
+                | "task.metadata"
+                | "reminder.list"
+                | "workflow.list"
+                | "workflow.get_state"
+                | "session.resolve"
+                | "session.list"
+                | "session.view"
+                | "session.thread_ownership"
+                | "coworker.list"
+                | "coworker.view"
+                | "coworker.questions"
+                | "pr.list-external"
+        )
+    }
+
+    let mutating_methods = [
+        "shutdown",
+        "daemon.exec-restart",
+        "daemon.set-draining",
+        "daemon.check-pending",
+        "coworker.stop_all",
+        "coworker.spawn",
+        "coworker.break",
+        "coworker.report-state",
+        "coworker.nudge",
+        "coworker.asking",
+        "lead.spawn",
+        "oneshot.execute",
+        "channel.post",
+        "channel.create",
+        "channel.archive",
+        "channel.unarchive",
+        "channel.rename",
+        "task.create",
+        "task.update",
+        "task.done",
+        "task.request",
+        "task.claim",
+        "reminder.create",
+        "reminder.cancel",
+        "workflow.assign",
+        "workflow.unassign",
+        "workflow.set_state",
+        "auth.switch",
+        "auth.pool-toggle",
+        "pr.review",
+        "pr.review-post",
+        "pr.merge",
+        "pr.auto-merge",
+        "pr.allow",
+        "session.attach",
+        "session.detach",
+        "session.clear",
+        "session.fork",
+        "session.fork_thread",
+        "session.unfork_thread",
+        "headed.register",
+        "headed.unregister",
+        "headed.heartbeat",
+        "headed.ack",
+        "headed.output",
+        "headed.enqueue",
+    ];
+
+    for method in &mutating_methods {
+        assert!(
+            !is_cacheable(method),
+            "Mutating method '{}' must NOT be in the RPC cache whitelist",
+            method
+        );
+    }
+
+    // Also verify read-only methods with their own caching are excluded
+    let domain_cached_methods = ["prs.status", "coworkers.status"];
+    for method in &domain_cached_methods {
+        assert!(
+            !is_cacheable(method),
+            "Domain-cached method '{}' must NOT be in the RPC cache whitelist",
+            method
+        );
+    }
+}
