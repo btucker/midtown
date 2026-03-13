@@ -1378,3 +1378,37 @@ export async function saveChannelAgentsMd(channel, content, scope = "channel") {
 		return { ok: false, error: err.message };
 	}
 }
+
+// Fetch channel working directory
+export async function fetchChannelDirectory(channel) {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/directory`);
+		if (res.ok) {
+			return await res.json();
+		}
+		console.warn("Failed to fetch channel directory:", res.status);
+	} catch (err) {
+		console.warn("Failed to fetch channel directory:", err);
+	}
+	return { directory: null };
+}
+
+// Save channel working directory
+export async function saveChannelDirectory(channel, directory) {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/directory`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ directory }),
+		});
+		if (res.ok || res.status === 204) {
+			return { ok: true };
+		}
+		const body = await res.text();
+		console.error("Failed to save channel directory:", res.status, body);
+		return { ok: false, error: body || `HTTP ${res.status}` };
+	} catch (err) {
+		console.error("Failed to save channel directory:", err);
+		return { ok: false, error: err.message };
+	}
+}

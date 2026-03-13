@@ -1,5 +1,5 @@
 <script>
-import { fetchChannelAgentsMd, saveChannelAgentsMd } from "./api.js";
+import { fetchChannelAgentsMd, fetchChannelDirectory, saveChannelAgentsMd, saveChannelDirectory } from "./api.js";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.js";
 
@@ -13,6 +13,65 @@ function toggleInlineToolCalls() {
 			inlineToolCalls: !inlineToolCalls,
 		},
 	}));
+}
+
+// Working directory editor state
+let directoryValue = $state("");
+let directoryOriginal = $state("");
+let directoryLoading = $state(false);
+let directorySaving = $state(false);
+let directoryError = $state("");
+let directorySuccess = $state("");
+
+let directoryDirty = $derived(directoryValue !== directoryOriginal);
+
+async function loadDirectory() {
+	directoryLoading = true;
+	directoryError = "";
+	directorySuccess = "";
+	const data = await fetchChannelDirectory($activeChannel);
+	directoryValue = data.directory || "";
+	directoryOriginal = data.directory || "";
+	directoryLoading = false;
+}
+
+function validateDirectory(path) {
+	if (!path) return null;
+	if (path.startsWith("/") || path.startsWith("\\")) {
+		return "Path must be relative (cannot start with / or \\)";
+	}
+	if (path.includes("..")) {
+		return "Path cannot contain ..";
+	}
+	return null;
+}
+
+async function saveDirectory() {
+	const trimmed = directoryValue.trim();
+	const validationError = validateDirectory(trimmed);
+	if (validationError) {
+		directoryError = validationError;
+		return;
+	}
+	directorySaving = true;
+	directoryError = "";
+	directorySuccess = "";
+	const result = await saveChannelDirectory($activeChannel, trimmed || null);
+	if (result.ok) {
+		directoryOriginal = trimmed;
+		directoryValue = trimmed;
+		directorySuccess = "Saved";
+		setTimeout(() => (directorySuccess = ""), 2000);
+	} else {
+		directoryError = result.error || "Failed to save";
+	}
+	directorySaving = false;
+}
+
+function discardDirectory() {
+	directoryValue = directoryOriginal;
+	directoryError = "";
+	directorySuccess = "";
 }
 
 // AGENTS.md editor state
@@ -80,6 +139,7 @@ let lastChannel = $state("");
 $effect(() => {
 	if ($activeChannel && $activeChannel !== lastChannel) {
 		lastChannel = $activeChannel;
+		loadDirectory();
 		loadAgentsMd();
 	}
 });
@@ -108,6 +168,48 @@ $effect(() => {
           <span class="toggle-knob"></span>
         </button>
       </div>
+    </section>
+
+    <!-- Working directory -->
+    <section class="settings-section">
+      <h2 class="section-title">Working Directory</h2>
+      <span class="setting-description">
+        Restrict this channel's coworkers to a subdirectory of the repo.
+      </span>
+      {#if directoryLoading}
+        <div class="dir-loading">Loading...</div>
+      {:else}
+        <input
+          type="text"
+          class="dir-input"
+          bind:value={directoryValue}
+          placeholder="e.g. packages/auth"
+          spellcheck="false"
+          aria-label="Working directory path"
+        />
+        <div class="dir-actions">
+          <div class="dir-status-area">
+            {#if directoryError}
+              <span class="dir-status error">{directoryError}</span>
+            {/if}
+            {#if directorySuccess}
+              <span class="dir-status success">{directorySuccess}</span>
+            {/if}
+          </div>
+          <div class="dir-buttons">
+            {#if directoryDirty}
+              <button class="dir-btn discard" onclick={discardDirectory}>Discard</button>
+            {/if}
+            <button
+              class="dir-btn save"
+              onclick={saveDirectory}
+              disabled={!directoryDirty || directorySaving}
+            >
+              {directorySaving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      {/if}
     </section>
 
     <!-- AGENTS.md editor -->
@@ -262,6 +364,100 @@ $effect(() => {
 
   .toggle-switch.active .toggle-knob {
     transform: translateX(18px);
+  }
+
+  /* Working directory styles */
+  .dir-loading {
+    font-size: 0.82rem;
+    color: hsl(var(--muted-foreground));
+    padding: 16px 0;
+  }
+
+  .dir-input {
+    width: 100%;
+    padding: 8px 12px;
+    margin-top: 8px;
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+    font-size: 0.82rem;
+    box-sizing: border-box;
+  }
+
+  .dir-input:focus {
+    outline: none;
+    border-color: hsl(var(--primary));
+  }
+
+  .dir-input::placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  .dir-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 8px;
+    min-height: 32px;
+  }
+
+  .dir-status-area {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dir-status {
+    font-size: 0.78rem;
+  }
+
+  .dir-status.error {
+    color: hsl(var(--destructive));
+  }
+
+  .dir-status.success {
+    color: hsl(var(--accent-green));
+  }
+
+  .dir-buttons {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  .dir-btn {
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    border: 1px solid hsl(var(--border));
+    transition: background 0.15s, border-color 0.15s;
+  }
+
+  .dir-btn.discard {
+    background: transparent;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .dir-btn.discard:hover {
+    background: hsl(var(--accent));
+  }
+
+  .dir-btn.save {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+    border-color: hsl(var(--primary));
+  }
+
+  .dir-btn.save:hover:not(:disabled) {
+    opacity: 0.9;
+  }
+
+  .dir-btn.save:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   /* AGENTS.md editor styles */
