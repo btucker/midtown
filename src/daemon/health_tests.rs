@@ -4195,6 +4195,8 @@ fn state_gc_preserves_dead_fork_sessions() {
         None,
     );
     fork_session.coworker_type = "channel-lead".to_string();
+    // bound_thread_id is set for fixture realism (real fork sessions have it),
+    // but it is NOT part of the GC predicate — coworker_type alone guards protection.
     fork_session.bound_thread_id = Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string());
     sessions.insert("fork-ops-abc123".to_string(), fork_session);
 
@@ -4260,6 +4262,7 @@ fn state_gc_handles_mixed_fork_and_dev_sessions() {
         None,
     );
     running_fork.coworker_type = "channel-lead".to_string();
+    // bound_thread_id set for realism; not part of GC predicate.
     running_fork.bound_thread_id = Some("11111111-1111-1111-1111-111111111111".to_string());
     sessions.insert("fork-ops-running".to_string(), running_fork);
 
@@ -4273,6 +4276,7 @@ fn state_gc_handles_mixed_fork_and_dev_sessions() {
         None,
     );
     dead_fork.coworker_type = "channel-lead".to_string();
+    // bound_thread_id set for realism; not part of GC predicate.
     dead_fork.bound_thread_id = Some("22222222-2222-2222-2222-222222222222".to_string());
     sessions.insert("fork-ops-dead".to_string(), dead_fork);
 
@@ -4368,6 +4372,7 @@ fn state_gc_fork_session_preserves_task_metadata() {
         Some("55"),
     );
     fork_with_task.coworker_type = "channel-lead".to_string();
+    // bound_thread_id set for realism; not part of GC predicate.
     fork_with_task.bound_thread_id = Some("33333333-3333-3333-3333-333333333333".to_string());
     sessions.insert("fork-ops-task".to_string(), fork_with_task);
 
@@ -4400,6 +4405,73 @@ fn state_gc_fork_session_preserves_task_metadata() {
             assert!(
                 orphaned_task_ids.contains(&"99".to_string()),
                 "task 99 is truly orphaned — should be pruned"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+/// Confirms that `bound_thread_id` is NOT part of the GC predicate.
+///
+/// A channel-lead session without `bound_thread_id` must still survive GC,
+/// proving that `coworker_type == "channel-lead"` is the sole guard — not
+/// `bound_thread_id`. This clarifies the boundary for readers of the other
+/// fork GC tests where `bound_thread_id` is set for fixture realism.
+#[test]
+fn state_gc_channel_lead_without_bound_thread_survives() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Channel-lead session with NO bound_thread_id — should still survive GC.
+    let mut lead_no_thread = make_session(
+        "lead-no-thread",
+        false,
+        false,
+        false,
+        now - chrono::Duration::hours(48),
+        None,
+    );
+    lead_no_thread.coworker_type = "channel-lead".to_string();
+    // Deliberately NOT setting bound_thread_id — proving it's not the guard.
+    sessions.insert("lead-no-thread".to_string(), lead_no_thread);
+
+    // Control: dead dev session, same age — should be pruned.
+    sessions.insert(
+        "dead-dev".to_string(),
+        make_session(
+            "dead-dev",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(48),
+            None,
+        ),
+    );
+
+    let retention = chrono::Duration::hours(24);
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids, ..
+        } => {
+            assert!(
+                !dead_session_ids.contains(&"lead-no-thread".to_string()),
+                "channel-lead without bound_thread_id must still survive GC — \
+                 coworker_type is the sole guard, not bound_thread_id"
+            );
+            assert!(
+                dead_session_ids.contains(&"dead-dev".to_string()),
+                "dead dev session should be pruned"
             );
         }
         other => panic!("Expected GarbageCollectState, got {:?}", other),
