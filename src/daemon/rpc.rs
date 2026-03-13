@@ -224,6 +224,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "pr.review-post"
             | "pr.merge"
             | "pr.allow"
+            | "workflow.set_lead_driven"
     );
 
     // Check cache for idempotent response (within 60 second TTL)
@@ -632,9 +633,15 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "workflow.list" => super::rpc_workflow::handle_workflow_list(request.id, state).await,
 
-        "workflow.set-lead-driven" => {
+        "workflow.set_lead_driven" => {
             let channel = require_str!(params, "channel", request.id);
-            let enabled = params.bool_or("enabled", true);
+            let enabled = match params
+                .and_then(|p| p.get("enabled"))
+                .and_then(|v| v.as_bool())
+            {
+                Some(v) => v,
+                None => return Response::error(request.id, RpcError::invalid_params()),
+            };
             super::rpc_workflow::handle_workflow_set_lead_driven(
                 request.id, channel, enabled, state,
             )

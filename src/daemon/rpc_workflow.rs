@@ -1,7 +1,7 @@
 //! Workflow RPC handlers.
 //!
 //! Handles `workflow.get_state`, `workflow.set_state`, `workflow.list`,
-//! `workflow.assign`, `workflow.unassign`, and `workflow.set-lead-driven` methods.
+//! `workflow.assign`, `workflow.unassign`, and `workflow.set_lead_driven` methods.
 //!
 //! State is owned by the daemon in `DaemonPersistentState::workflow_state`
 //! and persisted to `daemon-state.json` alongside other daemon state.
@@ -201,7 +201,7 @@ pub(super) async fn handle_workflow_unassign(
     Response::success(id, serde_json::json!({ "ok": true }))
 }
 
-/// Handle `workflow.set-lead-driven` RPC method.
+/// Handle `workflow.set_lead_driven` RPC method.
 ///
 /// Params:
 /// - `channel` (required): channel name
@@ -227,7 +227,7 @@ pub(super) async fn handle_workflow_set_lead_driven(
         error!(
             channel = %channel,
             enabled = %enabled,
-            "workflow.set-lead-driven: failed to save daemon state: {}",
+            "workflow.set_lead_driven: failed to save daemon state: {}",
             e
         );
         return Response::error(
@@ -239,7 +239,7 @@ pub(super) async fn handle_workflow_set_lead_driven(
     debug!(
         channel = %channel,
         enabled = %enabled,
-        "workflow.set-lead-driven: lead-driven mode {}",
+        "workflow.set_lead_driven: lead-driven mode {}",
         if enabled { "enabled" } else { "disabled" }
     );
 
@@ -271,12 +271,14 @@ pub(super) async fn handle_workflow_list(id: RequestId, daemon_state: &DaemonSta
         .iter()
         .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
         .collect();
+    let lead_driven: Vec<&String> = ps.lead_driven_channels.iter().collect();
 
     Response::success(
         id,
         serde_json::json!({
             "workflows": workflow_list,
             "assignments": assignments,
+            "lead_driven_channels": lead_driven,
         }),
     )
 }

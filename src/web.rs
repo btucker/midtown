@@ -2274,21 +2274,31 @@ struct SetWorkflowRequest {
 }
 
 impl SetWorkflowRequest {
-    fn from_json(value: &serde_json::Value) -> Self {
+    fn from_json(value: &serde_json::Value) -> Result<Self, &'static str> {
         let workflow = if let Some(v) = value.get("workflow") {
             if v.is_null() {
                 Some(None)
+            } else if let Some(s) = v.as_str() {
+                Some(Some(s.to_string()))
             } else {
-                v.as_str().map(|s| Some(s.to_string()))
+                return Err("workflow must be a string or null");
             }
         } else {
             None
         };
-        let lead_driven = value.get("lead_driven").and_then(|v| v.as_bool());
-        Self {
+        let lead_driven = if let Some(v) = value.get("lead_driven") {
+            if let Some(b) = v.as_bool() {
+                Some(b)
+            } else {
+                return Err("lead_driven must be a boolean");
+            }
+        } else {
+            None
+        };
+        Ok(Self {
             workflow,
             lead_driven,
-        }
+        })
     }
 }
 
@@ -2317,7 +2327,10 @@ async fn api_set_channel_workflow(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let body = SetWorkflowRequest::from_json(&body);
+    let body = match SetWorkflowRequest::from_json(&body) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
     let dir_key = state.config.dir_key.clone();
     let ch = channel.clone();
 
@@ -2343,7 +2356,7 @@ async fn api_set_channel_workflow(
     if let Some(enabled) = body.lead_driven {
         requests.push(serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "workflow.set-lead-driven",
+            "method": "workflow.set_lead_driven",
             "params": { "channel": ch, "enabled": enabled },
             "id": requests.len() + 1
         }));

@@ -376,22 +376,22 @@ async fn test_set_state_with_key_creates_intermediates() {
     assert_eq!(result["state"]["tasks"]["99"]["excluded"], true);
 }
 
-// ── workflow.set-lead-driven tests ────────────────────────────────────────
+// ── workflow.set_lead_driven tests ────────────────────────────────────────
 
-/// set-lead-driven enables lead-driven mode for a channel.
+/// set_lead_driven enables lead-driven mode for a channel.
 #[tokio::test]
 async fn test_set_lead_driven_enable() {
     let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-enable");
 
     let resp =
         handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
-    assert!(resp.result.is_some(), "set-lead-driven should succeed");
+    assert!(resp.result.is_some(), "set_lead_driven should succeed");
 
     let ps = state.persistent_state.lock().await;
     assert!(ps.lead_driven_channels.contains("proj-auth"));
 }
 
-/// set-lead-driven disable removes the channel from lead-driven mode.
+/// set_lead_driven disable removes the channel from lead-driven mode.
 #[tokio::test]
 async fn test_set_lead_driven_disable() {
     let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-disable");
@@ -408,7 +408,7 @@ async fn test_set_lead_driven_disable() {
     assert!(!ps.lead_driven_channels.contains("proj-auth"));
 }
 
-/// set-lead-driven persists to daemon-state.json.
+/// set_lead_driven persists to daemon-state.json.
 #[tokio::test]
 async fn test_set_lead_driven_persists() {
     let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-persist");
@@ -421,7 +421,7 @@ async fn test_set_lead_driven_persists() {
     assert!(reloaded.lead_driven_channels.contains("proj-auth"));
 }
 
-/// set-lead-driven is independent of workflow assignment.
+/// set_lead_driven is independent of workflow assignment.
 #[tokio::test]
 async fn test_lead_driven_independent_of_workflow() {
     let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-indep");
@@ -446,4 +446,23 @@ async fn test_lead_driven_independent_of_workflow() {
     let ps = state.persistent_state.lock().await;
     assert_eq!(ps.channel_workflows.get("proj-auth").unwrap(), "tdw");
     assert!(!ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// workflow.list includes lead_driven_channels.
+#[tokio::test]
+async fn test_workflow_list_includes_lead_driven() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-list-lead-driven");
+
+    // Enable lead-driven on a channel
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+
+    let resp = handle_workflow_list(RequestId::Number(2), &state).await;
+    let result = resp.result.expect("list should succeed");
+    let lead_driven = result["lead_driven_channels"]
+        .as_array()
+        .expect("should be array");
+    assert!(
+        lead_driven.iter().any(|v| v.as_str() == Some("proj-auth")),
+        "lead_driven_channels should include proj-auth"
+    );
 }

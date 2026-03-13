@@ -745,7 +745,7 @@ impl DaemonClient {
         enabled: bool,
     ) -> Result<Response, String> {
         self.send(
-            "workflow.set-lead-driven",
+            "workflow.set_lead_driven",
             Some(serde_json::json!({ "channel": channel, "enabled": enabled })),
         )
     }
