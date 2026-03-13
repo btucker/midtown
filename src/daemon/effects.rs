@@ -2169,21 +2169,31 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                     let wt_mgr = state.coworkers.worktree_manager().clone();
                     let wt_id = worktree_id.clone();
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(e) = wt_mgr.force_cleanup_task_worktree(&wt_id) {
-                            warn!("Failed to remove orphaned worktree {}: {}", wt_id, e);
-                        } else {
-                            info!("Cleaned up orphaned worktree {}", wt_id);
+                    match tokio::task::spawn_blocking(move || {
+                        wt_mgr.force_cleanup_task_worktree(&wt_id)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {
+                            info!("Cleaned up orphaned worktree {}", worktree_id);
+                            let mut msg = Message::system(format!(
+                                "🧹 Cleaned up orphaned worktree {} (not in registry)",
+                                worktree_id
+                            ));
+                            msg.channel = Some(OPS_CHANNEL.to_string());
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                warn!("Failed to post orphaned worktree cleanup message: {}", e);
+                            }
                         }
-                    });
-
-                    let mut msg = Message::system(format!(
-                        "🧹 Cleaned up orphaned worktree {} (not in registry)",
-                        worktree_id
-                    ));
-                    msg.channel = Some(OPS_CHANNEL.to_string());
-                    if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                        warn!("Failed to post orphaned worktree cleanup message: {}", e);
+                        Ok(Err(e)) => {
+                            warn!("Failed to remove orphaned worktree {}: {}", worktree_id, e);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "spawn_blocking panicked during orphaned worktree cleanup {}: {}",
+                                worktree_id, e
+                            );
+                        }
                     }
                 }
             }
