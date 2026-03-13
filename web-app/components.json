@@ -12,5 +12,5 @@
     "ui": "$lib/components/ui",
     "hooks": "$lib/hooks"
   },
-  "typescript": false
+  "typescript": true
 }
