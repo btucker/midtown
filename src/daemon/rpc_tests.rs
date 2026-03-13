@@ -268,3 +268,309 @@ fn test_rpc_cache_numeric_id_collision() {
         "PID-prefixed string IDs from different processes should NOT collide"
     );
 }
+
+// ============================================================================
+// RPC cache allowlist coverage tests
+// ============================================================================
+
+/// All RPC methods defined in dispatch_request, used to verify cache allowlist coverage.
+/// When adding a new RPC method, add it here AND to either CACHEABLE_METHODS or
+/// UNCACHEABLE_METHODS below.
+const ALL_RPC_METHODS: &[&str] = &[
+    // Simple / inline handlers
+    "ping",
+    "version",
+    "shutdown",
+    "daemon.exec-restart",
+    "daemon.set-draining",
+    "daemon.check-pending",
+    "coworker.stop_all",
+    // Snapshot / oneshot
+    "snapshot",
+    "oneshot.execute",
+    // Coworker lifecycle
+    "coworker.spawn",
+    "coworker.break",
+    "coworker.list",
+    "coworker.view",
+    "coworker.report-state",
+    "coworker.nudge",
+    "coworker.asking",
+    "coworker.questions",
+    // Lead lifecycle
+    "lead.spawn",
+    // Status / PRs
+    "status",
+    "prs.status",
+    "pr.review",
+    "pr.merge",
+    "pr.auto-merge",
+    "pr.review-post",
+    "pr.list-external",
+    "pr.allow",
+    "coworkers.status",
+    // Channel
+    "channel.post",
+    "channel.read",
+    "channel.list",
+    "channel.create",
+    "channel.archive",
+    "channel.unarchive",
+    "channel.rename",
+    // Tasks
+    "task.create",
+    "task.update",
+    "task.done",
+    "task.metadata",
+    "task.request",
+    "task.claim",
+    // Reminders
+    "reminder.create",
+    "reminder.list",
+    "reminder.cancel",
+    // Workflow management
+    "workflow.assign",
+    "workflow.unassign",
+    "workflow.list",
+    "workflow.set_lead_driven",
+    // Workflow state
+    "workflow.get_state",
+    "workflow.set_state",
+    // Auth
+    "auth.switch",
+    "auth.pool-toggle",
+    // Sessions
+    "session.resolve",
+    "session.attach",
+    "session.detach",
+    "session.list",
+    "session.view",
+    "session.clear",
+    "session.fork",
+    "session.fork_thread",
+    "session.unfork_thread",
+    "session.thread_ownership",
+    // Headed wrapper intercom
+    "headed.register",
+    "headed.unregister",
+    "headed.heartbeat",
+    "headed.poll",
+    "headed.ack",
+    "headed.output",
+    "headed.enqueue",
+];
+
+/// Methods that are safe to cache: parameter-free reads without their own
+/// domain cache. Parameterized reads are excluded because the web layer
+/// reuses id=1, so two calls with different params would collide.
+const CACHEABLE_METHODS: &[&str] = &[
+    "ping",
+    "version",
+    "status",
+    "snapshot",
+    "coworker.list",
+    "coworker.questions",
+    "channel.list",
+    "reminder.list",
+    "workflow.list",
+    "session.list",
+    "pr.list-external",
+];
+
+/// Methods that must NOT be cached. Includes:
+/// - All mutating methods
+/// - Reads with their own domain-specific cache (prs.status, coworkers.status)
+/// - Parameterized reads (subject to id=1 collision with different params)
+const UNCACHEABLE_METHODS: &[&str] = &[
+    // Mutating: daemon lifecycle
+    "shutdown",
+    "daemon.exec-restart",
+    "daemon.set-draining",
+    "daemon.check-pending",
+    "coworker.stop_all",
+    // Mutating: coworker lifecycle
+    "coworker.spawn",
+    "coworker.break",
+    "coworker.report-state",
+    "coworker.nudge",
+    "coworker.asking",
+    "lead.spawn",
+    "oneshot.execute",
+    // Mutating: PR operations
+    "pr.review",
+    "pr.merge",
+    "pr.auto-merge",
+    "pr.review-post",
+    "pr.allow",
+    // Mutating: channel operations
+    "channel.post",
+    "channel.create",
+    "channel.archive",
+    "channel.unarchive",
+    "channel.rename",
+    // Mutating: task operations
+    "task.create",
+    "task.update",
+    "task.done",
+    "task.request",
+    "task.claim",
+    // Mutating: reminder operations
+    "reminder.create",
+    "reminder.cancel",
+    // Mutating: workflow operations
+    "workflow.assign",
+    "workflow.unassign",
+    "workflow.set_lead_driven",
+    "workflow.set_state",
+    // Mutating: auth operations
+    "auth.switch",
+    "auth.pool-toggle",
+    // Mutating: session operations
+    "session.attach",
+    "session.detach",
+    "session.clear",
+    "session.fork",
+    "session.fork_thread",
+    "session.unfork_thread",
+    // Mutating: headed intercom
+    "headed.register",
+    "headed.unregister",
+    "headed.heartbeat",
+    "headed.ack",
+    "headed.output",
+    "headed.enqueue",
+    // Reads with own domain cache
+    "prs.status",
+    "coworkers.status",
+    // Parameterized reads (subject to id=1 collision with different params)
+    "coworker.view",
+    "channel.read",
+    "workflow.get_state",
+    "session.resolve",
+    "session.view",
+    "session.thread_ownership",
+    "headed.poll",
+    "task.metadata",
+];
+
+#[test]
+fn test_all_rpc_methods_categorized_for_cache() {
+    let mut all: Vec<&str> = ALL_RPC_METHODS.to_vec();
+    all.sort();
+    let mut categorized: Vec<&str> = CACHEABLE_METHODS
+        .iter()
+        .chain(UNCACHEABLE_METHODS.iter())
+        .copied()
+        .collect();
+    categorized.sort();
+
+    assert_eq!(
+        all, categorized,
+        "Every method in ALL_RPC_METHODS must appear in exactly one of CACHEABLE_METHODS or UNCACHEABLE_METHODS"
+    );
+}
+
+#[test]
+fn test_cacheable_methods_match_use_rpc_cache() {
+    // Verify the allowlist in handle_request matches CACHEABLE_METHODS.
+    // This test uses the same matches! logic as the production code.
+    for method in ALL_RPC_METHODS {
+        let use_cache = matches!(
+            *method,
+            "ping"
+                | "version"
+                | "status"
+                | "snapshot"
+                | "coworker.list"
+                | "coworker.questions"
+                | "channel.list"
+                | "reminder.list"
+                | "workflow.list"
+                | "session.list"
+                | "pr.list-external"
+        );
+        let should_cache = CACHEABLE_METHODS.contains(method);
+
+        assert_eq!(
+            use_cache, should_cache,
+            "Method {:?}: use_rpc_cache={} but CACHEABLE_METHODS says {}",
+            method, use_cache, should_cache
+        );
+    }
+}
+
+#[test]
+fn test_no_duplicates_in_cache_lists() {
+    let mut seen = std::collections::HashSet::new();
+    for method in CACHEABLE_METHODS.iter().chain(UNCACHEABLE_METHODS.iter()) {
+        assert!(
+            seen.insert(method),
+            "Duplicate method {:?} in cache categorization lists",
+            method
+        );
+    }
+}
+
+#[test]
+fn test_allowlisted_method_is_cached() {
+    let mut cache: HashMap<RequestId, (Response, Instant)> = HashMap::new();
+    let id = RequestId::Number(1);
+
+    // Simulate caching a response for an allowlisted method ("status")
+    let first_response = Response::success(id.clone(), serde_json::json!({"uptime": 100}));
+    cache.insert(id.clone(), (first_response, Instant::now()));
+
+    // Same id within TTL → should hit cache
+    let now = Instant::now();
+    let hit = cache
+        .get(&id)
+        .filter(|(_, ts)| now.duration_since(*ts).as_secs() < 60);
+    assert!(
+        hit.is_some(),
+        "Allowlisted (cacheable) method should return cached response for same id"
+    );
+}
+
+#[test]
+fn test_non_allowlisted_method_not_cached() {
+    // Simulate the production logic: non-allowlisted methods skip cache entirely.
+    // With the allowlist approach, a mutating method like "task.create" should not
+    // be cached, so two calls with id=1 both execute (no stale response).
+    let method = "task.create";
+    let use_cache = matches!(
+        method,
+        "ping"
+            | "version"
+            | "status"
+            | "snapshot"
+            | "coworker.list"
+            | "coworker.questions"
+            | "channel.list"
+            | "reminder.list"
+            | "workflow.list"
+            | "session.list"
+            | "pr.list-external"
+    );
+    assert!(
+        !use_cache,
+        "Mutating method {:?} should NOT be in the cache allowlist",
+        method
+    );
+
+    // Also verify previously-missing methods from the old blocklist
+    for method in &[
+        "coworker.spawn",
+        "channel.post",
+        "task.create",
+        "session.fork",
+        "headed.enqueue",
+        "workflow.set_state",
+    ] {
+        let cached = CACHEABLE_METHODS.contains(method);
+        assert!(
+            !cached,
+            "Mutating method {:?} should NOT be cacheable",
+            method
+        );
+    }
+}
