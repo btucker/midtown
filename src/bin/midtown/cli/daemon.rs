@@ -1594,16 +1594,10 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
         // Always detach on exit so the daemon resumes headless mode.
         let _ = client.session_detach(&ctx.project_name);
 
-        let attach_status = attach_result?;
-        if !attach_status.success() {
-            if let Some(cwd) = original_cwd {
-                let _ = std::env::set_current_dir(cwd);
-            }
-            return Err(format!(
-                "Attached session exited with status: {:?}",
-                attach_status.code()
-            ));
-        }
+        // Propagate spawn failures but not non-zero exit codes — interactive
+        // CLIs commonly exit non-zero on Ctrl+C, and the session is already
+        // detached so chat should always be reachable.
+        let _attach_status = attach_result?;
 
         let chat_result = super::chat::run();
 
