@@ -65,7 +65,9 @@ function toggle() {
 }
 </script>
 
-{#if displayState === "collapsed"}
+{#if visibleToolCount === 0}
+	<!-- All tool blocks were filtered (e.g. channel posts) — render nothing -->
+{:else if displayState === "collapsed"}
 	<button
 		class="tool-run-summary"
 		onclick={toggle}
