@@ -2210,7 +2210,7 @@ impl DaemonState {
     /// First tries the headless session_manager path (lead running headless).
     /// Falls back to the headed intercom queue (lead attached interactively).
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_alive(&self.project_name).await {
+        if self.session_manager.is_nudgeable(&self.project_name).await {
             if let Err(e) = self
                 .session_manager
                 .send_message(&self.project_name, message)
