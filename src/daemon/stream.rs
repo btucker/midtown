@@ -101,7 +101,7 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
 /// tool data (`ToolBlock`s) from tool_use/tool_result pairs and attaches them
 /// to the posted channel messages for client-side rendering.
 ///
-/// - The main lead's text and tool data are posted to the main channel (`channel: None`).
+/// - The main lead's text and tool data are posted to the main channel (project name).
 /// - Each channel lead's text and tool data are posted to its respective topic channel.
 /// - Fork sessions' text and tool data are posted to their bound topic channels.
 /// - Coworker text is handled separately by [`process_agent_output()`].
@@ -115,13 +115,13 @@ pub fn process_lead_output(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Main lead → posts to main channel.
+    // Main lead → posts to main channel (project name = default channel name).
     if let Some(lead_events) = events.get(main_lead_session_name) {
         push_lead_output_effects(
             &mut effects,
             lead_events,
             main_lead_session_name.to_string(),
-            None,
+            Some(main_lead_session_name.to_string()),
         );
     }
 
