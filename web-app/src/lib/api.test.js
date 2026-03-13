@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	clearErrorCallback,
 	closeThread,
+	fetchChannelAgentsMd,
 	fetchChannels,
 	fetchHistory,
 	forkThread,
@@ -1074,5 +1075,140 @@ describe("onNextError callback leak on success path", () => {
 		});
 
 		expect(onError).toHaveBeenCalledWith("fork failed: no channel lead");
+	});
+});
+
+describe("fetchChannelAgentsMd — AbortController cancellation", () => {
+	let originalFetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it("aborts a previous in-flight request when a new one starts for the same channel", async () => {
+		const abortSignals = [];
+		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
+			abortSignals.push(opts?.signal);
+			return new Promise((resolve) =>
+				setTimeout(() => resolve({ ok: true, json: async () => ({ content: "md", source: "channel-local" }) }), 100),
+			);
+		});
+
+		// Start two concurrent fetches for the same channel
+		const first = fetchChannelAgentsMd("web");
+		const second = fetchChannelAgentsMd("web");
+
+		await Promise.allSettled([first, second]);
+
+		// The first request's signal should have been aborted
+		expect(abortSignals).toHaveLength(2);
+		expect(abortSignals[0].aborted).toBe(true);
+		expect(abortSignals[1].aborted).toBe(false);
+	});
+
+	it("does not abort requests for different channels", async () => {
+		const abortSignals = {};
+		globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+			// Extract channel from URL path like /channels/web/agents-md
+			const match = url.match(/channels\/([^/]+)\/agents-md/);
+			const ch = match ? match[1] : "unknown";
+			abortSignals[ch] = opts?.signal;
+			return Promise.resolve({ ok: true, json: async () => ({ content: "", source: "none" }) });
+		});
+
+		await Promise.all([fetchChannelAgentsMd("web"), fetchChannelAgentsMd("ops")]);
+
+		expect(abortSignals.web.aborted).toBe(false);
+		expect(abortSignals.ops.aborted).toBe(false);
+	});
+});
+
+describe("fetchChannelAgentsMd — error distinction", () => {
+	let originalFetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it("returns error: null on successful fetch", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ content: "# Instructions", source: "channel-local" }),
+		});
+
+		const result = await fetchChannelAgentsMd("web");
+
+		expect(result.content).toBe("# Instructions");
+		expect(result.source).toBe("channel-local");
+		expect(result.error).toBeNull();
+	});
+
+	it("returns error string on HTTP failure (non-200)", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 500,
+		});
+
+		const result = await fetchChannelAgentsMd("web");
+
+		expect(result.content).toBe("");
+		expect(result.source).toBe("none");
+		expect(result.error).toBeTruthy();
+		expect(typeof result.error).toBe("string");
+	});
+
+	it("returns error string on network failure", async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
+
+		const result = await fetchChannelAgentsMd("web");
+
+		expect(result.content).toBe("");
+		expect(result.source).toBe("none");
+		expect(result.error).toBeTruthy();
+		expect(typeof result.error).toBe("string");
+	});
+
+	it("returns error: null when fetch is aborted (not treated as error)", async () => {
+		let callCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
+			callCount++;
+			if (callCount === 1) {
+				// First call: hang until aborted
+				return new Promise((_resolve, reject) => {
+					if (opts?.signal?.aborted) {
+						const err = new Error("The operation was aborted.");
+						err.name = "AbortError";
+						reject(err);
+						return;
+					}
+					opts?.signal?.addEventListener("abort", () => {
+						const err = new Error("The operation was aborted.");
+						err.name = "AbortError";
+						reject(err);
+					});
+				});
+			}
+			// Second call: resolve normally
+			return Promise.resolve({ ok: true, json: async () => ({ content: "", source: "none" }) });
+		});
+
+		// Start first request, then immediately start second (which aborts first)
+		const first = fetchChannelAgentsMd("abort-test");
+		const second = fetchChannelAgentsMd("abort-test");
+
+		const [firstResult, secondResult] = await Promise.all([first, second]);
+
+		// Aborted requests should return null error (not an error state)
+		expect(firstResult.error).toBeNull();
+		// Second request should succeed normally
+		expect(secondResult.error).toBeNull();
 	});
 });

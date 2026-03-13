@@ -32,6 +32,9 @@ async function loadAgentsMd() {
 	agentsError = "";
 	agentsSuccess = "";
 	const data = await fetchChannelAgentsMd($activeChannel, agentsScope);
+	if (data.error) {
+		agentsError = data.error;
+	}
 	agentsContent = data.content;
 	agentsOriginal = data.content;
 	agentsSource = data.source;

@@ -107,6 +107,9 @@ const BULK_FETCH_KEY = Symbol("bulk-fetch");
 // channel is aborted to prevent out-of-order responses from stale requests.
 const fetchHistoryControllers = new Map();
 
+// AbortController for in-flight fetchChannelAgentsMd requests, keyed by channel name.
+const fetchAgentsMdControllers = new Map();
+
 // ── Browser history navigation ──────────────────────────────────────────────
 // Tracks whether we're currently handling a popstate event to prevent
 // circular history pushes (popstate → store change → pushState).
@@ -1344,20 +1347,38 @@ export async function selectDm(coworkerName) {
 	fetchHistory(channelName);
 }
 
-// Fetch AGENTS.md content for a channel (optionally filtered by scope)
+// Fetch AGENTS.md content for a channel (optionally filtered by scope).
+// Returns { content, source, error } where error is null on success or a
+// descriptive string on failure — distinguishing "no data" from "fetch failed".
 export async function fetchChannelAgentsMd(channel, scope = null) {
+	// Abort any in-flight fetch for the same channel to prevent stale responses
+	// when the user rapidly switches channels.
+	const prev = fetchAgentsMdControllers.get(channel);
+	if (prev) prev.abort();
+	const controller = new AbortController();
+	fetchAgentsMdControllers.set(channel, controller);
+
 	try {
 		let url = `${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`;
 		if (scope) url += `?scope=${encodeURIComponent(scope)}`;
-		const res = await fetch(url);
+		const res = await fetch(url, { signal: controller.signal });
 		if (res.ok) {
-			return await res.json();
+			const data = await res.json();
+			return { ...data, error: null };
 		}
 		console.warn("Failed to fetch AGENTS.md:", res.status);
+		return { content: "", source: "none", error: `HTTP ${res.status}` };
 	} catch (err) {
+		if (err.name === "AbortError") {
+			return { content: "", source: "none", error: null };
+		}
 		console.warn("Failed to fetch AGENTS.md:", err);
+		return { content: "", source: "none", error: err.message || "Network error" };
+	} finally {
+		if (fetchAgentsMdControllers.get(channel) === controller) {
+			fetchAgentsMdControllers.delete(channel);
+		}
 	}
-	return { content: "", source: "none" };
 }
 
 // Save AGENTS.md content for a channel (scope: "channel" or "project")
