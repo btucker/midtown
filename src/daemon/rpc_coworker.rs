@@ -106,6 +106,17 @@ pub(super) async fn handle_coworker_spawn(
         (None, p) => p.clone(),
     };
 
+    // Resolve auth_provider: if the agent definition specifies a model,
+    // infer the correct provider from the model alias (e.g., "opus" → Claude).
+    // Without this, spawn_coworker() silently normalizes the model to match
+    // the passed-in provider, defeating the agent definition's model intent.
+    // (Same pattern as PR #1988 fix for reviewer resume.)
+    let effective_provider = agent_def
+        .as_ref()
+        .and_then(|d| d.model.as_deref())
+        .and_then(super::helpers::provider_for_model_alias)
+        .unwrap_or(provider);
+
     // Build headless launch config
     let config = crate::launch::LaunchConfig {
         name,
@@ -125,13 +136,13 @@ pub(super) async fn handle_coworker_spawn(
             .unwrap_or_else(|| {
                 super::helpers::resolve_model_for_role(
                     state.paths.dir_key(),
-                    provider,
+                    effective_provider,
                     &crate::launch::CoworkerRole::Coworker,
                 )
             }),
         channel: channel.clone(),
         auth_profile_dir: None,
-        auth_provider: provider, // Resolved by spawn_coworker()
+        auth_provider: effective_provider,
         escalation_target: None,
         task_id: None,
         persisted_initial_prompt: None,

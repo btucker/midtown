@@ -274,6 +274,43 @@ fn normalize_size_alias_for_provider(
     Some(normalized.to_string())
 }
 
+/// Infer the auth provider for a model alias.
+///
+/// Returns `Some(provider)` when the alias is unambiguously associated with a
+/// single provider (e.g., "opus" → Claude, "gpt-5-codex" → Codex).
+/// Returns `None` for provider-agnostic size aliases ("small", "medium", "large")
+/// or unknown model names, in which case the caller should keep the current provider.
+///
+/// Used when an agent definition specifies a model override — the auth_provider
+/// must match the model to avoid silent normalization by `spawn_coworker()`.
+pub fn provider_for_model_alias(model: &str) -> Option<crate::auth::AuthProvider> {
+    let lower = model.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+
+    // Provider-agnostic size aliases — keep current provider
+    if matches!(lower.as_str(), "small" | "medium" | "large") {
+        return None;
+    }
+
+    // Claude/z.ai model aliases
+    if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
+        return Some(crate::auth::AuthProvider::Claude);
+    }
+
+    // Codex model aliases
+    if lower.contains("codex")
+        || lower.starts_with("gpt-")
+        || lower.starts_with("o3")
+        || lower.starts_with("o4")
+    {
+        return Some(crate::auth::AuthProvider::Codex);
+    }
+
+    None
+}
+
 /// Check if a PR is authored by the lead (repo owner).
 ///
 /// Pure function: compares the PR's author login against the pre-fetched repo owner

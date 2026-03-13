@@ -1080,6 +1080,129 @@ fn resolve_model_for_role_matches_default_when_no_config() {
 }
 
 // ---------------------------------------------------------------------------
+// provider_for_model_alias tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn provider_for_model_alias_claude_models() {
+    use crate::auth::AuthProvider;
+    assert_eq!(provider_for_model_alias("opus"), Some(AuthProvider::Claude));
+    assert_eq!(
+        provider_for_model_alias("sonnet"),
+        Some(AuthProvider::Claude)
+    );
+    assert_eq!(
+        provider_for_model_alias("haiku"),
+        Some(AuthProvider::Claude)
+    );
+    // Full model names containing the alias
+    assert_eq!(
+        provider_for_model_alias("claude-sonnet-4-6"),
+        Some(AuthProvider::Claude)
+    );
+}
+
+#[test]
+fn provider_for_model_alias_codex_models() {
+    use crate::auth::AuthProvider;
+    assert_eq!(
+        provider_for_model_alias("gpt-5-codex"),
+        Some(AuthProvider::Codex)
+    );
+    assert_eq!(
+        provider_for_model_alias("gpt-5.1-codex-mini"),
+        Some(AuthProvider::Codex)
+    );
+    assert_eq!(provider_for_model_alias("o3"), Some(AuthProvider::Codex));
+    assert_eq!(
+        provider_for_model_alias("o4-mini"),
+        Some(AuthProvider::Codex)
+    );
+}
+
+#[test]
+fn provider_for_model_alias_size_aliases_return_none() {
+    assert_eq!(provider_for_model_alias("small"), None);
+    assert_eq!(provider_for_model_alias("medium"), None);
+    assert_eq!(provider_for_model_alias("large"), None);
+}
+
+#[test]
+fn provider_for_model_alias_unknown_returns_none() {
+    assert_eq!(provider_for_model_alias(""), None);
+    assert_eq!(provider_for_model_alias("some-custom-model"), None);
+}
+
+// ---------------------------------------------------------------------------
+// Agent definition auth_provider resolution tests
+// ---------------------------------------------------------------------------
+
+/// Reproduces the bug: when an agent definition specifies `model: opus`,
+/// the LaunchConfig should have auth_provider set to Claude. Before the fix,
+/// auth_provider was left as the passed-in provider parameter regardless of
+/// the agent's model, causing spawn_coworker() to silently normalize the
+/// model to match the wrong provider.
+#[test]
+fn agent_model_override_resolves_auth_provider() {
+    use crate::auth::AuthProvider;
+
+    // Simulate the config construction from handle_coworker_spawn
+    // with an agent definition that specifies model: opus
+    let agent_model = Some("opus".to_string());
+    let passed_in_provider = AuthProvider::Codex; // wrong provider for "opus"
+
+    // The fix: resolve auth_provider from the agent's model
+    let resolved_provider = agent_model
+        .as_deref()
+        .and_then(provider_for_model_alias)
+        .unwrap_or(passed_in_provider);
+
+    assert_eq!(
+        resolved_provider,
+        AuthProvider::Claude,
+        "Agent specifying model 'opus' should resolve to Claude provider, \
+         not keep the passed-in Codex provider"
+    );
+}
+
+/// When agent definition specifies a size alias like "large", the provider
+/// should be kept as the passed-in provider (size aliases are provider-agnostic).
+#[test]
+fn agent_model_size_alias_keeps_passed_provider() {
+    use crate::auth::AuthProvider;
+
+    let agent_model = Some("large".to_string());
+    let passed_in_provider = AuthProvider::Codex;
+
+    let resolved_provider = agent_model
+        .as_deref()
+        .and_then(provider_for_model_alias)
+        .unwrap_or(passed_in_provider);
+
+    assert_eq!(
+        resolved_provider,
+        AuthProvider::Codex,
+        "Size alias 'large' should keep the passed-in provider"
+    );
+}
+
+/// When no agent model is specified, provider stays as passed-in.
+#[test]
+fn no_agent_model_keeps_passed_provider() {
+    use crate::auth::AuthProvider;
+
+    let agent_model: Option<String> = None;
+    let passed_in_provider = AuthProvider::Claude;
+
+    let resolved_provider = agent_model
+        .as_deref()
+        .and_then(provider_for_model_alias)
+        .unwrap_or(passed_in_provider);
+
+    assert_eq!(resolved_provider, AuthProvider::Claude);
+}
+
+// ---------------------------------------------------------------------------
 // Addressed-review tag tests
 // ---------------------------------------------------------------------------
 
