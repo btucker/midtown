@@ -1,6 +1,6 @@
 <script>
 import { Command as CommandPrimitive } from "bits-ui";
-import { cn } from "$lib/utils.js";
+import { cn } from "$lib/utils.ts";
 
 let { api = $bindable(null), ref = $bindable(null), value = $bindable(""), class: className, ...restProps } = $props();
 </script>

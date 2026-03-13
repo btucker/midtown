@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { computeInitialState, createAutoCollapse, DEFAULT_COLLAPSE_DELAY_MS } from "./useAutoCollapse.js";
+import { computeInitialState, createAutoCollapse, DEFAULT_COLLAPSE_DELAY_MS } from "./useAutoCollapse.ts";
 
 describe("DEFAULT_COLLAPSE_DELAY_MS", () => {
 	it("is 10 seconds", () => {

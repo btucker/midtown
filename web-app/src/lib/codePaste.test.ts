@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { detectCode, handleCodePaste, wrapInFences } from "./codePaste.js";
+import { detectCode, handleCodePaste, wrapInFences } from "./codePaste.ts";
 
 // ---------------------------------------------------------------------------
 // detectCode

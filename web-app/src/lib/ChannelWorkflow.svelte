@@ -1,7 +1,7 @@
 <script>
-import { getApiBase } from "./api.js";
+import { getApiBase } from "./api.ts";
 import MermaidDiagram from "./MermaidDiagram.svelte";
-import { activeChannel, activeProject } from "./store.js";
+import { activeChannel, activeProject } from "./store.ts";
 
 let data = $state(null);
 let loading = $state(false);

@@ -4,8 +4,8 @@ import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
 import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
-import { closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.js";
-import { openImageLightbox } from "./biggerPicture.js";
+import { closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
+import { openImageLightbox } from "./biggerPicture.ts";
 import {
 	collectToolBlocks,
 	findPr as findPrUtil,
@@ -13,14 +13,14 @@ import {
 	getPrUrl as getPrUrlUtil,
 	hasInProgressToolBlocks,
 	resolveMessageTapAction,
-} from "./channelUtils.js";
-import { handleCodePaste } from "./codePaste.js";
-import { getCommandNames, parseCommand } from "./commands.js";
+} from "./channelUtils.ts";
+import { handleCodePaste } from "./codePaste.ts";
+import { getCommandNames, parseCommand } from "./commands.ts";
 import DayDivider from "./DayDivider.svelte";
-import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
+import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.ts";
 import MessageRow from "./MessageRow.svelte";
-import { AVENUE_COLORS, dateChanged, formatTime, getSenderColor, timeChanged } from "./messageUtils.js";
-import { clearMobileTextarea } from "./mobileInput.js";
+import { AVENUE_COLORS, dateChanged, formatTime, getSenderColor, timeChanged } from "./messageUtils.ts";
+import { clearMobileTextarea } from "./mobileInput.ts";
 import {
 	activeChannel,
 	activeProject,
@@ -37,9 +37,9 @@ import {
 	repoStatuses,
 	threadData,
 	threadUnreadCounts,
-} from "./store.js";
+} from "./store.ts";
 import ToolRunSummary from "./ToolRunSummary.svelte";
-import { groupToolRuns } from "./toolRunGrouping.js";
+import { groupToolRuns } from "./toolRunGrouping.ts";
 
 // Windowed rendering: only render a slice of messages near the viewport.
 // Messages outside this window are not mounted in the DOM.

@@ -22,7 +22,7 @@ self.addEventListener("message", (event) => {
 self.addEventListener("push", (event) => {
 	if (!event.data) return;
 
-	let data;
+	let data: { title?: string; body?: string };
 	try {
 		data = event.data.json();
 	} catch {

@@ -1,9 +1,9 @@
 <script>
 import XIcon from "@lucide/svelte/icons/x";
 import { Dialog as DialogPrimitive } from "bits-ui";
-import { cn } from "$lib/utils.js";
+import { cn } from "$lib/utils.ts";
 import DialogPortal from "./dialog-portal.svelte";
-import * as Dialog from "./index.js";
+import * as Dialog from "./index.ts";
 
 let { ref = $bindable(null), class: className, portalProps, children, showCloseButton = true, ...restProps } = $props();
 </script>

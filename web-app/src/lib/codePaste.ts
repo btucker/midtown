@@ -1,6 +1,6 @@
 // Smart code paste detection and markdown fence wrapping.
 
-import { hljs } from "./highlighting.js";
+import { hljs } from "./highlighting.ts";
 
 /** Keywords that strongly suggest the text is code. */
 const CODE_KEYWORDS =

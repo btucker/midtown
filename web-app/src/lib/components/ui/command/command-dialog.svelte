@@ -1,5 +1,5 @@
 <script>
-import * as Dialog from "$lib/components/ui/dialog/index.js";
+import * as Dialog from "$lib/components/ui/dialog/index.ts";
 import Command from "./command.svelte";
 
 let {

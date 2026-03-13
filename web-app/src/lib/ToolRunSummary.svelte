@@ -1,8 +1,8 @@
 <script>
 import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
-import { filterChannelPosts } from "./toolRunGrouping.js";
-import { createAutoCollapse } from "./useAutoCollapse.js";
+import { filterChannelPosts } from "./toolRunGrouping.ts";
+import { createAutoCollapse } from "./useAutoCollapse.ts";
 
 const TOOL_RUN_DELAY_MS = 10_000;
 

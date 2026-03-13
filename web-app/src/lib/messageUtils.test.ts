@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { getForkOwnerColor } from "./avenue-colors.js";
-import { AVENUE_COLORS, dateChanged, getPermalinkUrl, getSenderColor } from "./messageUtils.js";
+import { getForkOwnerColor } from "./avenue-colors.ts";
+import { AVENUE_COLORS, dateChanged, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";
 
 describe("getSenderColor", () => {
 	it("returns gold for sender matching channel name (channel lead rule)", () => {

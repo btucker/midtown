@@ -1,5 +1,5 @@
 <script>
-import { repoStatus, repoStatuses } from "./store.js";
+import { repoStatus, repoStatuses } from "./store.ts";
 
 let isMultiRepo = $derived($repoStatuses.length > 1);
 

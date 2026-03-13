@@ -7,7 +7,7 @@
  *   oldString — the text that was replaced
  *   newString — the replacement text
  */
-import { getLanguage, highlightLine } from "./highlighting.js";
+import { getLanguage, highlightLine } from "./highlighting.ts";
 
 let { filePath, oldString, newString, bare = false } = $props();
 let expanded = $state(false);

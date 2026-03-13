@@ -1,6 +1,6 @@
 <script>
-import { selectDm, sendAnswer } from "./api.js";
-import { pendingQuestions } from "./store.js";
+import { selectDm, sendAnswer } from "./api.ts";
+import { pendingQuestions } from "./store.ts";
 
 let answers = {};
 

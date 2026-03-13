@@ -1,7 +1,7 @@
 <script>
 import { onDestroy, onMount } from "svelte";
-import { fetchStatus, selectDm } from "./api.js";
-import { coworkers, daemonStatus } from "./store.js";
+import { fetchStatus, selectDm } from "./api.ts";
+import { coworkers, daemonStatus } from "./store.ts";
 
 // Braille spinner animation
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

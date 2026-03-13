@@ -5,11 +5,11 @@ import Feather from "@lucide/svelte/icons/feather";
 import Github from "@lucide/svelte/icons/github";
 import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 import Search from "@lucide/svelte/icons/search";
-import { openTaskThread, selectDm } from "./api.js";
-import { getPrUrl as getPrUrlUtil } from "./channelUtils.js";
-import { renderContent } from "./markdown.js";
-import { getSenderColor } from "./messageUtils.js";
-import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.js";
+import { openTaskThread, selectDm } from "./api.ts";
+import { getPrUrl as getPrUrlUtil } from "./channelUtils.ts";
+import { renderContent } from "./markdown.ts";
+import { getSenderColor } from "./messageUtils.ts";
+import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
 
 let { task, cw = null, reviewer = null, reviewPosted = false, onclick = null, variant = "row" } = $props();
 

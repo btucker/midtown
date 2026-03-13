@@ -14,7 +14,7 @@ import {
 	replaceNavState,
 	setupHistoryNavigation,
 	switchProject,
-} from "$lib/api.js";
+} from "$lib/api.ts";
 import CelebrationEffects from "$lib/CelebrationEffects.svelte";
 import Channel from "$lib/Channel.svelte";
 import ChannelHeader from "$lib/ChannelHeader.svelte";
@@ -40,7 +40,7 @@ import {
 	pushSupported,
 	subscribePush,
 	unsubscribePush,
-} from "$lib/push.js";
+} from "$lib/push.ts";
 import SearchPalette from "$lib/SearchPalette.svelte";
 import Status from "$lib/Status.svelte";
 import SwipeGestures from "$lib/SwipeGestures.svelte";
@@ -56,9 +56,9 @@ import {
 	messages,
 	projects,
 	threadData,
-} from "$lib/store.js";
+} from "$lib/store.ts";
 import ThreadPanel from "$lib/ThreadPanel.svelte";
-import { theme, toggleTheme } from "$lib/theme.js";
+import { theme, toggleTheme } from "$lib/theme.ts";
 
 $effect(() => {
 	if ($theme === "dark") {

@@ -5,7 +5,7 @@ import {
 	groupToolRuns,
 	isChannelPostBlock,
 	isToolOnly,
-} from "./toolRunGrouping.js";
+} from "./toolRunGrouping.ts";
 
 describe("isToolOnly", () => {
 	it("returns true for empty content with tool_data", () => {

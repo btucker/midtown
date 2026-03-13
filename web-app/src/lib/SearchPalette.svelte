@@ -9,9 +9,9 @@ import {
 	CommandItem,
 	CommandList,
 } from "$lib/components/ui/command";
-import { fetchHistory, openThread, searchMessages, selectDm } from "./api.js";
-import { getSenderColor } from "./messageUtils.js";
-import { activeChannel, channels, channelTargetMsgId, deepLinkMsgId, messagesByChannel } from "./store.js";
+import { fetchHistory, openThread, searchMessages, selectDm } from "./api.ts";
+import { getSenderColor } from "./messageUtils.ts";
+import { activeChannel, channels, channelTargetMsgId, deepLinkMsgId, messagesByChannel } from "./store.ts";
 
 let { open = $bindable(false) } = $props();
 

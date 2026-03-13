@@ -3,7 +3,7 @@
 
 import { marked, Renderer } from "marked";
 import { markedHighlight } from "marked-highlight";
-import { hljs } from "./highlighting.js";
+import { hljs } from "./highlighting.ts";
 
 // Configure marked with syntax highlighting via marked-highlight
 marked.use(
@@ -39,7 +39,7 @@ export function parseSegments(text) {
 	const segments = [];
 	const regex = /```mermaid\s*\n([\s\S]*?)```/g;
 	let lastIndex = 0;
-	let match;
+	let match: RegExpExecArray | null;
 
 	while ((match = regex.exec(text)) !== null) {
 		if (match.index > lastIndex) {

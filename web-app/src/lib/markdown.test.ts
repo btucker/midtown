@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clearRenderCache, hasMermaid, parseSegments, renderContent } from "./markdown.js";
+import { clearRenderCache, hasMermaid, parseSegments, renderContent } from "./markdown.ts";
 
 describe("renderContent", () => {
 	// XSS protection

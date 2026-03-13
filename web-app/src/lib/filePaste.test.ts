@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { updatePreviewUrl } from "./filePaste.js";
+import { updatePreviewUrl } from "./filePaste.ts";
 
 describe("updatePreviewUrl", () => {
-	let mockCreate;
-	let mockRevoke;
+	let mockCreate: ReturnType<typeof vi.fn>;
+	let mockRevoke: ReturnType<typeof vi.fn>;
 
 	beforeEach(() => {
 		let counter = 0;

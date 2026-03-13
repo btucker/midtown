@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getCommandNames, parseCommand } from "./commands.js";
+import { getCommandNames, parseCommand } from "./commands.ts";
 
 // Mock api.js and store.js
 vi.mock("./api.js", () => ({

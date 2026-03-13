@@ -1,7 +1,7 @@
 <script>
 import { onDestroy } from "svelte";
-import { AVENUE_COLORS } from "./avenue-colors.js";
-import { daemonStatus, kanbanData } from "./store.js";
+import { AVENUE_COLORS } from "./avenue-colors.ts";
+import { daemonStatus, kanbanData } from "./store.ts";
 
 const COLOR_PALETTE = [
 	"var(--color-primary)",

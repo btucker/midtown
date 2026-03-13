@@ -15,7 +15,7 @@ import {
 	getPrUrl,
 	hasInProgressToolBlocks,
 	resolveMessageTapAction,
-} from "./channelUtils.js";
+} from "./channelUtils.ts";
 
 describe("getChannelTaskCount", () => {
 	const mockKanban = {

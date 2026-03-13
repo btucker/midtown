@@ -9,7 +9,7 @@
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  */
-import { highlightBlock } from "./highlighting.js";
+import { highlightBlock } from "./highlighting.ts";
 
 let { block } = $props();
 

@@ -1,8 +1,8 @@
 <script>
 import { onMount } from "svelte";
-import { fetchAllAuthProfiles, startAuthLogin, switchAuthProfile } from "./api.js";
-import { authProfilesByProvider, authSwitching, usageData } from "./store.js";
-import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.js";
+import { fetchAllAuthProfiles, startAuthLogin, switchAuthProfile } from "./api.ts";
+import { authProfilesByProvider, authSwitching, usageData } from "./store.ts";
+import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 
 let { footerLeft } = $props();
 let listExpanded = $state(false);

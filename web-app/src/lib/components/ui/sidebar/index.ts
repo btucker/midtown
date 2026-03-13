@@ -1,4 +1,4 @@
-import { useSidebar } from "./context.svelte.js";
+import { useSidebar } from "./context.svelte.ts";
 import Root from "./sidebar.svelte";
 import Content from "./sidebar-content.svelte";
 import Footer from "./sidebar-footer.svelte";

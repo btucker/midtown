@@ -1,7 +1,7 @@
 <script>
 import SearchIcon from "@lucide/svelte/icons/search";
 import { Command as CommandPrimitive } from "bits-ui";
-import { cn } from "$lib/utils.js";
+import { cn } from "$lib/utils.ts";
 
 let { ref = $bindable(null), class: className, value = $bindable(""), ...restProps } = $props();
 </script>

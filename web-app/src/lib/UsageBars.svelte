@@ -1,6 +1,6 @@
 <script>
-import { usageData } from "./store.js";
-import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.js";
+import { usageData } from "./store.ts";
+import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 
 let expandedAccount = $state(null);
 

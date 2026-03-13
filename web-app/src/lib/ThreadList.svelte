@@ -1,9 +1,9 @@
 <script>
 import X from "@lucide/svelte/icons/x";
-import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
-import { dismissThread, openThread } from "./api.js";
-import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.js";
-import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.js";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
+import { dismissThread, openThread } from "./api.ts";
+import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.ts";
+import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.ts";
 
 const sidebar = useSidebar();
 

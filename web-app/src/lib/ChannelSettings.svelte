@@ -1,7 +1,7 @@
 <script>
-import { fetchChannelAgentsMd, fetchChannelDirectory, saveChannelAgentsMd, saveChannelDirectory } from "./api.js";
+import { fetchChannelAgentsMd, fetchChannelDirectory, saveChannelAgentsMd, saveChannelDirectory } from "./api.ts";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
-import { activeChannel, channelSettings } from "./store.js";
+import { activeChannel, channelSettings } from "./store.ts";
 
 let inlineToolCalls = $derived($channelSettings[$activeChannel]?.inlineToolCalls ?? true);
 

@@ -1,5 +1,5 @@
 import { writable } from "svelte/store";
-import { getApiBase } from "./api.js";
+import { getApiBase } from "./api.ts";
 
 // Push notification state
 export const pushSupported = writable(false);

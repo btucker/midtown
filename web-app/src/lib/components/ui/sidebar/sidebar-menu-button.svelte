@@ -23,10 +23,10 @@ export const sidebarMenuButtonVariants = tv({
 </script>
 
 <script>
-	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-	import { cn } from "$lib/utils.js";
+	import * as Tooltip from "$lib/components/ui/tooltip/index.ts";
+	import { cn } from "$lib/utils.ts";
 	import { mergeProps } from "bits-ui";
-	import { useSidebar } from "./context.svelte.js";
+	import { useSidebar } from "./context.svelte.ts";
 
 	let {
 		ref = $bindable(null),

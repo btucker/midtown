@@ -13,7 +13,7 @@ import {
 	selectDm,
 	switchProject,
 	unforkThread,
-} from "./api.js";
+} from "./api.ts";
 import {
 	activeChannel,
 	activeProject,
@@ -24,10 +24,10 @@ import {
 	threadUnreadCounts,
 	trackedThreads,
 	userSenderName,
-} from "./store.js";
+} from "./store.ts";
 
 describe("fetchHistory", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -272,7 +272,7 @@ describe("fetchHistory", () => {
 });
 
 describe("fetchHistory — AbortController cancellation", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -493,7 +493,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 });
 
 describe("fetchChannels — is_dm field", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -538,8 +538,8 @@ describe("fetchChannels — is_dm field", () => {
 });
 
 describe("selectDm", () => {
-	let originalFetch;
-	let originalHistory;
+	let originalFetch: typeof globalThis.fetch;
+	let originalHistory: typeof globalThis.history;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -652,7 +652,7 @@ describe("selectDm", () => {
 });
 
 describe("fetchChannels — is_dm name-prefix fallback", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -713,7 +713,7 @@ describe("switchProject — initial channel state uses project name, not hardcod
 });
 
 describe("fetchHistory — channelless messages use activeProject, not hardcoded midtown", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -764,7 +764,7 @@ describe("handleUpdate channel_message — channelless messages route to activeP
 });
 
 describe("pushNavState — URL construction", () => {
-	let originalHistory;
+	let originalHistory: typeof globalThis.history;
 
 	beforeEach(() => {
 		originalHistory = globalThis.history;
@@ -802,7 +802,7 @@ describe("pushNavState — URL construction", () => {
 });
 
 describe("closeThread — history push behavior", () => {
-	let originalHistory;
+	let originalHistory: typeof globalThis.history;
 
 	beforeEach(() => {
 		originalHistory = globalThis.history;
@@ -1079,7 +1079,7 @@ describe("onNextError callback leak on success path", () => {
 });
 
 describe("fetchChannelAgentsMd — AbortController cancellation", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
@@ -1128,7 +1128,7 @@ describe("fetchChannelAgentsMd — AbortController cancellation", () => {
 });
 
 describe("fetchChannelAgentsMd — error distinction", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;

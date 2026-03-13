@@ -3,7 +3,7 @@ import ArchiveIcon from "@lucide/svelte/icons/archive";
 import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";
 import { SvelteSet } from "svelte/reactivity";
-import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import {
 	closeThread,
 	dismissThread,
@@ -12,7 +12,7 @@ import {
 	getApiBase,
 	openThread,
 	pushNavState,
-} from "./api.js";
+} from "./api.ts";
 import {
 	computeExpandedAfterChannelNameClick,
 	computeVisibleDmChannels,
@@ -25,8 +25,8 @@ import {
 	getChannelThreads,
 	getCompletedTaskThreadIds,
 	getTaskThreadIds,
-} from "./channelUtils.js";
-import { getSenderColor } from "./messageUtils.js";
+} from "./channelUtils.ts";
+import { getSenderColor } from "./messageUtils.ts";
 import {
 	activeChannel,
 	activeProject,
@@ -39,7 +39,7 @@ import {
 	threadData,
 	threadUnreadCounts,
 	trackedThreads,
-} from "./store.js";
+} from "./store.ts";
 import TaskList from "./TaskList.svelte";
 import ThreadList from "./ThreadList.svelte";
 

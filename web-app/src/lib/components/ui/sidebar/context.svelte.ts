@@ -1,11 +1,11 @@
 import { getContext, setContext } from "svelte";
-import { IsMobile } from "$lib/hooks/is-mobile.svelte.js";
+import { IsMobile } from "$lib/hooks/is-mobile.svelte.ts";
 import {
 	SIDEBAR_KEYBOARD_SHORTCUT,
 	SIDEBAR_MAX_WIDTH,
 	SIDEBAR_MIN_WIDTH,
 	SIDEBAR_WIDTH_STORAGE_KEY,
-} from "./constants.js";
+} from "./constants.ts";
 
 class SidebarState {
 	props;

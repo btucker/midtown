@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
-import { archiveChannel, fetchChannels, unarchiveChannel } from "./api.js";
-import { activeChannel, showArchivedChannels } from "./store.js";
+import { archiveChannel, fetchChannels, unarchiveChannel } from "./api.ts";
+import { activeChannel, showArchivedChannels } from "./store.ts";
 
 /**
  * Registry of slash commands available in the web UI.

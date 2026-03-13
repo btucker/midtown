@@ -1,6 +1,6 @@
 // Shared paste/upload logic used by Channel.svelte and ThreadPanel.svelte.
 
-import { sendMessage, uploadFile } from "./api.js";
+import { sendMessage, uploadFile } from "./api.ts";
 
 /**
  * Handle a paste event — extract a file (image or other) from the clipboard.

@@ -1,7 +1,7 @@
 <script>
-import { calculateFitToWidthScale, getBiggerPicture } from "./biggerPicture.js";
-import { getSelkie } from "./selkie.js";
-import { theme } from "./theme.js";
+import { calculateFitToWidthScale, getBiggerPicture } from "./biggerPicture.ts";
+import { getSelkie } from "./selkie.ts";
+import { theme } from "./theme.ts";
 
 let { code } = $props();
 let svgHtml = $state("");

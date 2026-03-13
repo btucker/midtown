@@ -28,8 +28,8 @@ import {
 	trackedThreads,
 	usageData,
 	userSenderName,
-} from "./store.js";
-import { isToolOnly } from "./toolRunGrouping.js";
+} from "./store.ts";
+import { isToolOnly } from "./toolRunGrouping.ts";
 
 // Strip markdown from the first non-empty line of message content.
 function extractPlainText(content) {

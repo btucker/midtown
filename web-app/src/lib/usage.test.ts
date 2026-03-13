@@ -1,11 +1,11 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fetchUsage } from "./api.js";
-import { usageData } from "./store.js";
-import { estimateTimeToFull, formatDurationEstimate } from "./usage-utils.js";
+import { fetchUsage } from "./api.ts";
+import { usageData } from "./store.ts";
+import { estimateTimeToFull, formatDurationEstimate } from "./usage-utils.ts";
 
 describe("fetchUsage", () => {
-	let originalFetch;
+	let originalFetch: typeof globalThis.fetch;
 
 	beforeEach(() => {
 		originalFetch = globalThis.fetch;
