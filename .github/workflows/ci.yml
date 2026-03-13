@@ -155,7 +155,7 @@ jobs:
           cache-dependency-path: web-app/package-lock.json
 
       - name: Install dependencies
-        run: cd web-app && npm ci || (rm -rf node_modules && npm install)
+        run: cd web-app && npm ci
 
       - name: Lint
         run: cd web-app && npx biome check .
