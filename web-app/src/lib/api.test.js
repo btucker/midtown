@@ -1176,7 +1176,7 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 		expect(typeof result.error).toBe("string");
 	});
 
-	it("returns error: null when fetch is aborted (not treated as error)", async () => {
+	it("returns null when fetch is aborted so caller can bail out", async () => {
 		let callCount = 0;
 		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
 			callCount++;
@@ -1206,9 +1206,10 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 
 		const [firstResult, secondResult] = await Promise.all([first, second]);
 
-		// Aborted requests should return null error (not an error state)
-		expect(firstResult.error).toBeNull();
+		// Aborted requests return null so the caller can bail out
+		expect(firstResult).toBeNull();
 		// Second request should succeed normally
+		expect(secondResult).not.toBeNull();
 		expect(secondResult.error).toBeNull();
 	});
 });

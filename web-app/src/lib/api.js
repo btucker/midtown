@@ -1370,7 +1370,7 @@ export async function fetchChannelAgentsMd(channel, scope = null) {
 		return { content: "", source: "none", error: `HTTP ${res.status}` };
 	} catch (err) {
 		if (err.name === "AbortError") {
-			return { content: "", source: "none", error: null };
+			return null;
 		}
 		console.warn("Failed to fetch AGENTS.md:", err);
 		return { content: "", source: "none", error: err.message || "Network error" };
