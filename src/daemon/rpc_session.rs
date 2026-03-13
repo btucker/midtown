@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
-use crate::message::Message;
+use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
 use crate::web;
 
@@ -1494,6 +1494,49 @@ fn format_blockquote(content: &str) -> String {
         .join("\n")
 }
 
+/// Build a concise summary of recent channel activity for fork context.
+///
+/// Returns a formatted summary of the last ~30 top-level messages (excluding
+/// thread replies, auto-output, and nudges) to give the fork situational
+/// awareness of what's happening in the channel.
+async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Option<String> {
+    let messages = match channel.read_last_n_messages_async(30).await {
+        Ok((msgs, _)) => msgs,
+        Err(e) => {
+            debug!("Failed to read channel messages for fork summary: {}", e);
+            return None;
+        }
+    };
+
+    let lines: Vec<String> = messages
+        .iter()
+        .filter(|m| m.thread_parent_id.is_none())
+        .filter(|m| !m.auto_output)
+        .filter(|m| m.message_type != MessageType::Nudge)
+        .map(|m| {
+            let time = m.timestamp.format("%H:%M");
+            let content = if m.content.chars().count() > 150 {
+                let truncated: String = m.content.chars().take(150).collect();
+                format!("{truncated}...")
+            } else {
+                m.content.clone()
+            };
+            // Collapse multiline content to single line for summary brevity.
+            let content = content.replace('\n', " ");
+            format!("[{time}] {}: {content}", m.from)
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "## Recent channel activity\n\n{}",
+        lines.join("\n")
+    ))
+}
+
 /// Handle session.fork RPC method.
 ///
 /// Forks the calling session into a new independent session bound to a thread.
@@ -1510,11 +1553,13 @@ fn format_blockquote(content: &str) -> String {
 ///   1. Explicit `initial_message` from the caller (always preferred).
 ///   2. Parent message content looked up by `thread_parent_id` from the
 ///      channel history. For channel leads, this is combined with
-///      `fork_initial_framing`; for non-channel-lead callers, the parent
-///      message is wrapped as "The following message needs investigation".
-///   3. Bare `fork_initial_framing` for channel leads when no parent
-///      message is found. Non-channel-lead callers get no nudge in this
-///      case (the framing text assumes a channel-lead role).
+///      `fork_initial_framing` and a channel summary; for non-channel-lead
+///      callers, the parent message is wrapped as "The following message
+///      needs investigation" with a channel summary appended.
+///   3. Bare `fork_initial_framing` (with channel summary) for channel
+///      leads when no parent message is found. Non-channel-lead callers
+///      get no nudge in this case (the framing text assumes a
+///      channel-lead role).
 /// - Broadcasts `ThreadOwnership` to web clients so the "Dedicated session"
 ///   indicator appears in the UI regardless of whether the fork was created
 ///   via CLI or web UI.
@@ -1594,36 +1639,39 @@ pub(super) async fn handle_session_fork(
                     .map(|r| r.coworker_type == "channel-lead")
                     .unwrap_or(false)
             };
-            let nudge_message = if let Some(msg) = initial_message {
-                Some(msg.to_string())
+            // (persistent_prompt, nudge_message): persistent is crash-recovery-safe
+            // (no volatile channel summary), nudge is the full message sent to the fork.
+            let (persistent_prompt, nudge_message) = if let Some(msg) = initial_message {
+                let s = msg.to_string();
+                (Some(s.clone()), Some(s))
             } else {
-                // Look up the parent message content as fallback context.
-                let parent_content = if let Some(ref ch) = fork_channel {
+                // Open channel once for both parent message lookup and summary.
+                let channel_obj = fork_channel.as_ref().and_then(|ch| {
                     let base_dir = state.paths.base_dir().to_path_buf();
                     match crate::channel::Channel::new(&base_dir, ch) {
-                        Ok(channel) => {
-                            match channel.find_message_by_id_async(thread_parent_id).await {
-                                Ok(Some(msg)) => Some((msg.from, msg.content)),
-                                Ok(None) => {
-                                    debug!(
-                                        "Parent message {} not found in channel {}",
-                                        thread_parent_id, ch
-                                    );
-                                    None
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to look up parent message {}: {}",
-                                        thread_parent_id, e
-                                    );
-                                    None
-                                }
-                            }
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            warn!("Failed to open channel {:?} for fork summary: {}", ch, e);
+                            None
+                        }
+                    }
+                });
+
+                let parent_content = if let Some(ref channel) = channel_obj {
+                    match channel.find_message_by_id_async(thread_parent_id).await {
+                        Ok(Some(msg)) => Some((msg.from, msg.content)),
+                        Ok(None) => {
+                            debug!(
+                                "Parent message {} not found in channel {}",
+                                thread_parent_id,
+                                fork_channel.as_deref().unwrap_or("?")
+                            );
+                            None
                         }
                         Err(e) => {
                             warn!(
-                                "Failed to open channel {} for parent message lookup: {}",
-                                ch, e
+                                "Failed to look up parent message {}: {}",
+                                thread_parent_id, e
                             );
                             None
                         }
@@ -1632,39 +1680,68 @@ pub(super) async fn handle_session_fork(
                     None
                 };
 
-                match (is_channel_lead, parent_content) {
+                let channel_summary = if let Some(ref channel) = channel_obj {
+                    build_channel_summary_for_fork(channel).await
+                } else {
+                    None
+                };
+
+                // Build the persistent (crash-recovery-safe) prompt and the
+                // full nudge (which includes the volatile channel summary).
+                // Only the persistent portion is saved to initial_prompt.
+                let (persistent_prompt, nudge_prompt) = match (is_channel_lead, parent_content) {
                     // Channel lead + parent message: framing + quoted message
                     (true, Some((from, content))) => {
                         let framing = fork_channel
                             .as_ref()
                             .map(|ch| super::rpc_channel::fork_initial_framing(ch))
                             .unwrap_or_default();
-                        Some(format!(
-                            "{framing}\n\n{from} wrote:\n{}",
-                            format_blockquote(&content)
-                        ))
+                        let quoted = format!("{from} wrote:\n{}", format_blockquote(&content));
+                        let persistent = format!("{framing}\n\n{quoted}");
+                        let full = if let Some(ref summary) = channel_summary {
+                            format!("{framing}\n\n{summary}\n\n{quoted}")
+                        } else {
+                            persistent.clone()
+                        };
+                        (Some(persistent), Some(full))
                     }
-                    // Non-channel-lead + parent message: just the message context
-                    (false, Some((from, content))) => Some(format!(
-                        "The following message needs investigation:\n\n\
-                             {from} wrote:\n{}",
-                        format_blockquote(&content)
-                    )),
-                    // Channel lead, no parent found: bare framing
-                    (true, None) => fork_channel
-                        .as_ref()
-                        .map(|ch| super::rpc_channel::fork_initial_framing(ch)),
+                    // Non-channel-lead + parent message: investigation context
+                    (false, Some((from, content))) => {
+                        let header = "The following message needs investigation:";
+                        let quoted = format!("{from} wrote:\n{}", format_blockquote(&content));
+                        let persistent = format!("{header}\n\n{quoted}");
+                        let full = if let Some(ref summary) = channel_summary {
+                            format!("{header}\n\n{summary}\n\n{quoted}")
+                        } else {
+                            persistent.clone()
+                        };
+                        (Some(persistent), Some(full))
+                    }
+                    // Channel lead, no parent found: framing + optional summary
+                    (true, None) => {
+                        let framing = fork_channel
+                            .as_ref()
+                            .map(|ch| super::rpc_channel::fork_initial_framing(ch));
+                        let full = match (&framing, &channel_summary) {
+                            (Some(f), Some(s)) => Some(format!("{f}\n\n{s}")),
+                            _ => framing.clone(),
+                        };
+                        (framing, full)
+                    }
                     // Non-channel-lead, no parent: no nudge
-                    (false, None) => None,
-                }
+                    (false, None) => (None, None),
+                };
+                // Return (persistent, full) — caller persists `persistent` and
+                // sends `full` as the nudge.
+                (persistent_prompt, nudge_prompt)
             };
             if let Some(message) = nudge_message {
-                // Persist the nudge message as initial_prompt so crash recovery
-                // can resend it instead of generic "crash recovery" framing.
-                {
+                // Persist only the static portion (no channel summary) so crash
+                // recovery doesn't replay stale time-stamped activity data.
+                if let Some(ref persistent) = persistent_prompt {
                     let mut ps = state.persistent_state.lock().await;
                     if let Some(record) = ps.sessions.get_mut(&sid) {
-                        record.initial_prompt = Some(message.clone());
+                        record.initial_prompt = Some(persistent.clone());
                     }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!("session.fork: failed to persist initial_prompt: {}", e);
@@ -1800,14 +1877,31 @@ pub(super) async fn handle_session_fork_thread(
     .await
     {
         Ok((sid, is_existing, _)) => {
-            // Send framing nudge to fresh forks
+            // Send framing + channel summary nudge to fresh forks
             if !is_existing {
                 let framing = super::rpc_channel::fork_initial_framing(channel);
-                // Persist the framing as initial_prompt for crash recovery
+
+                // Build channel summary for situational awareness
+                let channel_summary = {
+                    let base_dir = state.paths.base_dir().to_path_buf();
+                    match crate::channel::Channel::new(&base_dir, channel) {
+                        Ok(ch) => build_channel_summary_for_fork(&ch).await,
+                        Err(_) => None,
+                    }
+                };
+
+                // Full nudge includes volatile summary; persist only static framing
+                let full_nudge = if let Some(ref summary) = channel_summary {
+                    format!("{framing}\n\n{summary}")
+                } else {
+                    framing.clone()
+                };
+
+                // Persist only the static framing for crash recovery
                 {
                     let mut ps = state.persistent_state.lock().await;
                     if let Some(record) = ps.sessions.get_mut(&sid) {
-                        record.initial_prompt = Some(framing.clone());
+                        record.initial_prompt = Some(framing);
                     }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
@@ -1818,7 +1912,9 @@ pub(super) async fn handle_session_fork_thread(
                 }
                 let framing_effect = crate::daemon::effects::Effect::NudgeSession {
                     session_id: sid.clone(),
-                    reason: crate::daemon::wake_reason::WakeReason::Nudge { message: framing },
+                    reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                        message: full_nudge,
+                    },
                 };
                 crate::daemon::effects::execute_effects(vec![framing_effect], state).await;
             }
