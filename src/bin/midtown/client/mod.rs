@@ -714,6 +714,17 @@ impl DaemonClient {
         )
     }
 
+    pub fn workflow_set_lead_driven(
+        &self,
+        channel: &str,
+        enabled: bool,
+    ) -> Result<Response, String> {
+        self.send(
+            "workflow.set-lead-driven",
+            Some(serde_json::json!({ "channel": channel, "enabled": enabled })),
+        )
+    }
+
     pub fn workflow_set_state(
         &self,
         channel: &str,

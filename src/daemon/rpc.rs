@@ -627,6 +627,15 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "workflow.list" => super::rpc_workflow::handle_workflow_list(request.id, state).await,
 
+        "workflow.set-lead-driven" => {
+            let channel = require_str!(params, "channel", request.id);
+            let enabled = params.bool_or("enabled", true);
+            super::rpc_workflow::handle_workflow_set_lead_driven(
+                request.id, channel, enabled, state,
+            )
+            .await
+        }
+
         // ---- Workflow state ----
         "workflow.get_state" => {
             let channel = require_str!(params, "channel", request.id);

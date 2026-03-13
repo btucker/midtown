@@ -236,6 +236,52 @@ pub(super) async fn handle_workflow_list(id: RequestId, daemon_state: &DaemonSta
     )
 }
 
+/// Handle `workflow.set-lead-driven` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+/// - `enabled` (required): boolean — true to enable lead-driven mode, false to disable
+///
+/// When enabled, inserts the channel into `lead_driven_channels`. When disabled,
+/// removes it. Lead-driven mode causes the daemon to relay workflow events as
+/// human-readable @mentions to the channel lead instead of executing its built-in
+/// state machine.
+pub(super) async fn handle_workflow_set_lead_driven(
+    id: RequestId,
+    channel: &str,
+    enabled: bool,
+    daemon_state: &DaemonState,
+) -> Response {
+    let mut ps = daemon_state.persistent_state.lock().await;
+
+    if enabled {
+        ps.lead_driven_channels.insert(channel.to_string());
+    } else {
+        ps.lead_driven_channels.remove(channel);
+    }
+
+    if let Err(e) = ps.save_for_repo(daemon_state.paths.dir_key()) {
+        error!(
+            channel = %channel,
+            enabled = %enabled,
+            "workflow.set-lead-driven: failed to save daemon state: {}",
+            e
+        );
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("failed to persist state: {e}")),
+        );
+    }
+
+    debug!(
+        channel = %channel,
+        enabled = %enabled,
+        "workflow.set-lead-driven: updated"
+    );
+
+    Response::success(id, serde_json::json!({ "ok": true, "enabled": enabled }))
+}
+
 #[path = "rpc_workflow_tests.rs"]
 #[cfg(test)]
 mod tests;

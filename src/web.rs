@@ -2126,6 +2126,7 @@ async fn api_channel_workflow(
         crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
 
     let assigned_workflow = persistent_state.channel_workflows.get(channel).cloned();
+    let lead_driven = persistent_state.lead_driven_channels.contains(channel);
 
     // Discover available workflows
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
@@ -2169,6 +2170,7 @@ async fn api_channel_workflow(
         "available_workflows": available_workflows,
         "state": workflow_state,
         "mermaid": mermaid,
+        "lead_driven": lead_driven,
     })))
 }
 
@@ -2262,6 +2264,8 @@ fn generate_mermaid_from_transitions(
 #[derive(Debug, Deserialize)]
 struct SetWorkflowRequest {
     workflow: Option<String>,
+    /// Enable or disable lead-driven mode for this channel.
+    lead_driven: Option<bool>,
 }
 
 /// Assign or unassign a workflow for a channel.
@@ -2288,6 +2292,7 @@ async fn api_set_channel_workflow(
 
     let dir_key = state.config.dir_key.clone();
     let workflow = body.workflow.clone();
+    let lead_driven = body.lead_driven;
     let ch = channel.clone();
 
     // Route through daemon RPC to use the in-memory persistent state mutex
@@ -2296,16 +2301,12 @@ async fn api_set_channel_workflow(
         use std::os::unix::net::UnixStream;
 
         let socket = crate::paths::daemon_socket_for_repo(&dir_key);
-        let mut stream = UnixStream::connect(&socket)
-            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
-        stream
-            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
 
-        let request = match workflow {
+        // Build list of RPC requests to send sequentially over one connection
+        let mut requests: Vec<serde_json::Value> = Vec::new();
+
+        // Workflow assign/unassign (only if workflow field is present or explicitly null)
+        requests.push(match workflow {
             Some(ref wf) => serde_json::json!({
                 "jsonrpc": "2.0",
                 "method": "workflow.assign",
@@ -2318,27 +2319,48 @@ async fn api_set_channel_workflow(
                 "params": { "channel": ch },
                 "id": 1
             }),
-        };
+        });
 
-        writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
-        stream.flush().ok();
+        // Lead-driven toggle (if specified)
+        if let Some(enabled) = lead_driven {
+            requests.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "workflow.set-lead-driven",
+                "params": { "channel": ch, "enabled": enabled },
+                "id": 2
+            }));
+        }
 
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+        let mut stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+        for request in &requests {
+            writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+            stream.flush().ok();
 
-        if let Some(err) = response.get("error") {
-            return Err(format!(
-                "RPC error: {}",
-                err.get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+            let response: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+            if let Some(err) = response.get("error") {
+                return Err(format!(
+                    "RPC error: {}",
+                    err.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown")
+                ));
+            }
         }
 
         Ok(())

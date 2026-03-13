@@ -4,7 +4,7 @@
 //! (github-state.json, reminders.json) into a single daemon-state.json.
 //! Loaded once at startup, saved after any mutation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -239,6 +239,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub profile_pool_state: HashMap<String, ProfileState>,
 
+    /// Channels operating in lead-driven mode.
+    ///
+    /// When a channel is in this set, the daemon relays workflow events as
+    /// human-readable @mentions to the channel lead instead of executing its
+    /// built-in state machine (spawning reviewers, nudging coworkers, etc.).
+    /// The lead uses AGENTS.md knowledge and CLI tools to act on events.
+    #[serde(default)]
+    pub lead_driven_channels: HashSet<String>,
+
     /// Channel-to-workflow assignment mapping.
     ///
     /// Maps channel name → workflow name (e.g., "proj-auth" → "tdw").
@@ -311,7 +320,7 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} lead-driven channels, {} channel-workflow assignments, {} workflow-state channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -324,6 +333,7 @@ impl DaemonPersistentState {
                     state.task_message_id.len(),
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
+                    state.lead_driven_channels.len(),
                     state.channel_workflows.len(),
                     state.workflow_state.len()
                 );
@@ -348,7 +358,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} lead-driven channels, {} channel-workflow assignments, {} workflow-state channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -359,6 +369,7 @@ impl DaemonPersistentState {
             self.task_execution_skill.len(),
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
+            self.lead_driven_channels.len(),
             self.channel_workflows.len(),
             self.workflow_state.len()
         );
@@ -452,6 +463,7 @@ impl DaemonPersistentState {
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
+            lead_driven_channels: HashSet::new(),
             channel_workflows: HashMap::new(),
             workflow_state,
             permanent_pr_nudges: Vec::new(),

@@ -5,7 +5,7 @@ use std::process::Command;
 use super::super::DaemonState;
 use super::{
     handle_workflow_assign, handle_workflow_get_state, handle_workflow_list,
-    handle_workflow_set_state, handle_workflow_unassign,
+    handle_workflow_set_lead_driven, handle_workflow_set_state, handle_workflow_unassign,
 };
 use crate::rpc::RequestId;
 
@@ -374,4 +374,94 @@ async fn test_set_state_with_key_creates_intermediates() {
     let result = resp.result.unwrap();
 
     assert_eq!(result["state"]["tasks"]["99"]["excluded"], true);
+}
+
+// ── workflow.set-lead-driven ─────────────────────────────────────────────
+
+/// Enabling lead-driven mode inserts channel into the set.
+#[tokio::test]
+async fn test_set_lead_driven_enable() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-enable");
+
+    let resp =
+        handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+    let result = resp.result.expect("should succeed");
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["enabled"], true);
+
+    // Verify persistent state
+    let ps = state.persistent_state.lock().await;
+    assert!(ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// Disabling lead-driven mode removes channel from the set.
+#[tokio::test]
+async fn test_set_lead_driven_disable() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-disable");
+
+    // Enable first
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+
+    // Then disable
+    let resp =
+        handle_workflow_set_lead_driven(RequestId::Number(2), "proj-auth", false, &state).await;
+    let result = resp.result.expect("should succeed");
+    assert_eq!(result["ok"], true);
+    assert_eq!(result["enabled"], false);
+
+    // Verify removed
+    let ps = state.persistent_state.lock().await;
+    assert!(!ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// Lead-driven state persists to daemon-state.json and survives reload.
+#[tokio::test]
+async fn test_lead_driven_persists_to_disk() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-persist");
+
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-writing", true, &state).await;
+
+    // Reload from disk
+    let reloaded =
+        crate::daemon::state::DaemonPersistentState::load_for_repo("wf-lead-driven-persist")
+            .expect("reload should succeed");
+    assert!(reloaded.lead_driven_channels.contains("proj-writing"));
+}
+
+/// Multiple channels can be lead-driven independently.
+#[tokio::test]
+async fn test_lead_driven_multiple_channels() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-multi");
+
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+    handle_workflow_set_lead_driven(RequestId::Number(2), "proj-writing", true, &state).await;
+
+    let ps = state.persistent_state.lock().await;
+    assert!(ps.lead_driven_channels.contains("proj-auth"));
+    assert!(ps.lead_driven_channels.contains("proj-writing"));
+    assert!(!ps.lead_driven_channels.contains("proj-other"));
+    drop(ps);
+
+    // Disable one, other stays
+    handle_workflow_set_lead_driven(RequestId::Number(3), "proj-auth", false, &state).await;
+
+    let ps = state.persistent_state.lock().await;
+    assert!(!ps.lead_driven_channels.contains("proj-auth"));
+    assert!(ps.lead_driven_channels.contains("proj-writing"));
+}
+
+/// Disabling an already-disabled channel is a no-op (idempotent).
+#[tokio::test]
+async fn test_lead_driven_disable_idempotent() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-idempotent");
+
+    let resp =
+        handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", false, &state).await;
+    assert!(
+        resp.result.is_some(),
+        "disabling non-existent should succeed"
+    );
+
+    let ps = state.persistent_state.lock().await;
+    assert!(!ps.lead_driven_channels.contains("proj-auth"));
 }

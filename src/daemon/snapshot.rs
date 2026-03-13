@@ -366,6 +366,14 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub channel_lead_sessions: HashMap<String, String>,
 
+    /// Channels operating in lead-driven mode.
+    ///
+    /// When a channel is in this set, the daemon relays workflow events as
+    /// human-readable @mentions to the channel lead instead of executing its
+    /// built-in state machine. Populated from `DaemonPersistentState::lead_driven_channels`.
+    #[serde(default)]
+    pub lead_driven_channels: HashSet<String>,
+
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
     pub coworkers_with_unblocked_deps: HashSet<String>,
@@ -841,7 +849,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
-    // task-to-thread, task-to-message, and channel-lead mappings
+    // task-to-thread, task-to-message, channel-lead, and lead-driven mappings
     let (
         task_channel,
         task_model_map,
@@ -850,6 +858,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_thread_id_map,
         task_message_id_map,
         channel_lead_sessions,
+        lead_driven_channels,
     ) = {
         let ps = state.persistent_state.lock().await;
         (
@@ -860,6 +869,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             ps.task_thread_id.clone(),
             ps.task_message_id.clone(),
             ps.channel_lead_sessions.clone(),
+            ps.lead_driven_channels.clone(),
         )
     };
 
@@ -1472,6 +1482,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_thread_id_map,
         task_message_id_map,
         channel_lead_sessions,
+        lead_driven_channels,
         coworkers_with_unblocked_deps,
         archived_channels,
         stale_channel_notes,
@@ -1547,6 +1558,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_thread_id_map: HashMap::new(),
         task_message_id_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
+        lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),
         stale_channel_notes: HashMap::new(),
