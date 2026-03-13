@@ -1833,3 +1833,130 @@ async fn test_handle_session_fork_thread_rejects_non_uuid() {
         msg
     );
 }
+
+// ============================================================================
+// build_channel_summary_for_fork tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_channel_summary_empty_channel() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+    let result = build_channel_summary_for_fork(&channel).await;
+    assert!(result.is_none(), "Empty channel should return None");
+}
+
+#[tokio::test]
+async fn test_channel_summary_basic_messages() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    channel
+        .send(&Message::text("park", "opened PR #1985"))
+        .unwrap();
+    channel
+        .send(&Message::text("columbus", "reviewing PR"))
+        .unwrap();
+
+    let result = build_channel_summary_for_fork(&channel).await;
+    assert!(result.is_some());
+    let summary = result.unwrap();
+    assert!(summary.contains("## Recent channel activity"));
+    assert!(summary.contains("park: opened PR #1985"));
+    assert!(summary.contains("columbus: reviewing PR"));
+}
+
+#[tokio::test]
+async fn test_channel_summary_filters_thread_replies() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    let parent = Message::text("park", "top-level message");
+    let parent_id = parent.id.clone();
+    channel.send(&parent).unwrap();
+
+    let mut reply = Message::text("columbus", "thread reply");
+    reply.thread_parent_id = Some(parent_id);
+    channel.send(&reply).unwrap();
+
+    let summary = build_channel_summary_for_fork(&channel).await.unwrap();
+    assert!(summary.contains("park: top-level message"));
+    assert!(
+        !summary.contains("thread reply"),
+        "Thread replies should be filtered out"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_summary_filters_auto_output() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    channel.send(&Message::text("park", "manual post")).unwrap();
+
+    let mut auto = Message::text("park", "auto streamed output");
+    auto.auto_output = true;
+    channel.send(&auto).unwrap();
+
+    let summary = build_channel_summary_for_fork(&channel).await.unwrap();
+    assert!(summary.contains("manual post"));
+    assert!(
+        !summary.contains("auto streamed"),
+        "Auto-output should be filtered out"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_summary_filters_nudges() {
+    use crate::message::MessageType;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    channel
+        .send(&Message::text("park", "normal message"))
+        .unwrap();
+    channel
+        .send(&Message::new("midtown", "wake up", MessageType::Nudge))
+        .unwrap();
+
+    let summary = build_channel_summary_for_fork(&channel).await.unwrap();
+    assert!(summary.contains("normal message"));
+    assert!(
+        !summary.contains("wake up"),
+        "Nudge messages should be filtered out"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_summary_truncates_long_content() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    let long_content = "a".repeat(200);
+    channel.send(&Message::text("park", &long_content)).unwrap();
+
+    let summary = build_channel_summary_for_fork(&channel).await.unwrap();
+    assert!(summary.contains("..."), "Long content should be truncated");
+    // The truncated line should be ~150 chars of 'a' + "..."
+    assert!(
+        !summary.contains(&"a".repeat(200)),
+        "Full 200-char content should not appear"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_summary_collapses_multiline() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let channel = crate::channel::Channel::new(tmp.path(), "test-ch").unwrap();
+
+    channel
+        .send(&Message::text("park", "line one\nline two\nline three"))
+        .unwrap();
+
+    let summary = build_channel_summary_for_fork(&channel).await.unwrap();
+    assert!(
+        summary.contains("line one line two line three"),
+        "Multiline content should be collapsed to single line"
+    );
+}

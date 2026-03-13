@@ -1515,8 +1515,9 @@ async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Op
         .filter(|m| m.message_type != MessageType::Nudge)
         .map(|m| {
             let time = m.timestamp.format("%H:%M");
-            let content = if m.content.len() > 150 {
-                format!("{}...", &m.content[..150])
+            let content = if m.content.chars().count() > 150 {
+                let truncated: String = m.content.chars().take(150).collect();
+                format!("{truncated}...")
             } else {
                 m.content.clone()
             };
