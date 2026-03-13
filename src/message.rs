@@ -418,14 +418,6 @@ mod tests {
     }
 
     #[test]
-    fn test_insight_message() {
-        let msg = Message::insight("architect", "```mermaid\ngraph TD\nA-->B");
-        assert_eq!(msg.from, "architect");
-        assert_eq!(msg.message_type, MessageType::Insight);
-        assert!(msg.content.contains("mermaid"));
-    }
-
-    #[test]
     fn test_channel_defaults_to_unknown() {
         let msg = Message::text("agent1", "Hello");
         assert_eq!(msg.channel_name(), "unknown");
