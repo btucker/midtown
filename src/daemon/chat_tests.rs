@@ -17,7 +17,8 @@ fn mention_nudge_produces_nudge_effect() {
         "lexington".to_string(),
         "sess-lexington-1".to_string(),
     )]);
-    let effects = mention_action_to_effects(action, "lexington", "test-repo", &name_session_map);
+    let effects =
+        mention_action_to_effects(action, "lexington", "test-repo", &name_session_map, None);
 
     assert_eq!(effects.len(), 1);
     assert!(
@@ -105,7 +106,7 @@ fn mention_spawn_produces_spawn_with_callbacks() {
     };
     let name_session_map =
         std::collections::HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
-    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map);
+    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map, None);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -142,7 +143,8 @@ fn mention_skip_produces_no_effects() {
         "lexington".to_string(),
         "sess-lexington-1".to_string(),
     )]);
-    let effects = mention_action_to_effects(action, "lexington", "test-repo", &name_session_map);
+    let effects =
+        mention_action_to_effects(action, "lexington", "test-repo", &name_session_map, None);
     assert!(
         effects.is_empty(),
         "Skip (non dev-limit) should produce no effects"
@@ -158,7 +160,8 @@ fn mention_skip_dev_limit_posts_to_ops_channel() {
         "amsterdam".to_string(),
         "sess-amsterdam-1".to_string(),
     )]);
-    let effects = mention_action_to_effects(action, "amsterdam", "test-repo", &name_session_map);
+    let effects =
+        mention_action_to_effects(action, "amsterdam", "test-repo", &name_session_map, None);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -178,6 +181,85 @@ fn mention_skip_dev_limit_posts_to_ops_channel() {
         }
         _ => panic!("Expected PostToChannel for dev limit, got {:?}", effects[0]),
     }
+}
+
+#[test]
+fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
+    let action = MentionAction::Spawn {
+        name: "amsterdam".to_string(),
+        message: "lead said (msg-77): @amsterdam triaged your review notes".to_string(),
+    };
+    let name_session_map = std::collections::HashMap::from([(
+        "amsterdam".to_string(),
+        "sess-amsterdam-reviewer".to_string(),
+    )]);
+    // Provide reviewer session info: the name has an existing reviewer session
+    let reviewer_info = Some(ReviewerSessionInfo {
+        session_id: "sess-amsterdam-reviewer".to_string(),
+        task_id: Some("2253".to_string()),
+    });
+    let effects = mention_action_to_effects(
+        action,
+        "amsterdam",
+        "test-repo",
+        &name_session_map,
+        reviewer_info,
+    );
+
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should produce ResumeCoworker + ops notification"
+    );
+    match &effects[0] {
+        Effect::ResumeCoworker {
+            name,
+            session_id,
+            config,
+        } => {
+            assert_eq!(name, "amsterdam");
+            assert_eq!(session_id, "sess-amsterdam-reviewer");
+            assert_eq!(
+                config.session_mode,
+                crate::launch::SessionMode::ResumeSession("sess-amsterdam-reviewer".to_string())
+            );
+            // Verify reviewer role is preserved (not coworker)
+            assert_eq!(
+                config.role,
+                crate::launch::CoworkerRole::Reviewer,
+                "Resumed reviewer should have Reviewer role, not Coworker"
+            );
+        }
+        _ => panic!(
+            "Expected ResumeCoworker for reviewer session, got {:?}",
+            effects[0]
+        ),
+    }
+    // Second effect: ops-channel notification
+    assert!(
+        matches!(&effects[1], Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == OPS_CHANNEL && message.contains("amsterdam") && message.contains("Resuming reviewer")),
+        "Should post ops notification for reviewer resume, got {:?}",
+        effects[1]
+    );
+}
+
+#[test]
+fn mention_spawn_without_reviewer_info_produces_spawn_with_callbacks() {
+    // When no reviewer session info is provided, behavior is unchanged
+    let action = MentionAction::Spawn {
+        name: "park".to_string(),
+        message: "lead said (msg-99): @park fix the bug".to_string(),
+    };
+    let name_session_map =
+        std::collections::HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
+    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map, None);
+
+    assert_eq!(effects.len(), 1);
+    assert!(
+        matches!(&effects[0], Effect::SpawnCoworkerWithCallbacks { .. }),
+        "Non-reviewer spawn should still produce SpawnCoworkerWithCallbacks"
+    );
 }
 
 /// The deduplication key `chat_mention_{name}` must block a second nudge for the
