@@ -51,7 +51,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
   </button>
 
   {#if !expanded && block.output}
-    <div class="tool-body tool-preview">
+    <div class="tool-body tool-preview" onclick={() => expanded = true} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
       <pre>{@html highlightedOutputPreview}</pre>
     </div>
   {:else if expanded}
@@ -152,6 +152,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
     max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
+    cursor: pointer;
   }
 
   .tool-preview::after {

@@ -29,7 +29,7 @@ let newString = $derived(block.input?.new_string || "");
   </button>
 
   {#if !expanded}
-    <div class="edit-preview">
+    <div class="edit-preview" onclick={() => expanded = true} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
       <DiffView {filePath} {oldString} {newString} bare />
     </div>
   {:else}
@@ -83,6 +83,7 @@ let newString = $derived(block.input?.new_string || "");
     max-height: calc(1.4em * 6 + 12px);
     overflow: hidden;
     position: relative;
+    cursor: pointer;
   }
 
   .edit-preview::after {

@@ -58,7 +58,7 @@ let isLong = $derived(outputLines.length > 3);
   </button>
 
   {#if hasOutput && !expanded && isLong}
-    <div class="bash-output bash-preview">
+    <div class="bash-output bash-preview" onclick={() => expanded = true} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
       <pre>{@html highlightedPreview}</pre>
     </div>
   {:else if hasOutput && (expanded || !isLong)}
@@ -143,6 +143,7 @@ let isLong = $derived(outputLines.length > 3);
     max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
+    cursor: pointer;
   }
 
   .bash-preview::after {
