@@ -1918,22 +1918,38 @@ impl DaemonState {
 
     /// Restore task assignments from disk after daemon restart.
     ///
-    /// Backfills `sessions[].task_id` from in_progress tasks with owners.
-    /// Needed because session records may have been written before the task
-    /// was assigned (e.g., session resumed but task assignment wasn't persisted).
+    /// Reconciles `sessions[].task_id` with disk-based task storage:
+    /// 1. Clears stale task_id values (task no longer in_progress)
+    /// 2. Backfills missing task_id from in_progress tasks with owners
     pub(crate) async fn restore_task_assignments_from_disk(&self) {
         let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+        let in_progress_task_ids: std::collections::HashSet<&str> = in_progress_tasks
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect();
 
         let mut ps = self.persistent_state.lock().await;
         let n2s = self.name_to_session.lock().unwrap().clone();
         let mut restored_count = 0;
+        let mut cleared_count = 0;
 
-        for (task_id, _subject, owner) in in_progress_tasks {
+        // Clear stale task_id values from sessions whose tasks are no longer in_progress.
+        // This handles tasks completed/reassigned while the daemon was down.
+        for record in ps.sessions.values_mut() {
+            if let Some(ref tid) = record.task_id
+                && !in_progress_task_ids.contains(tid.as_str())
+            {
+                record.task_id = None;
+                cleared_count += 1;
+            }
+        }
+
+        // Backfill missing task_id from in_progress tasks with owners
+        for (task_id, _subject, owner) in &in_progress_tasks {
             if owner.is_empty() {
                 continue;
             }
             let owner_lower = owner.to_lowercase();
-            // Find the session for this owner and set task_id if not already set
             if let Some(session_id) = n2s.get(&owner_lower)
                 && let Some(record) = ps.sessions.get_mut(session_id)
                 && record.task_id.is_none()
@@ -1943,10 +1959,10 @@ impl DaemonState {
             }
         }
 
-        if restored_count > 0 {
+        if restored_count > 0 || cleared_count > 0 {
             info!(
-                "Restored {} task assignment(s) from disk during daemon startup",
-                restored_count
+                "Task assignment restore: {} backfilled, {} stale cleared",
+                restored_count, cleared_count
             );
             if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                 warn!(
