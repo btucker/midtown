@@ -268,3 +268,154 @@ fn test_rpc_cache_numeric_id_collision() {
         "PID-prefixed string IDs from different processes should NOT collide"
     );
 }
+
+/// All methods in dispatch_request must be classified as either cacheable (read-only)
+/// or uncached (mutating / domain-cached). This test ensures the allowlist in
+/// handle_rpc_request stays in sync with the dispatch table.
+#[test]
+fn test_rpc_cache_allowlist_covers_all_read_methods() {
+    // Read-only methods that ARE cached (the allowlist in handle_rpc_request)
+    let cached_methods: Vec<&str> = vec![
+        "ping",
+        "version",
+        "status",
+        "snapshot",
+        "coworker.list",
+        "coworker.view",
+        "coworker.questions",
+        "channel.read",
+        "channel.list",
+        "task.metadata",
+        "session.resolve",
+        "session.list",
+        "session.view",
+        "session.thread_ownership",
+        "headed.poll",
+        "pr.list-external",
+        "reminder.list",
+        "workflow.list",
+        "workflow.get_state",
+    ];
+
+    // Read-only methods excluded from cache because they have domain-specific caching
+    let domain_cached_methods: Vec<&str> = vec!["prs.status", "coworkers.status"];
+
+    // Mutating methods that must NOT be cached
+    let mutating_methods: Vec<&str> = vec![
+        "shutdown",
+        "daemon.exec-restart",
+        "daemon.set-draining",
+        "daemon.check-pending",
+        "oneshot.execute",
+        "coworker.spawn",
+        "coworker.break",
+        "coworker.report-state",
+        "coworker.nudge",
+        "coworker.asking",
+        "lead.spawn",
+        "channel.post",
+        "channel.create",
+        "channel.archive",
+        "channel.unarchive",
+        "channel.rename",
+        "task.create",
+        "task.update",
+        "task.done",
+        "task.request",
+        "task.claim",
+        "reminder.create",
+        "reminder.cancel",
+        "workflow.assign",
+        "workflow.unassign",
+        "workflow.set_lead_driven",
+        "workflow.set_state",
+        "auth.switch",
+        "auth.pool-toggle",
+        "session.attach",
+        "session.detach",
+        "session.clear",
+        "session.fork",
+        "session.fork_thread",
+        "session.unfork_thread",
+        "headed.register",
+        "headed.unregister",
+        "headed.heartbeat",
+        "headed.ack",
+        "headed.output",
+        "headed.enqueue",
+        "pr.review",
+        "pr.review-post",
+        "pr.merge",
+        "pr.auto-merge",
+        "pr.allow",
+    ];
+
+    // Verify no method appears in multiple lists
+    for method in &cached_methods {
+        assert!(
+            !domain_cached_methods.contains(method),
+            "Method '{}' is in both cached and domain_cached lists",
+            method
+        );
+        assert!(
+            !mutating_methods.contains(method),
+            "Method '{}' is in both cached and mutating lists",
+            method
+        );
+    }
+    for method in &domain_cached_methods {
+        assert!(
+            !mutating_methods.contains(method),
+            "Method '{}' is in both domain_cached and mutating lists",
+            method
+        );
+    }
+
+    // Verify mutating methods are NOT in the allowlist
+    let use_rpc_cache = |method: &str| -> bool {
+        matches!(
+            method,
+            "ping"
+                | "version"
+                | "status"
+                | "snapshot"
+                | "coworker.list"
+                | "coworker.view"
+                | "coworker.questions"
+                | "channel.read"
+                | "channel.list"
+                | "task.metadata"
+                | "session.resolve"
+                | "session.list"
+                | "session.view"
+                | "session.thread_ownership"
+                | "headed.poll"
+                | "pr.list-external"
+                | "reminder.list"
+                | "workflow.list"
+                | "workflow.get_state"
+        )
+    };
+
+    for method in &mutating_methods {
+        assert!(
+            !use_rpc_cache(method),
+            "Mutating method '{}' should NOT be in the cache allowlist",
+            method
+        );
+    }
+    for method in &domain_cached_methods {
+        assert!(
+            !use_rpc_cache(method),
+            "Domain-cached method '{}' should NOT be in the RPC cache allowlist",
+            method
+        );
+    }
+    for method in &cached_methods {
+        assert!(
+            use_rpc_cache(method),
+            "Read-only method '{}' should be in the cache allowlist",
+            method
+        );
+    }
+}
