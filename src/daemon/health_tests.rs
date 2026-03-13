@@ -4164,6 +4164,248 @@ fn state_gc_preserves_channel_lead_sessions() {
     }
 }
 
+/// Dead fork sessions (coworker_type=channel-lead, bound_thread_id set,
+/// resume_on_startup=false) must survive GC even when past the retention period.
+///
+/// Fork sessions are ephemeral (resume_on_startup=false) but created with
+/// coworker_type="channel-lead", which protects them from GC. Without this
+/// protection, a liveness check marking is_running=false would make the fork
+/// eligible for pruning, breaking fork crash recovery (which reads the
+/// persistent SessionRecord to get working_dir, auth_provider, and
+/// initial_prompt for respawn).
+///
+/// Regression test for the GC/liveness interaction on fork SessionRecords.
+#[test]
+fn state_gc_preserves_dead_fork_sessions() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead fork session: coworker_type=channel-lead, resume_on_startup=false,
+    // bound_thread_id set, is_running=false (liveness marked it dead), 48h old.
+    // This mimics the state after a liveness check detects a dead fork process
+    // and cleanup_dead_coworker_state marks is_running=false in the record.
+    let mut fork_session = make_session(
+        "fork-ops-abc123",
+        false,                             // is_running: liveness marked dead
+        false,                             // is_reviewer
+        false,                             // resume_on_startup: forks are ephemeral
+        now - chrono::Duration::hours(48), // well past 24h retention
+        None,
+    );
+    fork_session.coworker_type = "channel-lead".to_string();
+    fork_session.bound_thread_id = Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string());
+    sessions.insert("fork-ops-abc123".to_string(), fork_session);
+
+    // Dead dev session, same age — should be pruned (control case).
+    sessions.insert(
+        "dead-dev".to_string(),
+        make_session(
+            "dead-dev",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(48),
+            Some("10"),
+        ),
+    );
+
+    let retention = chrono::Duration::hours(24);
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1, "should produce exactly one GC effect");
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids, ..
+        } => {
+            assert!(
+                !dead_session_ids.contains(&"fork-ops-abc123".to_string()),
+                "fork session (channel-lead) must NOT be garbage-collected — \
+                 fork crash recovery needs the persistent record"
+            );
+            assert!(
+                dead_session_ids.contains(&"dead-dev".to_string()),
+                "dead dev session should still be pruned"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+/// Multiple fork sessions at different lifecycle stages: running fork survives
+/// (skipped as running), dead fork survives (channel-lead protection), and
+/// a dead dev session is pruned. Verifies the GC correctly handles a mixed
+/// set of fork and non-fork records simultaneously.
+#[test]
+fn state_gc_handles_mixed_fork_and_dev_sessions() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Running fork session — should survive (is_running=true)
+    let mut running_fork = make_session(
+        "fork-ops-running",
+        true, // is_running
+        false,
+        false, // resume_on_startup=false (fork)
+        now,
+        None,
+    );
+    running_fork.coworker_type = "channel-lead".to_string();
+    running_fork.bound_thread_id = Some("11111111-1111-1111-1111-111111111111".to_string());
+    sessions.insert("fork-ops-running".to_string(), running_fork);
+
+    // Dead fork session, 72 hours old — should survive (channel-lead protection)
+    let mut dead_fork = make_session(
+        "fork-ops-dead",
+        false,
+        false,
+        false,
+        now - chrono::Duration::hours(72),
+        None,
+    );
+    dead_fork.coworker_type = "channel-lead".to_string();
+    dead_fork.bound_thread_id = Some("22222222-2222-2222-2222-222222222222".to_string());
+    sessions.insert("fork-ops-dead".to_string(), dead_fork);
+
+    // Dead dev session, 48h old — should be pruned
+    sessions.insert(
+        "dead-dev-1".to_string(),
+        make_session(
+            "dead-dev-1",
+            false,
+            false,
+            false,
+            now - chrono::Duration::hours(48),
+            None,
+        ),
+    );
+
+    // Dead reviewer session — should be pruned immediately
+    sessions.insert(
+        "reviewer-1".to_string(),
+        make_session(
+            "reviewer-1",
+            false,
+            true,
+            false,
+            now - chrono::Duration::minutes(5),
+            None,
+        ),
+    );
+
+    let retention = chrono::Duration::hours(24);
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids, ..
+        } => {
+            // Fork sessions must survive regardless of age or is_running state
+            assert!(
+                !dead_session_ids.contains(&"fork-ops-running".to_string()),
+                "running fork must not be GC'd"
+            );
+            assert!(
+                !dead_session_ids.contains(&"fork-ops-dead".to_string()),
+                "dead fork (channel-lead) must not be GC'd"
+            );
+            // Non-fork sessions follow normal pruning rules
+            assert!(
+                dead_session_ids.contains(&"dead-dev-1".to_string()),
+                "dead dev session should be pruned"
+            );
+            assert!(
+                dead_session_ids.contains(&"reviewer-1".to_string()),
+                "dead reviewer should be pruned immediately"
+            );
+            assert_eq!(
+                dead_session_ids.len(),
+                2,
+                "exactly 2 sessions should be pruned"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
+/// Fork session with a task_id preserves that task from orphaned metadata pruning.
+///
+/// Even though the fork is dead, its task_id must be treated as "surviving"
+/// because the fork's SessionRecord persists (channel-lead sessions are never
+/// GC'd). If the task were pruned, metadata like task_channel and task_plan
+/// would be lost.
+#[test]
+fn state_gc_fork_session_preserves_task_metadata() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+    let mut sessions = HashMap::new();
+
+    // Dead fork session with task_id — channel-lead survives GC, so task "55"
+    // should be in surviving_task_ids and NOT pruned from metadata.
+    let mut fork_with_task = make_session(
+        "fork-ops-task",
+        false,
+        false,
+        false,
+        now - chrono::Duration::hours(48),
+        Some("55"),
+    );
+    fork_with_task.coworker_type = "channel-lead".to_string();
+    fork_with_task.bound_thread_id = Some("33333333-3333-3333-3333-333333333333".to_string());
+    sessions.insert("fork-ops-task".to_string(), fork_with_task);
+
+    // Task metadata keys: "55" (referenced by fork), "99" (orphaned)
+    let task_metadata_keys = HashSet::from(["55".to_string(), "99".to_string()]);
+
+    let retention = chrono::Duration::hours(24);
+    let effects = check_for_state_gc(
+        &sessions,
+        &HashSet::new(),
+        &task_metadata_keys,
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            orphaned_task_ids,
+        } => {
+            assert!(
+                dead_session_ids.is_empty(),
+                "fork (channel-lead) should not be pruned"
+            );
+            assert!(
+                !orphaned_task_ids.contains(&"55".to_string()),
+                "task 55 is referenced by surviving fork — must not be orphaned"
+            );
+            assert!(
+                orphaned_task_ids.contains(&"99".to_string()),
+                "task 99 is truly orphaned — should be pruned"
+            );
+        }
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    }
+}
+
 /// When a user posts in a topic channel and the channel lead is dead
 /// (within respawn cooldown), clearing the stop time should allow
 /// ensure_channel_leads_alive to respawn on the next tick.
