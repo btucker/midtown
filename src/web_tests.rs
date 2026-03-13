@@ -1852,9 +1852,9 @@ async fn test_channel_directory_rejects_nonexistent_directory() {
 }
 
 /// Regression test: main lead auto-output messages have `channel: None`, and
-/// `channel_name()` falls back to hardcoded "midtown".  Before the fix in
-/// `send_and_broadcast_async`, the WebSocket broadcast would always send
-/// "midtown" regardless of the actual project name.  The fix sets
+/// `channel_name()` falls back to "unknown" (a sentinel value) when
+/// `channel` is `None`.  Before the fix in `send_and_broadcast_async`,
+/// the WebSocket broadcast would use this sentinel.  The fix sets
 /// `message.channel` to the resolved name from the channel router before
 /// broadcasting.  This test verifies the contract: when a caller resolves
 /// the channel and sets it on the message, the broadcast carries the
@@ -1868,8 +1868,8 @@ fn test_channel_message_update_resolved_channel_overrides_default() {
         "main lead messages start with channel: None"
     );
 
-    // Before fix: channel_name() returns "midtown" regardless of project
-    assert_eq!(msg.channel_name(), "midtown");
+    // Before fix: channel_name() returns "unknown" sentinel
+    assert_eq!(msg.channel_name(), "unknown");
 
     // After fix: send_and_broadcast_async sets the resolved channel
     msg.channel = Some("my-custom-project".to_string());
