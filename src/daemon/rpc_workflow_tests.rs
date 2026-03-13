@@ -5,7 +5,7 @@ use std::process::Command;
 use super::super::DaemonState;
 use super::{
     handle_workflow_assign, handle_workflow_get_state, handle_workflow_list,
-    handle_workflow_set_state, handle_workflow_unassign,
+    handle_workflow_set_lead_driven, handle_workflow_set_state, handle_workflow_unassign,
 };
 use crate::rpc::RequestId;
 
@@ -374,4 +374,95 @@ async fn test_set_state_with_key_creates_intermediates() {
     let result = resp.result.unwrap();
 
     assert_eq!(result["state"]["tasks"]["99"]["excluded"], true);
+}
+
+// ── workflow.set_lead_driven tests ────────────────────────────────────────
+
+/// set_lead_driven enables lead-driven mode for a channel.
+#[tokio::test]
+async fn test_set_lead_driven_enable() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-enable");
+
+    let resp =
+        handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+    assert!(resp.result.is_some(), "set_lead_driven should succeed");
+
+    let ps = state.persistent_state.lock().await;
+    assert!(ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// set_lead_driven disable removes the channel from lead-driven mode.
+#[tokio::test]
+async fn test_set_lead_driven_disable() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-disable");
+
+    // Enable first
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+
+    // Disable
+    let resp =
+        handle_workflow_set_lead_driven(RequestId::Number(2), "proj-auth", false, &state).await;
+    assert!(resp.result.is_some(), "disable should succeed");
+
+    let ps = state.persistent_state.lock().await;
+    assert!(!ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// set_lead_driven persists to daemon-state.json.
+#[tokio::test]
+async fn test_set_lead_driven_persists() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-persist");
+
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+
+    let reloaded =
+        crate::daemon::state::DaemonPersistentState::load_for_repo("wf-lead-driven-persist")
+            .expect("reload should succeed");
+    assert!(reloaded.lead_driven_channels.contains("proj-auth"));
+}
+
+/// set_lead_driven is independent of workflow assignment.
+#[tokio::test]
+async fn test_lead_driven_independent_of_workflow() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-lead-driven-indep");
+
+    // Create a workflow directory so assign works
+    let workflows_dir = state.paths.workflows_dir();
+    std::fs::create_dir_all(workflows_dir.join("tdw")).unwrap();
+    std::fs::write(workflows_dir.join("tdw/workflow.py"), "# hooks").unwrap();
+
+    // Assign workflow and enable lead-driven
+    handle_workflow_assign(RequestId::Number(1), "proj-auth", "tdw", &state).await;
+    handle_workflow_set_lead_driven(RequestId::Number(2), "proj-auth", true, &state).await;
+
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(ps.channel_workflows.get("proj-auth").unwrap(), "tdw");
+    assert!(ps.lead_driven_channels.contains("proj-auth"));
+    drop(ps);
+
+    // Disable lead-driven — workflow assignment should remain
+    handle_workflow_set_lead_driven(RequestId::Number(3), "proj-auth", false, &state).await;
+
+    let ps = state.persistent_state.lock().await;
+    assert_eq!(ps.channel_workflows.get("proj-auth").unwrap(), "tdw");
+    assert!(!ps.lead_driven_channels.contains("proj-auth"));
+}
+
+/// workflow.list includes lead_driven_channels.
+#[tokio::test]
+async fn test_workflow_list_includes_lead_driven() {
+    let (state, _temp_dir, _guard) = make_test_state("wf-list-lead-driven");
+
+    // Enable lead-driven on a channel
+    handle_workflow_set_lead_driven(RequestId::Number(1), "proj-auth", true, &state).await;
+
+    let resp = handle_workflow_list(RequestId::Number(2), &state).await;
+    let result = resp.result.expect("list should succeed");
+    let lead_driven = result["lead_driven_channels"]
+        .as_array()
+        .expect("should be array");
+    assert!(
+        lead_driven.iter().any(|v| v.as_str() == Some("proj-auth")),
+        "lead_driven_channels should include proj-auth"
+    );
 }

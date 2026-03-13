@@ -2126,6 +2126,7 @@ async fn api_channel_workflow(
         crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
 
     let assigned_workflow = persistent_state.channel_workflows.get(channel).cloned();
+    let lead_driven = persistent_state.lead_driven_channels.contains(channel);
 
     // Discover available workflows
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");
@@ -2169,6 +2170,7 @@ async fn api_channel_workflow(
         "available_workflows": available_workflows,
         "state": workflow_state,
         "mermaid": mermaid,
+        "lead_driven": lead_driven,
     })))
 }
 
@@ -2258,24 +2260,63 @@ fn generate_mermaid_from_transitions(
     lines.join("\n")
 }
 
-/// Request body for assigning/unassigning a workflow to a channel.
-#[derive(Debug, Deserialize)]
+/// Request body for updating a channel's workflow configuration.
+///
+/// Parsed from raw JSON to distinguish absent fields from explicit `null`.
+/// `{"lead_driven": true}` won't touch the workflow assignment;
+/// `{"workflow": null}` explicitly unassigns.
+#[derive(Debug)]
 struct SetWorkflowRequest {
-    workflow: Option<String>,
+    /// `Some(Some(name))` = assign, `Some(None)` = unassign, `None` = no-op.
+    workflow: Option<Option<String>>,
+    /// `Some(true/false)` = set lead-driven, `None` = no-op.
+    lead_driven: Option<bool>,
 }
 
-/// Assign or unassign a workflow for a channel.
+impl SetWorkflowRequest {
+    fn from_json(value: &serde_json::Value) -> Result<Self, &'static str> {
+        let workflow = if let Some(v) = value.get("workflow") {
+            if v.is_null() {
+                Some(None)
+            } else if let Some(s) = v.as_str() {
+                Some(Some(s.to_string()))
+            } else {
+                return Err("workflow must be a string or null");
+            }
+        } else {
+            None
+        };
+        let lead_driven = if let Some(v) = value.get("lead_driven") {
+            if let Some(b) = v.as_bool() {
+                Some(b)
+            } else {
+                return Err("lead_driven must be a boolean");
+            }
+        } else {
+            None
+        };
+        Ok(Self {
+            workflow,
+            lead_driven,
+        })
+    }
+}
+
+/// Update workflow configuration for a channel.
 ///
 /// Path: `PUT /api/channels/{channel}/workflow`
 ///
-/// Body: `{"workflow": "tdw"}` to assign, `{"workflow": null}` to unassign.
+/// Body fields (all optional — absent fields are no-ops):
+/// - `"workflow": "tdw"` — assign a workflow
+/// - `"workflow": null` — unassign the workflow
+/// - `"lead_driven": true/false` — enable/disable lead-driven mode
 ///
 /// Routes through the daemon's RPC to ensure the in-memory persistent state
 /// mutex is used (avoids race conditions with direct file I/O).
 async fn api_set_channel_workflow(
     State(state): State<Arc<WebState>>,
     Path(channel): Path<String>,
-    Json(body): Json<SetWorkflowRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Validate channel name
     if channel.contains("..")
@@ -2286,9 +2327,44 @@ async fn api_set_channel_workflow(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    let body = match SetWorkflowRequest::from_json(&body) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
     let dir_key = state.config.dir_key.clone();
-    let workflow = body.workflow.clone();
     let ch = channel.clone();
+
+    // Build RPC requests for each field that was specified.
+    let mut requests: Vec<serde_json::Value> = Vec::new();
+
+    match &body.workflow {
+        Some(Some(wf)) => requests.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workflow.assign",
+            "params": { "channel": ch, "workflow": wf },
+            "id": requests.len() + 1
+        })),
+        Some(None) => requests.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workflow.unassign",
+            "params": { "channel": ch },
+            "id": requests.len() + 1
+        })),
+        None => {} // workflow field absent — no-op
+    }
+
+    if let Some(enabled) = body.lead_driven {
+        requests.push(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workflow.set_lead_driven",
+            "params": { "channel": ch, "enabled": enabled },
+            "id": requests.len() + 1
+        }));
+    }
+
+    if requests.is_empty() {
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
 
     // Route through daemon RPC to use the in-memory persistent state mutex
     let result = tokio::task::spawn_blocking(move || {
@@ -2296,7 +2372,7 @@ async fn api_set_channel_workflow(
         use std::os::unix::net::UnixStream;
 
         let socket = crate::paths::daemon_socket_for_repo(&dir_key);
-        let mut stream = UnixStream::connect(&socket)
+        let stream = UnixStream::connect(&socket)
             .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
         stream
             .set_write_timeout(Some(std::time::Duration::from_secs(5)))
@@ -2305,40 +2381,31 @@ async fn api_set_channel_workflow(
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .ok();
 
-        let request = match workflow {
-            Some(ref wf) => serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "workflow.assign",
-                "params": { "channel": ch, "workflow": wf },
-                "id": 1
-            }),
-            None => serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "workflow.unassign",
-                "params": { "channel": ch },
-                "id": 1
-            }),
-        };
-
-        writeln!(stream, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
-        stream.flush().ok();
-
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| format!("Failed to clone stream: {e}"))?;
         let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
 
-        let response: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+        for request in &requests {
+            writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+            writer.flush().ok();
 
-        if let Some(err) = response.get("error") {
-            return Err(format!(
-                "RPC error: {}",
-                err.get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown")
-            ));
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+            let response: serde_json::Value =
+                serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+            if let Some(err) = response.get("error") {
+                return Err(format!(
+                    "RPC error: {}",
+                    err.get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown")
+                ));
+            }
         }
 
         Ok(())

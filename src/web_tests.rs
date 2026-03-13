@@ -1462,7 +1462,7 @@ async fn test_set_workflow_rejects_path_traversal() {
     let result = api_set_channel_workflow(
         State(state),
         Path("../etc".to_string()),
-        Json(SetWorkflowRequest { workflow: None }),
+        Json(serde_json::json!({ "workflow": null })),
     )
     .await;
     assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
@@ -1881,4 +1881,60 @@ fn test_channel_message_update_resolved_channel_overrides_default() {
         }
         _ => panic!("Expected ChannelMessage update"),
     }
+}
+
+// ── SetWorkflowRequest::from_json tests ──────────────────────────────────
+
+#[test]
+fn test_from_json_workflow_assign() {
+    let body = serde_json::json!({"workflow": "tdw"});
+    let req = SetWorkflowRequest::from_json(&body).unwrap();
+    assert_eq!(req.workflow, Some(Some("tdw".to_string())));
+    assert_eq!(req.lead_driven, None);
+}
+
+#[test]
+fn test_from_json_workflow_unassign() {
+    let body = serde_json::json!({"workflow": null});
+    let req = SetWorkflowRequest::from_json(&body).unwrap();
+    assert_eq!(req.workflow, Some(None));
+}
+
+#[test]
+fn test_from_json_lead_driven_only_preserves_workflow() {
+    // Sending only lead_driven should NOT touch the workflow field (no-op).
+    let body = serde_json::json!({"lead_driven": true});
+    let req = SetWorkflowRequest::from_json(&body).unwrap();
+    assert_eq!(req.workflow, None); // absent = no-op
+    assert_eq!(req.lead_driven, Some(true));
+}
+
+#[test]
+fn test_from_json_both_fields() {
+    let body = serde_json::json!({"workflow": "tdw", "lead_driven": false});
+    let req = SetWorkflowRequest::from_json(&body).unwrap();
+    assert_eq!(req.workflow, Some(Some("tdw".to_string())));
+    assert_eq!(req.lead_driven, Some(false));
+}
+
+#[test]
+fn test_from_json_empty_body() {
+    let body = serde_json::json!({});
+    let req = SetWorkflowRequest::from_json(&body).unwrap();
+    assert_eq!(req.workflow, None);
+    assert_eq!(req.lead_driven, None);
+}
+
+#[test]
+fn test_from_json_rejects_invalid_workflow_type() {
+    let body = serde_json::json!({"workflow": 42});
+    let err = SetWorkflowRequest::from_json(&body).unwrap_err();
+    assert_eq!(err, "workflow must be a string or null");
+}
+
+#[test]
+fn test_from_json_rejects_invalid_lead_driven_type() {
+    let body = serde_json::json!({"lead_driven": "yes"});
+    let err = SetWorkflowRequest::from_json(&body).unwrap_err();
+    assert_eq!(err, "lead_driven must be a boolean");
 }

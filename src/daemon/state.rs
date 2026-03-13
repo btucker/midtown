@@ -4,7 +4,7 @@
 //! (github-state.json, reminders.json) into a single daemon-state.json.
 //! Loaded once at startup, saved after any mutation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -248,6 +248,14 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub channel_workflows: HashMap<String, String>,
 
+    /// Channels operating in lead-driven mode.
+    ///
+    /// When a channel is in this set, the daemon relays workflow events as
+    /// human-readable @mentions to the channel lead instead of executing its
+    /// built-in state machine (auto-dispatch, reviewer spawning, PR nudges).
+    #[serde(default)]
+    pub lead_driven_channels: HashSet<String>,
+
     /// Workflow state, owned by the daemon.
     ///
     /// Maps channel name → per-channel state (JSON object). Nested keys
@@ -311,7 +319,7 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -325,7 +333,8 @@ impl DaemonPersistentState {
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
                     state.channel_workflows.len(),
-                    state.workflow_state.len()
+                    state.workflow_state.len(),
+                    state.lead_driven_channels.len()
                 );
                 Ok(state)
             }
@@ -348,7 +357,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -360,7 +369,8 @@ impl DaemonPersistentState {
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
             self.channel_workflows.len(),
-            self.workflow_state.len()
+            self.workflow_state.len(),
+            self.lead_driven_channels.len()
         );
         Ok(())
     }
@@ -453,6 +463,7 @@ impl DaemonPersistentState {
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
             channel_workflows: HashMap::new(),
+            lead_driven_channels: HashSet::new(),
             workflow_state,
             permanent_pr_nudges: Vec::new(),
         };

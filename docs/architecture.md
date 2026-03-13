@@ -748,6 +748,8 @@ Two RPC methods in `rpc_workflow.rs` provide access:
 
 **Legacy migration:** On first startup after upgrade, per-channel `workflow-state.json` files are automatically migrated into `daemon-state.json` and the old files are removed. The `--state` CLI flag is still passed to legacy `workflow.py` scripts for backward compatibility, but new plugin-based workflows should use RPC exclusively.
 
+**Lead-driven mode:** Channels can be put into "lead-driven" mode via `workflow.set_lead_driven` RPC (CLI: `midtown workflow lead-driven <channel>`). When enabled, the daemon relays workflow events as human-readable @mentions to the channel lead instead of executing its built-in state machine (auto-dispatch, reviewer spawning, PR nudges). State is stored in `DaemonPersistentState::lead_driven_channels: HashSet<String>` and exposed to pure decision functions via `WorldSnapshot::lead_driven_channels`. The web API extends `GET /api/channels/{channel}/workflow` with a `lead_driven` boolean and `PUT /api/channels/{channel}/workflow` accepts `{"lead_driven": true/false}`.
+
 ### Plugin Daemon (Unix Socket IPC)
 
 `WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves plugin hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based plugins.
