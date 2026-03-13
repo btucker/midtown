@@ -5311,6 +5311,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::CleanWorktreeTarget { .. } => "CleanWorktreeTarget",
         Effect::CleanupMergedWorktree { .. } => "CleanupMergedWorktree",
         Effect::CleanupStaleWorktree { .. } => "CleanupStaleWorktree",
+        Effect::CleanupOrphanedWorktrees { .. } => "CleanupOrphanedWorktrees",
         Effect::GarbageCollectState { .. } => "GarbageCollectState",
         Effect::EnsureWorktree { .. } => "EnsureWorktree",
         Effect::BindCoworkerToWorktree { .. } => "BindCoworkerToWorktree",

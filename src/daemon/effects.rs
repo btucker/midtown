@@ -486,6 +486,9 @@ pub enum Effect {
     /// This is the time-based cleanup path (N hours after completion),
     /// complementing the PR-merge cleanup path.
     CleanupStaleWorktree { worktree_id: String },
+    /// Sweep orphaned worktree directories that exist on disk but are not in
+    /// the registry and not in use by any active session.
+    CleanupOrphanedWorktrees { retention_hours: u64 },
     /// Garbage-collect stale daemon persistent state in a single batch.
     ///
     /// Removes dead session records older than the retention period and prunes
@@ -1008,6 +1011,28 @@ async fn shutdown_coworker_impl(name: &str, message: &str, state: &DaemonState) 
     // persistence-write paths.
     state.cleanup_dead_coworker_state(name).await;
     Ok(())
+}
+
+fn worktree_is_old_enough(path: &std::path::Path, min_age: std::time::Duration) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+        return false;
+    };
+    age >= min_age
+}
+
+fn is_worktree_active(
+    worktree_path: &std::path::Path,
+    active_workdirs: &std::collections::HashSet<std::path::PathBuf>,
+) -> bool {
+    active_workdirs
+        .iter()
+        .any(|dir| dir == worktree_path || dir.starts_with(worktree_path))
 }
 
 /// Resolve a session ID to its coworker name and deliver a nudge message.
@@ -2114,6 +2139,84 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Worktree {} not found in registry, skipping cleanup",
                         worktree_id
                     );
+                }
+            }
+            Effect::CleanupOrphanedWorktrees { retention_hours } => {
+                let min_age = std::time::Duration::from_secs(retention_hours.saturating_mul(3600));
+                let (registered_ids, active_workdirs) = {
+                    let ps = state.persistent_state.lock().await;
+                    let registered_ids = ps
+                        .worktree_registry
+                        .all_assignments()
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let mut active = std::collections::HashSet::new();
+                    for coworker in state.coworkers.list() {
+                        active.insert(std::path::PathBuf::from(coworker.working_dir));
+                    }
+                    for record in ps.sessions.values() {
+                        if record.is_running && !record.working_dir.is_empty() {
+                            active.insert(std::path::PathBuf::from(&record.working_dir));
+                        }
+                    }
+                    (registered_ids, active)
+                };
+
+                let orphan_ids = state
+                    .coworkers
+                    .worktree_manager()
+                    .find_orphaned_task_worktrees(&registered_ids);
+                if orphan_ids.is_empty() {
+                    continue;
+                }
+
+                let worktrees_base = state
+                    .coworkers
+                    .worktree_manager()
+                    .task_worktrees_base()
+                    .to_path_buf();
+                for worktree_id in orphan_ids {
+                    let worktree_path = worktrees_base.join(&worktree_id);
+                    if is_worktree_active(&worktree_path, &active_workdirs) {
+                        debug!(
+                            "Skipping orphaned worktree {} because an active session is using it",
+                            worktree_id
+                        );
+                        continue;
+                    }
+                    if !worktree_is_old_enough(&worktree_path, min_age) {
+                        continue;
+                    }
+
+                    let wt_mgr = state.coworkers.worktree_manager().clone();
+                    let wt_id = worktree_id.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        wt_mgr.force_cleanup_task_worktree(&wt_id)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {
+                            info!("Cleaned up orphaned worktree {}", worktree_id);
+                            let mut msg = Message::system(format!(
+                                "🧹 Cleaned up orphaned worktree {} (not in registry)",
+                                worktree_id
+                            ));
+                            msg.channel = Some(OPS_CHANNEL.to_string());
+                            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                                warn!("Failed to post orphaned worktree cleanup message: {}", e);
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            warn!("Failed to remove orphaned worktree {}: {}", worktree_id, e);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "spawn_blocking panicked during orphaned worktree cleanup {}: {}",
+                                worktree_id, e
+                            );
+                        }
+                    }
                 }
             }
             Effect::GarbageCollectState {

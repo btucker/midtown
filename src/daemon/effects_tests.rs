@@ -2442,6 +2442,67 @@ fn read_channel_messages(
         .collect()
 }
 
+#[tokio::test]
+async fn cleanup_orphaned_worktrees_posts_success_only_after_actual_cleanup() {
+    let (state, temp_dir, _guard) = make_insight_test_state("orphan-cleanup-success");
+    let orphan_id = "task-9001-orphan";
+    let orphan_path = state
+        .coworkers
+        .worktree_manager()
+        .task_worktrees_base()
+        .join(orphan_id);
+    std::fs::create_dir_all(&orphan_path).expect("create orphan worktree dir");
+
+    execute_effects(
+        vec![Effect::CleanupOrphanedWorktrees { retention_hours: 0 }],
+        &state,
+    )
+    .await;
+
+    assert!(
+        !orphan_path.exists(),
+        "orphaned worktree should be removed on successful cleanup"
+    );
+
+    let ops_messages = read_channel_messages(&temp_dir, "ops");
+    assert!(
+        ops_messages.iter().any(|m| {
+            m.get("content")
+                .and_then(|v| v.as_str())
+                .is_some_and(|content| content.contains(orphan_id))
+        }),
+        "ops channel should get a success message after cleanup"
+    );
+}
+
+#[tokio::test]
+async fn cleanup_orphaned_worktrees_skips_success_message_on_cleanup_failure() {
+    let (state, temp_dir, _guard) = make_insight_test_state("orphan-cleanup-failure");
+    let orphan_id = "task-9002-orphan";
+    let orphan_path = state
+        .coworkers
+        .worktree_manager()
+        .task_worktrees_base()
+        .join(orphan_id);
+    std::fs::create_dir_all(&orphan_path).expect("create orphan worktree dir");
+
+    // Force cleanup failure: prune requires a valid git repo at repo_root.
+    // Removing .git causes force_cleanup_task_worktree() to return Err.
+    std::fs::remove_dir_all(temp_dir.path().join(".git")).expect("remove .git");
+
+    execute_effects(
+        vec![Effect::CleanupOrphanedWorktrees { retention_hours: 0 }],
+        &state,
+    )
+    .await;
+
+    let ops_messages = read_channel_messages(&temp_dir, "ops");
+    assert!(
+        ops_messages.is_empty(),
+        "cleanup failure should not emit a false success message to ops"
+    );
+}
+
 #[test]
 fn test_hash_insight_deterministic() {
     let hash1 = super::hash_insight("Test insight content");

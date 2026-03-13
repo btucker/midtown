@@ -1096,8 +1096,31 @@ impl DaemonState {
                 }
             }
 
-            if clear_worktree_binding && ps.worktree_registry.unbind_coworker(name) {
-                changed = true;
+            if clear_worktree_binding {
+                let now = chrono::Utc::now();
+                let bound_worktree_ids: Vec<String> = ps
+                    .worktree_registry
+                    .all_assignments()
+                    .iter()
+                    .filter(|(_, assignment)| {
+                        assignment
+                            .current_coworker
+                            .as_ref()
+                            .is_some_and(|c| c.eq_ignore_ascii_case(name))
+                    })
+                    .map(|(worktree_id, _)| worktree_id.clone())
+                    .collect();
+
+                for worktree_id in &bound_worktree_ids {
+                    ps.worktree_registry.mark_completed(worktree_id, now);
+                }
+                if !bound_worktree_ids.is_empty() {
+                    changed = true;
+                }
+
+                if ps.worktree_registry.unbind_coworker(name) {
+                    changed = true;
+                }
             }
 
             if changed && let Err(e) = ps.save_for_repo(self.paths.dir_key()) {

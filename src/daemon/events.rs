@@ -172,6 +172,8 @@ pub async fn evaluate_tick(
                         &snap.coworkers.active_names,
                         retention_period,
                     ));
+                    effects
+                        .push(super::effects::Effect::CleanupOrphanedWorktrees { retention_hours });
                 }
 
                 // State GC always runs: reviewer session pruning is immediate (no retention),
