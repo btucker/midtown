@@ -1609,8 +1609,10 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
             "pending nudge should be cleared"
         );
     }
-    // Task assignment is derived from session records — cleanup_coworker_state
-    // removes the name_to_session mapping, so the assignment is no longer visible.
+    assert!(
+        state.get_task_id_for_coworker(name).await.is_none(),
+        "task assignment should not be visible after cleanup"
+    );
     {
         let headers_map = state.tool_activity_headers.read().unwrap();
         assert!(

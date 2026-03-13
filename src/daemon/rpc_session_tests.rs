@@ -416,7 +416,10 @@ async fn test_session_clear_cleans_up_transient_state() {
             "pending nudges should be cleared after session clear"
         );
     }
-    // Task assignment is derived from session records — cleanup removes name_to_session
+    assert!(
+        state.get_task_id_for_coworker(name).await.is_none(),
+        "task assignment should not be visible after session clear"
+    );
 }
 
 #[tokio::test]
