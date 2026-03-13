@@ -1495,3 +1495,151 @@ async fn test_spawn_name_excludes_active_sessions() {
          were excluded, so 'park' would be allocated causing a name collision."
     );
 }
+
+// ============================================================================
+// Thread binding — fork_bound_threads + SessionRecord persistence
+// ============================================================================
+
+/// Tests that --thread binding correctly populates both the in-memory
+/// fork_bound_threads cache and the persisted SessionRecord.bound_thread_id.
+///
+/// We can't call handle_coworker_spawn (it spawns a real process), so this
+/// tests the binding logic directly on DaemonState, mirroring the code path
+/// in handle_coworker_spawn lines 149-172.
+#[tokio::test]
+async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
+    let (state, _tmp, _guard) = make_test_state();
+    let coworker_name = "madison";
+    let thread_id = "msg-abc-123";
+
+    // Simulate: a SessionRecord exists for this coworker (created by spawn_coworker)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-test".to_string(),
+            super::super::state::SessionRecord {
+                session_id: "sess-test".to_string(),
+                task_id: None,
+                current_name: Some(coworker_name.to_string()),
+                preferred_name: Some(coworker_name.to_string()),
+                working_dir: "/tmp".to_string(),
+                branch: None,
+                pr_number: None,
+                initial_prompt: None,
+                is_reviewer: false,
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                created_at: chrono::Utc::now(),
+                resume_on_startup: false,
+                bound_thread_id: None,
+                last_active: chrono::Utc::now(),
+                purpose: String::new(),
+                pid: None,
+                channel: None,
+                provider: Some(crate::auth::AuthProvider::Claude),
+                platform: None,
+                profile: None,
+            },
+        );
+    }
+
+    // Apply the same binding logic as handle_coworker_spawn --thread
+    {
+        state
+            .fork_bound_threads
+            .lock()
+            .unwrap()
+            .insert(coworker_name.to_string(), thread_id.to_string());
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        if let Some(record) = ps
+            .sessions
+            .values_mut()
+            .find(|r| r.current_name.as_deref() == Some(coworker_name))
+        {
+            record.bound_thread_id = Some(thread_id.to_string());
+        }
+    }
+
+    // Verify: fork_bound_threads contains the binding
+    {
+        let bound = state.fork_bound_threads.lock().unwrap();
+        assert_eq!(
+            bound.get(coworker_name),
+            Some(&thread_id.to_string()),
+            "fork_bound_threads should contain the thread binding"
+        );
+    }
+
+    // Verify: SessionRecord.bound_thread_id is set
+    {
+        let ps = state.persistent_state.lock().await;
+        let record = ps
+            .sessions
+            .values()
+            .find(|r| r.current_name.as_deref() == Some(coworker_name))
+            .expect("SessionRecord should exist");
+        assert_eq!(
+            record.bound_thread_id.as_deref(),
+            Some(thread_id),
+            "SessionRecord.bound_thread_id should be persisted"
+        );
+    }
+}
+
+/// Tests that when no SessionRecord matches the coworker name, the thread
+/// binding still populates fork_bound_threads (for immediate routing) even
+/// though the persistence path silently fails to find a record.
+#[tokio::test]
+async fn test_thread_binding_no_session_record_still_sets_in_memory() {
+    let (state, _tmp, _guard) = make_test_state();
+    let coworker_name = "riverside";
+    let thread_id = "msg-xyz-789";
+
+    // No SessionRecord exists — simulate a race or missing record
+
+    // Apply binding logic
+    {
+        state
+            .fork_bound_threads
+            .lock()
+            .unwrap()
+            .insert(coworker_name.to_string(), thread_id.to_string());
+    }
+    {
+        let mut ps = state.persistent_state.lock().await;
+        // This find will return None — no record matches
+        if let Some(record) = ps
+            .sessions
+            .values_mut()
+            .find(|r| r.current_name.as_deref() == Some(coworker_name))
+        {
+            record.bound_thread_id = Some(thread_id.to_string());
+        }
+        // No save error — just no record found
+    }
+
+    // Verify: fork_bound_threads still has the binding (immediate routing works)
+    {
+        let bound = state.fork_bound_threads.lock().unwrap();
+        assert_eq!(
+            bound.get(coworker_name),
+            Some(&thread_id.to_string()),
+            "fork_bound_threads should be set even without a SessionRecord"
+        );
+    }
+
+    // Verify: no SessionRecord was created (we don't create records here)
+    {
+        let ps = state.persistent_state.lock().await;
+        let record = ps
+            .sessions
+            .values()
+            .find(|r| r.current_name.as_deref() == Some(coworker_name));
+        assert!(
+            record.is_none(),
+            "No SessionRecord should exist — binding logic doesn't create records"
+        );
+    }
+}
