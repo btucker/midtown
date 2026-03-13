@@ -435,6 +435,46 @@ impl LaunchConfig {
         }
     }
 
+    /// Create a config for resuming an existing reviewer session via @mention.
+    ///
+    /// Uses reviewer-appropriate model and auth provider (not coworker defaults),
+    /// but takes a nudge message as initial_prompt instead of the full reviewer
+    /// launch prompt (the session already has its system prompt from the original launch).
+    pub fn resume_reviewer(
+        name: impl Into<String>,
+        dir_key: impl Into<String>,
+        session_id: String,
+        initial_prompt: Option<String>,
+        task_id: Option<String>,
+    ) -> Self {
+        let repo = dir_key.into();
+        let auth_provider = crate::config::get_execution_provider_for_role(
+            &repo,
+            crate::config::ExecutionRole::Reviewer,
+        );
+        let model =
+            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
+                .map(|s| s.as_model_str().to_string())
+                .unwrap_or_else(|| "opus".to_string());
+        LaunchConfig {
+            name: name.into(),
+            session_mode: SessionMode::ResumeSession(session_id),
+            role: CoworkerRole::Reviewer,
+            initial_prompt,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model,
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider,
+            escalation_target: None,
+            task_id,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+        }
+    }
+
     /// Create a config for the Project Lead session.
     ///
     /// When `channel` is None, creates the Project Lead (uses `main_lead_system_prompt()`).

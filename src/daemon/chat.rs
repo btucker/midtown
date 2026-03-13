@@ -247,11 +247,14 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             let ps = state.persistent_state.lock().await;
             ps.sessions
                 .iter()
-                .find(|(_, r)| {
+                .filter(|(_, r)| {
                     r.is_reviewer
                         && (r.preferred_name.as_deref() == Some(&target_name)
                             || r.current_name.as_deref() == Some(&target_name))
                 })
+                // Pick the most recently active reviewer to avoid nondeterminism
+                // when multiple stopped reviewer sessions share the same name.
+                .max_by_key(|(_, r)| r.last_active)
                 .map(|(sid, r)| ReviewerSessionInfo {
                     session_id: sid.clone(),
                     task_id: r.task_id.clone(),
@@ -395,10 +398,10 @@ fn mention_action_to_effects(
             // instead of spawning a fresh dev session. This preserves reviewer
             // context (ephemeral lifecycle, review state, etc.).
             if let Some(info) = reviewer_session {
-                let config = crate::launch::LaunchConfig::coworker(
+                let config = crate::launch::LaunchConfig::resume_reviewer(
                     name.clone(),
                     repo_name.to_string(),
-                    crate::launch::SessionMode::ResumeSession(info.session_id.clone()),
+                    info.session_id.clone(),
                     Some(message),
                     info.task_id,
                 );

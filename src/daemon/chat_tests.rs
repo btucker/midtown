@@ -219,6 +219,12 @@ fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
                 config.session_mode,
                 crate::launch::SessionMode::ResumeSession("sess-amsterdam-reviewer".to_string())
             );
+            // Verify reviewer role is preserved (not coworker)
+            assert_eq!(
+                config.role,
+                crate::launch::CoworkerRole::Reviewer,
+                "Resumed reviewer should have Reviewer role, not Coworker"
+            );
         }
         _ => panic!(
             "Expected ResumeCoworker for reviewer session, got {:?}",
