@@ -11,6 +11,7 @@ import {
 	getChannelPrs,
 	getChannelTaskCount,
 	getChannelThreads,
+	getDisplayableDmChannels,
 	getMostRecentToolCall,
 	getPrUrl,
 	hasInProgressToolBlocks,
@@ -428,6 +429,21 @@ describe("computeVisibleDmChannels", () => {
 		});
 		// All 3 are visited, so filtered set = full set → "show less" is redundant
 		expect(filtered.length).toBe(allDmsNoUnread.length);
+	});
+});
+
+describe("getDisplayableDmChannels", () => {
+	it("hides legacy DM mirrors for root leads that already own a real channel", () => {
+		const result = getDisplayableDmChannels([
+			{ name: "midtown", is_dm: false },
+			{ name: "auth", is_dm: false },
+			{ name: "dm-auth", is_dm: true },
+			{ name: "dm-midtown", is_dm: true },
+			{ name: "dm-park", is_dm: true },
+			{ name: "dm-auth-discuss-a1b2", is_dm: true },
+		]);
+
+		expect(result.map((ch) => ch.name)).toEqual(["dm-park", "dm-auth-discuss-a1b2"]);
 	});
 });
 

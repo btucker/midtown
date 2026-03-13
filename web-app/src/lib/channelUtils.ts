@@ -220,6 +220,21 @@ export function computeVisibleDmChannels(
 	return dmChannels.filter((ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name));
 }
 
+/**
+ * Filter DM channels that should be displayed in the UI.
+ * Root leads already have a real channel, so legacy `dm-<channel>` mirrors are hidden.
+ */
+export function getDisplayableDmChannels(channelList) {
+	const regularChannelNames = new Set(
+		channelList.filter((ch) => !(ch.is_dm || ch.name.startsWith("dm-"))).map((ch) => ch.name),
+	);
+	return channelList.filter((ch) => {
+		if (!(ch.is_dm || ch.name.startsWith("dm-"))) return false;
+		const dmPeer = ch.name.replace(/^dm-/, "");
+		return !regularChannelNames.has(dmPeer);
+	});
+}
+
 // ── Thread sidebar utilities ──────────────────────────────────────────────────
 
 /**

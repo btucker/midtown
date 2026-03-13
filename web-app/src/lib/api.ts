@@ -1390,6 +1390,18 @@ export async function selectDm(coworkerName: string): Promise<void> {
 	closeThread({ pushState: false });
 
 	const currentChannels = get(channels);
+	const matchingLeadChannel = currentChannels.find(
+		(ch) => ch.name === coworkerName && !(ch.is_dm || ch.name.startsWith("dm-")),
+	);
+	if (matchingLeadChannel) {
+		// Root leads already own a real channel. Keep accidental DM navigation
+		// pinned to that channel instead of recreating a duplicate dm-* mirror.
+		activeChannel.set(coworkerName);
+		pushNavState({ channel: coworkerName });
+		channels.update((channelList) => channelList.map((ch) => (ch.name === coworkerName ? { ...ch, unread: 0 } : ch)));
+		fetchHistory(coworkerName);
+		return;
+	}
 	const exists = currentChannels.some((ch) => ch.name === channelName);
 
 	if (!exists) {

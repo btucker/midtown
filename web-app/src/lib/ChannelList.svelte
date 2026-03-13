@@ -24,6 +24,7 @@ import {
 	getChannelTasks,
 	getChannelThreads,
 	getCompletedTaskThreadIds,
+	getDisplayableDmChannels,
 	getTaskThreadIds,
 } from "./channelUtils.ts";
 import { getSenderColor } from "./messageUtils.ts";
@@ -64,7 +65,7 @@ $: {
 }
 
 $: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith("dm-"));
-$: dmChannels = $channels.filter((ch) => ch.is_dm || ch.name.startsWith("dm-"));
+$: dmChannels = getDisplayableDmChannels($channels);
 
 // Track which channels have their task lists expanded (default: collapsed)
 // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5
