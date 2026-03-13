@@ -84,9 +84,6 @@ fn socket_path() -> PathBuf {
 /// Track whether a progress line is currently displayed (needs clearing before other output).
 static PROGRESS_LINE_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
-#[cfg(target_os = "macos")]
-static ACCESSIBILITY_SETTINGS_OPENED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 /// Clear the in-progress gauge line so subsequent output (errors, warnings) doesn't overlap it.
 fn clear_startup_progress() {
@@ -1469,316 +1466,10 @@ fn resolve_attach_context(project: Option<&str>) -> Result<AttachContext, String
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AttachHost {
-    Ghostty,
-    ITerm,
-    Unknown,
-}
-
-impl AttachHost {
-    pub(super) fn detect() -> Self {
-        let term_program = std::env::var("TERM_PROGRAM")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if term_program == "ghostty" {
-            return Self::Ghostty;
-        }
-        if term_program == "iterm.app" {
-            return Self::ITerm;
-        }
-
-        let lc_terminal = std::env::var("LC_TERMINAL")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if lc_terminal == "iterm2" {
-            return Self::ITerm;
-        }
-
-        Self::Unknown
-    }
-}
-
-fn shell_quote(input: &str) -> String {
-    let escaped = input.replace('\'', "'\"'\"'");
-    format!("'{}'", escaped)
-}
-
-fn escape_applescript_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn parse_ghostty_keybind_for_action(list_keybinds_output: &str, action: &str) -> Option<String> {
-    for line in list_keybinds_output.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("keybind = ") else {
-            continue;
-        };
-        let Some((binding, bound_action)) = rest.split_once('=') else {
-            continue;
-        };
-        if bound_action.trim() == action {
-            return Some(binding.trim().to_string());
-        }
-    }
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn is_accessibility_permission_error(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    lower.contains("not allowed to send keystrokes") || lower.contains("(1002)")
-}
-
-#[cfg(target_os = "macos")]
-fn is_automation_permission_error(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    lower.contains("not authorized to send apple events") || lower.contains("(-1743)")
-}
-
-#[cfg(target_os = "macos")]
-fn maybe_open_permission_settings(stderr: &str) -> Option<String> {
-    let needs_accessibility = is_accessibility_permission_error(stderr);
-    let needs_automation = is_automation_permission_error(stderr);
-    if !needs_accessibility && !needs_automation {
-        return None;
-    }
-
-    if !ACCESSIBILITY_SETTINGS_OPENED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        if needs_accessibility {
-            let _ = Command::new("open")
-                .arg(
-                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-                )
-                .status();
-        }
-        if needs_automation {
-            let _ = Command::new("open")
-                .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
-                .status();
-        }
-    }
-
-    Some(
-        "Ghostty does not expose a direct API to run commands in a new split, so Midtown uses \
-macOS System Events to send your split keybinding and type the Lead command. \
-This can require both Accessibility ('control your computer') and Automation permission. \
-Opened the relevant System Settings privacy panes. \
-If Ghostty does not appear automatically, use '+' in Accessibility to add Ghostty.app \
-and the app running `midtown`, then rerun `midtown view`."
-            .to_string(),
-    )
-}
-
-fn trigger_ghostty_keybinding(binding: &str) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut modifiers: Vec<&str> = Vec::new();
-        let mut key_token: Option<String> = None;
-
-        for token in binding
-            .split('+')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            match token.to_ascii_lowercase().as_str() {
-                "super" | "cmd" | "command" => modifiers.push("command down"),
-                "shift" => modifiers.push("shift down"),
-                "alt" | "option" => modifiers.push("option down"),
-                "ctrl" | "control" => modifiers.push("control down"),
-                other => {
-                    if key_token.is_some() {
-                        return Ok(false);
-                    }
-                    key_token = Some(other.to_string());
-                }
-            }
-        }
-
-        let Some(key_token) = key_token else {
-            return Ok(false);
-        };
-
-        let using_clause = if modifiers.is_empty() {
-            String::new()
-        } else {
-            format!(" using {{{}}}", modifiers.join(", "))
-        };
-
-        let key_event = if key_token == "enter" {
-            format!(
-                "tell application \"System Events\" to key code 36{}",
-                using_clause
-            )
-        } else {
-            let key_text = if let Some(digit) = key_token.strip_prefix("digit_") {
-                if digit.len() == 1 {
-                    digit.to_string()
-                } else {
-                    return Ok(false);
-                }
-            } else if key_token.chars().count() == 1 {
-                key_token
-            } else {
-                return Ok(false);
-            };
-
-            format!(
-                "tell application \"System Events\" to keystroke \"{}\"{}",
-                escape_applescript_string(&key_text),
-                using_clause
-            )
-        };
-        let script = format!(
-            "tell application \"Ghostty\" to activate\n\
-             delay 0.05\n\
-             {}\n\
-             delay 0.05",
-            key_event
-        );
-
-        let output = Command::new("osascript")
-            .args(["-e", &script])
-            .output()
-            .map_err(|e| format!("Failed to trigger Ghostty keybinding via osascript: {}", e))?;
-        if output.status.success() {
-            return Ok(true);
-        }
-
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if let Some(msg) = maybe_open_permission_settings(&stderr) {
-            return Err(msg);
-        }
-
-        Ok(false)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = binding;
-        Ok(false)
-    }
-}
-
-fn trigger_ghostty_split_action() -> Result<bool, String> {
-    if let Ok(output) = Command::new("ghostty").arg("+list-keybinds").output()
-        && output.status.success()
-    {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for action in ["new_split:right", "new_split_right", "new_split"] {
-            if let Some(binding) = parse_ghostty_keybind_for_action(&stdout, action)
-                && trigger_ghostty_keybinding(&binding)?
-            {
-                return Ok(true);
-            }
-        }
-    }
-
-    for action in ["new_split_right", "new_split:right", "new_split"] {
-        let status = Command::new("ghostty")
-            .args(["+action", action])
-            .status()
-            .map_err(|e| format!("Failed to run ghostty split action '{}': {}", action, e))?;
-        if status.success() {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
-
-fn launch_iterm_split(cwd: &str, shell_command: &str) -> Result<bool, String> {
-    let typed_cmd = format!("cd {} && {}", shell_quote(cwd), shell_command);
-    let script = format!(
-        r#"tell application \"iTerm2\"
-    if (count of windows) = 0 then
-        create window with default profile
-    end if
-    tell current window
-        tell current session
-            set newSession to (split horizontally with default profile)
-            tell newSession
-                write text \"{}\"
-            end tell
-        end tell
-    end tell
-end tell"#,
-        escape_applescript_string(&typed_cmd)
-    );
-
-    let status = Command::new("osascript")
-        .args(["-e", &script])
-        .status()
-        .map_err(|e| format!("Failed to run osascript for iTerm split: {}", e))?;
-    Ok(status.success())
-}
-
-pub(super) fn launch_lead_split(
-    host: AttachHost,
-    cwd: &str,
-    shell_command: &str,
-) -> Result<String, String> {
-    match host {
-        AttachHost::Ghostty => {
-            if !trigger_ghostty_split_action()? {
-                return Err(
-                    "ghostty split action failed (tried keybind dispatch and known action names)"
-                        .to_string(),
-                );
-            }
-
-            #[cfg(target_os = "macos")]
-            {
-                std::thread::sleep(std::time::Duration::from_millis(150));
-                let typed_cmd = format!("cd {} && {}", shell_quote(cwd), shell_command);
-                let script = format!(
-                    "tell application \"Ghostty\" to activate\n\
-                     delay 0.05\n\
-                     tell application \"System Events\" to keystroke \"{}\"\n\
-                     tell application \"System Events\" to key code 36",
-                    escape_applescript_string(&typed_cmd)
-                );
-                let output = Command::new("osascript")
-                    .args(["-e", &script])
-                    .output()
-                    .map_err(|e| format!("Failed to dispatch lead command to Ghostty: {}", e))?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    if let Some(msg) = maybe_open_permission_settings(&stderr) {
-                        return Err(msg);
-                    }
-                    return Err(format!(
-                        "Ghostty split opened but failed to send lead command: {}",
-                        stderr.trim()
-                    ));
-                }
-                Ok("ghostty split pane".to_string())
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                Err(
-                    "Ghostty split command injection is currently only supported on macOS"
-                        .to_string(),
-                )
-            }
-        }
-        AttachHost::ITerm => {
-            if cfg!(target_os = "macos") && launch_iterm_split(cwd, shell_command)? {
-                return Ok("iTerm split pane".to_string());
-            }
-            Err("iTerm split launch failed".to_string())
-        }
-        AttachHost::Unknown => {
-            Err("Unsupported terminal host for automatic split. Use ghostty or iTerm.".to_string())
-        }
-    }
-}
-
 /// Handle `midtown view` command.
 ///
 /// By default, starts `midtown chat` in the current terminal without touching the lead session.
-/// With `--attach`, also attaches to the Lead's headless session and opens it in a split pane.
+/// With `--attach`, attaches to the Lead session first, then returns to chat on exit.
 pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
     let ctx = resolve_attach_context(project)?;
 
@@ -1894,27 +1585,27 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             },
         )?;
 
-        let host = AttachHost::detect();
+        let attach_result = Command::new("sh")
+            .args(["-lc", &lead_shell_command])
+            .current_dir(&cwd)
+            .status()
+            .map_err(|e| format!("Failed to launch interactive session: {}", e));
 
-        if let Err(e) = launch_lead_split(host, &cwd, &lead_shell_command) {
-            // Detach so the lead resumes headless
-            let _ = client.session_detach(&ctx.project_name);
+        // Always detach on exit so the daemon resumes headless mode.
+        let _ = client.session_detach(&ctx.project_name);
+
+        let attach_status = attach_result?;
+        if !attach_status.success() {
             if let Some(cwd) = original_cwd {
                 let _ = std::env::set_current_dir(cwd);
             }
             return Err(format!(
-                "Failed to create Lead split. Chat was not started.\n{}\n\n\
-To open chat without a Lead split, run:\n  midtown view",
-                e
+                "Attached session exited with status: {:?}",
+                attach_status.code()
             ));
         }
 
         let chat_result = super::chat::run();
-
-        // Always detach on exit so the daemon resumes headless mode.
-        // Without this, a normal exit leaves the lead in `attached_coworkers`
-        // and subsequent `midtown view --attach` calls fail with "already attached".
-        let _ = client.session_detach(&ctx.project_name);
 
         if let Some(cwd) = original_cwd {
             let _ = std::env::set_current_dir(cwd);
@@ -2272,65 +1963,6 @@ mod tests {
         assert!(validate_project_name("my/project").is_err());
         assert!(validate_project_name("my;project").is_err());
         assert!(validate_project_name("$(whoami)").is_err());
-    }
-
-    #[test]
-    fn test_parse_ghostty_keybind_for_action_finds_binding() {
-        let output = "keybind = super+shift+d=new_split:down\nkeybind = super+d=new_split:right\n";
-        assert_eq!(
-            parse_ghostty_keybind_for_action(output, "new_split:right"),
-            Some("super+d".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_ghostty_keybind_for_action_returns_none_when_missing() {
-        let output = "keybind = super+shift+d=new_split:down\n";
-        assert_eq!(
-            parse_ghostty_keybind_for_action(output, "new_split:right"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_ghostty_split_action_works_when_running_inside_ghostty() {
-        let term_program = std::env::var("TERM_PROGRAM")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if term_program != "ghostty" {
-            eprintln!("Skipping: not running inside Ghostty.");
-            return;
-        }
-        if std::env::var("MIDTOWN_RUN_GHOSTTY_SPLIT_TEST").unwrap_or_default() != "1" {
-            eprintln!("Skipping: set MIDTOWN_RUN_GHOSTTY_SPLIT_TEST=1 to enable.");
-            return;
-        }
-
-        let status = trigger_ghostty_split_action().expect("ghostty split action dispatch failed");
-        assert!(
-            status,
-            "Expected a Ghostty split action/keybind to succeed when running inside Ghostty."
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn test_accessibility_permission_error_detection() {
-        assert!(is_accessibility_permission_error(
-            "System Events got an error: osascript is not allowed to send keystrokes. (1002)"
-        ));
-        assert!(is_automation_permission_error(
-            "Not authorized to send Apple events to System Events. (-1743)"
-        ));
-        assert!(is_accessibility_permission_error(
-            "System Events got an error: osascript is not allowed to send keystrokes. (1002)"
-        ));
-        assert!(!is_automation_permission_error(
-            "failed to initialize ghostty error=error.InvalidAction"
-        ));
-        assert!(!is_accessibility_permission_error(
-            "failed to initialize ghostty error=error.InvalidAction"
-        ));
     }
 
     #[test]
