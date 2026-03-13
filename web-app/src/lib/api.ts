@@ -30,9 +30,20 @@ import {
 	userSenderName,
 } from "./store.ts";
 import { isToolOnly } from "./toolRunGrouping.ts";
+import type {
+	AuthProfile,
+	Channel,
+	Coworker,
+	DaemonStatus,
+	Message,
+	PendingQuestion,
+	Project,
+	SearchResponse,
+	Task,
+} from "./types.ts";
 
 // Strip markdown from the first non-empty line of message content.
-function extractPlainText(content) {
+function extractPlainText(content: string | null | undefined): string {
 	if (!content) return "";
 	const firstLine = content.split("\n").find((l) => l.trim().length > 0) || "";
 	return firstLine
@@ -45,7 +56,7 @@ function extractPlainText(content) {
 }
 
 // Extract a short subject line from message content for sidebar thread labels.
-function extractThreadSubject(content) {
+function extractThreadSubject(content: string | null | undefined): string {
 	const plain = extractPlainText(content);
 	if (!plain) return "Thread";
 	return plain.length > 60 ? `${plain.slice(0, 57)}...` : plain;
@@ -54,7 +65,12 @@ function extractThreadSubject(content) {
 // Track a thread in the sidebar (unless previously dismissed by user).
 // When the thread is already tracked, preserves lastActivity (avoids re-sorting)
 // and only upgrades the subject if a better one is available.
-function trackThread(threadParentId, channelName, content, replyCount) {
+function trackThread(
+	threadParentId: string,
+	channelName: string,
+	content: string | null | undefined,
+	replyCount?: number,
+): void {
 	const dismissed = get(dismissedThreads);
 	if (dismissed.has(threadParentId)) return;
 	const newSubject = extractThreadSubject(content);
@@ -79,7 +95,7 @@ function trackThread(threadParentId, channelName, content, replyCount) {
 }
 
 // Dismiss a tracked thread — removes from sidebar, prevents re-tracking.
-export function dismissThread(threadParentId) {
+export function dismissThread(threadParentId: string): void {
 	trackedThreads.update((tracked) => {
 		const next = { ...tracked };
 		delete next[threadParentId];
@@ -93,10 +109,10 @@ export function dismissThread(threadParentId) {
 	});
 }
 
-let ws = null;
-let reconnectTimeout = null;
-let statusPollInterval = null;
-let usagePollInterval = null;
+let ws: WebSocket | null = null;
+let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+let statusPollInterval: ReturnType<typeof setInterval> | null = null;
+let usagePollInterval: ReturnType<typeof setInterval> | null = null;
 
 // Unique key for the bulk (all-channels) fetchHistory request. Using a Symbol
 // avoids collisions with real channel names in the AbortController map.
@@ -105,10 +121,10 @@ const BULK_FETCH_KEY = Symbol("bulk-fetch");
 // AbortController for in-flight fetchHistory requests, keyed by channel name.
 // When a new fetch starts for a channel, any previous in-flight fetch for that
 // channel is aborted to prevent out-of-order responses from stale requests.
-const fetchHistoryControllers = new Map();
+const fetchHistoryControllers = new Map<string | symbol, AbortController>();
 
 // AbortController for in-flight fetchChannelAgentsMd requests, keyed by channel name.
-const fetchAgentsMdControllers = new Map();
+const fetchAgentsMdControllers = new Map<string, AbortController>();
 
 // ── Browser history navigation ──────────────────────────────────────────────
 // Tracks whether we're currently handling a popstate event to prevent
@@ -122,7 +138,7 @@ let projectApiBase = "";
 const WEBSERVER_API = "/api";
 
 // Fetch the list of projects from the shared webserver
-export async function fetchProjects() {
+export async function fetchProjects(): Promise<Project[]> {
 	try {
 		const res = await fetch(`${WEBSERVER_API}/projects`);
 		if (res.ok) {
@@ -137,20 +153,22 @@ export async function fetchProjects() {
 }
 
 // Fetch the list of available channels
-export async function fetchChannels(includeArchived = false) {
+export async function fetchChannels(includeArchived = false): Promise<Channel[]> {
 	try {
 		const url = includeArchived ? `${getApiBase()}/channels?include_archived=true` : `${getApiBase()}/channels`;
 		const res = await fetch(url);
 		if (res.ok) {
 			const data = await res.json();
-			const channelList = data.channels.map((ch) => ({
-				name: typeof ch === "string" ? ch : ch.name,
-				unread: 0,
-				has_pr: false,
-				ci_status: null,
-				is_archived: typeof ch === "object" && ch.is_archived,
-				is_dm: typeof ch === "object" ? ch.is_dm || ch.name.startsWith("dm-") : ch.startsWith("dm-"),
-			}));
+			const channelList: Channel[] = data.channels.map(
+				(ch: string | { name: string; is_archived?: boolean; is_dm?: boolean }) => ({
+					name: typeof ch === "string" ? ch : ch.name,
+					unread: 0,
+					has_pr: false,
+					ci_status: null,
+					is_archived: typeof ch === "object" && ch.is_archived,
+					is_dm: typeof ch === "object" ? ch.is_dm || ch.name.startsWith("dm-") : ch.startsWith("dm-"),
+				}),
+			);
 			// Backend already returns channels sorted with main project channel first
 			channels.set(channelList);
 			return channelList;
@@ -164,7 +182,7 @@ export async function fetchChannels(includeArchived = false) {
 }
 
 // Archive a channel
-export async function archiveChannel(channelName) {
+export async function archiveChannel(channelName: string): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channelName)}/archive`, {
 			method: "POST",
@@ -174,14 +192,14 @@ export async function archiveChannel(channelName) {
 		}
 		const data = await res.json().catch(() => ({}));
 		return { ok: false, error: data.error || `HTTP ${res.status}` };
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to archive channel:", err);
-		return { ok: false, error: err.message };
+		return { ok: false, error: (err as Error).message };
 	}
 }
 
 // Unarchive a channel
-export async function unarchiveChannel(channelName) {
+export async function unarchiveChannel(channelName: string): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channelName)}/unarchive`, {
 			method: "POST",
@@ -191,14 +209,14 @@ export async function unarchiveChannel(channelName) {
 		}
 		const data = await res.json().catch(() => ({}));
 		return { ok: false, error: data.error || `HTTP ${res.status}` };
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to unarchive channel:", err);
-		return { ok: false, error: err.message };
+		return { ok: false, error: (err as Error).message };
 	}
 }
 
 // Switch to a different project by name
-export function switchProject(projectName, webhookPort) {
+export function switchProject(projectName: string, webhookPort: number | null): void {
 	// Disconnect existing WebSocket
 	if (ws) {
 		ws.close();
@@ -292,17 +310,17 @@ export function switchProject(projectName, webhookPort) {
 }
 
 // Get the API base for the current project
-export function getApiBase() {
+export function getApiBase(): string {
 	return projectApiBase ? `${projectApiBase}/api` : "/api";
 }
 
 // Backward-compat fallback for older history payloads:
 // if thread replies are included inline, compute reply_count/last_reply on
 // parents and filter replies from the main timeline.
-function annotateThreadReplyCounts(msgs) {
-	const replyCountMap = {};
-	const lastReplyMap = {};
-	const participantsMap = {};
+function annotateThreadReplyCounts(msgs: Message[]): Message[] {
+	const replyCountMap: Record<string, number> = {};
+	const lastReplyMap: Record<string, Message> = {};
+	const participantsMap: Record<string, string[]> = {};
 	for (const m of msgs) {
 		if (m.thread_parent_id && !isToolOnly(m)) {
 			replyCountMap[m.thread_parent_id] = (replyCountMap[m.thread_parent_id] || 0) + 1;
@@ -330,7 +348,7 @@ function annotateThreadReplyCounts(msgs) {
 // Fetch channel message history
 // If channelName is provided, fetches only that channel's messages.
 // Otherwise, fetches all messages from the main channel.
-export async function fetchHistory(channelName = null) {
+export async function fetchHistory(channelName: string | null = null): Promise<void> {
 	// Abort any in-flight fetch for the same channel to prevent out-of-order
 	// responses when the user rapidly switches channels.
 	const cacheKey = channelName || BULK_FETCH_KEY;
@@ -385,7 +403,7 @@ export async function fetchHistory(channelName = null) {
 				}));
 			} else {
 				// Fetching all messages (initial load) - group by channel
-				const byChannel = {};
+				const byChannel: Record<string, Message[]> = {};
 				for (const msg of data) {
 					const name = msg.channel || get(activeProject);
 					if (!byChannel[name]) {
@@ -427,8 +445,8 @@ export async function fetchHistory(channelName = null) {
 				// content to avoid showing ghost channels for invalid/deleted .jsonl files.
 			}
 		}
-	} catch (err) {
-		if (err.name === "AbortError") {
+	} catch (err: unknown) {
+		if ((err as Error).name === "AbortError") {
 			// Request was cancelled by a newer fetchHistory call — expected during
 			// rapid channel switching. No action needed.
 			return;
@@ -446,7 +464,7 @@ export async function fetchHistory(channelName = null) {
 }
 
 // Fetch daemon/coworker status and update kanban data
-export async function fetchStatus() {
+export async function fetchStatus(): Promise<void> {
 	try {
 		const res = await fetch(`${getApiBase()}/status`);
 		if (res.ok) {
@@ -476,7 +494,7 @@ export async function fetchStatus() {
 }
 
 // Fetch API usage data (session + weekly utilization)
-export async function fetchUsage() {
+export async function fetchUsage(): Promise<void> {
 	try {
 		const res = await fetch(`${getApiBase()}/usage`);
 		if (res.status === 204) {
@@ -498,7 +516,7 @@ export async function fetchUsage() {
 	}
 }
 
-function updateKanbanData(data) {
+function updateKanbanData(data: DaemonStatus): void {
 	const tasks = data.tasks || [];
 	const prs = data.pull_requests || [];
 	const mergedPrs = data.merged_prs || [];
@@ -530,7 +548,7 @@ function updateKanbanData(data) {
 	});
 }
 
-function updateRepoStatus(data) {
+function updateRepoStatus(data: DaemonStatus): void {
 	const rs = data.repo_status || {};
 	repoStatus.set({
 		repoName: data.repo_name || "",
@@ -547,7 +565,7 @@ function updateRepoStatus(data) {
 }
 
 // Connect to WebSocket for live updates
-export function connectWebSocket() {
+export function connectWebSocket(): void {
 	if (ws) {
 		ws.close();
 	}
@@ -607,35 +625,36 @@ export function connectWebSocket() {
 }
 
 // Callbacks for handling error responses from the server
-const errorCallbacks = new Map();
+const errorCallbacks = new Map<number, (msg: string) => void>();
 let nextErrorCallbackId = 1;
 
 // Register a callback to handle the next error from the server
 // Returns a callback ID that can be used to unregister if needed
-export function onNextError(callback) {
+export function onNextError(callback: (msg: string) => void): number {
 	const id = nextErrorCallbackId++;
 	errorCallbacks.set(id, callback);
 	return id;
 }
 
 // Unregister an error callback
-export function clearErrorCallback(id) {
+export function clearErrorCallback(id: number): void {
 	errorCallbacks.delete(id);
 }
 
 // Handle incoming WebSocket updates.
 // Exported for testing only — production code uses this via the WS onmessage handler.
-export function handleUpdate(update) {
+export function handleUpdate(update: Record<string, unknown>): void {
 	switch (update.type) {
 		case "channel_message": {
-			const msg = update.data;
-			const channelName = msg.channel || get(activeProject);
+			const msg = update.data as Message;
+			const channelName = msg.channel || get(activeProject) || "midtown";
 
 			if (msg.thread_parent_id) {
+				const threadParentId = msg.thread_parent_id;
 				// Thread reply — update thread panel if open for this parent, and
 				// bump reply_count on the parent message.
 				threadData.update((td) => {
-					if (td && td.parentMessage?.id === msg.thread_parent_id) {
+					if (td && td.parentMessage?.id === threadParentId) {
 						// Remove the first pending optimistic reply with matching content/sender before
 						// appending the real server-confirmed message. Only match when the confirmed
 						// message is from 'user' (guards against a different participant posting the
@@ -661,8 +680,8 @@ export function handleUpdate(update) {
 						if (!channelMsgs) return byChannel;
 						return {
 							...byChannel,
-							[channelName]: channelMsgs.map((m) => {
-								if (m.id === msg.thread_parent_id) {
+							[channelName]: channelMsgs.map((m: Message) => {
+								if (m.id === threadParentId) {
 									const participants = m.reply_participants || [];
 									return {
 										...m,
@@ -688,29 +707,29 @@ export function handleUpdate(update) {
 					// Pass undefined for replyCount so trackThread initializes to 0 for new
 					// entries (or preserves existing) — the update block below handles the +1.
 					const channelMsgs = get(messagesByChannel)[channelName];
-					const parentMsg = channelMsgs?.find((m) => m.id === msg.thread_parent_id);
+					const parentMsg = channelMsgs?.find((m: Message) => m.id === threadParentId);
 					const uName = get(userSenderName);
 					if (parentMsg && (parentMsg.from === "user" || parentMsg.from === uName)) {
-						trackThread(msg.thread_parent_id, channelName, parentMsg.content);
+						trackThread(threadParentId, channelName, parentMsg.content);
 					}
 
 					const tracked = get(trackedThreads);
 					const td = get(threadData);
-					const panelShowingThis = td && td.parentMessage?.id === msg.thread_parent_id;
-					if (tracked[msg.thread_parent_id] && !panelShowingThis) {
+					const panelShowingThis = td && td.parentMessage?.id === threadParentId;
+					if (tracked[threadParentId] && !panelShowingThis) {
 						threadUnreadCounts.update((counts) => ({
 							...counts,
-							[msg.thread_parent_id]: (counts[msg.thread_parent_id] || 0) + 1,
+							[threadParentId]: (counts[threadParentId] || 0) + 1,
 						}));
 					}
 					// Update lastActivity/replyCount on the tracked entry
-					if (tracked[msg.thread_parent_id]) {
+					if (tracked[threadParentId]) {
 						trackedThreads.update((t) => ({
 							...t,
-							[msg.thread_parent_id]: {
-								...t[msg.thread_parent_id],
+							[threadParentId]: {
+								...t[threadParentId],
 								lastActivity: new Date().toISOString(),
-								replyCount: (t[msg.thread_parent_id]?.replyCount || 0) + 1,
+								replyCount: (t[threadParentId]?.replyCount || 0) + 1,
 							},
 						}));
 					}
@@ -732,7 +751,7 @@ export function handleUpdate(update) {
 					// Only dedup when the confirmed message is from 'user': prevents a different
 					// channel participant posting identical text from consuming our placeholder.
 					let deduplicated = false;
-					const withoutPending = channelMsgs.filter((m) => {
+					const withoutPending = channelMsgs.filter((m: Message) => {
 						if (!deduplicated && m.pending && m.content === msg.content && msg.from === "user") {
 							deduplicated = true;
 							return false;
@@ -766,33 +785,41 @@ export function handleUpdate(update) {
 			// Skip channel lead sessions (ch-<channel>) and the lead itself.
 			// Channel leads are scoped to a specific topic channel and must not
 			// appear in the general coworker status panel.
-			const name = update.data.name;
+			const coworkerData = update.data as Coworker;
+			const name = coworkerData.name;
 			if (name && (name.startsWith("ch-") || name.toLowerCase() === "lead")) {
 				break;
 			}
 			coworkers.update((list) => {
 				const idx = list.findIndex((c) => c.name === name);
 				if (idx >= 0) {
-					list[idx] = { ...list[idx], ...update.data };
+					list[idx] = { ...list[idx], ...coworkerData };
 					return [...list];
 				}
-				return [...list, update.data];
+				return [...list, coworkerData];
 			});
 			break;
 		}
-		case "coworker_question":
+		case "coworker_question": {
+			const questionData = update.data as PendingQuestion;
 			pendingQuestions.update((qs) => {
 				// Replace existing question from same coworker (only one question per coworker at a time)
-				const filtered = qs.filter((q) => q.coworker_name !== update.data.coworker_name);
-				return [...filtered, update.data];
+				const filtered = qs.filter((q) => q.coworker_name !== questionData.coworker_name);
+				return [...filtered, questionData];
 			});
 			break;
+		}
 		case "channel_list_changed":
 			// Re-fetch full channel list from server to get accurate state
 			fetchChannels(get(showArchivedChannels));
 			break;
 		case "thread_ownership": {
-			const { thread_parent_id, has_dedicated_session, owner, parent_lead } = update.data;
+			const { thread_parent_id, has_dedicated_session, owner, parent_lead } = update.data as {
+				thread_parent_id: string;
+				has_dedicated_session: boolean;
+				owner?: string;
+				parent_lead?: string;
+			};
 			threadOwnership.update((map) => ({
 				...map,
 				[thread_parent_id]: has_dedicated_session,
@@ -837,7 +864,7 @@ export function handleUpdate(update) {
 		}
 		case "error":
 			// Invoke all registered error callbacks and then clear them
-			errorCallbacks.forEach((callback) => callback(update.data.message));
+			errorCallbacks.forEach((callback) => callback((update.data as { message: string }).message));
 			errorCallbacks.clear();
 			break;
 		default:
@@ -846,9 +873,13 @@ export function handleUpdate(update) {
 }
 
 // Send a message to the lead via WebSocket
-export function sendMessage(content, channel = null, threadParentId = null) {
+export function sendMessage(
+	content: string,
+	channel: string | null = null,
+	threadParentId: string | null = null,
+): void {
 	if (ws && ws.readyState === WebSocket.OPEN) {
-		const message = {
+		const message: Record<string, string> = {
 			type: "send_message",
 			content,
 		};
@@ -895,7 +926,7 @@ export function sendMessage(content, channel = null, threadParentId = null) {
 }
 
 // Answer a coworker's pending question
-export function sendAnswer(coworkerName, answer) {
+export function sendAnswer(coworkerName: string, answer: string): void {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		ws.send(
 			JSON.stringify({
@@ -914,7 +945,11 @@ export function sendAnswer(coworkerName, answer) {
 // Create a dedicated session for a thread (fork).
 // If onError is provided, it will be called with the error message on failure.
 // Returns the error callback ID (or undefined) so callers can clear it on success.
-export function forkThread(threadParentId, channelName, onError) {
+export function forkThread(
+	threadParentId: string,
+	channelName: string,
+	onError?: (msg: string) => void,
+): number | undefined {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		const errorId = onError ? onNextError(onError) : undefined;
 		ws.send(
@@ -933,7 +968,11 @@ export function forkThread(threadParentId, channelName, onError) {
 // Return a thread to the channel lead (kill dedicated session).
 // If onError is provided, it will be called with the error message on failure.
 // Returns the error callback ID (or undefined) so callers can clear it on success.
-export function unforkThread(threadParentId, channelName, onError) {
+export function unforkThread(
+	threadParentId: string,
+	channelName: string,
+	onError?: (msg: string) => void,
+): number | undefined {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		const errorId = onError ? onNextError(onError) : undefined;
 		ws.send(
@@ -950,7 +989,7 @@ export function unforkThread(threadParentId, channelName, onError) {
 }
 
 // Query whether a thread has a dedicated session
-export function queryThreadOwnership(threadParentId, channelName) {
+export function queryThreadOwnership(threadParentId: string, channelName: string): void {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		ws.send(
 			JSON.stringify({
@@ -964,7 +1003,7 @@ export function queryThreadOwnership(threadParentId, channelName) {
 
 // Send a raw JSON message over the WebSocket (for view_window / leave_window).
 // Returns true if the message was sent, false if the WebSocket was not open.
-export function sendWsMessage(msg) {
+export function sendWsMessage(msg: Record<string, unknown>): boolean {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		ws.send(JSON.stringify(msg));
 		return true;
@@ -975,7 +1014,7 @@ export function sendWsMessage(msg) {
 // Fetch auth profiles from the current project's daemon
 // If provider is specified, fetches profiles for that provider only.
 // If provider is null/undefined, fetches profiles for the default provider (claude).
-export async function fetchAuthProfiles(provider = null) {
+export async function fetchAuthProfiles(provider: string | null = null): Promise<AuthProfile[]> {
 	try {
 		const url = provider
 			? `${getApiBase()}/auth/profiles?provider=${encodeURIComponent(provider)}`
@@ -997,9 +1036,9 @@ export async function fetchAuthProfiles(provider = null) {
 
 // Fetch profiles for all providers and populate authProfilesByProvider.
 // Only includes providers that have at least one profile configured.
-export async function fetchAllAuthProfiles() {
+export async function fetchAllAuthProfiles(): Promise<Record<string, AuthProfile[]>> {
 	const providers = ["claude", "codex", "zai"];
-	const byProvider = {};
+	const byProvider: Record<string, AuthProfile[]> = {};
 
 	for (const provider of providers) {
 		const profiles = await fetchAuthProfiles(provider);
@@ -1021,7 +1060,7 @@ export async function fetchAllAuthProfiles() {
 // Start an OAuth login flow for a profile.
 // The backend spawns the CLI which opens the default browser for OAuth.
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
-export async function startAuthLogin(email, provider = "claude") {
+export async function startAuthLogin(email: string, provider = "claude"): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/auth/login`, {
 			method: "POST",
@@ -1048,7 +1087,7 @@ export async function startAuthLogin(email, provider = "claude") {
 //   - profile: Profile name to switch to (e.g., "work", "personal")
 //   - provider: Provider name ('claude', 'codex', or 'zai')
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
-export async function switchAuthProfile(profile, provider) {
+export async function switchAuthProfile(profile: string, provider: string): Promise<{ ok: boolean; error?: string }> {
 	authSwitching.set(true);
 	try {
 		const res = await fetch(`${getApiBase()}/auth/switch`, {
@@ -1080,7 +1119,9 @@ export async function switchAuthProfile(profile, provider) {
 
 // Upload a file (image or document) to the daemon.
 // Returns { ok: true, path, filename } on success, or { ok: false, error } on failure.
-export async function uploadFile(file) {
+export async function uploadFile(
+	file: File,
+): Promise<{ ok: boolean; path?: string; filename?: string; error?: string }> {
 	try {
 		const formData = new FormData();
 		formData.append("file", file);
@@ -1111,7 +1152,7 @@ export async function uploadFile(file) {
 }
 
 // Fetch thread history (parent message + replies) for a given parent message
-export async function fetchThread(channelName, parentMessageId) {
+export async function fetchThread(channelName: string, parentMessageId: string): Promise<Message[]> {
 	try {
 		const params = new URLSearchParams({
 			channel: channelName,
@@ -1132,7 +1173,7 @@ export async function fetchThread(channelName, parentMessageId) {
 // Open a thread panel for the given parent message.
 // Pass { pushState: false } during deep-link initialization to avoid
 // pushing a history entry that replaceNavState would immediately replace.
-export function openThread(parentMessage, channelName, { pushState = true } = {}) {
+export function openThread(parentMessage: Message, channelName: string, { pushState = true } = {}): void {
 	// Find any tasks associated with this thread's parent message.
 	// Check both thread_id and message_id: for tasks created with --thread-id,
 	// thread_id (the conversation root) differs from message_id (the announcement).
@@ -1181,7 +1222,7 @@ export function openThread(parentMessage, channelName, { pushState = true } = {}
 // Open a thread panel for a task, showing task card(s) above the thread.
 // If task.thread_id or task.message_id is present, fetches thread replies.
 // If neither is present, shows the task card with no backing thread.
-export function openTaskThread(task, channelName) {
+export function openTaskThread(task: Task, channelName: string): void {
 	if (!task.thread_id && !task.message_id) {
 		// No creation message — show task card only, replies sent as top-level messages
 		threadData.set({ parentMessage: null, channelName, messages: [], tasks: [task] });
@@ -1195,11 +1236,12 @@ export function openTaskThread(task, channelName) {
 	const channelMsgs = get(messagesByChannel)[channelName] || [];
 	const parentMessageId =
 		task.thread_id ?? channelMsgs.find((m) => m.id === task.message_id)?.thread_parent_id ?? task.message_id;
+	if (!parentMessageId) return;
 
 	// Find all tasks whose thread roots under the same parent
-	// Also include completed tasks from kanbanData.done
-	const { inProgress, backlog, done } = get(kanbanData);
-	const allTasks = [...inProgress, ...backlog, ...done];
+	// Also include completed tasks from kanbanData.completedTasks
+	const { inProgress, backlog, completedTasks } = get(kanbanData);
+	const allTasks: Task[] = [...inProgress, ...backlog, ...(completedTasks || [])];
 	const tasks = allTasks.filter((t) => {
 		if (!t.thread_id && !t.message_id) return false;
 		const tParent = t.thread_id ?? channelMsgs.find((m) => m.id === t.message_id)?.thread_parent_id ?? t.message_id;
@@ -1211,10 +1253,11 @@ export function openTaskThread(task, channelName) {
 	// Use the real channel message if available so the MessageRow gets correct
 	// timestamp, sender, and content.  Fall back to a synthetic stub only when
 	// the message hasn't loaded yet (rare edge case).
-	const parentMessage = channelMsgs.find((m) => m.id === parentMessageId) ?? {
+	const parentMessage: Message = channelMsgs.find((m) => m.id === parentMessageId) ?? {
 		id: parentMessageId,
 		from: "lead",
 		content: task.subject,
+		timestamp: new Date().toISOString(),
 	};
 	threadData.set({ parentMessage, channelName, messages: [], tasks });
 	pushNavState({ channel: channelName, thread: parentMessageId });
@@ -1240,12 +1283,12 @@ export function openTaskThread(task, channelName) {
 // Build a URL path for the given navigation state.
 // Always includes `channel` when a thread is present so deep-links work
 // even when the channel name matches the project name.
-function buildNavUrl(state) {
+function buildNavUrl(state: { channel?: string; thread?: string; msg?: string }): string {
 	const project = get(activeProject);
 	if (!project) return "/";
 	let url = `/${encodeURIComponent(project)}`;
 	const needsChannel = state.channel && (state.channel !== project || state.thread);
-	if (needsChannel) {
+	if (needsChannel && state.channel) {
 		url += `?channel=${encodeURIComponent(state.channel)}`;
 	}
 	if (state.thread) {
@@ -1259,20 +1302,20 @@ function buildNavUrl(state) {
 
 // Push a new history entry for a user-initiated navigation event.
 // No-op when handling a popstate event (prevents circular pushes).
-export function pushNavState(state) {
+export function pushNavState(state: { channel?: string; thread?: string; msg?: string }): void {
 	if (_handlingPopstate) return;
 	history.pushState(state, "", buildNavUrl(state));
 }
 
 // Replace the current history entry (initial state or URL sync).
-export function replaceNavState(state) {
+export function replaceNavState(state: { channel?: string; thread?: string; msg?: string }): void {
 	history.replaceState(state, "", buildNavUrl(state));
 }
 
 // Set up the popstate listener for browser back/forward navigation.
 // Returns a cleanup function to remove the listener.
-export function setupHistoryNavigation() {
-	function handlePopstate(e) {
+export function setupHistoryNavigation(): () => void {
+	function handlePopstate(e: PopStateEvent) {
 		const state = e.state;
 		if (!state) return;
 
@@ -1291,14 +1334,14 @@ export function setupHistoryNavigation() {
 				if (state.msg) {
 					deepLinkMsgId.set(state.msg);
 				}
-				const channel = state.channel || get(activeChannel);
+				const channel = state.channel || get(activeChannel) || "";
 				const channelMsgs = get(messagesByChannel)[channel] || [];
 				const parentMsg = channelMsgs.find((m) => m.id === state.thread);
 				if (parentMsg) {
 					openThread(parentMsg, channel);
 				} else {
 					// Message not in loaded messages — use a stub; openThread will fetch the data
-					openThread({ id: state.thread, from: "", content: "" }, channel);
+					openThread({ id: state.thread, from: "", content: "", timestamp: "" } as Message, channel);
 				}
 			} else {
 				threadData.set(null);
@@ -1315,15 +1358,15 @@ export function setupHistoryNavigation() {
 // Close the thread panel.
 // Pass { pushState: false } when the caller will push its own history entry
 // (e.g. selectChannel, selectDm) to avoid duplicate entries.
-export function closeThread({ pushState = true } = {}) {
+export function closeThread({ pushState = true } = {}): void {
 	threadData.set(null);
 	if (pushState) {
-		pushNavState({ channel: get(activeChannel) });
+		pushNavState({ channel: get(activeChannel) || undefined });
 	}
 }
 
 // Search messages across all channels
-export async function searchMessages(query, limit = 50) {
+export async function searchMessages(query: string, limit = 50): Promise<SearchResponse> {
 	try {
 		const params = new URLSearchParams({ q: query, limit: String(limit) });
 		const res = await fetch(`${getApiBase()}/search?${params}`);
@@ -1341,7 +1384,7 @@ export async function searchMessages(query, limit = 50) {
 // Select (or create-then-select) a DM channel for the given coworker name.
 // DM channels are named `dm-<coworkerName>` on the backend.
 // If the channel doesn't exist yet, it's created first, then selected.
-export async function selectDm(coworkerName) {
+export async function selectDm(coworkerName: string): Promise<void> {
 	const channelName = `dm-${coworkerName}`;
 
 	closeThread({ pushState: false });
@@ -1384,7 +1427,10 @@ export async function selectDm(coworkerName) {
 // Fetch AGENTS.md content for a channel (optionally filtered by scope).
 // Returns { content, source, error } where error is null on success or a
 // descriptive string on failure — distinguishing "no data" from "fetch failed".
-export async function fetchChannelAgentsMd(channel, scope = null) {
+export async function fetchChannelAgentsMd(
+	channel: string,
+	scope: string | null = null,
+): Promise<{ content: string; source: string; error: string | null } | null> {
 	// Abort any in-flight fetch for the same channel to prevent stale responses
 	// when the user rapidly switches channels.
 	const prev = fetchAgentsMdControllers.get(channel);
@@ -1402,12 +1448,12 @@ export async function fetchChannelAgentsMd(channel, scope = null) {
 		}
 		console.warn("Failed to fetch AGENTS.md:", res.status);
 		return { content: "", source: "none", error: `HTTP ${res.status}` };
-	} catch (err) {
-		if (err.name === "AbortError") {
+	} catch (err: unknown) {
+		if ((err as Error).name === "AbortError") {
 			return null;
 		}
 		console.warn("Failed to fetch AGENTS.md:", err);
-		return { content: "", source: "none", error: err.message || "Network error" };
+		return { content: "", source: "none", error: (err as Error).message || "Network error" };
 	} finally {
 		if (fetchAgentsMdControllers.get(channel) === controller) {
 			fetchAgentsMdControllers.delete(channel);
@@ -1416,7 +1462,11 @@ export async function fetchChannelAgentsMd(channel, scope = null) {
 }
 
 // Save AGENTS.md content for a channel (scope: "channel" or "project")
-export async function saveChannelAgentsMd(channel, content, scope = "channel") {
+export async function saveChannelAgentsMd(
+	channel: string,
+	content: string,
+	scope = "channel",
+): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`, {
 			method: "PUT",
@@ -1428,14 +1478,14 @@ export async function saveChannelAgentsMd(channel, content, scope = "channel") {
 		}
 		console.error("Failed to save AGENTS.md:", res.status);
 		return { ok: false, error: `HTTP ${res.status}` };
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to save AGENTS.md:", err);
-		return { ok: false, error: err.message };
+		return { ok: false, error: (err as Error).message };
 	}
 }
 
 // Fetch channel working directory
-export async function fetchChannelDirectory(channel) {
+export async function fetchChannelDirectory(channel: string): Promise<{ directory: string | null }> {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/directory`);
 		if (res.ok) {
@@ -1449,7 +1499,10 @@ export async function fetchChannelDirectory(channel) {
 }
 
 // Save channel working directory
-export async function saveChannelDirectory(channel, directory) {
+export async function saveChannelDirectory(
+	channel: string,
+	directory: string,
+): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/directory`, {
 			method: "PUT",
@@ -1462,8 +1515,8 @@ export async function saveChannelDirectory(channel, directory) {
 		const body = await res.text();
 		console.error("Failed to save channel directory:", res.status, body);
 		return { ok: false, error: body || `HTTP ${res.status}` };
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to save channel directory:", err);
-		return { ok: false, error: err.message };
+		return { ok: false, error: (err as Error).message };
 	}
 }

@@ -1,10 +1,22 @@
 // Shared utilities for channel filtering, task counting, and sidebar expansion state
 
+import type {
+	Channel,
+	KanbanData,
+	MergedPullRequest,
+	Message,
+	MultiRepoStatus,
+	PullRequest,
+	Task,
+	ToolBlock,
+	TrackedThread,
+} from "./types.ts";
+
 /**
  * Build a map of task_id → channel from the kanban task lists.
  * Used to look up a PR's channel via its associated task.
  */
-function buildTaskChannelMap(kanban) {
+function buildTaskChannelMap(kanban: KanbanData): Map<string, string> {
 	const map = new Map();
 	for (const task of kanban.inProgress) {
 		if (task.id != null && task.channel) {
@@ -23,8 +35,8 @@ function buildTaskChannelMap(kanban) {
  * Get the channel for a PR by looking up its task_id in the task channel map.
  * Returns the channel name or null if the PR has no associated task/channel.
  */
-function getPrChannel(pr, taskChannelMap) {
-	if (pr.task_id != null) {
+function getPrChannel(pr: PullRequest | MergedPullRequest, taskChannelMap: Map<string, string>): string | null {
+	if ("task_id" in pr && pr.task_id != null) {
 		return taskChannelMap.get(String(pr.task_id)) || null;
 	}
 	return null;
@@ -34,7 +46,11 @@ function getPrChannel(pr, taskChannelMap) {
  * Filter PRs by channel, using task_id → channel lookup.
  * PRs without a task or without a channel assignment only appear in the main channel.
  */
-function filterPrsByChannel(prs, channelName, taskChannelMap) {
+function filterPrsByChannel(
+	prs: PullRequest[],
+	channelName: string,
+	taskChannelMap: Map<string, string>,
+): PullRequest[] {
 	return prs.filter((pr) => getPrChannel(pr, taskChannelMap) === channelName);
 }
 
@@ -44,9 +60,12 @@ function filterPrsByChannel(prs, channelName, taskChannelMap) {
  *
  * This matches the TUI implementation which groups tasks by task.channel.
  */
-export function getChannelTaskCount(channelName, kanban) {
+export function getChannelTaskCount(
+	channelName: string,
+	kanban: KanbanData,
+): { inProgress: number; pending: number; review: number } {
 	// Tasks with no channel field default to the main channel (matches TUI's unwrap_or(main_channel))
-	const filterTasks = (list) => {
+	const filterTasks = (list: Task[]) => {
 		if (channelName === "midtown") {
 			return list.filter((task) => !task.channel || task.channel === "midtown");
 		}
@@ -56,7 +75,7 @@ export function getChannelTaskCount(channelName, kanban) {
 	// For PRs, look up channel via task_id → channel map (consistent with task filtering).
 	// PRs with no task_id default to the main channel.
 	const taskChannelMap = buildTaskChannelMap(kanban);
-	const filterPrs = (prs) => {
+	const filterPrs = (prs: PullRequest[]) => {
 		if (channelName === "midtown") {
 			return prs.filter((pr) => {
 				const ch = getPrChannel(pr, taskChannelMap);
@@ -77,7 +96,7 @@ export function getChannelTaskCount(channelName, kanban) {
  * Get CI status for a channel based on its PRs.
  * Returns 'failed', 'pending', 'passed', or null.
  */
-export function getChannelCiStatus(channelName, kanban) {
+export function getChannelCiStatus(channelName: string, kanban: KanbanData): string | null {
 	if (channelName === "midtown") {
 		// Main channel considers all PRs
 		if (kanban.review.length === 0) return null;
@@ -102,8 +121,8 @@ export function getChannelCiStatus(channelName, kanban) {
  * Get the actual task objects for a channel, tagged with status.
  * Returns in-progress tasks first, then pending.
  */
-export function getChannelTasks(channelName, kanban) {
-	const filterTasks = (list) => {
+export function getChannelTasks(channelName: string, kanban: KanbanData): Task[] {
+	const filterTasks = (list: Task[]) => {
 		if (channelName === "midtown") {
 			return list.filter((task) => !task.channel || task.channel === "midtown");
 		}
@@ -119,7 +138,7 @@ export function getChannelTasks(channelName, kanban) {
  * Returns true if a channel has any active tasks (in-progress or pending).
  * Used to determine whether to auto-expand the task list on channel select.
  */
-export function getChannelHasActiveTasks(channelName, kanban) {
+export function getChannelHasActiveTasks(channelName: string, kanban: KanbanData): boolean {
 	const counts = getChannelTaskCount(channelName, kanban);
 	return counts.inProgress > 0 || counts.pending > 0;
 }
@@ -129,7 +148,7 @@ export function getChannelHasActiveTasks(channelName, kanban) {
  * The triangle always toggles: collapsed → expanded, expanded → collapsed.
  * Returns a new Set; does not mutate the input.
  */
-export function computeExpandedAfterTriangleClick(channelName, expandedChannels) {
+export function computeExpandedAfterTriangleClick(channelName: string, expandedChannels: Set<string>): Set<string> {
 	const next = new Set(expandedChannels);
 	if (next.has(channelName)) {
 		next.delete(channelName);
@@ -147,7 +166,17 @@ export function computeExpandedAfterTriangleClick(channelName, expandedChannels)
  *
  * @param {object} opts - Optional { trackedThreads, taskThreadIds, completedTaskThreadIds } for thread-aware expansion
  */
-export function computeExpandedAfterChannelNameClick(channelName, expandedChannels, activeChannel, kanban, opts = {}) {
+export function computeExpandedAfterChannelNameClick(
+	channelName: string,
+	expandedChannels: Set<string>,
+	activeChannel: string | null,
+	kanban: KanbanData,
+	opts: {
+		trackedThreads?: Record<string, TrackedThread>;
+		taskThreadIds?: Set<string>;
+		completedTaskThreadIds?: Set<string>;
+	} = {},
+): Set<string> {
 	const next = new Set(expandedChannels);
 	if (channelName === activeChannel) {
 		if (next.has(channelName)) {
@@ -177,7 +206,15 @@ export function computeExpandedAfterChannelNameClick(channelName, expandedChanne
  * "Visited" DMs are tracked so they don't vanish when unread drops to 0 and
  * the user collapses/re-expands the section.
  */
-export function computeVisibleDmChannels(dmChannels, { expanded, showAll, activeChannel, visitedDms }) {
+export function computeVisibleDmChannels(
+	dmChannels: Channel[],
+	{
+		expanded,
+		showAll,
+		activeChannel,
+		visitedDms,
+	}: { expanded: boolean; showAll: boolean; activeChannel: string | null; visitedDms: Set<string> },
+): Channel[] {
 	if (!expanded) return [];
 	if (showAll) return dmChannels;
 	return dmChannels.filter((ch) => ch.unread > 0 || ch.name === activeChannel || visitedDms.has(ch.name));
@@ -189,8 +226,8 @@ export function computeVisibleDmChannels(dmChannels, { expanded, showAll, active
  * Build a Set of threadParentIds that are already represented by a task.
  * A thread is "task-backed" when any task's thread_id or message_id matches it.
  */
-export function getTaskThreadIds(kanban) {
-	const ids = new Set();
+export function getTaskThreadIds(kanban: KanbanData): Set<string> {
+	const ids = new Set<string>();
 	for (const list of [kanban.inProgress, kanban.backlog]) {
 		for (const task of list) {
 			if (task.thread_id) ids.add(task.thread_id);
@@ -203,8 +240,8 @@ export function getTaskThreadIds(kanban) {
 /**
  * Build a Set of threadParentIds from completed tasks.
  */
-export function getCompletedTaskThreadIds(kanban) {
-	const ids = new Set();
+export function getCompletedTaskThreadIds(kanban: KanbanData): Set<string> {
+	const ids = new Set<string>();
 	const completed = kanban.completedTasks || [];
 	for (const task of completed) {
 		if (task.thread_id) ids.add(task.thread_id);
@@ -227,14 +264,21 @@ export function getCompletedTaskThreadIds(kanban) {
  * @returns {{ threads: Array<{id, subject, lastActivity, replyCount, unread}>, toClean: string[] }}
  */
 export function getChannelThreads(
-	channelName,
-	tracked,
-	unreadCounts,
-	taskThreadIds,
-	completedTaskThreadIds = new Set(),
+	channelName: string,
+	tracked: Record<string, TrackedThread>,
+	unreadCounts: Record<string, number>,
+	taskThreadIds: Set<string>,
+	completedTaskThreadIds: Set<string> = new Set(),
 ) {
-	const threads = [];
-	const toClean = [];
+	const threads: {
+		id: string;
+		subject: string;
+		fullText: string;
+		lastActivity: string;
+		replyCount: number;
+		unread: number;
+	}[] = [];
+	const toClean: string[] = [];
 	for (const [id, entry] of Object.entries(tracked)) {
 		if (entry.channelName !== channelName) continue;
 		if (taskThreadIds.has(id)) {
@@ -267,8 +311,21 @@ export function getChannelThreads(
  * @param {Set} completedTaskThreadIds - from getCompletedTaskThreadIds()
  * @returns {Array<{id, subject, fullText, lastActivity, replyCount, unread, channelName}>}
  */
-export function getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds) {
-	const threads = [];
+export function getAllCompletedThreads(
+	tracked: Record<string, TrackedThread>,
+	unreadCounts: Record<string, number>,
+	taskThreadIds: Set<string>,
+	completedTaskThreadIds: Set<string>,
+) {
+	const threads: {
+		id: string;
+		subject: string;
+		fullText: string;
+		lastActivity: string;
+		replyCount: number;
+		unread: number;
+		channelName: string;
+	}[] = [];
 	for (const [id, entry] of Object.entries(tracked)) {
 		// Skip active task-backed threads
 		if (taskThreadIds.has(id)) continue;
@@ -292,7 +349,12 @@ export function getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, com
  * Returns true if a channel has any tracked threads that aren't task-backed
  * and aren't completed (completed threads appear in needs-attention instead).
  */
-export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds, completedTaskThreadIds = new Set()) {
+export function getChannelHasTrackedThreads(
+	channelName: string,
+	tracked: Record<string, TrackedThread>,
+	taskThreadIds: Set<string>,
+	completedTaskThreadIds: Set<string> = new Set(),
+): boolean {
 	for (const [id, entry] of Object.entries(tracked)) {
 		if (entry.channelName === channelName && !taskThreadIds.has(id) && !completedTaskThreadIds.has(id)) return true;
 	}
@@ -303,8 +365,11 @@ export function getChannelHasTrackedThreads(channelName, tracked, taskThreadIds,
  * Find a PR by number across kanban columns that contain PR data.
  * PRs appear in 'review' (open) and 'done' (merged) columns.
  */
-export function findPr(prNum, kanbanData) {
-	const num = parseInt(prNum, 10);
+export function findPr(
+	prNum: string | number,
+	kanbanData: KanbanData,
+): PullRequest | MergedPullRequest | null | undefined {
+	const num = parseInt(String(prNum), 10);
 	return kanbanData.review.find((p) => p.number === num) || kanbanData.done?.find((p) => p.number === num) || null;
 }
 
@@ -317,7 +382,12 @@ export function findPr(prNum, kanbanData) {
  * This always returns a GitHub URL regardless of whether the PR has
  * an associated task — PR links should always open GitHub.
  */
-export function getPrUrl(prNum, kanbanData, repoStatuses, primaryRepoFullName) {
+export function getPrUrl(
+	prNum: string | number,
+	kanbanData: KanbanData,
+	repoStatuses: MultiRepoStatus[],
+	primaryRepoFullName: string | null,
+): string | null {
 	const pr = findPr(prNum, kanbanData);
 	// If the PR has a repo label, resolve it via repoStatuses (multi-repo)
 	if (pr?.repo && repoStatuses.length > 0) {
@@ -337,7 +407,7 @@ export function getPrUrl(prNum, kanbanData, repoStatuses, primaryRepoFullName) {
  * Get active PRs for a channel, using task_id → channel lookup.
  * Main channel shows all PRs, topic channels filter by task channel.
  */
-export function getChannelPrs(channelName, kanban) {
+export function getChannelPrs(channelName: string, kanban: KanbanData): PullRequest[] {
 	const taskChannelMap = buildTaskChannelMap(kanban);
 	if (channelName === "midtown") {
 		// Main channel shows PRs with no task, or whose task has no channel (or channel='midtown')
@@ -354,8 +424,8 @@ export function getChannelPrs(channelName, kanban) {
 /**
  * Collect all tool_data blocks from an array of channel messages.
  */
-export function collectToolBlocks(messages) {
-	const blocks = [];
+export function collectToolBlocks(messages: Message[]): ToolBlock[] {
+	const blocks: ToolBlock[] = [];
 	for (const msg of messages) {
 		if (msg.tool_data?.length) {
 			for (const block of msg.tool_data) {
@@ -370,7 +440,7 @@ export function collectToolBlocks(messages) {
  * Determine whether any tool block is in-progress: output === null and no
  * later block with the same call_id has output set (completed).
  */
-export function hasInProgressToolBlocks(allToolBlocks) {
+export function hasInProgressToolBlocks(allToolBlocks: ToolBlock[]): boolean {
 	const completedCallIds = new Set();
 	for (const block of allToolBlocks) {
 		if (block.call_id && block.output != null) {
@@ -384,9 +454,11 @@ export function hasInProgressToolBlocks(allToolBlocks) {
  * Find the most recent tool call entry for inline display.
  * Returns { toolName, callId, status } or null.
  */
-export function getMostRecentToolCall(allToolBlocks) {
+export function getMostRecentToolCall(
+	allToolBlocks: ToolBlock[],
+): { toolName: string; callId: string | undefined; status: string } | null {
 	if (allToolBlocks.length === 0) return null;
-	const resultStatus = {};
+	const resultStatus: Record<string, string> = {};
 	for (const block of allToolBlocks) {
 		if (block.call_id && block.output != null) {
 			resultStatus[block.call_id] = block.error ? "error" : "ok";
@@ -398,7 +470,7 @@ export function getMostRecentToolCall(allToolBlocks) {
 			return {
 				toolName: block.tool_name,
 				callId: block.call_id,
-				status: resultStatus[block.call_id] || "InProgress",
+				status: (block.call_id ? resultStatus[block.call_id] : undefined) || "InProgress",
 			};
 		}
 	}
@@ -424,7 +496,17 @@ export function getMostRecentToolCall(allToolBlocks) {
  * @param {boolean} opts.isInteractiveControl - true if tap target is button/input/etc.
  * @param {object|null} opts.link - link info: { isExternal, dataset: { task, pr, channel, coworker } }
  */
-export function resolveMessageTapAction({ isWideScreen, msg, isInteractiveControl, link }) {
+export function resolveMessageTapAction({
+	isWideScreen,
+	msg,
+	isInteractiveControl,
+	link,
+}: {
+	isWideScreen: boolean;
+	msg: Message;
+	isInteractiveControl: boolean;
+	link: { isExternal: boolean; dataset: { task?: string; pr?: string; channel?: string; coworker?: string } } | null;
+}): { type: string; prNum?: string; taskId?: string } | null {
 	// Mobile-only affordance: skip on desktop or when tapping inside a thread
 	if (isWideScreen || msg.thread_parent_id) return null;
 	// Don't intercept taps on interactive controls

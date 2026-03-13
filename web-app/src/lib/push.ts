@@ -5,10 +5,10 @@ import { getApiBase } from "./api.ts";
 export const pushSupported = writable(false);
 export const pushPermission = writable("default"); // 'default' | 'granted' | 'denied'
 export const pushSubscribed = writable(false);
-export const pushError = writable(null); // string | null — user-visible error message
+export const pushError = writable<string | null>(null);
 
 // Check if push notifications are supported
-export function checkPushSupport() {
+export function checkPushSupport(): boolean {
 	const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 	pushSupported.set(supported);
 	if (supported) {
@@ -26,7 +26,7 @@ async function getVapidPublicKey() {
 }
 
 // Convert base64url string to Uint8Array (for applicationServerKey)
-function urlBase64ToUint8Array(base64String) {
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
 	const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
 	const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
 	const rawData = atob(base64);
@@ -56,13 +56,14 @@ export async function subscribePush() {
 
 		const subscription = await registration.pushManager.subscribe({
 			userVisibleOnly: true,
-			applicationServerKey,
+			applicationServerKey: applicationServerKey as BufferSource,
 		});
 
 		// Extract keys and send to server
 		const key = subscription.getKey("p256dh");
 		const auth = subscription.getKey("auth");
 
+		if (!key || !auth) return;
 		const p256dh = btoa(String.fromCharCode(...new Uint8Array(key)))
 			.replace(/\+/g, "-")
 			.replace(/\//g, "_")
@@ -86,9 +87,9 @@ export async function subscribePush() {
 
 		pushSubscribed.set(true);
 		return true;
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to subscribe to push:", err);
-		pushError.set(err.message || "Failed to subscribe");
+		pushError.set((err as Error).message || "Failed to subscribe");
 		return false;
 	}
 }
@@ -112,9 +113,9 @@ export async function unsubscribePush() {
 
 		pushSubscribed.set(false);
 		return true;
-	} catch (err) {
+	} catch (err: unknown) {
 		console.error("Failed to unsubscribe from push:", err);
-		pushError.set(err.message || "Failed to unsubscribe");
+		pushError.set((err as Error).message || "Failed to unsubscribe");
 		return false;
 	}
 }

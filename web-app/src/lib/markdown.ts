@@ -22,7 +22,8 @@ marked.use(
 // Configure marked with a custom renderer that suppresses underscore-based
 // italic rendering. Identifiers like `function_name` should not become italic.
 const renderer = new Renderer();
-renderer.em = ({ raw }) => {
+// @ts-expect-error — marked's em renderer expects string return but supports false for fallthrough
+renderer.em = ({ raw }: { raw: string }) => {
 	if (raw.startsWith("_")) {
 		return raw;
 	}
@@ -35,8 +36,8 @@ marked.use({ renderer, gfm: true, breaks: true });
  * Split text into segments of plain text and mermaid code blocks.
  * Returns array of {type: 'text'|'mermaid', content: string}.
  */
-export function parseSegments(text) {
-	const segments = [];
+export function parseSegments(text: string): { type: string; content: string }[] {
+	const segments: { type: string; content: string }[] = [];
 	const regex = /```mermaid\s*\n([\s\S]*?)```/g;
 	let lastIndex = 0;
 	let match: RegExpExecArray | null;
@@ -59,7 +60,7 @@ export function parseSegments(text) {
 /**
  * Check if message text contains any mermaid code blocks.
  */
-export function hasMermaid(text) {
+export function hasMermaid(text: string): boolean {
 	return /```mermaid\s*\n/.test(text);
 }
 
@@ -69,7 +70,7 @@ export function hasMermaid(text) {
 const RENDER_CACHE_CAPACITY = 500;
 const renderCache = new Map();
 
-export function clearRenderCache() {
+export function clearRenderCache(): void {
 	renderCache.clear();
 }
 
@@ -79,8 +80,8 @@ const IMAGE_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp)$/i;
  * Generate HTML for an inline attachment reference.
  * Image files render as a clickable thumbnail; other files show a file badge.
  */
-function renderAttachmentHtml(path, apiBase) {
-	const filename = path.split("/").pop();
+function renderAttachmentHtml(path: string, apiBase: string): string {
+	const filename = path.split("/").pop() || "";
 	if (IMAGE_EXTENSIONS.test(filename) && apiBase) {
 		const subdir = path.includes("/screenshots/") ? "screenshots" : "uploads";
 		const url = `${apiBase}/${subdir}/${encodeURIComponent(filename)}`;
@@ -104,7 +105,7 @@ function renderAttachmentHtml(path, apiBase) {
  * @param {string} text - Raw message content
  * @param {string} [apiBase] - Base URL for the project daemon API (e.g. http://host:47023/api)
  */
-export function renderContent(text, apiBase = "") {
+export function renderContent(text: string, apiBase = ""): string {
 	const cacheKey = `${text}\0${apiBase}`;
 	const cached = renderCache.get(cacheKey);
 	if (cached !== undefined) {
@@ -122,12 +123,12 @@ export function renderContent(text, apiBase = "") {
 	// Pattern 2: [Attached file: name]\nPlease read: /full/path  (standalone file message)
 	// Both forms are replaced with a control-char placeholder; final HTML is injected after
 	// all markdown transformations so the image tags aren't escaped or double-processed.
-	const attachments = [];
-	text = text.replace(/\[Attached file:[^\]]*\]\nPlease read:\s*(.+)/g, (_, path) => {
+	const attachments: string[] = [];
+	text = text.replace(/\[Attached file:[^\]]*\]\nPlease read:\s*(.+)/g, (_: string, path: string) => {
 		attachments.push(path);
 		return `\x01ATTACH${attachments.length - 1}\x01`;
 	});
-	text = text.replace(/\[Attached:\s*([^\]\n]+)\]/g, (_, path) => {
+	text = text.replace(/\[Attached:\s*([^\]\n]+)\]/g, (_: string, path: string) => {
 		attachments.push(path.trim());
 		return `\x01ATTACH${attachments.length - 1}\x01`;
 	});
@@ -136,16 +137,16 @@ export function renderContent(text, apiBase = "") {
 	// This prevents double-escaping: code containing <div> would otherwise become
 	// &lt;div&gt; after escaping, then render as literal "&lt;div&gt;" in the output.
 	// marked-highlight handles its own escaping for code content.
-	const preservedItems = [];
+	const preservedItems: string[] = [];
 
 	// Preserve fenced code blocks first (before inline code spans)
-	text = text.replace(/```[\s\S]*?```/g, (m) => {
+	text = text.replace(/```[\s\S]*?```/g, (m: string) => {
 		preservedItems.push(m);
 		return `\x02PRESERVE${preservedItems.length - 1}\x02`;
 	});
 
 	// Preserve inline code spans
-	text = text.replace(/`[^`]+`/g, (m) => {
+	text = text.replace(/`[^`]+`/g, (m: string) => {
 		preservedItems.push(m);
 		return `\x02PRESERVE${preservedItems.length - 1}\x02`;
 	});
@@ -157,7 +158,7 @@ export function renderContent(text, apiBase = "") {
 	safe = safe.replace(/^(&gt;)+/gm, (m) => m.replace(/&gt;/g, ">"));
 
 	// Preserve markdown links before converting special references
-	safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m) => {
+	safe = safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m: string) => {
 		preservedItems.push(m);
 		return `\x02PRESERVE${preservedItems.length - 1}\x02`;
 	});
@@ -166,17 +167,17 @@ export function renderContent(text, apiBase = "") {
 	// Order matters: we must protect already-converted links from being re-matched
 
 	// Helper function to preserve and restore conversions between each pattern
-	function preserveAndReplace(text, pattern, replacement) {
-		const tempPreserved = [];
+	function preserveAndReplace(text: string, pattern: RegExp, replacement: (...args: string[]) => string) {
+		const tempPreserved: string[] = [];
 		// First, protect already-converted markdown links (our special URL schemes)
-		text = text.replace(/\[([^\]]+)\]\((channel|task|pr|coworker):[^)]+\)/g, (m) => {
+		text = text.replace(/\[([^\]]+)\]\((channel|task|pr|coworker):[^)]+\)/g, (m: string) => {
 			tempPreserved.push(m);
 			return `\x03TEMP${tempPreserved.length - 1}\x03`;
 		});
 		// Apply the new pattern
 		text = text.replace(pattern, replacement);
 		// Restore protected links
-		text = text.replace(/\x03TEMP(\d+)\x03/g, (_, i) => tempPreserved[i]);
+		text = text.replace(/\x03TEMP(\d+)\x03/g, (_: string, i: string) => tempPreserved[parseInt(i, 10)]);
 		return text;
 	}
 
@@ -206,25 +207,28 @@ export function renderContent(text, apiBase = "") {
 	});
 
 	// Restore preserved user-written markdown links and code blocks
-	safe = safe.replace(/\x02PRESERVE(\d+)\x02/g, (_, i) => preservedItems[i]);
+	safe = safe.replace(/\x02PRESERVE(\d+)\x02/g, (_: string, i: string) => preservedItems[parseInt(i, 10)]);
 
 	// Render markdown via marked (GFM: tables, strikethrough, auto-links)
-	let html = marked.parse(safe);
+	let html = marked.parse(safe) as string;
 
 	// Convert our special URL schemes to proper links with classes and data attributes
-	html = html.replace(/<a href="channel:([^"]+)">([^<]*)<\/a>/g, (_match, channelName, text) => {
-		return `<a href="#" class="channel-link" data-channel="${channelName}">${text}</a>`;
-	});
+	html = html.replace(
+		/<a href="channel:([^"]+)">([^<]*)<\/a>/g,
+		(_match: string, channelName: string, text: string) => {
+			return `<a href="#" class="channel-link" data-channel="${channelName}">${text}</a>`;
+		},
+	);
 
-	html = html.replace(/<a href="task:([^"]+)">([^<]*)<\/a>/g, (_match, taskId, text) => {
+	html = html.replace(/<a href="task:([^"]+)">([^<]*)<\/a>/g, (_match: string, taskId: string, text: string) => {
 		return `<a href="#" class="task-link" data-task="${taskId}">${text}</a>`;
 	});
 
-	html = html.replace(/<a href="pr:([^"]+)">(.*?)<\/a>/g, (_match, prNum, text) => {
+	html = html.replace(/<a href="pr:([^"]+)">(.*?)<\/a>/g, (_match: string, prNum: string, text: string) => {
 		return `<a href="#" class="pr-link" data-pr="${prNum}">${text}</a>`;
 	});
 
-	html = html.replace(/<a href="coworker:([^"]+)">([^<]*)<\/a>/g, (_match, name, text) => {
+	html = html.replace(/<a href="coworker:([^"]+)">([^<]*)<\/a>/g, (_match: string, name: string, text: string) => {
 		return `<a href="#" class="coworker-link" data-coworker="${name}">${text}</a>`;
 	});
 
@@ -241,10 +245,12 @@ export function renderContent(text, apiBase = "") {
 	// Strip surrounding <p>…</p> when the placeholder is the sole paragraph content
 	// so the image renders as a block element rather than inside a paragraph.
 	if (attachments.length > 0) {
-		html = html.replace(/<p>\s*\x01ATTACH(\d+)\x01\s*<\/p>/g, (_, i) =>
+		html = html.replace(/<p>\s*\x01ATTACH(\d+)\x01\s*<\/p>/g, (_: string, i: string) =>
 			renderAttachmentHtml(attachments[parseInt(i, 10)], apiBase),
 		);
-		html = html.replace(/\x01ATTACH(\d+)\x01/g, (_, i) => renderAttachmentHtml(attachments[parseInt(i, 10)], apiBase));
+		html = html.replace(/\x01ATTACH(\d+)\x01/g, (_: string, i: string) =>
+			renderAttachmentHtml(attachments[parseInt(i, 10)], apiBase),
+		);
 	}
 
 	const result = html.trim();

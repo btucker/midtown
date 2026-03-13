@@ -28,16 +28,16 @@ export const AVENUE_COLORS = {
 	midtown: "#E3BD3F",
 };
 
-export function getAvenueColor(name, fallback = "#d0d0d0") {
-	return AVENUE_COLORS[name?.toLowerCase()] || fallback;
+export function getAvenueColor(name: string | null | undefined, fallback = "#d0d0d0"): string {
+	return AVENUE_COLORS[name?.toLowerCase() as keyof typeof AVENUE_COLORS] || fallback;
 }
 
 // Extract the avenue color for a fork session owner.
 // Fork session names are compound: "{caller}-{slug}-{tid}" (e.g., "park-discuss-ab12")
 // or "fork-{tid}" for anonymous forks. Extract the first segment and look it up.
 // Falls back to lead gold for non-avenue prefixes (channel leads, anonymous forks).
-export function getForkOwnerColor(forkName) {
+export function getForkOwnerColor(forkName: string | null | undefined): string {
 	if (!forkName) return AVENUE_COLORS.lead;
 	const prefix = forkName.split("-")[0].toLowerCase();
-	return AVENUE_COLORS[prefix] || AVENUE_COLORS.lead;
+	return AVENUE_COLORS[prefix as keyof typeof AVENUE_COLORS] || AVENUE_COLORS.lead;
 }

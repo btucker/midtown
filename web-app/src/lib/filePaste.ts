@@ -7,7 +7,7 @@ import { sendMessage, uploadFile } from "./api.ts";
  * Returns the File if one was found, or null otherwise.
  * Calls e.preventDefault() when a file is consumed.
  */
-export function extractPastedFile(e) {
+export function extractPastedFile(e: ClipboardEvent): File | null {
 	const items = e.clipboardData?.items;
 	if (!items) return null;
 
@@ -27,7 +27,7 @@ export function extractPastedFile(e) {
  * Create a blob preview URL for a file, revoking any previous URL to prevent leaks.
  * Returns the new URL, or null if file is null/undefined.
  */
-export function updatePreviewUrl(previousUrl, file) {
+export function updatePreviewUrl(previousUrl: string | null, file: File | null): string | null {
 	if (previousUrl) URL.revokeObjectURL(previousUrl);
 	return file ? URL.createObjectURL(file) : null;
 }
@@ -41,7 +41,12 @@ export function updatePreviewUrl(previousUrl, file) {
  * @param {string|null} threadParentId - Thread parent message ID (null for top-level)
  * @returns {Promise<{ok: boolean, error?: string}>}
  */
-export async function uploadAndSend(file, text, channel, threadParentId = null) {
+export async function uploadAndSend(
+	file: File,
+	text: string,
+	channel: string,
+	threadParentId: string | null = null,
+): Promise<{ ok: boolean; error?: string }> {
 	const result = await uploadFile(file);
 
 	if (!result.ok) {

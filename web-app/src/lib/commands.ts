@@ -7,11 +7,28 @@ import { activeChannel, showArchivedChannels } from "./store.ts";
  * Each command has a name, description, and execute function.
  * The execute function receives { args, channel } and returns { ok, message?, error? }.
  */
-const commands = [
+interface CommandContext {
+	args: string;
+	channel: string | null;
+}
+
+interface CommandResult {
+	ok: boolean;
+	message?: string;
+	error?: string;
+}
+
+interface Command {
+	name: string;
+	description: string;
+	execute: (ctx: CommandContext) => Promise<CommandResult>;
+}
+
+const commands: Command[] = [
 	{
 		name: "archive",
 		description: "Archive the current channel",
-		async execute({ channel }) {
+		async execute({ channel }: CommandContext) {
 			if (!channel) {
 				return { ok: false, error: "No active channel" };
 			}
@@ -25,7 +42,7 @@ const commands = [
 	{
 		name: "unarchive",
 		description: "Unarchive a channel",
-		async execute({ args, channel }) {
+		async execute({ args, channel }: CommandContext) {
 			const target = args.trim() || channel;
 			if (!target) {
 				return { ok: false, error: "Usage: /unarchive <channel-name>" };
@@ -44,7 +61,7 @@ const commands = [
  * Parse input text and check if it's a slash command.
  * Returns { handled, execute? } where execute is an async function if handled.
  */
-export function parseCommand(input) {
+export function parseCommand(input: string) {
 	const trimmed = input.trim();
 	if (!trimmed.startsWith("/")) {
 		return { handled: false };
@@ -74,6 +91,6 @@ export function parseCommand(input) {
 /**
  * Get all registered command names (for autocomplete).
  */
-export function getCommandNames() {
+export function getCommandNames(): { name: string; description: string }[] {
 	return commands.map((cmd) => ({ name: cmd.name, description: cmd.description }));
 }

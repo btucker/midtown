@@ -2,7 +2,7 @@
  * Estimate time until utilization reaches 100% based on current consumption rate.
  * Uses the known window duration (5h session, 7d weekly) and current utilization.
  */
-export function estimateTimeToFull(util, resetsAt, isSession) {
+export function estimateTimeToFull(util: number, resetsAt: string, isSession: boolean): string | null {
 	if (util <= 0 || util >= 100) return null;
 
 	const now = Date.now();
@@ -30,7 +30,7 @@ export function estimateTimeToFull(util, resetsAt, isSession) {
 /**
  * Format a duration in seconds as a human-readable estimate.
  */
-export function formatDurationEstimate(secs) {
+export function formatDurationEstimate(secs: number): string {
 	const minutes = Math.round(secs / 60);
 	if (minutes < 1) return "~<1m left";
 	if (minutes < 60) return `~${minutes}m left`;
@@ -44,7 +44,7 @@ export function formatDurationEstimate(secs) {
  * Format reset time for display.
  * Session: "H:MMam/pm", Weekly: "Mon DD"
  */
-export function formatResetTime(resetsAt, isSession) {
+export function formatResetTime(resetsAt: string, isSession: boolean): string {
 	const reset = new Date(resetsAt);
 	if (reset <= new Date()) return "now";
 
@@ -60,7 +60,7 @@ export function formatResetTime(resetsAt, isSession) {
  * Get the color for a utilization percentage.
  * Matches TUI thresholds: green (<60%), yellow (60-80%), red (>=80%).
  */
-export function usageColor(util) {
+export function usageColor(util: number): string {
 	if (util >= 80) return "#af5f5f";
 	if (util >= 60) return "#d7af5f";
 	return "#5faf5f";

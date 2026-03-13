@@ -1,3 +1,6 @@
+/// <reference lib="webworker" />
+declare const self: ServiceWorkerGlobalScope;
+
 import { clientsClaim } from "workbox-core";
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
 
@@ -12,17 +15,17 @@ precacheAndRoute(self.__WB_MANIFEST);
 
 // Listen for SKIP_WAITING message from the client (sent by vite-plugin-pwa's registerSW)
 // This allows immediate activation of new service workers
-self.addEventListener("message", (event) => {
+self.addEventListener("message", (event: ExtendableMessageEvent) => {
 	if (event.data && event.data.type === "SKIP_WAITING") {
 		self.skipWaiting();
 	}
 });
 
 // Handle incoming push notifications
-self.addEventListener("push", (event) => {
+self.addEventListener("push", (event: PushEvent) => {
 	if (!event.data) return;
 
-	let data: { title?: string; body?: string };
+	let data: { title?: string; body?: string; tag?: string; url?: string };
 	try {
 		data = event.data.json();
 	} catch {
@@ -43,28 +46,34 @@ self.addEventListener("push", (event) => {
 
 	// Skip notification if a client window is focused (user is already in the app)
 	event.waitUntil(
-		clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
-			const hasFocusedClient = windowClients.some((client) => client.visibilityState === "visible" && client.focused);
-			if (hasFocusedClient) return;
-			return self.registration.showNotification(title, options);
-		}),
+		self.clients
+			.matchAll({ type: "window", includeUncontrolled: true })
+			.then((windowClients: readonly WindowClient[]) => {
+				const hasFocusedClient = windowClients.some(
+					(client: WindowClient) => client.visibilityState === "visible" && client.focused,
+				);
+				if (hasFocusedClient) return;
+				return self.registration.showNotification(title, options);
+			}),
 	);
 });
 
 // Handle notification click - open or focus the PWA
-self.addEventListener("notificationclick", (event) => {
+self.addEventListener("notificationclick", (event: NotificationEvent) => {
 	event.notification.close();
 
 	const targetUrl = event.notification.data?.url || "/";
 
 	event.waitUntil(
-		clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
-			for (const client of windowClients) {
-				if (client.url.includes(self.location.origin) && "focus" in client) {
-					return client.focus();
+		self.clients
+			.matchAll({ type: "window", includeUncontrolled: true })
+			.then((windowClients: readonly WindowClient[]) => {
+				for (const client of windowClients) {
+					if (client.url.includes(self.location.origin) && "focus" in client) {
+						return client.focus();
+					}
 				}
-			}
-			return clients.openWindow(targetUrl);
-		}),
+				return self.clients.openWindow(targetUrl);
+			}),
 	);
 });

@@ -2,14 +2,18 @@
 // Caches the loaded module so init only runs once.
 // On failure, clears the cached promise so subsequent calls can retry.
 
-let selkie = null;
-let initPromise = null;
+interface SelkieModule {
+	render: (...args: unknown[]) => string;
+}
 
-export async function getSelkie() {
+let selkie: SelkieModule | null = null;
+let initPromise: Promise<SelkieModule> | null = null;
+
+export async function getSelkie(): Promise<SelkieModule> {
 	if (selkie) return selkie;
 
 	if (!initPromise) {
-		initPromise = (async () => {
+		initPromise = (async (): Promise<SelkieModule> => {
 			const { default: initWasm, initialize, render } = await import("selkie-rs");
 			await initWasm();
 			initialize({ startOnLoad: false });

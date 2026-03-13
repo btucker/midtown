@@ -11,7 +11,7 @@
  * @param {HTMLTextAreaElement | null} element
  * @param {() => void} syncBinding - re-sets the Svelte state binding to ''
  */
-export function clearMobileTextarea(element, syncBinding) {
+export function clearMobileTextarea(element: HTMLTextAreaElement | null, syncBinding: () => void): void {
 	if (!element) return;
 	element.value = "";
 	element.addEventListener(

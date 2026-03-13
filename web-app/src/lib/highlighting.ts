@@ -43,7 +43,7 @@ hljs.registerLanguage("diff", diff);
  * @param {string} str - Raw text to escape
  * @returns {string} HTML-escaped text
  */
-export function escapeHtml(str) {
+export function escapeHtml(str: string): string {
 	return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -53,7 +53,7 @@ export function escapeHtml(str) {
  * @param {string|null} lang - Language name (e.g., 'rust', 'bash') or null for auto-detection
  * @returns {string} HTML with syntax highlighting spans
  */
-export function highlightLine(text, lang) {
+export function highlightLine(text: string, lang: string | null): string {
 	if (!lang || !hljs.getLanguage(lang)) {
 		// Try auto-detection for unknown languages
 		try {
@@ -75,7 +75,7 @@ export function highlightLine(text, lang) {
  * @param {string|null} lang - Language name or null for auto-detection
  * @returns {string} HTML with syntax highlighting spans
  */
-export function highlightBlock(code, lang) {
+export function highlightBlock(code: string, lang: string | null): string {
 	if (!lang || !hljs.getLanguage(lang)) {
 		try {
 			return hljs.highlightAuto(code).value;
@@ -94,7 +94,7 @@ export function highlightBlock(code, lang) {
  * Map file extensions to highlight.js language names.
  * Kept in sync with the languages registered above.
  */
-export const EXT_TO_LANG = {
+export const EXT_TO_LANG: Record<string, string> = {
 	rs: "rust",
 	js: "javascript",
 	jsx: "javascript",
@@ -120,7 +120,7 @@ export const EXT_TO_LANG = {
  * @param {string} path - File path
  * @returns {string|null} Language name or null if unknown
  */
-export function getLanguage(path) {
+export function getLanguage(path: string | null | undefined): string | null {
 	if (!path) return null;
 	const ext = path.split(".").pop()?.toLowerCase();
 	return ext ? EXT_TO_LANG[ext] || null : null;

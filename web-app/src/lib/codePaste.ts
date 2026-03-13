@@ -22,7 +22,7 @@ const STRONG_SINGLE_LINE =
  * @param {string} text - The pasted text to analyse
  * @returns {{ isCode: boolean, language: string | null }}
  */
-export function detectCode(text) {
+export function detectCode(text: string): { isCode: boolean; language: string | null } {
 	if (!text || !text.trim()) {
 		return { isCode: false, language: null };
 	}
@@ -64,7 +64,7 @@ export function detectCode(text) {
 	if (semiLines.length >= 2) score += 2;
 
 	// 6. highlight.js relevance
-	let hljsLanguage = null;
+	let hljsLanguage: string | null | undefined = null;
 	try {
 		const result = hljs.highlightAuto(text);
 		if (result.relevance > 5) {
@@ -103,7 +103,7 @@ export function detectCode(text) {
  * @param {string|null} language - Language tag (e.g. "javascript"), or null
  * @returns {string} Fenced code block
  */
-export function wrapInFences(text, language) {
+export function wrapInFences(text: string, language: string | null): string {
 	const lang = language || "";
 	const body = text.trimEnd();
 	return `\`\`\`${lang}\n${body}\n\`\`\``;
@@ -119,7 +119,12 @@ export function wrapInFences(text, language) {
  * @returns {false | number} `false` if the paste was not handled, or the
  *   cursor position that should be set after the DOM updates.
  */
-export function handleCodePaste(e, textareaElement, getCurrentText, setText) {
+export function handleCodePaste(
+	e: ClipboardEvent,
+	textareaElement: HTMLTextAreaElement,
+	getCurrentText: () => string,
+	setText: (text: string) => void,
+): false | number {
 	const text = e.clipboardData?.getData("text/plain");
 	if (!text) return false;
 

@@ -3,9 +3,9 @@ import { registerSW } from "virtual:pwa-register";
 import { mount } from "svelte";
 import App from "./App.svelte";
 
-const app = mount(App, {
-	target: document.getElementById("app"),
-});
+const target = document.getElementById("app");
+if (!target) throw new Error("Missing #app element");
+const app = mount(App, { target });
 
 // Svelte 5 mount() appends to the target (unlike Svelte 4 which replaced
 // innerHTML), so the static #app-loader spinner from index.html persists.

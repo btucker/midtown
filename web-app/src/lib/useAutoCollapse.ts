@@ -7,7 +7,11 @@ export const DEFAULT_COLLAPSE_DELAY_MS = 10_000;
  * @param {number} delay — collapse delay in ms
  * @returns {'preview' | 'collapsed'}
  */
-export function computeInitialState(timestamp, now = Date.now(), delay = DEFAULT_COLLAPSE_DELAY_MS) {
+export function computeInitialState(
+	timestamp: string | null,
+	now = Date.now(),
+	delay = DEFAULT_COLLAPSE_DELAY_MS,
+): "preview" | "collapsed" {
 	if (!timestamp) return "collapsed";
 	const age = now - new Date(timestamp).getTime();
 	return age >= delay ? "collapsed" : "preview";
@@ -32,13 +36,13 @@ export function computeInitialState(timestamp, now = Date.now(), delay = DEFAULT
  *       return () => currentAc.clearTimer();
  *   });
  */
-export function createAutoCollapse(timestamp, delay = DEFAULT_COLLAPSE_DELAY_MS) {
+export function createAutoCollapse(timestamp: string | null, delay = DEFAULT_COLLAPSE_DELAY_MS) {
 	const now = Date.now();
 	const initial = computeInitialState(timestamp, now, delay);
-	let timerId = null;
-	let timeoutMs = null;
+	let timerId: ReturnType<typeof setTimeout> | null = null;
+	let timeoutMs: number | null = null;
 
-	if (initial === "preview") {
+	if (initial === "preview" && timestamp) {
 		const age = now - new Date(timestamp).getTime();
 		timeoutMs = Math.max(0, delay - age);
 	}
@@ -52,7 +56,7 @@ export function createAutoCollapse(timestamp, delay = DEFAULT_COLLAPSE_DELAY_MS)
 				timerId = null;
 			}
 		},
-		startTimer(onCollapse) {
+		startTimer(onCollapse: () => void) {
 			if (timeoutMs != null) {
 				if (timerId != null) clearTimeout(timerId);
 				timerId = setTimeout(onCollapse, timeoutMs);

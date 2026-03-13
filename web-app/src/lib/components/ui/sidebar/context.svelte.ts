@@ -7,17 +7,22 @@ import {
 	SIDEBAR_WIDTH_STORAGE_KEY,
 } from "./constants.ts";
 
+interface SidebarStateProps {
+	open: () => boolean;
+	setOpen: (open: boolean) => void;
+}
+
 class SidebarState {
-	props;
+	props: SidebarStateProps;
 	open = $derived.by(() => this.props.open());
 	openMobile = $state(false);
-	setOpen;
-	#isMobile;
+	setOpen: (open: boolean) => void;
+	#isMobile: IsMobile;
 	state = $derived.by(() => (this.open ? "expanded" : "collapsed"));
 	width = $state(256); // Default width in pixels (16rem)
 	isResizing = $state(false);
 
-	constructor(props) {
+	constructor(props: SidebarStateProps) {
 		this.setOpen = props.setOpen;
 		this.#isMobile = new IsMobile();
 		this.props = props;
@@ -41,14 +46,14 @@ class SidebarState {
 	}
 
 	// Event handler to apply to the `<svelte:window>`
-	handleShortcutKeydown = (e) => {
+	handleShortcutKeydown = (e: KeyboardEvent) => {
 		if (e.key === SIDEBAR_KEYBOARD_SHORTCUT && (e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
 			this.toggle();
 		}
 	};
 
-	setOpenMobile = (value) => {
+	setOpenMobile = (value: boolean) => {
 		this.openMobile = value;
 	};
 
@@ -56,7 +61,7 @@ class SidebarState {
 		return this.#isMobile.current ? (this.openMobile = !this.openMobile) : this.setOpen(!this.open);
 	};
 
-	setWidth = (newWidth) => {
+	setWidth = (newWidth: number) => {
 		const clamped = Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, newWidth));
 		this.width = clamped;
 		if (typeof window !== "undefined") {
@@ -81,7 +86,7 @@ const SYMBOL_KEY = "scn-sidebar";
  * @param props The constructor props for the `SidebarState` class.
  * @returns  The `SidebarState` instance.
  */
-export function setSidebar(props) {
+export function setSidebar(props: SidebarStateProps): SidebarState {
 	return setContext(Symbol.for(SYMBOL_KEY), new SidebarState(props));
 }
 
@@ -90,6 +95,6 @@ export function setSidebar(props) {
  * so you cannot destructure it.
  * @returns The `SidebarState` instance.
  */
-export function useSidebar() {
-	return getContext(Symbol.for(SYMBOL_KEY));
+export function useSidebar(): SidebarState {
+	return getContext<SidebarState>(Symbol.for(SYMBOL_KEY));
 }

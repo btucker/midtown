@@ -7,13 +7,14 @@
  */
 import BiggerPicture from "bigger-picture";
 
-let bpInstance = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let bpInstance: ReturnType<typeof BiggerPicture> | null = null;
 
 /**
  * Get or create the shared BiggerPicture instance
- * @returns {Object|null} The BiggerPicture instance, or null if not in browser
+ * @returns The BiggerPicture instance, or null if not in browser
  */
-export function getBiggerPicture() {
+export function getBiggerPicture(): ReturnType<typeof BiggerPicture> | null {
 	// Check if we're in a browser environment
 	if (typeof window === "undefined") {
 		return null;
@@ -32,7 +33,7 @@ export function getBiggerPicture() {
  * Open an image in the BiggerPicture lightbox
  * @param {string} imgUrl - The URL of the image to display
  */
-export function openImageLightbox(imgUrl) {
+export function openImageLightbox(imgUrl: string): void {
 	const bp = getBiggerPicture();
 	if (!bp) return;
 	bp.open({ items: [{ img: imgUrl }], position: 0 });
@@ -45,7 +46,7 @@ export function openImageLightbox(imgUrl) {
  * @param {string} svgString - The SVG markup as a string
  * @returns {number} The scale factor to apply (default 1 if calculation fails)
  */
-export function calculateFitToWidthScale(svgString) {
+export function calculateFitToWidthScale(svgString: string): number {
 	try {
 		// Parse SVG to get intrinsic dimensions
 		const parser = new DOMParser();
@@ -57,12 +58,12 @@ export function calculateFitToWidthScale(svgString) {
 		let intrinsicHeight = 0;
 
 		if (svg.hasAttribute("viewBox")) {
-			const viewBox = svg.getAttribute("viewBox").split(/\s+|,/);
+			const viewBox = (svg.getAttribute("viewBox") ?? "").split(/\s+|,/);
 			intrinsicWidth = parseFloat(viewBox[2]);
 			intrinsicHeight = parseFloat(viewBox[3]);
 		} else {
-			intrinsicWidth = parseFloat(svg.getAttribute("width")) || 0;
-			intrinsicHeight = parseFloat(svg.getAttribute("height")) || 0;
+			intrinsicWidth = parseFloat(svg.getAttribute("width") || "0") || 0;
+			intrinsicHeight = parseFloat(svg.getAttribute("height") || "0") || 0;
 		}
 
 		if (!intrinsicWidth || !intrinsicHeight) {

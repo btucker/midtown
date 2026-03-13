@@ -1,7 +1,9 @@
+import type { Message } from "./types.ts";
+
 // Avenue colors for the web UI. Most match the terminal TUI palette (AVENUE_COLORS from ui.rs),
 // but the lead/midtown color intentionally diverges: the TUI uses Color::LightYellow (#d7d787)
 // while the web uses a richer gold (#E3BD3F) for better visual weight on screen.
-export const AVENUE_COLORS = {
+export const AVENUE_COLORS: Record<string, string> = {
 	lexington: "#5fafaf", // Cyan
 	park: "#5faf5f", // Green
 	madison: "#ff5f5f", // LightRed
@@ -29,22 +31,29 @@ export const AVENUE_COLORS = {
 // Senders whose content is rendered in DarkGray (system infrastructure actors)
 export const DIM_SENDERS = new Set(["daemon", "github", "system"]);
 
-function normalizeName(name) {
+function normalizeName(name: unknown): string {
 	return typeof name === "string" ? name.toLowerCase() : "";
 }
 
-function getOverride(overrides, key) {
+function getOverride(
+	overrides: Map<string, string> | Record<string, string> | null | undefined,
+	key: string,
+): string | undefined {
 	if (!overrides || !key) return undefined;
 	if (overrides instanceof Map) {
 		return overrides.get(key);
 	}
 	if (typeof overrides === "object") {
-		return overrides[key];
+		return (overrides as Record<string, string>)[key];
 	}
 	return undefined;
 }
 
-export function getSenderColor(name, overrides, channelName) {
+export function getSenderColor(
+	name: string,
+	overrides: Map<string, string> | Record<string, string> | null | undefined,
+	channelName?: string,
+): string {
 	const normalized = normalizeName(name);
 	if (channelName && normalized === normalizeName(channelName)) {
 		return AVENUE_COLORS.lead;
@@ -52,7 +61,10 @@ export function getSenderColor(name, overrides, channelName) {
 	return getOverride(overrides, normalized) || AVENUE_COLORS[normalized] || "#d0d0d0";
 }
 
-function hasExtraDim(extraDimSenders, normalized) {
+function hasExtraDim(
+	extraDimSenders: Set<string> | string[] | Record<string, unknown> | null | undefined,
+	normalized: string,
+): boolean {
 	if (!extraDimSenders || !normalized) return false;
 	if (extraDimSenders instanceof Set) {
 		return extraDimSenders.has(normalized);
@@ -61,19 +73,22 @@ function hasExtraDim(extraDimSenders, normalized) {
 		return extraDimSenders.some((sender) => normalizeName(sender) === normalized);
 	}
 	if (typeof extraDimSenders === "object") {
-		return Boolean(extraDimSenders[normalized]);
+		return Boolean((extraDimSenders as Record<string, unknown>)[normalized]);
 	}
 	return false;
 }
 
-export function isDimSender(sender, extraDimSenders) {
+export function isDimSender(
+	sender: string,
+	extraDimSenders?: Set<string> | string[] | Record<string, unknown> | null,
+): boolean {
 	const normalized = normalizeName(sender);
 	if (!normalized) return false;
 	if (DIM_SENDERS.has(normalized)) return true;
 	return hasExtraDim(extraDimSenders, normalized);
 }
 
-export function formatTime(timestamp) {
+export function formatTime(timestamp: string): string {
 	try {
 		const date = new Date(timestamp);
 		return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true });
@@ -82,7 +97,7 @@ export function formatTime(timestamp) {
 	}
 }
 
-export function formatTimeCompact(timestamp) {
+export function formatTimeCompact(timestamp: string): string {
 	try {
 		const date = new Date(timestamp);
 		let hours = date.getHours();
@@ -96,7 +111,7 @@ export function formatTimeCompact(timestamp) {
 }
 
 // Returns true if the sender changed from the previous message in the list.
-export function senderChanged(msgs, index) {
+export function senderChanged(msgs: Message[], index: number): boolean {
 	if (index === 0) return true;
 	return msgs[index].from !== msgs[index - 1].from;
 }
@@ -110,7 +125,7 @@ export function senderChanged(msgs, index) {
  *
  * Returns Array<{ type: 'text' | 'insight', content: string }>
  */
-export function parseInsightSegments(content) {
+export function parseInsightSegments(content: string | null | undefined): { type: string; content: string }[] {
 	if (!content) return [{ type: "text", content: content || "" }];
 
 	// Format 1: whole-message insight (coworker 💡 prefix)
@@ -123,10 +138,10 @@ export function parseInsightSegments(content) {
 		return [{ type: "text", content }];
 	}
 
-	const segments = [];
+	const segments: { type: string; content: string }[] = [];
 	const lines = content.split("\n");
-	let textBuf = [];
-	let insightBuf = [];
+	let textBuf: string[] = [];
+	let insightBuf: string[] = [];
 	let inInsight = false;
 
 	for (const line of lines) {
@@ -169,7 +184,7 @@ export function parseInsightSegments(content) {
 
 // Returns true if the minute ticked over from the previous message in the same group.
 // Used to conditionally show a gutter timestamp on continuation messages.
-export function timeChanged(msgs, index) {
+export function timeChanged(msgs: Message[], index: number): boolean {
 	if (index === 0 || senderChanged(msgs, index)) return false;
 	return formatTimeCompact(msgs[index].timestamp) !== formatTimeCompact(msgs[index - 1].timestamp);
 }
@@ -183,7 +198,12 @@ export function timeChanged(msgs, index) {
  * For thread replies (with threadParentId), generates a message-level permalink:
  *   /<project>?channel=<channel>&thread=<threadParentId>&msg=<msgId>
  */
-export function getPermalinkUrl(projectName, channelName, msgId, threadParentId) {
+export function getPermalinkUrl(
+	projectName: string,
+	channelName: string,
+	msgId: string,
+	threadParentId?: string | null,
+): string {
 	if (!projectName || !channelName || !msgId) return "";
 	let url = `/${encodeURIComponent(projectName)}`;
 	url += `?channel=${encodeURIComponent(channelName)}`;
@@ -208,7 +228,7 @@ const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
  *
  * Date format: "Today", "Yesterday", or "March 2, 2026" for older dates.
  */
-export function dateChanged(msgs, index) {
+export function dateChanged(msgs: Message[], index: number): string | null {
 	if (index === 0) return null;
 	const curr = new Date(msgs[index].timestamp);
 	const prev = new Date(msgs[index - 1].timestamp);
@@ -225,7 +245,7 @@ export function dateChanged(msgs, index) {
 	return formatDateLabel(curr);
 }
 
-function formatDateLabel(date) {
+function formatDateLabel(date: Date): string {
 	const now = new Date();
 	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 	const target = new Date(date.getFullYear(), date.getMonth(), date.getDate());
