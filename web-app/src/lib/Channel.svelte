@@ -910,7 +910,7 @@ function getToolCallStatusIcon(entry) {
                       {#each participants as p}
                         <span
                           class="thread-avatar-chip"
-                          style="background-color: {getSenderColor(p)}"
+                          style="background-color: {getSenderColor(p, undefined, $activeChannel)}"
                           title={p}
                         >{p[0].toUpperCase()}</span>
                       {/each}
