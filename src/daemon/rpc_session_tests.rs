@@ -1820,13 +1820,14 @@ async fn test_handle_session_fork_accepts_valid_uuid() {
 
     let valid_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
-    // Pre-populate topic_sessions so the fork returns "already exists"
-    // without needing to spawn a real session.
+    // Pre-populate topic_sessions with an alive session so the fork returns
+    // "already exists" without needing to spawn a real process.
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(valid_uuid.to_string(), "existing-session".to_string());
+    setup_alive_fork(&state, "existing-session", "fork-existing");
 
     let resp = handle_session_fork(
         RequestId::Number(101),
