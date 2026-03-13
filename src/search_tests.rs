@@ -247,3 +247,34 @@ fn test_build_snippet_with_unicode() {
     assert!(snippet.contains("world"));
     assert!(snippet.contains("🌃"));
 }
+
+/// Verify that truncation via build_snippet (no-match path) respects the budget.
+///
+/// build_snippet calls truncate_str when the query isn't found in content.
+/// The result (including the "..." suffix) must fit within the budget.
+#[test]
+fn test_build_snippet_no_match_respects_budget() {
+    let content = "a]".repeat(60); // 120 bytes of ASCII
+    let snippet = build_snippet(&content, "zzz_not_found", 50);
+    // The snippet should be truncated with "..." and fit within 2*50 = 100 chars
+    assert!(snippet.ends_with("..."));
+    assert!(
+        snippet.len() <= 100,
+        "snippet should fit within budget: got {} bytes",
+        snippet.len()
+    );
+}
+
+/// Verify truncation handles multi-byte characters correctly in the no-match path.
+#[test]
+fn test_build_snippet_no_match_multibyte() {
+    let content = "🌃".repeat(30); // 120 bytes of 4-byte emoji
+    let snippet = build_snippet(&content, "zzz_not_found", 25);
+    assert!(snippet.ends_with("..."));
+    // Must be valid UTF-8 (implicit — it's a String) and within budget
+    assert!(
+        snippet.len() <= 50,
+        "snippet should fit within budget: got {} bytes",
+        snippet.len()
+    );
+}

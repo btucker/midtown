@@ -50,8 +50,10 @@ fn hashset_contains_icase(set: &HashSet<String>, name: &str) -> bool {
 /// Unified cooldown tracker that replaces six separate mechanisms in DaemonState.
 ///
 /// Keys are `(rule_name, context_key)` pairs mapped to the [`Instant`] they
-/// were last recorded. Call [`check`](CooldownTracker::check) before firing
-/// and [`record`](CooldownTracker::record) after a successful fire.
+/// were last recorded. Prefer [`check_and_record`](CooldownTracker::check_and_record)
+/// to atomically test and claim a cooldown slot — using separate `check()` then
+/// `record()` calls introduces a TOCTOU window where concurrent callers can both
+/// see the cooldown as expired.
 ///
 /// Currently used in DaemonState's `cooldowns` field.
 #[derive(Debug, Default)]
@@ -1501,6 +1503,10 @@ mod rules_channel_lead_tests;
 #[path = "rules_idle_tests.rs"]
 #[cfg(test)]
 mod rules_idle_tests;
+
+#[path = "rules_cooldown_tests.rs"]
+#[cfg(test)]
+mod rules_cooldown_tests;
 
 #[cfg(test)]
 mod tests {

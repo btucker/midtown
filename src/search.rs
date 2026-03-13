@@ -55,7 +55,7 @@ pub fn build_snippet(content: &str, query: &str, context_chars: usize) -> String
 
     let pos = match lower_content.find(&lower_query) {
         Some(p) => p,
-        None => return truncate_str(content, context_chars * 2),
+        None => return crate::daemon::helpers::truncate_str(content, context_chars * 2),
     };
 
     let start = pos.saturating_sub(context_chars);
@@ -94,15 +94,6 @@ fn snap_to_char_boundary(s: &str, offset: usize, forward: bool) -> usize {
             .rev()
             .find(|&i| s.is_char_boundary(i))
             .unwrap_or(0)
-    }
-}
-
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        let end = snap_to_char_boundary(s, max_len, false);
-        format!("{}...", &s[..end])
     }
 }
 
