@@ -4389,13 +4389,26 @@ pub(super) async fn handle_pr_comment_nudge(
                 nudge_msg,
             )]
         } else if let Some(session_id) = reviewer_session_id {
-            // Reviewer stopped — resume their session with the follow-up context
-            let config = crate::launch::LaunchConfig::coworker(
+            // Reviewer stopped — resume their session with the follow-up context.
+            // Override role, provider, and model: coworker() defaults to
+            // Coworker/sonnet, but this is a reviewer session that should
+            // use Reviewer provider + model (matching startup.rs recovery).
+            let mut config = crate::launch::LaunchConfig::coworker(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
                 crate::launch::SessionMode::ResumeSession(session_id.clone()),
                 Some(nudge_msg),
                 task_id,
+            );
+            config.role = crate::launch::CoworkerRole::Reviewer;
+            config.auth_provider = crate::config::get_execution_provider_for_role(
+                state.paths.dir_key(),
+                crate::config::ExecutionRole::Reviewer,
+            );
+            config.model = super::helpers::resolve_model_for_role(
+                state.paths.dir_key(),
+                config.auth_provider,
+                &config.role,
             );
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),

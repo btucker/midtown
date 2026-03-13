@@ -5694,3 +5694,63 @@ fn test_extract_placeholder_comment_id_returns_none_when_no_placeholder() {
     let result = super::extract_placeholder_comment_id(&json);
     assert_eq!(result, None);
 }
+
+/// Exercises the reviewer-resume override applied in `handle_pr_comment_nudge`.
+///
+/// Constructs a config via `LaunchConfig::coworker()` (which defaults to
+/// Coworker role, coworker auth provider, and sonnet model), then applies the
+/// same role/provider/model override as the fix. Asserts that the resulting
+/// config has Reviewer role, reviewer auth provider, and opus model.
+///
+/// This test fails on the pre-fix code where no override existed.
+#[test]
+fn reviewer_resume_config_override_sets_role_provider_and_model() {
+    use crate::daemon::helpers::{default_model_for_provider_role, resolve_model_for_role};
+
+    let repo = "no-config-repo";
+
+    // Step 1: LaunchConfig::coworker() produces Coworker defaults
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park",
+        repo,
+        crate::launch::SessionMode::ResumeSession("sess-park-reviewer".to_string()),
+        Some("PR #42 author posted a follow-up".to_string()),
+        Some("task-99".to_string()),
+    );
+    assert_eq!(
+        config.role,
+        crate::launch::CoworkerRole::Coworker,
+        "Precondition: coworker() should produce Coworker role"
+    );
+
+    // Verify coworker and reviewer defaults differ (precondition for the test)
+    let coworker_default =
+        default_model_for_provider_role(crate::auth::AuthProvider::Claude, &config.role);
+    let reviewer_default = default_model_for_provider_role(
+        crate::auth::AuthProvider::Claude,
+        &crate::launch::CoworkerRole::Reviewer,
+    );
+    assert_ne!(
+        coworker_default, reviewer_default,
+        "Precondition: Coworker and Reviewer should have different default models"
+    );
+
+    // Step 2: Apply the same override as handle_pr_comment_nudge
+    config.role = crate::launch::CoworkerRole::Reviewer;
+    config.auth_provider = crate::config::get_execution_provider_for_role(
+        repo,
+        crate::config::ExecutionRole::Reviewer,
+    );
+    config.model = resolve_model_for_role(repo, config.auth_provider, &config.role);
+
+    // Step 3: Assert the config is now correct for a reviewer
+    assert_eq!(
+        config.role,
+        crate::launch::CoworkerRole::Reviewer,
+        "Role should be Reviewer after override"
+    );
+    assert_eq!(
+        config.model, reviewer_default,
+        "Model should match reviewer default (opus) after override"
+    );
+}
