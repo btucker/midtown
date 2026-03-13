@@ -5033,15 +5033,21 @@ fn test_orphan_recovery_dispatches_non_lead_driven_channel() {
     snap.task_channel
         .insert("42".into(), "proj-workflows".into());
     // lead_driven_channels is empty — default behavior.
-    snap.coworkers.active_names.insert("park".into());
+    // NOTE: Do NOT add "park" to active_names — that causes orphan recovery to
+    // skip it (active coworkers aren't considered orphans), making the test
+    // produce empty effects for the wrong reason.
 
     let effects = dispatch_via_sessions_for_test(&snap);
-    // Should produce effects (session recovery attempt) since channel is not lead-driven.
-    // The task has no session record, so it'll be collected for the fallback path.
-    // With no session_task_map entry, the task enters the "tasks_without_sessions" path
-    // which may produce a SpawnCoworker effect if conditions are met.
-    // The key assertion: effects processing was NOT short-circuited by lead-driven gate.
-    let _ = effects; // Dispatch proceeds (may or may not produce effects depending on session state).
+    // Without lead-driven gating, the task enters the no-session fallback path
+    // and orphan recovery produces a SpawnCoworkerWithCallbacks effect.
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    assert!(
+        has_spawn,
+        "Non-lead-driven channel should produce spawn effect, got: {:?}",
+        effects
+    );
 }
 
 #[test]
