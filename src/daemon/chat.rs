@@ -228,38 +228,39 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let is_running = state.coworkers.get(&target_name).is_some();
         let nudge_text = render_thread_context(msg);
 
-        // Decide action using pure decision function
+        // Convert MentionAction → Effects, execute via the standard pipeline.
+        let name_session_map: std::collections::HashMap<String, String> =
+            state.name_to_session.lock().unwrap().clone();
+
+        // Look up whether the @mentioned name has an existing reviewer session
+        // via PrReviewerAssignment (persists beyond session GC, unlike session records).
+        let reviewer_session = {
+            let ps = state.persistent_state.lock().await;
+            ps.github
+                .pr_reviewers
+                .values()
+                .find(|a| a.reviewer.eq_ignore_ascii_case(&target_name))
+                .and_then(|a| {
+                    a.reviewer_session_id
+                        .as_ref()
+                        .map(|sid| ReviewerSessionInfo {
+                            session_id: sid.clone(),
+                            task_id: Some(format!("{}", a.pr_number)),
+                        })
+                })
+        };
+
+        // Decide action using pure decision function.
+        // Pass whether a reviewer session exists so the dev limit check
+        // doesn't block resuming an existing reviewer (no new slot needed).
         let action = crate::rules::decide_mention_action(
             &target_name,
             &msg.from,
             is_running,
             state.is_at_dev_limit(&channel_lead_names),
+            reviewer_session.is_some(),
             &nudge_text,
         );
-
-        // Convert MentionAction → Effects, execute via the standard pipeline.
-        let name_session_map: std::collections::HashMap<String, String> =
-            state.name_to_session.lock().unwrap().clone();
-
-        // Look up whether the @mentioned name has an existing reviewer session.
-        // If so, we resume it instead of spawning a fresh dev session.
-        let reviewer_session = {
-            let ps = state.persistent_state.lock().await;
-            ps.sessions
-                .iter()
-                .filter(|(_, r)| {
-                    r.is_reviewer
-                        && (r.preferred_name.as_deref() == Some(&target_name)
-                            || r.current_name.as_deref() == Some(&target_name))
-                })
-                // Pick the most recently active reviewer to avoid nondeterminism
-                // when multiple stopped reviewer sessions share the same name.
-                .max_by_key(|(_, r)| r.last_active)
-                .map(|(sid, r)| ReviewerSessionInfo {
-                    session_id: sid.clone(),
-                    task_id: r.task_id.clone(),
-                })
-        };
 
         let effects = mention_action_to_effects(
             action,
@@ -405,11 +406,17 @@ fn mention_action_to_effects(
                     Some(message),
                     info.task_id,
                 );
-                return vec![Effect::ResumeCoworker {
-                    name,
-                    session_id: info.session_id,
-                    config,
-                }];
+                return vec![
+                    Effect::ResumeCoworker {
+                        name: name.clone(),
+                        session_id: info.session_id,
+                        config,
+                    },
+                    Effect::post_to_ops(format!(
+                        "Resuming reviewer {} in response to @mention",
+                        name
+                    )),
+                ];
             }
 
             let config = crate::launch::LaunchConfig::coworker(

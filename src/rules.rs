@@ -1450,11 +1450,16 @@ pub(crate) enum MentionAction {
 }
 
 /// Decide what action to take for an @mention of a coworker.
+///
+/// `has_reviewer_session` indicates whether the mentioned name has an existing
+/// reviewer session that can be resumed. Resuming a reviewer doesn't consume
+/// a new dev slot, so the dev limit check is bypassed in that case.
 pub(crate) fn decide_mention_action(
     mentioned_name: &str,
     sender: &str,
     is_running: bool,
     at_dev_limit: bool,
+    has_reviewer_session: bool,
     nudge_text: &str,
 ) -> MentionAction {
     // Skip self-mentions
@@ -1466,6 +1471,12 @@ pub(crate) fn decide_mention_action(
 
     if is_running {
         MentionAction::Nudge {
+            name: mentioned_name.to_string(),
+            message: nudge_text.to_string(),
+        }
+    } else if has_reviewer_session {
+        // Reviewer resume: doesn't consume a dev slot, bypass limit check.
+        MentionAction::Spawn {
             name: mentioned_name.to_string(),
             message: nudge_text.to_string(),
         }
@@ -3075,7 +3086,7 @@ mod tests {
 
     #[test]
     fn mention_nudges_running_coworker() {
-        let action = decide_mention_action("york", "amsterdam", true, false, "hey york");
+        let action = decide_mention_action("york", "amsterdam", true, false, false, "hey york");
         assert_eq!(
             action,
             MentionAction::Nudge {
@@ -3087,7 +3098,7 @@ mod tests {
 
     #[test]
     fn mention_spawns_inactive_coworker() {
-        let action = decide_mention_action("york", "amsterdam", false, false, "hey york");
+        let action = decide_mention_action("york", "amsterdam", false, false, false, "hey york");
         assert_eq!(
             action,
             MentionAction::Spawn {
@@ -3099,14 +3110,28 @@ mod tests {
 
     #[test]
     fn mention_skips_self_mention() {
-        let action = decide_mention_action("york", "york", true, false, "hey @york");
+        let action = decide_mention_action("york", "york", true, false, false, "hey @york");
         assert!(matches!(action, MentionAction::Skip { .. }));
     }
 
     #[test]
     fn mention_skips_at_dev_limit() {
-        let action = decide_mention_action("york", "amsterdam", false, true, "hey york");
+        let action = decide_mention_action("york", "amsterdam", false, true, false, "hey york");
         assert!(matches!(action, MentionAction::Skip { .. }));
+    }
+
+    #[test]
+    fn mention_reviewer_bypasses_dev_limit() {
+        // A stopped reviewer with a session can be resumed even at dev limit
+        let action = decide_mention_action("york", "amsterdam", false, true, true, "hey york");
+        assert_eq!(
+            action,
+            MentionAction::Spawn {
+                name: "york".to_string(),
+                message: "hey york".to_string(),
+            },
+            "Reviewer resume should bypass dev limit"
+        );
     }
 
     /// Snapshot from bug #756: madison was in a break/respawn loop for 4+ hours.

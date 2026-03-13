@@ -206,7 +206,11 @@ fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
         reviewer_info,
     );
 
-    assert_eq!(effects.len(), 1);
+    assert_eq!(
+        effects.len(),
+        2,
+        "Should produce ResumeCoworker + ops notification"
+    );
     match &effects[0] {
         Effect::ResumeCoworker {
             name,
@@ -231,6 +235,13 @@ fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
             effects[0]
         ),
     }
+    // Second effect: ops-channel notification
+    assert!(
+        matches!(&effects[1], Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == OPS_CHANNEL && message.contains("amsterdam") && message.contains("Resuming reviewer")),
+        "Should post ops notification for reviewer resume, got {:?}",
+        effects[1]
+    );
 }
 
 #[test]

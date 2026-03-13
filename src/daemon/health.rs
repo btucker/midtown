@@ -1552,7 +1552,8 @@ pub(super) fn check_for_state_gc(
             continue;
         }
 
-        // Dead reviewer sessions: prune immediately (ephemeral, never resumed)
+        // Dead reviewer sessions: prune immediately (ephemeral lifecycle).
+        // Resume-on-@mention uses PrReviewerAssignment (not session records).
         if record.is_reviewer {
             dead_session_ids.push(session_id.clone());
             continue;
