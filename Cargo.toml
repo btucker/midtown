@@ -74,9 +74,6 @@ ratatui = "0.30"
 ratatui-themes = { version = "0.1", features = ["serde"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 
-# Mermaid diagram rendering
-selkie-rs = { version = "0.3", default-features = false }
-
 # Syntax highlighting for code blocks
 syntect = { version = "5", default-features = false, features = ["default-themes", "default-syntaxes", "regex-fancy"] }
 

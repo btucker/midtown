@@ -1520,3 +1520,18 @@ export async function saveChannelDirectory(
 		return { ok: false, error: (err as Error).message };
 	}
 }
+
+// Fetch available directories across all project repos
+export async function fetchDirectories() {
+	try {
+		const res = await fetch(`${getApiBase()}/directories`);
+		if (res.ok) {
+			const data = await res.json();
+			return data.directories || [];
+		}
+		console.warn("Failed to fetch directories:", res.status);
+	} catch (err) {
+		console.warn("Failed to fetch directories:", err);
+	}
+	return [];
+}

@@ -1,5 +1,11 @@
 <script lang="ts">
-import { fetchChannelAgentsMd, fetchChannelDirectory, saveChannelAgentsMd, saveChannelDirectory } from "./api.ts";
+import {
+	fetchChannelAgentsMd,
+	fetchChannelDirectory,
+	fetchDirectories,
+	saveChannelAgentsMd,
+	saveChannelDirectory,
+} from "./api.ts";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.ts";
 
@@ -22,6 +28,7 @@ let directoryLoading = $state(false);
 let directorySaving = $state(false);
 let directoryError = $state("");
 let directorySuccess = $state("");
+let availableDirectories = $state<string[]>([]);
 
 let directoryDirty = $derived(directoryValue !== directoryOriginal);
 
@@ -29,30 +36,15 @@ async function loadDirectory() {
 	directoryLoading = true;
 	directoryError = "";
 	directorySuccess = "";
-	const data = await fetchChannelDirectory($activeChannel);
+	const [data, dirs] = await Promise.all([fetchChannelDirectory($activeChannel), fetchDirectories()]);
 	directoryValue = data.directory || "";
 	directoryOriginal = data.directory || "";
+	availableDirectories = dirs;
 	directoryLoading = false;
-}
-
-function validateDirectory(path) {
-	if (!path) return null;
-	if (path.startsWith("/") || path.startsWith("\\")) {
-		return "Path must be relative (cannot start with / or \\)";
-	}
-	if (path.includes("..")) {
-		return "Path cannot contain ..";
-	}
-	return null;
 }
 
 async function saveDirectory() {
 	const trimmed = directoryValue.trim();
-	const validationError = validateDirectory(trimmed);
-	if (validationError) {
-		directoryError = validationError;
-		return;
-	}
 	directorySaving = true;
 	directoryError = "";
 	directorySuccess = "";
@@ -184,19 +176,24 @@ $effect(() => {
     <section class="settings-section">
       <h2 class="section-title">Working Directory</h2>
       <span class="setting-description">
-        Restrict this channel's coworkers to a subdirectory of the repo.
+        Set the working directory (CWD) for coworkers launched in this channel.
       </span>
       {#if directoryLoading}
         <div class="dir-loading">Loading...</div>
       {:else}
-        <input
-          type="text"
+        <select
           class="dir-input"
           bind:value={directoryValue}
-          placeholder="e.g. packages/auth"
-          spellcheck="false"
-          aria-label="Working directory path"
-        />
+          aria-label="Working directory"
+        >
+          <option value="">Project root (default)</option>
+          {#each availableDirectories as dir}
+            <option value={dir}>{dir}</option>
+          {/each}
+          {#if directoryValue && !availableDirectories.includes(directoryValue)}
+            <option value={directoryValue}>{directoryValue} (not found)</option>
+          {/if}
+        </select>
         <div class="dir-actions">
           <div class="dir-status-area">
             {#if directoryError}
@@ -394,15 +391,12 @@ $effect(() => {
     font-family: "SF Mono", "Cascadia Code", "Fira Code", monospace;
     font-size: 0.82rem;
     box-sizing: border-box;
+    cursor: pointer;
   }
 
   .dir-input:focus {
     outline: none;
     border-color: hsl(var(--primary));
-  }
-
-  .dir-input::placeholder {
-    color: hsl(var(--muted-foreground) / 0.5);
   }
 
   .dir-actions {

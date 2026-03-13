@@ -1,9 +1,9 @@
-// Lazy loader for the selkie WASM module.
+// Lazy loader for the mermaid rendering module.
 // Caches the loaded module so init only runs once.
 // On failure, clears the cached promise so subsequent calls can retry.
 
 interface SelkieModule {
-	render: (...args: unknown[]) => string;
+	render: (id: string, code: string) => Promise<{ svg: string }>;
 }
 
 let selkie: SelkieModule | null = null;
@@ -14,10 +14,14 @@ export async function getSelkie(): Promise<SelkieModule> {
 
 	if (!initPromise) {
 		initPromise = (async (): Promise<SelkieModule> => {
-			const { default: initWasm, initialize, render } = await import("selkie-rs");
-			await initWasm();
-			initialize({ startOnLoad: false });
-			selkie = { render: render as (...args: unknown[]) => string };
+			const mermaid = (await import("mermaid")).default;
+			mermaid.initialize({ startOnLoad: false });
+			selkie = {
+				render: async (id: string, code: string) => {
+					const { svg } = await mermaid.render(id, code);
+					return { svg };
+				},
+			};
 			return selkie!;
 		})().catch((err) => {
 			initPromise = null;

@@ -1,7 +1,8 @@
 //! Mermaid diagram parsing and rendering for the chat TUI
 //!
-//! Detects ```mermaid code fences in chat messages, renders them to ASCII art
-//! (for inline terminal display) and SVG (for browser viewing) using selkie-rs.
+//! Detects ```mermaid code fences in chat messages. Server-side rendering has
+//! been removed (selkie-rs dependency dropped). The web app renders diagrams
+//! client-side via mermaid-js; the TUI shows raw mermaid source.
 //! Results are cached by content hash.
 
 use std::collections::HashMap;
@@ -315,20 +316,12 @@ impl MermaidCache {
     }
 }
 
-/// Render mermaid source to ASCII art + SVG using selkie-rs
+/// Render mermaid source to ASCII art + SVG
 ///
-/// Returns None if rendering fails (invalid syntax, etc.)
-fn render_mermaid_diagram(source: &str) -> Option<RenderedDiagram> {
-    let dark_source = format!("%%{{init: {{\"theme\": \"dark\"}}}}%%\n{}", source);
-
-    // Render SVG (works for all diagram types)
-    let svg = selkie::render::render_text(&dark_source).ok()?;
-
-    // Render ASCII art (selkie v0.3 supports all diagram types)
-    let ascii_art =
-        selkie::render::render_text_ascii(source).unwrap_or_else(|_| source.to_string());
-
-    Some(RenderedDiagram { ascii_art, svg })
+/// Returns None — selkie-rs has been removed. Mermaid rendering now happens
+/// client-side only (web app via mermaid-js, TUI shows raw source).
+fn render_mermaid_diagram(_source: &str) -> Option<RenderedDiagram> {
+    None
 }
 
 #[cfg(test)]
@@ -556,58 +549,9 @@ mod tests {
     }
 
     #[test]
-    fn test_render_mermaid_diagram_simple_flowchart() {
+    fn test_render_mermaid_diagram_returns_none() {
+        // selkie-rs removed — render_mermaid_diagram always returns None
         let result = render_mermaid_diagram("graph TD\n  A-->B");
-        assert!(result.is_some(), "Simple flowchart should render");
-        let diagram = result.unwrap();
-        assert!(!diagram.svg.is_empty(), "SVG should not be empty");
-        assert!(diagram.svg.contains("<svg"), "SVG should contain <svg tag");
-        assert!(
-            !diagram.ascii_art.is_empty(),
-            "ASCII art should not be empty"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_sequence() {
-        let source = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob->>Alice: Hi";
-        let result = render_mermaid_diagram(source);
-        assert!(result.is_some(), "Sequence diagram should render");
-        let diagram = result.unwrap();
-        assert!(!diagram.svg.is_empty(), "SVG should not be empty");
-        assert!(diagram.svg.contains("<svg"), "SVG should contain <svg tag");
-        assert!(
-            diagram.ascii_art.contains("Alice"),
-            "ASCII art should contain participant names"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_invalid_input() {
-        let result = render_mermaid_diagram("this is not valid mermaid syntax }{}{}{");
-        // Invalid input should return None (selkie-rs parse failure)
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_flowchart_ascii() {
-        let result = render_mermaid_diagram("graph TD\n  A[Hello]-->B[World]");
-        assert!(result.is_some(), "Flowchart should render");
-        let diagram = result.unwrap();
-        assert!(
-            diagram.ascii_art.contains("Hello"),
-            "ASCII art should contain node labels"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_sequence_ascii() {
-        let result = render_mermaid_diagram("sequenceDiagram\n    Alice->>Bob: Hello");
-        assert!(result.is_some(), "Sequence diagram should render");
-        let diagram = result.unwrap();
-        assert!(
-            diagram.ascii_art.contains("Alice"),
-            "ASCII art should contain participant names"
-        );
     }
 }
