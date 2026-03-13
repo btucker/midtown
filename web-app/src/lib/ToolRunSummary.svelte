@@ -8,7 +8,6 @@ const TOOL_RUN_DELAY_MS = 10_000;
 
 let {
 	messages,
-	toolCount,
 	lastTimestamp,
 	allMessages = [],
 	startIndex = 0,
@@ -55,7 +54,7 @@ let visibleEntries = $derived.by(() =>
 		.filter(Boolean),
 );
 
-// Use visible tool count (after filtering channel posts) instead of raw toolCount
+// Count visible tools (after filtering channel posts like 'midtown channel post')
 let visibleToolCount = $derived(visibleEntries.reduce((sum, entry) => sum + (entry.msg.tool_data?.length || 0), 0));
 
 function toggle() {
