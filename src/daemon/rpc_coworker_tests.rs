@@ -676,16 +676,8 @@ async fn test_completed_without_pr_marks_task_done() {
     )
     .expect("write task file");
 
-    // Set up in-memory task assignment so the Completed handler can resolve it
-    {
-        let mut assignments = state.coworker_task_assignments.lock().unwrap();
-        assignments.insert(
-            "riverside".to_string(),
-            super::super::TaskAssignment {
-                task_id: task_id.to_string(),
-            },
-        );
-    }
+    // Set up session-based task assignment so the Completed handler can resolve it
+    state.set_test_task_assignment("riverside", task_id).await;
 
     // Report completed — no PR exists for this task
     let response = handle_coworker_report_state(
@@ -710,14 +702,11 @@ async fn test_completed_without_pr_marks_task_done() {
         "task should be marked completed on disk (not left in_progress)"
     );
 
-    // Verify the coworker's assignment was cleared
-    {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assert!(
-            !assignments.contains_key("riverside"),
-            "coworker assignment should be cleared after completion"
-        );
-    }
+    // Verify the coworker's assignment was cleared (session task_id should be None)
+    assert!(
+        state.get_task_id_for_coworker("riverside").await.is_none(),
+        "coworker assignment should be cleared after completion"
+    );
 
     // Cleanup
     let _ = std::fs::remove_file(&task_file);
@@ -753,15 +742,7 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
     .expect("write task file");
 
     // Set up in-memory task assignment
-    {
-        let mut assignments = state.coworker_task_assignments.lock().unwrap();
-        assignments.insert(
-            "riverside".to_string(),
-            super::super::TaskAssignment {
-                task_id: task_id.to_string(),
-            },
-        );
-    }
+    state.set_test_task_assignment("riverside", task_id).await;
 
     // NOTE: pr_author_sessions is empty — simulates daemon restart.
     // The task has pr=99 on disk but no in-memory PR tracking.
@@ -820,16 +801,8 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
     )
     .expect("write task file");
 
-    // Set up task assignment
-    {
-        let mut assignments = state.coworker_task_assignments.lock().unwrap();
-        assignments.insert(
-            "park".to_string(),
-            super::super::TaskAssignment {
-                task_id: task_id.to_string(),
-            },
-        );
-    }
+    // Set up task assignment via session record
+    state.set_test_task_assignment("park", task_id).await;
 
     // Simulate an open PR for this task via pr_author_sessions
     {

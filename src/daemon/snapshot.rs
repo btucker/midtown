@@ -835,16 +835,13 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
     let pending_tasks_without_owners =
         crate::tasks::filter_pending_tasks_without_owners(&all_tasks, 45);
-    let busy_coworkers: HashSet<String> = state.get_all_busy_coworkers().into_iter().collect();
+    let busy_coworkers: HashSet<String> =
+        state.get_all_busy_coworkers().await.into_iter().collect();
 
-    // Coworker → task assignments (for nudge/spawn loop prevention in dispatch)
-    let coworker_task_assignments: HashMap<String, String> = {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assignments
-            .iter()
-            .map(|(coworker, assignment)| (coworker.clone(), assignment.task_id.clone()))
-            .collect()
-    };
+    // Coworker → task assignments, derived from sessions[].task_id.
+    // The single source of truth for which coworker is assigned to which task.
+    let coworker_task_assignments: HashMap<String, String> =
+        state.get_coworker_task_assignments().await;
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
     // task-to-thread, task-to-message, channel-lead, and lead-driven mappings

@@ -2221,7 +2221,7 @@ async fn silent_coworker_scenario(
     tracker: &mut super::trackers::StuckConditionTracker,
     state: &DaemonState,
 ) -> u32 {
-    let busy_coworkers = state.get_all_busy_coworkers();
+    let busy_coworkers = state.get_all_busy_coworkers().await;
     let records = state.coworker_records.read().await;
     let mut nudge_count = 0;
 
@@ -2978,7 +2978,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers();
+    let busy_coworkers = state.get_all_busy_coworkers().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))
@@ -4497,7 +4497,7 @@ pub(super) async fn handle_pr_comment_nudge(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers();
+    let busy_coworkers = state.get_all_busy_coworkers().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))
@@ -4629,7 +4629,7 @@ pub(super) async fn handle_webhook_review_state_change(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers();
+    let busy_coworkers = state.get_all_busy_coworkers().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))
@@ -4765,7 +4765,7 @@ pub(super) async fn handle_webhook_ci_failure(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers();
+    let busy_coworkers = state.get_all_busy_coworkers().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
         .filter(|c| !busy_coworkers.contains(*c))

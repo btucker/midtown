@@ -164,7 +164,7 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
 
-**Task assignment persistence**: `RecordTaskAssignment` (emitted by both `SpawnSession` and `NudgeSessionWithCallbacks` callback chains) updates three things: (1) the in-memory `coworker_task_assignments` map for busy tracking, (2) `sessions[].task_id` in `DaemonPersistentState` so that insight routing and other session-aware features can resolve the task's channel, and (3) the `task_to_session` reverse map for dispatch lookups. All three are kept in sync by the single `RecordTaskAssignment` effect handler in `effects.rs`.
+**Task assignment persistence**: `sessions[].task_id` on `SessionRecord` is the single source of truth for coworker→task mapping. `RecordTaskAssignment` (emitted by both `SpawnSession` and `NudgeSessionWithCallbacks` callback chains) updates two things: (1) `sessions[].task_id` in `DaemonPersistentState` so that insight routing, busy tracking, and other session-aware features can resolve the task's channel, and (2) the `task_to_session` reverse map for dispatch lookups. The `WorldSnapshot::coworker_task_assignments` field is derived from session records during `collect_world_snapshot()`, ensuring dispatch decisions always reflect the persisted state.
 
 On daemon startup, the `NamePool` is restored from persisted session records: names with active sessions are marked allocated, the rest are available in LRU order.
 

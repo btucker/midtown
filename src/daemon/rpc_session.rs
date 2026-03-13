@@ -153,28 +153,20 @@ async fn resolve_attach_target_candidates(
         AttachTarget::Name(name) => vec![name],
         AttachTarget::Task(id) => {
             let id_str = id.to_string();
-            let mut matches: Vec<String> = {
-                let assignments = state.coworker_task_assignments.lock().unwrap();
-                assignments
-                    .iter()
-                    .filter_map(|(coworker, assignment)| {
-                        if assignment.task_id == id_str {
-                            Some(coworker.to_lowercase())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
-
+            // Look up coworker names from session records (single source of truth)
             let persistent = state.persistent_state.lock().await;
-            matches.extend(persistent.sessions.values().filter_map(|record| {
-                if record.task_id.as_deref() == Some(id_str.as_str()) {
-                    record.current_name.as_ref().map(|n| n.to_lowercase())
-                } else {
-                    None
-                }
-            }));
+            let matches: Vec<String> = persistent
+                .sessions
+                .values()
+                .filter_map(|record| {
+                    if record.task_id.as_deref() == Some(id_str.as_str()) {
+                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            drop(persistent);
 
             if matches.is_empty() {
                 return Err(format!("No coworker is assigned to task !{}", id));
@@ -777,11 +769,8 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
                 "paused"
             };
 
-            // Look up task assignment
-            let task = {
-                let assignments = state.coworker_task_assignments.lock().unwrap();
-                assignments.get(name).map(|a| a.task_id.clone())
-            };
+            // Task assignment is on the session record itself
+            let task = record.task_id.clone();
 
             Some(serde_json::json!({
                 "name": name,

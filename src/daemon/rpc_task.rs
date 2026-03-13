@@ -506,17 +506,37 @@ pub(super) async fn handle_task_update(
         );
     }
 
-    // Update in-memory assignment tracking
+    // Update session-based task assignment tracking
     if let Some(new_owner) = owner {
         // Clear old assignment before recording new one (prevents stale entries
         // when a task is reassigned from coworker A to coworker B)
-        state.clear_task_assignment_by_task(task_id);
-        state.record_task_assignment(new_owner, task_id);
+        state.clear_task_assignment_by_task(task_id).await;
+        // Set task_id on the new owner's session record
+        let session_id = state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .get(&new_owner.to_lowercase())
+            .cloned();
+        if let Some(sid) = session_id {
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(record) = ps.sessions.get_mut(&sid) {
+                record.task_id = Some(task_id.to_string());
+            }
+            state
+                .task_to_session
+                .lock()
+                .unwrap()
+                .insert(task_id.to_string(), sid);
+            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                warn!("Failed to save state after task.update assignment: {}", e);
+            }
+        }
     }
 
     // Clear assignment when task is completed or reset to pending
     if matches!(status, Some("completed") | Some("pending")) {
-        state.clear_task_assignment_by_task(task_id);
+        state.clear_task_assignment_by_task(task_id).await;
     }
 
     // Update daemon-side task-to-channel and task-to-model mappings
@@ -589,8 +609,8 @@ pub(super) async fn handle_task_done(
         }
     }
 
-    // Clear in-memory tracking
-    state.clear_task_assignment_by_task(task_id);
+    // Clear session-based task assignment tracking
+    state.clear_task_assignment_by_task(task_id).await;
 
     // Unblock dependent tasks
     if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &dir_key) {
@@ -723,8 +743,29 @@ pub(super) async fn handle_task_claim(
         );
     }
 
-    // Record in-memory assignment for busy tracking (only after disk write succeeds)
-    state.record_task_assignment(from, task_id);
+    // Update session-based task assignment (only after disk write succeeds)
+    {
+        let session_id = state
+            .name_to_session
+            .lock()
+            .unwrap()
+            .get(&from.to_lowercase())
+            .cloned();
+        if let Some(sid) = session_id {
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(record) = ps.sessions.get_mut(&sid) {
+                record.task_id = Some(task_id.to_string());
+            }
+            state
+                .task_to_session
+                .lock()
+                .unwrap()
+                .insert(task_id.to_string(), sid);
+            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                warn!("Failed to save state after task.claim assignment: {}", e);
+            }
+        }
+    }
 
     // Post task divider to the coworker's DM channel.
     // Reuse build_dm_separator_effect (already tested in effects_tests.rs) to

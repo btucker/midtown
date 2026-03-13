@@ -2308,11 +2308,8 @@ fn test_grouped_task_skips_if_already_assigned() {
         "Tick 1 should nudge york with task !1107"
     );
 
-    // Simulate the nudge executing and recording the assignment
-    state.record_task_assignment("york", "1107");
-
     // Tick 2: Task !1107 is still pending, york is busy with !1107 now.
-    // Create a new snapshot that includes the assignment.
+    // The assignment is reflected in the snapshot (derived from sessions[].task_id).
     let snap_tick2 = snapshot::WorldSnapshot {
         coworker_task_assignments: {
             let mut assignments = HashMap::new();
@@ -2441,9 +2438,6 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
         has_assignment,
         "NudgeOwner on_success should include RecordTaskAssignment"
     );
-
-    // Simulate the nudge executing and recording the assignment
-    state.record_task_assignment("york", "1107");
 
     // Tick 2: Create a new snapshot that includes the assignment in coworker_task_assignments.
     // The guard should use snap.coworker_task_assignments to prevent re-nudge (pure decision pattern).

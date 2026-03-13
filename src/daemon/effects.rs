@@ -1144,9 +1144,8 @@ async fn clear_stale_task_session_binding(
         }
     }
 
-    // Remove any in-memory assignment guard so task dispatch can recover cleanly.
-    state.clear_task_assignment_by_task(task_id);
-
+    // clear_task_binding_in_records below handles session record cleanup
+    // (clearing task_id, resume_on_startup, is_running with expected_session_id logic).
     let mut ps = state.persistent_state.lock().await;
     let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
     if cleared > 0
@@ -1503,7 +1502,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to reset task !{} to pending: {}", task_id, e);
                 }
                 // Clear task assignment tracking (task is no longer assigned)
-                state.clear_task_assignment_by_task(&task_id);
+                state.clear_task_assignment_by_task(&task_id).await;
             }
             Effect::ClearSessionForTask { task_id } => {
                 let cleared = clear_stale_task_session_binding(state, &task_id, None).await;
@@ -1614,10 +1613,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     for task_id in &cleared_task_ids {
                         t2s.remove(task_id);
                     }
-                    drop(t2s);
-                    for task_id in &cleared_task_ids {
-                        state.clear_task_assignment_by_task(task_id);
-                    }
+                    // Session records already cleared above (task_id.take()),
+                    // no separate clear_task_assignment_by_task needed.
                 }
             }
             Effect::ClearSessionWorkingDir { session_id } => {
@@ -1690,9 +1687,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         info!("Spawned coworker {} successfully", name);
                         // Clear in-flight marker on success
                         state.clear_task_spawn_in_flight(&task_id);
-                        // Record task assignment in-memory for busy tracking
-                        state.record_task_assignment(&owner, &task_id);
-                        // Update SessionRecord with task_id if the session is known.
+                        // Update sessions[].task_id — the single source of truth.
                         let maybe_session_id =
                             state.name_to_session.lock().unwrap().get(&name).cloned();
                         if let Some(session_id) = maybe_session_id {
@@ -1700,7 +1695,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             if let Some(record) = ps.sessions.get_mut(&session_id) {
                                 record.task_id = Some(task_id.clone());
                             }
-                            // Also update task_to_session reverse map.
                             state
                                 .task_to_session
                                 .lock()
@@ -1803,15 +1797,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 debug!("Cleared orphaned PR lead nudge for PR #{}", pr_number);
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
-                state.record_task_assignment(&coworker, &task_id);
-
-                // Also update sessions[].task_id in persistent state so that
-                // post_insight (which resolves channel via session records) can
-                // route insights to the correct task channel. Without this,
-                // NudgeSessionWithCallbacks (reassigning an idle session to a new
-                // task) only updates the in-memory coworker_task_assignments map,
-                // leaving session records stale — causing insights to fall back
-                // to the default #midtown channel.
+                // Update sessions[].task_id — the single source of truth for
+                // coworker→task mapping. Also maintains the task_to_session
+                // reverse map.
                 let session_id = state
                     .name_to_session
                     .lock()
@@ -1823,7 +1811,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Some(record) = ps.sessions.get_mut(&sid) {
                         record.task_id = Some(task_id.clone());
                     }
-                    // Also update task_to_session reverse map
                     state
                         .task_to_session
                         .lock()
@@ -2011,7 +1998,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                     }
                     // Clear task assignment tracking (coworker is now free)
-                    state.clear_task_assignment_by_task(&task_id);
+                    state.clear_task_assignment_by_task(&task_id).await;
                 }
             }
             Effect::ClearBlockedBy {
@@ -2703,7 +2690,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Unassigned task !{} (PR in review, freeing coworker name)",
                         task_id
                     );
-                    state.clear_task_assignment_by_task(&task_id);
+                    state.clear_task_assignment_by_task(&task_id).await;
                 }
             }
             Effect::ResetAbandonedTask {
@@ -2721,7 +2708,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Reset task !{} to pending (PR #{} closed without merge)",
                         task_id, pr_number
                     );
-                    state.clear_task_assignment_by_task(&task_id);
+                    state.clear_task_assignment_by_task(&task_id).await;
                     // Post to ops channel — PR closure is daemon operational info
                     let mut msg = crate::message::Message::system(format!(
                         "PR #{} closed without merge. Task !{} reset to pending.",
@@ -4717,7 +4704,7 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
     );
 
     // Nudge channel lead about the insight.
-    let task_id = state.get_task_id_for_coworker(agent);
+    let task_id = state.get_task_id_for_coworker(agent).await;
     let nudge_effect = Effect::NudgeChannelLead {
         channel_name: channel_name.to_string(),
         reason: super::wake_reason::WakeReason::InsightPosted {
