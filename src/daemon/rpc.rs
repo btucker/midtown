@@ -249,11 +249,10 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Dispatch based on method
     let response = dispatch_request(request, state).await;
 
-    // Cache only successful responses for idempotency (60 second TTL).
+    // Cache only successful responses for allowlisted methods (60 second TTL).
     // Error responses are NOT cached so that clients can retry after transient
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
-    // Methods with domain-specific caching (e.g., prs.status) are excluded.
     if use_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(
