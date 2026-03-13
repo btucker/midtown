@@ -1462,7 +1462,7 @@ async fn test_set_workflow_rejects_path_traversal() {
     let result = api_set_channel_workflow(
         State(state),
         Path("../etc".to_string()),
-        Json(SetWorkflowRequest { workflow: None }),
+        Json(serde_json::json!({ "workflow": null })),
     )
     .await;
     assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);

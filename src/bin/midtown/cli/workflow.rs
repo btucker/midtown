@@ -29,6 +29,14 @@ pub enum WorkflowCommand {
         /// Task ID to include
         task_id: String,
     },
+    /// Enable or disable lead-driven mode for a channel
+    LeadDriven {
+        /// Channel name
+        channel: String,
+        /// Disable lead-driven mode (default: enable)
+        #[arg(long)]
+        disable: bool,
+    },
 }
 
 pub fn handle(cmd: &WorkflowCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -38,6 +46,9 @@ pub fn handle(cmd: &WorkflowCommand, client: &DaemonClient) -> Result<Response, 
         WorkflowCommand::Unassign { channel } => client.workflow_unassign(channel),
         WorkflowCommand::Exclude { task_id } => handle_exclude(task_id, client),
         WorkflowCommand::Include { task_id } => handle_include(task_id, client),
+        WorkflowCommand::LeadDriven { channel, disable } => {
+            client.workflow_set_lead_driven(channel, !disable)
+        }
     }
 }
 

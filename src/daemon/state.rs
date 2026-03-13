@@ -4,7 +4,7 @@
 //! (github-state.json, reminders.json) into a single daemon-state.json.
 //! Loaded once at startup, saved after any mutation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -248,6 +248,14 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub channel_workflows: HashMap<String, String>,
 
+    /// Channels operating in lead-driven mode.
+    ///
+    /// When a channel is in this set, the daemon relays workflow events as
+    /// human-readable @mentions to the channel lead instead of executing its
+    /// built-in state machine (auto-dispatch, reviewer spawning, PR nudges).
+    #[serde(default)]
+    pub lead_driven_channels: HashSet<String>,
+
     /// Workflow state, owned by the daemon.
     ///
     /// Maps channel name → per-channel state (JSON object). Nested keys
@@ -453,6 +461,7 @@ impl DaemonPersistentState {
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
             channel_workflows: HashMap::new(),
+            lead_driven_channels: HashSet::new(),
             workflow_state,
             permanent_pr_nudges: Vec::new(),
         };

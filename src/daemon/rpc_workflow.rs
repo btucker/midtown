@@ -1,7 +1,7 @@
 //! Workflow RPC handlers.
 //!
 //! Handles `workflow.get_state`, `workflow.set_state`, `workflow.list`,
-//! `workflow.assign`, and `workflow.unassign` methods.
+//! `workflow.assign`, `workflow.unassign`, and `workflow.set-lead-driven` methods.
 //!
 //! State is owned by the daemon in `DaemonPersistentState::workflow_state`
 //! and persisted to `daemon-state.json` alongside other daemon state.
@@ -196,6 +196,51 @@ pub(super) async fn handle_workflow_unassign(
     debug!(
         channel = %channel,
         "workflow.unassign: removed workflow assignment"
+    );
+
+    Response::success(id, serde_json::json!({ "ok": true }))
+}
+
+/// Handle `workflow.set-lead-driven` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+/// - `enabled` (required): boolean — `true` to enable, `false` to disable
+///
+/// When enabled, the daemon relays workflow events as human-readable @mentions
+/// to the channel lead instead of executing its built-in state machine.
+pub(super) async fn handle_workflow_set_lead_driven(
+    id: RequestId,
+    channel: &str,
+    enabled: bool,
+    daemon_state: &DaemonState,
+) -> Response {
+    let mut ps = daemon_state.persistent_state.lock().await;
+
+    if enabled {
+        ps.lead_driven_channels.insert(channel.to_string());
+    } else {
+        ps.lead_driven_channels.remove(channel);
+    }
+
+    if let Err(e) = ps.save_for_repo(daemon_state.paths.dir_key()) {
+        error!(
+            channel = %channel,
+            enabled = %enabled,
+            "workflow.set-lead-driven: failed to save daemon state: {}",
+            e
+        );
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("failed to persist state: {e}")),
+        );
+    }
+
+    debug!(
+        channel = %channel,
+        enabled = %enabled,
+        "workflow.set-lead-driven: lead-driven mode {}",
+        if enabled { "enabled" } else { "disabled" }
     );
 
     Response::success(id, serde_json::json!({ "ok": true }))

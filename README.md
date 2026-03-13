@@ -580,7 +580,11 @@ Each channel can have a `workflow.py` script that customizes how the daemon resp
 ```bash
 midtown workflow assign <channel> <workflow-name>
 midtown workflow unassign <channel>
+midtown workflow lead-driven <channel>       # enable lead-driven mode
+midtown workflow lead-driven <channel> --disable  # disable
 ```
+
+**Lead-driven mode**: When enabled for a channel, the daemon relays workflow events as human-readable @mentions to the channel lead instead of executing its built-in state machine (auto-dispatch, reviewer spawning, PR nudges). This gives the channel lead full control over task routing and PR workflow.
 
 If no workflow is assigned, the daemon falls back to its compiled-in default behavior. **Changes take effect on the next daemon tick** — no restart needed.
 
