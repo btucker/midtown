@@ -616,25 +616,32 @@ pub(super) async fn handle_coworker_report_state(
             }
         }
 
-        // Clear the coworker's task assignment from their session record
-        let session_id = state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get(&name.to_lowercase())
-            .cloned();
-        if let Some(sid) = session_id {
-            let mut ps = state.persistent_state.lock().await;
-            if let Some(record) = ps.sessions.get_mut(&sid)
-                && let Some(task_id) = record.task_id.take()
-            {
-                state.task_to_session.lock().unwrap().remove(&task_id);
-            }
-            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                warn!(
-                    "Failed to save state after clearing coworker assignment for {}: {}",
-                    name, e
-                );
+        // Clear the task assignment — use clear_task_assignment_by_task when we
+        // have a task_id so it defensively clears ALL session records that might
+        // reference this task (e.g., stale records from crash recovery).
+        if let Some(ref tid) = effective_task_id {
+            state.clear_task_assignment_by_task(tid).await;
+        } else {
+            // No task_id known — clear this coworker's session record directly
+            let session_id = state
+                .name_to_session
+                .lock()
+                .unwrap()
+                .get(&name.to_lowercase())
+                .cloned();
+            if let Some(sid) = session_id {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(record) = ps.sessions.get_mut(&sid)
+                    && let Some(task_id) = record.task_id.take()
+                {
+                    state.task_to_session.lock().unwrap().remove(&task_id);
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save state after clearing coworker assignment for {}: {}",
+                        name, e
+                    );
+                }
             }
         }
     }
