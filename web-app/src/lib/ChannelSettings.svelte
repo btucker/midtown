@@ -91,6 +91,16 @@ async function loadAgentsMd() {
 	agentsError = "";
 	agentsSuccess = "";
 	const data = await fetchChannelAgentsMd($activeChannel, agentsScope);
+	if (!data) {
+		// Request was aborted (e.g., rapid channel switch) — don't touch state
+		agentsLoading = false;
+		return;
+	}
+	if (data.error) {
+		agentsError = data.error;
+		agentsLoading = false;
+		return;
+	}
 	agentsContent = data.content;
 	agentsOriginal = data.content;
 	agentsSource = data.source;
