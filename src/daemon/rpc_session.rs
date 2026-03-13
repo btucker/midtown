@@ -1255,9 +1255,13 @@ pub(super) fn build_fork_config(
 /// `midtown session fork`), `handle_session_fork_thread` (web-UI-triggered fork), and
 /// potentially other fork paths.
 ///
-/// Uses an atomic check-and-reserve on `topic_sessions` to prevent duplicate forks for
-/// the same thread: inserts a "pending" sentinel, then replaces it with the real
-/// session_id on success (or removes it on failure).
+/// Uses a two-phase check-and-reserve on `topic_sessions` to prevent duplicate forks:
+/// 1. Read lock: extract any existing entry
+/// 2. Async liveness check: verify the existing session is still alive
+/// 3. Write lock: re-check for concurrent insertions, then insert "pending" sentinel
+///
+/// On success the sentinel is replaced with the real session_id (after reverse maps
+/// are populated); on failure it is removed so the slot is available for retry.
 ///
 /// `channel_hint` lets callers provide a known channel name that takes priority over the
 /// session record's channel field.
@@ -1270,8 +1274,9 @@ pub(super) fn build_fork_config(
 /// When `None` or empty, falls back to `fork-{first-8-chars-of-thread-id}`.
 ///
 /// Returns `Ok((session_id, already_existed, fork_channel))` where `already_existed` is
-/// true when a fork was found in `topic_sessions` before this call. The `fork_channel` is
-/// the resolved channel for the fork session (`None` only for pre-existing forks).
+/// true when a live fork was found in `topic_sessions` (stale/dead entries are cleared
+/// and treated as absent). The `fork_channel` is the resolved channel for the fork
+/// session (`None` only for pre-existing forks).
 /// Returns `Err` if the slot holds "pending" (concurrent fork in progress) or spawn fails.
 pub(super) async fn create_fork_session(
     thread_parent_id: &str,
@@ -1325,21 +1330,55 @@ pub(super) async fn create_fork_session(
 
     // Reserve the slot to prevent concurrent forks for the same thread.
     // This also clears any stale entry detected above.
-    {
+    //
+    // Re-check for concurrent insertion between our liveness check and this
+    // lock acquisition. Extract a concurrent entry (if any) so we can verify
+    // liveness outside the lock (is_alive is async).
+    let concurrent_entry = {
         let mut topic = state.topic_sessions.lock().unwrap();
-        // Re-check for concurrent insertion between our check and this lock acquisition.
         let empty = String::new();
         let stale = existing_entry.as_ref().unwrap_or(&empty);
         if let Some(sid) = topic.get(thread_parent_id)
             && sid != stale
         {
-            // Another request inserted a fresh entry while we were checking liveness.
             if sid == "pending" {
                 return Err("fork in progress for this thread".to_string());
             }
-            return Ok((sid.clone(), true, None));
+            // Another request completed while we checked liveness — extract
+            // its session_id for async verification below.
+            Some(sid.clone())
+        } else {
+            topic.insert(thread_parent_id.to_string(), "pending".to_string());
+            None
         }
-        topic.insert(thread_parent_id.to_string(), "pending".to_string());
+    };
+
+    // If a concurrent fork completed, verify it's alive before returning it.
+    if let Some(concurrent_sid) = concurrent_entry {
+        let concurrent_name = state
+            .session_to_name
+            .lock()
+            .unwrap()
+            .get(&concurrent_sid)
+            .cloned();
+        let concurrent_alive = if let Some(ref name) = concurrent_name {
+            state.session_manager.is_alive(name).await
+        } else {
+            false
+        };
+        if concurrent_alive {
+            return Ok((concurrent_sid, true, None));
+        }
+        // Concurrent entry is also dead — proceed to spawn a new one.
+        warn!(
+            "{}: concurrent topic_sessions entry for thread {} is also dead (session_id={})",
+            caller, thread_parent_id, concurrent_sid
+        );
+        state
+            .topic_sessions
+            .lock()
+            .unwrap()
+            .insert(thread_parent_id.to_string(), "pending".to_string());
     }
 
     // Resolve the calling session's name from the reverse map.
