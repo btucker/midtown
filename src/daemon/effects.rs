@@ -1354,7 +1354,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else if let Some(ch) = channel_name {
                     Message::for_channel(&ch, &sender, &message, msg_type)
                 } else {
-                    Message::new(&sender, &message, msg_type)
+                    let ch = state.channel_router.default_channel_name().to_string();
+                    Message::for_channel(&ch, &sender, &message, msg_type)
                 };
                 msg.auto_output = auto_output;
                 msg.nudge_type = nudge_type;
