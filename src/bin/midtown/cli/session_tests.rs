@@ -26,10 +26,20 @@ fn attach_options<'a>(
     include_detach: bool,
 ) -> AttachShellOptions<'a> {
     AttachShellOptions {
+        launch: attach_launch_options(profile, coworker_type, channel),
+        include_detach,
+    }
+}
+
+fn attach_launch_options<'a>(
+    profile: Option<&'a str>,
+    coworker_type: Option<&'a str>,
+    channel: Option<&'a str>,
+) -> AttachLaunchOptions<'a> {
+    AttachLaunchOptions {
         profile,
         coworker_type,
         channel,
-        include_detach,
     }
 }
 
@@ -89,26 +99,6 @@ fn normalize_single_target_rejects_missing_value() {
     assert!(normalize_single_target("name:").is_err());
 }
 
-// ── Pane host detection ───────────────────────────────────────────────
-
-#[test]
-fn detect_host_ghostty_from_term_program() {
-    let host = detect_pane_host_from(|k| match k {
-        "TERM_PROGRAM" => Some("ghostty".to_string()),
-        _ => None,
-    });
-    assert_eq!(host, PaneHost::Ghostty);
-}
-
-#[test]
-fn detect_host_iterm_from_lc_terminal() {
-    let host = detect_pane_host_from(|k| match k {
-        "LC_TERMINAL" => Some("iTerm2".to_string()),
-        _ => None,
-    });
-    assert_eq!(host, PaneHost::ITerm);
-}
-
 // ── Provider / target helpers ─────────────────────────────────────────
 
 #[test]
@@ -143,26 +133,6 @@ fn provider_from_target_platform() {
     assert_eq!(
         provider_from_target("name/madison"),
         midtown::auth::AuthProvider::Claude
-    );
-}
-
-// ── Ghostty keybind parsing ───────────────────────────────────────────
-
-#[test]
-fn parse_ghostty_keybind_for_action_finds_binding() {
-    let output = "keybind = super+shift+d=new_split:down\nkeybind = super+d=new_split:right\n";
-    assert_eq!(
-        parse_ghostty_keybind_for_action(output, "new_split:right"),
-        Some("super+d".to_string())
-    );
-}
-
-#[test]
-fn parse_ghostty_keybind_for_action_returns_none_when_missing() {
-    let output = "keybind = super+shift+d=new_split:down\n";
-    assert_eq!(
-        parse_ghostty_keybind_for_action(output, "new_split:right"),
-        None
     );
 }
 
@@ -319,6 +289,45 @@ fn test_to_cli_args_coworker_restricts_settings() {
 }
 
 // ── build_attach_shell_command ────────────────────────────────────────
+
+#[test]
+fn test_build_attach_launch_spec_returns_program_and_args() {
+    let cwd = find_project_root();
+    let spec = build_attach_launch_spec(
+        &cwd,
+        "lead",
+        midtown::auth::AuthProvider::Codex,
+        "thread-xyz",
+        attach_launch_options(None, Some("lead"), None),
+    )
+    .expect("build_attach_launch_spec should succeed");
+
+    assert!(
+        !spec.program.is_empty(),
+        "attach launch program should not be empty"
+    );
+    assert!(
+        spec.args.iter().any(|arg| arg == "thread-xyz"),
+        "attach launch args should include the resumed session id, got: {:?}",
+        spec.args
+    );
+}
+
+#[test]
+fn test_build_attach_launch_spec_includes_agent_env() {
+    let cwd = find_project_root();
+    let spec = build_attach_launch_spec(
+        &cwd,
+        "park",
+        midtown::auth::AuthProvider::Codex,
+        "thread-abc",
+        attach_launch_options(None, None, None),
+    )
+    .expect("build_attach_launch_spec should succeed");
+
+    assert_eq!(spec.env.get("MIDTOWN_AGENT"), Some(&"park".to_string()));
+    assert_eq!(spec.env.get("DISABLE_AUTOUPDATER"), Some(&"1".to_string()));
+}
 
 #[test]
 fn test_lead_attach_includes_system_prompt() {

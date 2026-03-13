@@ -1885,9 +1885,11 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             provider,
             session_id,
             super::session::AttachShellOptions {
-                profile: profile.as_deref(),
-                coworker_type: Some("lead"),
-                channel: None,
+                launch: super::session::AttachLaunchOptions {
+                    profile: profile.as_deref(),
+                    coworker_type: Some("lead"),
+                    channel: None,
+                },
                 include_detach: false, // midtown view calls session_detach explicitly on exit
             },
         )?;

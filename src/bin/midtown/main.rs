@@ -153,7 +153,7 @@ enum Commands {
     },
     /// Show system status
     Status,
-    /// Headed wrapper intercom (register/poll/ack + PTY-backed run-agent)
+    /// Headed wrapper intercom (register/poll/ack)
     #[command(hide = true)]
     HeadedWrapper {
         #[command(subcommand)]

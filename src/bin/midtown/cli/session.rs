@@ -109,121 +109,6 @@ struct ResolvePayload {
     resolved_at_monotonic_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneHost {
-    Ghostty,
-    ITerm,
-    Unknown,
-}
-
-impl PaneHost {
-    fn detect() -> Self {
-        detect_pane_host_from(|key| std::env::var(key).ok())
-    }
-}
-
-struct PaneLauncher {
-    host: PaneHost,
-}
-
-impl PaneLauncher {
-    fn detect() -> Self {
-        Self {
-            host: PaneHost::detect(),
-        }
-    }
-
-    fn launch(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
-        match self.host {
-            PaneHost::Ghostty => self.launch_ghostty(cwd, shell_command),
-            PaneHost::ITerm => self.launch_iterm(cwd, shell_command),
-            PaneHost::Unknown => {
-                self.launch_in_current_shell(cwd, shell_command)?;
-                Ok("current terminal".to_string())
-            }
-        }
-    }
-
-    fn launch_ghostty(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
-        // Ghostty split creation is configured by user keybinds, so discover
-        // the active keybinding first and trigger it.
-        let mut split_ok = false;
-        if let Ok(output) = Command::new("ghostty").arg("+list-keybinds").output()
-            && output.status.success()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Some(binding) = parse_ghostty_keybind_for_action(&stdout, "new_split:right")
-                .or_else(|| parse_ghostty_keybind_for_action(&stdout, "new_split"))
-            {
-                split_ok = trigger_ghostty_keybinding(&binding).unwrap_or(false);
-            }
-        }
-
-        // Best-effort fallback when keybinding dispatch is unavailable.
-        if !split_ok {
-            split_ok = Command::new("ghostty")
-                .args(["+action", "new_split:right"])
-                .status()
-                .is_ok_and(|s| s.success());
-        }
-
-        // Ghostty's CLI split action does not reliably support command injection
-        // across builds, so execute in the current terminal as a deterministic fallback.
-        self.launch_in_current_shell(cwd, shell_command)?;
-
-        if split_ok {
-            Ok("ghostty (split + current pane fallback)".to_string())
-        } else {
-            Ok("ghostty (current pane fallback)".to_string())
-        }
-    }
-
-    fn launch_iterm(&self, cwd: &str, shell_command: &str) -> Result<String, String> {
-        if cfg!(target_os = "macos") && self.launch_iterm_split(cwd, shell_command)? {
-            return Ok("iTerm split pane".to_string());
-        }
-
-        self.launch_in_current_shell(cwd, shell_command)?;
-        Ok("iTerm (current pane fallback)".to_string())
-    }
-
-    fn launch_iterm_split(&self, cwd: &str, shell_command: &str) -> Result<bool, String> {
-        let typed_cmd = format!("cd {} && {}", shell_quote(cwd), shell_command);
-        let script = format!(
-            r#"tell application \"iTerm2\"
-    if (count of windows) = 0 then
-        create window with default profile
-    end if
-    tell current window
-        tell current session
-            set newSession to (split horizontally with default profile)
-            tell newSession
-                write text \"{}\"
-            end tell
-        end tell
-    end tell
-end tell"#,
-            escape_applescript_string(&typed_cmd)
-        );
-
-        let status = Command::new("osascript")
-            .args(["-e", &script])
-            .status()
-            .map_err(|e| format!("Failed to run osascript for iTerm split: {}", e))?;
-
-        Ok(status.success())
-    }
-
-    fn launch_in_current_shell(&self, cwd: &str, shell_command: &str) -> Result<(), String> {
-        Command::new("sh")
-            .args(["-lc", shell_command])
-            .current_dir(cwd)
-            .status()
-            .map_err(|e| format!("Failed to run attach command in current shell: {}", e))?;
-        Ok(())
-    }
-}
-
 pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
         SessionCommand::Attach { target } => handle_attach(target, client),
@@ -248,7 +133,7 @@ pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, S
     }
 }
 
-/// Handle attach: resolve target -> pause headless -> open interactive pane -> auto-detach on exit.
+/// Handle attach: resolve target -> pause headless -> run interactive CLI -> auto-detach on exit.
 fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response, String> {
     let mut target_str = normalize_attach_target(target)?;
     let mut retried_after_race = false;
@@ -328,45 +213,62 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         // For coworkers, this validates the daemon-provided worktree path.
         let cwd = ensure_attach_worktree(name, cwd, coworker_type.as_deref() == Some("lead"))?;
 
-        let shell_command = build_attach_shell_command(
+        let launch_spec = build_attach_launch_spec(
             &cwd,
             name,
             provider,
             session_id,
-            AttachShellOptions {
+            AttachLaunchOptions {
                 profile: profile.as_deref(),
                 coworker_type: coworker_type.as_deref(),
                 channel: channel.as_deref(),
-                include_detach: true, // standalone attach resumes headless when pane closes
             },
         )?;
-        let launcher = PaneLauncher::detect();
 
-        // Step 3: Launch interactive session in a pane for the current terminal host.
-        let where_opened = launcher.launch(&cwd, &shell_command).map_err(|e| {
-            // If pane launch fails, tell daemon to resume headless.
-            match client.session_detach(name) {
-                Ok(_) => eprintln!(
-                    "Attach launch failed; headless session resumed for {}.",
-                    name
-                ),
-                Err(detach_err) => eprintln!(
-                    "ERROR: Attach launch failed AND detach RPC failed for {}.\n\
-                     Launch error: {}\n\
-                     Detach error: {}\n\
-                     Manual recovery: run `midtown session detach {}`",
-                    name, e, detach_err, name
-                ),
-            }
-            format!("Failed to launch interactive session: {}", e)
-        })?;
+        // Step 3: Run the provider CLI directly in the current terminal.
+        let status = Command::new(&launch_spec.program)
+            .args(&launch_spec.args)
+            .envs(&launch_spec.env)
+            .current_dir(&cwd)
+            .status()
+            .map_err(|e| {
+                // If launch fails, tell daemon to resume headless.
+                match client.session_detach(name) {
+                    Ok(_) => eprintln!(
+                        "Attach launch failed; headless session resumed for {}.",
+                        name
+                    ),
+                    Err(detach_err) => eprintln!(
+                        "ERROR: Attach launch failed AND detach RPC failed for {}.\n\
+                         Launch error: {}\n\
+                         Detach error: {}\n\
+                         Manual recovery: run `midtown session detach {}`",
+                        name, e, detach_err, name
+                    ),
+                }
+                format!("Failed to launch interactive session: {}", e)
+            })?;
+
+        // Always detach on exit so the daemon resumes headless mode.
+        if let Err(detach_err) = client.session_detach(name) {
+            eprintln!(
+                "ERROR: Interactive session exited but detach RPC failed for {}.\n\
+                 Exit status: {:?}\n\
+                 Detach error: {}\n\
+                 Manual recovery: run `midtown session detach {}`",
+                name,
+                status.code(),
+                detach_err,
+                name
+            );
+        }
 
         return Ok(Response::message(format!(
-            "Attached to {} ({} / session {}). Opened in {}.",
+            "Attached to {} ({} / session {}). Session exited with status {:?}.",
             name,
             provider.as_str(),
             session_id,
-            where_opened
+            status.code()
         )));
     }
 }
@@ -731,29 +633,32 @@ fn usage_attach() -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttachShellOptions<'a> {
+pub(crate) struct AttachLaunchOptions<'a> {
     pub profile: Option<&'a str>,
     pub coworker_type: Option<&'a str>,
     pub channel: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttachShellOptions<'a> {
+    pub launch: AttachLaunchOptions<'a>,
     pub include_detach: bool,
 }
 
-/// Build the shell command to run in a pane for an interactive attach session.
-///
-/// When `include_detach` is `true`, the shell command ends with
-/// `midtown session detach <name>`, which resumes the headless session when the
-/// interactive pane closes. Set this to `true` for `midtown session attach`
-/// (standalone interactive use) and `false` for `midtown view`, which calls
-/// `session_detach` explicitly when the chat UI exits, avoiding a race where
-/// the pane's provider process exits before the chat UI and triggers an early
-/// headless respawn that creates a dual-lead situation.
-pub(crate) fn build_attach_shell_command(
+#[derive(Debug)]
+pub(crate) struct AttachLaunchSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+pub(crate) fn build_attach_launch_spec(
     cwd: &str,
     name: &str,
     provider: midtown::auth::AuthProvider,
     session_id: &str,
-    options: AttachShellOptions<'_>,
-) -> Result<String, String> {
+    options: AttachLaunchOptions<'_>,
+) -> Result<AttachLaunchSpec, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
         .ok_or_else(|| "Not in a git repository".to_string())?;
 
@@ -787,12 +692,6 @@ pub(crate) fn build_attach_shell_command(
         &profile_dir,
         &repo_name,
     );
-
-    // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
-    let env_parts: Vec<String> = env_map
-        .iter()
-        .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
-        .collect();
 
     let sandbox_config = midtown::config::get_project_sandbox_config(&repo_name);
     let writable = midtown::sandbox::writable_dirs(
@@ -889,39 +788,66 @@ pub(crate) fn build_attach_shell_command(
         }
     }
 
+    let (program, args) = cmd_parts
+        .split_first()
+        .ok_or_else(|| "Attach command is empty".to_string())?;
+
+    Ok(AttachLaunchSpec {
+        program: program.clone(),
+        args: args.to_vec(),
+        env: env_map,
+    })
+}
+
+/// Build the shell command for split-pane attach flows (`midtown view` paths).
+///
+/// When `include_detach` is `true`, the shell command ends with
+/// `midtown session detach <name>`, which resumes the headless session when the
+/// interactive pane closes. Set this to `true` only for pane flows that should
+/// auto-resume on process exit, and `false` for `midtown view`, which calls
+/// `session_detach` explicitly when the chat UI exits, avoiding a race where
+/// the pane's provider process exits before the chat UI and triggers an early
+/// headless respawn that creates a dual-lead situation.
+pub(crate) fn build_attach_shell_command(
+    cwd: &str,
+    name: &str,
+    provider: midtown::auth::AuthProvider,
+    session_id: &str,
+    options: AttachShellOptions<'_>,
+) -> Result<String, String> {
+    let launch_spec = build_attach_launch_spec(cwd, name, provider, session_id, options.launch)?;
+
+    // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
+    let env_parts: Vec<String> = launch_spec
+        .env
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
+        .collect();
+
     // Build the provider command as a shell command string.
     // Each part is individually shell-escaped, then joined with spaces.
     // The resulting string will be passed to `sh -lc` as a single argument.
-    let provider_cmd = cmd_parts
-        .iter()
+    let provider_cmd = std::iter::once(&launch_spec.program)
+        .chain(launch_spec.args.iter())
         .map(|part| shell_quote(part))
         .collect::<Vec<_>>()
         .join(" ");
 
-    let bin_command = midtown::config::get_bin_command();
-    let wrapped_attach_cmd = format!(
-        "{} headed-wrapper run-agent --session {} --provider {} --cwd {} -- sh -lc {}",
-        shell_quote(&bin_command),
-        shell_quote(name),
-        provider.as_str(),
-        shell_quote(cwd),
-        shell_quote(&provider_cmd),
-    );
+    // Direct exec: run the provider CLI directly with inherited stdio.
+    // No PTY wrapper — the process gets the real terminal.
+    let attach_cmd = format!("sh -lc {}", shell_quote(&provider_cmd));
 
     if options.include_detach {
+        let bin_command = midtown::config::get_bin_command();
         let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
         Ok(format!(
             "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
             env_parts.join(" "),
-            wrapped_attach_cmd,
+            attach_cmd,
             detach_cmd
         ))
     } else {
-        Ok(format!(
-            "export {}; {}",
-            env_parts.join(" "),
-            wrapped_attach_cmd,
-        ))
+        Ok(format!("export {}; {}", env_parts.join(" "), attach_cmd,))
     }
 }
 
@@ -938,121 +864,6 @@ fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
 /// This properly handles all special characters for Unix shells.
 fn shell_quote(input: &str) -> String {
     shell_escape::escape(input.into()).into_owned()
-}
-
-fn escape_applescript_string(input: &str) -> String {
-    input.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn parse_ghostty_keybind_for_action(list_keybinds_output: &str, action: &str) -> Option<String> {
-    for line in list_keybinds_output.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("keybind = ") else {
-            continue;
-        };
-        let Some((binding, bound_action)) = rest.split_once('=') else {
-            continue;
-        };
-        if bound_action.trim() == action {
-            return Some(binding.trim().to_string());
-        }
-    }
-    None
-}
-
-fn trigger_ghostty_keybinding(binding: &str) -> Result<bool, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let mut modifiers: Vec<&str> = Vec::new();
-        let mut key_token: Option<String> = None;
-
-        for token in binding
-            .split('+')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-        {
-            match token.to_ascii_lowercase().as_str() {
-                "super" | "cmd" | "command" => modifiers.push("command down"),
-                "shift" => modifiers.push("shift down"),
-                "alt" | "option" => modifiers.push("option down"),
-                "ctrl" | "control" => modifiers.push("control down"),
-                other => {
-                    if key_token.is_some() {
-                        return Ok(false);
-                    }
-                    key_token = Some(other.to_string());
-                }
-            }
-        }
-
-        let Some(key_token) = key_token else {
-            return Ok(false);
-        };
-
-        let using_clause = if modifiers.is_empty() {
-            String::new()
-        } else {
-            format!(" using {{{}}}", modifiers.join(", "))
-        };
-
-        let script = if key_token == "enter" {
-            format!(
-                "tell application \"System Events\" to key code 36{}",
-                using_clause
-            )
-        } else {
-            let key_text = if let Some(digit) = key_token.strip_prefix("digit_") {
-                if digit.len() == 1 {
-                    digit.to_string()
-                } else {
-                    return Ok(false);
-                }
-            } else if key_token.chars().count() == 1 {
-                key_token
-            } else {
-                return Ok(false);
-            };
-
-            format!(
-                "tell application \"System Events\" to keystroke \"{}\"{}",
-                escape_applescript_string(&key_text),
-                using_clause
-            )
-        };
-
-        let status = Command::new("osascript")
-            .args(["-e", &script])
-            .status()
-            .map_err(|e| format!("Failed to trigger Ghostty keybinding via osascript: {}", e))?;
-        Ok(status.success())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = binding;
-        Ok(false)
-    }
-}
-
-fn detect_pane_host_from(get_env: impl Fn(&str) -> Option<String>) -> PaneHost {
-    let term_program = get_env("TERM_PROGRAM")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if term_program == "ghostty" {
-        return PaneHost::Ghostty;
-    }
-    if term_program == "iterm.app" {
-        return PaneHost::ITerm;
-    }
-
-    let lc_terminal = get_env("LC_TERMINAL")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if lc_terminal == "iterm2" {
-        return PaneHost::ITerm;
-    }
-
-    PaneHost::Unknown
 }
 
 /// Handle `midtown session view` with rich ANSI rendering and optional `--watch` mode.
