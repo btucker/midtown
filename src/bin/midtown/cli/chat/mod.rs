@@ -1368,9 +1368,11 @@ fn attach_session_split(session_name: &str) {
         provider,
         session_id,
         super::session::AttachShellOptions {
-            profile: profile.as_deref(),
-            coworker_type: coworker_type.as_deref(),
-            channel: channel.as_deref(),
+            launch: super::session::AttachLaunchOptions {
+                profile: profile.as_deref(),
+                coworker_type: coworker_type.as_deref(),
+                channel: channel.as_deref(),
+            },
             include_detach: false, // midtown view calls session_detach explicitly on exit
         },
     ) {

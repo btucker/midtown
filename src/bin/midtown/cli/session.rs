@@ -218,11 +218,10 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
             name,
             provider,
             session_id,
-            AttachShellOptions {
+            AttachLaunchOptions {
                 profile: profile.as_deref(),
                 coworker_type: coworker_type.as_deref(),
                 channel: channel.as_deref(),
-                include_detach: false,
             },
         )?;
 
@@ -634,10 +633,15 @@ fn usage_attach() -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttachShellOptions<'a> {
+pub(crate) struct AttachLaunchOptions<'a> {
     pub profile: Option<&'a str>,
     pub coworker_type: Option<&'a str>,
     pub channel: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttachShellOptions<'a> {
+    pub launch: AttachLaunchOptions<'a>,
     pub include_detach: bool,
 }
 
@@ -653,7 +657,7 @@ pub(crate) fn build_attach_launch_spec(
     name: &str,
     provider: midtown::auth::AuthProvider,
     session_id: &str,
-    options: AttachShellOptions<'_>,
+    options: AttachLaunchOptions<'_>,
 ) -> Result<AttachLaunchSpec, String> {
     let repo_name = midtown::paths::detect_repo_name_from_dir(Path::new(cwd))
         .ok_or_else(|| "Not in a git repository".to_string())?;
@@ -794,12 +798,12 @@ pub(crate) fn build_attach_launch_spec(
     })
 }
 
-/// Build the shell command to run in a pane for an interactive attach session.
+/// Build the shell command for split-pane attach flows (`midtown view` paths).
 ///
 /// When `include_detach` is `true`, the shell command ends with
 /// `midtown session detach <name>`, which resumes the headless session when the
-/// interactive pane closes. Set this to `true` for `midtown session attach`
-/// (standalone interactive use) and `false` for `midtown view`, which calls
+/// interactive pane closes. Set this to `true` only for pane flows that should
+/// auto-resume on process exit, and `false` for `midtown view`, which calls
 /// `session_detach` explicitly when the chat UI exits, avoiding a race where
 /// the pane's provider process exits before the chat UI and triggers an early
 /// headless respawn that creates a dual-lead situation.
@@ -810,7 +814,7 @@ pub(crate) fn build_attach_shell_command(
     session_id: &str,
     options: AttachShellOptions<'_>,
 ) -> Result<String, String> {
-    let launch_spec = build_attach_launch_spec(cwd, name, provider, session_id, options)?;
+    let launch_spec = build_attach_launch_spec(cwd, name, provider, session_id, options.launch)?;
 
     // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
     let env_parts: Vec<String> = launch_spec

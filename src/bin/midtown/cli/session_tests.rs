@@ -26,10 +26,20 @@ fn attach_options<'a>(
     include_detach: bool,
 ) -> AttachShellOptions<'a> {
     AttachShellOptions {
+        launch: attach_launch_options(profile, coworker_type, channel),
+        include_detach,
+    }
+}
+
+fn attach_launch_options<'a>(
+    profile: Option<&'a str>,
+    coworker_type: Option<&'a str>,
+    channel: Option<&'a str>,
+) -> AttachLaunchOptions<'a> {
+    AttachLaunchOptions {
         profile,
         coworker_type,
         channel,
-        include_detach,
     }
 }
 
@@ -285,7 +295,7 @@ fn test_build_attach_launch_spec_returns_program_and_args() {
         "lead",
         midtown::auth::AuthProvider::Codex,
         "thread-xyz",
-        attach_options(None, Some("lead"), None, false),
+        attach_launch_options(None, Some("lead"), None),
     )
     .expect("build_attach_launch_spec should succeed");
 
@@ -308,7 +318,7 @@ fn test_build_attach_launch_spec_includes_agent_env() {
         "park",
         midtown::auth::AuthProvider::Codex,
         "thread-abc",
-        attach_options(None, None, None, false),
+        attach_launch_options(None, None, None),
     )
     .expect("build_attach_launch_spec should succeed");
 

@@ -58,7 +58,7 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
 
-**Hybrid process model**: The Project Lead runs in a terminal pane managed by a launcher; coworkers run as headless Claude Code sessions. Project Lead nudges flow through headed intercom queues; coworker nudges use JSON streaming via `SessionManager`.
+**Hybrid process model**: The Project Lead can run headless (daemon-managed) or interactively (`midtown session attach`) with direct provider exec in the current terminal; coworkers run as headless sessions by default. Interactive attach no longer uses PTY wrapping.
 
 **Centralized path resolution**: All `~/.midtown/` paths derive from `midtown_base_dir()` and its helpers in `src/paths.rs`. In tests, `let _guard = set_test_midtown_base_dir(tmp)` redirects resolution to a temp directory — the guard must be held for the override to remain active.
 
@@ -405,7 +405,7 @@ Coworkers stay synchronized via a Claude Code Stop hook. When Claude pauses, the
 
 Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_prompt_nudges`) using `CooldownTracker` for per-coworker cooldowns and `CoworkerPhase` for deduplication (Idle → Prompted → Interrupted). Delivery is via `Effect::NudgeCoworker` / `Effect::NudgeLead` in `src/daemon/effects.rs`:
 
-- **Project Lead nudges**: Delivered through headed intercom queues (`headed.register/poll/ack`)
+- **Project Lead nudges**: Delivered via daemon nudge effects (`Effect::NudgeLead`) and rendered in the active lead session path (headless stream or interactive attach)
 - **Coworker nudges**: JSON streaming via `SessionManager` for headless sessions
 
 **Review content embedding**: PR feedback nudges (GreenWithFeedback, ReviewComplete, ChangesRequested, Approved, ReviewComment) embed the full review body inline via `format_review_content()` in `helpers.rs`. This fetches both formal GitHub reviews and Midtown coworker issue-comment reviews (detected by `text_contains_review_signature()`), so the nudged coworker sees all feedback without running extra `gh` commands. On the polling path (`poll_prs_for_issues`), review content is pre-fetched in bulk before decision functions to keep I/O out of the decision phase. Webhook handlers call `fetch_review_content()` directly since they're already event-driven I/O paths.
