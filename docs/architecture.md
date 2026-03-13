@@ -291,7 +291,7 @@ Note: `route_mentions()` is enabled for non-user, non-system senders in topic ch
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork --thread-id <id>`). A forked session inherits the parent's conversation context and gets an independent session ID bound to a specific thread (Claude/z.ai use `--resume <parent-id> --fork-session`; Codex uses `thread/fork`).
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork --thread-id <id>`). A forked session gets an independent session ID bound to a specific thread. Claude/z.ai forks launch as fresh sessions (headless sessions don't persist JSONL files, so `--fork-session` has nothing to fork from); Codex uses `thread/fork`. Fork context is injected via the initial nudge message rather than inherited from the parent session.
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 
@@ -314,7 +314,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 - `fork_bound_threads` (in-memory `Mutex<HashMap<String, String>>`) maps `fork_name → thread_parent_id`. Used by the output binding path in `handle_channel_post` to auto-tag forked session posts with their bound thread (avoids the async `persistent_state` lock on the hot path).
 - `DaemonPersistentState.task_thread_id` maps `task_id → thread_parent_id`. Populated in two ways: (1) explicitly via `--thread-id` on `midtown task create` (the CLI defaults to `$MIDTOWN_BOUND_THREAD_ID` inside fork sessions), or (2) automatically defaulted to the task's announcement message ID when no explicit thread ID is provided. This ensures every task's coworker posts route to the task announcement thread by default. `SpawnSession` reads this mapping to set `bound_thread_id` on the spawned coworker's `SessionRecord`.
 - `SessionRecord.bound_thread_id` (persisted) stores the binding on each session so restarts can rebuild the cache.
-- `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session` since fork sessions (--resume --fork-session) never emit `system/init` and the session ID is pre-assigned via `--session-id`.
+- `name_to_session` / `session_to_name` reverse maps are backfilled in `create_fork_session`. Although fork sessions now launch as fresh sessions (which do emit `system/init`), the backfill remains necessary because the session ID is pre-assigned via `--session-id` and the `create_fork_session` caller needs these mappings immediately — before the init event arrives asynchronously.
 
 **Auth profile resolution:** Fork sessions must use `active_profile_dir_for_project_with_provider(repo_name, provider)` (project-aware) to resolve credentials — never `current_profile_dir_for(provider)` (global-only). The project-aware path checks the project config's per-provider profile mapping first, then falls back to the global marker. After a per-project `auth switch`, only the project config is updated; the global marker is unchanged. Using the global-only path would give forks stale pre-switch credentials. This is handled by `build_fork_config()` in `rpc_session.rs`, which matches the coworker relaunch path in `rpc_auth.rs`.
 

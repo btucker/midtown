@@ -4334,8 +4334,8 @@ async fn respawn_fork(
         // Resume the fork's own session — plain resume, not a fork.
         // Clear session_id: the old session already has an ID on disk, and
         // leaving the pre-assigned UUID from build_fork_config would cause
-        // spawn_fork to enter the wrong code path (fresh-session or two-step
-        // instead of Codex init-event discovery).
+        // spawn_fork to enter the wrong code path (fresh-session instead of
+        // Codex init-event discovery).
         let mut resume_config = headless_config.clone();
         resume_config.resume_session_id = Some(old_sid.to_string());
         resume_config.fork_session = false;

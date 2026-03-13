@@ -1389,9 +1389,9 @@ pub(super) async fn create_fork_session(
     }
 
     // Backfill the data structures that the event loop normally populates from the
-    // init event. Fork sessions (--resume --fork-session) never emit system/init,
-    // so the event loop never sees one. We must create the SessionRecord and populate
-    // the name↔session reverse maps ourselves.
+    // init event. Fork sessions launch as fresh sessions (which do emit system/init),
+    // but we backfill eagerly because the caller needs these mappings immediately —
+    // before the init event arrives asynchronously.
     {
         let mut ps = state.persistent_state.lock().await;
         // Look up the parent session record for backfilling fork metadata.

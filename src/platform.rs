@@ -62,8 +62,10 @@ impl Platform {
 /// - `--add-dir` (for each additional directory)
 ///
 /// Note: `--setting-sources` is NOT included here. It must be added by callers
-/// that need it. Fork sessions (`--resume --fork-session`) are incompatible with
-/// `--setting-sources`, so callers must decide based on their session type.
+/// that need it. Legacy fork-resume sessions (`--resume --fork-session`) are
+/// incompatible with `--setting-sources`, so callers must decide based on their
+/// session type. (New fork sessions launch as fresh sessions and always include
+/// `--setting-sources`.)
 fn build_claude_common_args(model: &str, additional_dirs: &[PathBuf]) -> Vec<String> {
     let mut args = vec!["--dangerously-skip-permissions".to_string()];
 
