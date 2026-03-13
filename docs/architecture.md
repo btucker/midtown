@@ -104,6 +104,12 @@ When the daemon starts, it executes a careful cleanup and recovery sequence in `
 
 8. **Stale flag cleanup** — `clear_stale_running_sessions()` clears the `is_running` flag for any session not included in the recovered set. This includes channel lead records that are not part of coworker recovery, so stale "alive" flags do not block dispatch or resume logic.
 
+## RPC Response Cache
+
+The daemon caches successful RPC responses for 60 seconds, keyed by request ID, to provide idempotency for repeated web-UI polls (which reuse `id=1`). Caching uses an **allowlist** of read-only methods (`is_rpc_cacheable()` in `rpc.rs`): new RPC methods are uncached by default until explicitly opted in, preventing accidental cache-replay of mutating operations.
+
+Two read-only methods are excluded from the cache despite being safe: `prs.status` and `coworkers.status` have their own domain-specific TTL caches, and the idempotency cache would shadow those shorter TTLs.
+
 ## Coworkers
 
 Each coworker runs as:

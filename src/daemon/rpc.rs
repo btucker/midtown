@@ -184,6 +184,40 @@ pub(super) async fn handle_connection(
 // Request dispatch
 // ============================================================================
 
+/// Returns true if the given RPC method is safe to cache (pure read-only).
+///
+/// This is intentionally an allowlist rather than a blocklist: new RPC methods
+/// are uncached by default until explicitly opted in. The web layer reuses id=1
+/// for repeated polls, so caching a mutating method would cause the second call
+/// within the 60s TTL to replay the first call's response without executing.
+///
+/// Excluded from caching even though read-only:
+///   - `prs.status` / `coworkers.status`: have their own domain-specific TTL
+///     caches; the idempotency cache would shadow them.
+pub(crate) fn is_rpc_cacheable(method: &str) -> bool {
+    matches!(
+        method,
+        "ping"
+            | "version"
+            | "status"
+            | "snapshot"
+            | "coworker.list"
+            | "coworker.view"
+            | "coworker.questions"
+            | "channel.read"
+            | "channel.list"
+            | "task.metadata"
+            | "session.resolve"
+            | "session.list"
+            | "session.view"
+            | "session.thread_ownership"
+            | "pr.list-external"
+            | "reminder.list"
+            | "workflow.list"
+            | "workflow.get_state"
+    )
+}
+
 /// Process a JSON-RPC request and return a response.
 async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Parse the request
@@ -204,38 +238,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     let request_id_for_cache = request.id.clone();
     let request_method = request.method.clone();
 
-    // Only cache responses for pure read-only methods (allowlist).
-    //
-    // This is intentionally an allowlist rather than a blocklist: new RPC methods
-    // are uncached by default until explicitly opted in. The web layer reuses id=1
-    // for repeated polls, so caching a mutating method would cause the second call
-    // within the 60s TTL to replay the first call's response without executing.
-    //
-    // Excluded from caching even though read-only:
-    //   - prs.status / coworkers.status: have their own domain-specific TTL caches;
-    //     the idempotency cache would shadow them.
-    let use_rpc_cache = matches!(
-        request_method.as_str(),
-        "ping"
-            | "version"
-            | "status"
-            | "snapshot"
-            | "coworker.list"
-            | "coworker.view"
-            | "coworker.questions"
-            | "channel.read"
-            | "channel.list"
-            | "task.metadata"
-            | "session.resolve"
-            | "session.list"
-            | "session.view"
-            | "session.thread_ownership"
-            | "headed.poll"
-            | "pr.list-external"
-            | "reminder.list"
-            | "workflow.list"
-            | "workflow.get_state"
-    );
+    let use_rpc_cache = is_rpc_cacheable(&request_method);
 
     // Check cache for idempotent response (within 60 second TTL)
     if use_rpc_cache {
@@ -259,7 +262,6 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
     // Error responses are NOT cached so that clients can retry after transient
     // failures (e.g., invalid params due to race conditions) without getting
     // a stale cached error.
-    // Methods with domain-specific caching (e.g., prs.status) are excluded.
     if use_rpc_cache && !response.is_error() {
         let mut cache = state.rpc_response_cache.lock().await;
         cache.insert(

@@ -269,12 +269,14 @@ fn test_rpc_cache_numeric_id_collision() {
     );
 }
 
-/// All methods in dispatch_request must be classified as either cacheable (read-only)
+/// All methods in `dispatch_request` must be classified as either cacheable (read-only)
 /// or uncached (mutating / domain-cached). This test ensures the allowlist in
-/// handle_rpc_request stays in sync with the dispatch table.
+/// `is_rpc_cacheable()` stays in sync with the dispatch table.
 #[test]
 fn test_rpc_cache_allowlist_covers_all_read_methods() {
-    // Read-only methods that ARE cached (the allowlist in handle_rpc_request)
+    use super::is_rpc_cacheable;
+
+    // Read-only methods that ARE cached (the allowlist in is_rpc_cacheable)
     let cached_methods: Vec<&str> = vec![
         "ping",
         "version",
@@ -290,7 +292,6 @@ fn test_rpc_cache_allowlist_covers_all_read_methods() {
         "session.list",
         "session.view",
         "session.thread_ownership",
-        "headed.poll",
         "pr.list-external",
         "reminder.list",
         "workflow.list",
@@ -308,6 +309,7 @@ fn test_rpc_cache_allowlist_covers_all_read_methods() {
         "daemon.check-pending",
         "oneshot.execute",
         "coworker.spawn",
+        "coworker.stop_all",
         "coworker.break",
         "coworker.report-state",
         "coworker.nudge",
@@ -337,6 +339,7 @@ fn test_rpc_cache_allowlist_covers_all_read_methods() {
         "session.fork",
         "session.fork_thread",
         "session.unfork_thread",
+        "headed.poll",
         "headed.register",
         "headed.unregister",
         "headed.heartbeat",
@@ -371,50 +374,25 @@ fn test_rpc_cache_allowlist_covers_all_read_methods() {
         );
     }
 
-    // Verify mutating methods are NOT in the allowlist
-    let use_rpc_cache = |method: &str| -> bool {
-        matches!(
-            method,
-            "ping"
-                | "version"
-                | "status"
-                | "snapshot"
-                | "coworker.list"
-                | "coworker.view"
-                | "coworker.questions"
-                | "channel.read"
-                | "channel.list"
-                | "task.metadata"
-                | "session.resolve"
-                | "session.list"
-                | "session.view"
-                | "session.thread_ownership"
-                | "headed.poll"
-                | "pr.list-external"
-                | "reminder.list"
-                | "workflow.list"
-                | "workflow.get_state"
-        )
-    };
-
+    // Verify classifications using the shared is_rpc_cacheable function
     for method in &mutating_methods {
         assert!(
-            !use_rpc_cache(method),
-            "Mutating method '{}' should NOT be in the cache allowlist",
+            !is_rpc_cacheable(method),
+            "Mutating method '{}' should NOT be cacheable",
             method
         );
     }
     for method in &domain_cached_methods {
         assert!(
-            !use_rpc_cache(method),
+            !is_rpc_cacheable(method),
             "Domain-cached method '{}' should NOT be in the RPC cache allowlist",
             method
         );
     }
     for method in &cached_methods {
         assert!(
-            use_rpc_cache(method),
-            "Read-only method '{}' should be in the cache allowlist",
+            is_rpc_cacheable(method),
+            "Read-only method '{}' should be cacheable",
             method
         );
     }
