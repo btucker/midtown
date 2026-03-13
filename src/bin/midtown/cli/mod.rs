@@ -126,7 +126,7 @@ pub fn handle_restart(force: bool) -> Result<Response, String> {
     daemon::handle_restart(force)
 }
 
-/// Handle view command (launches chat; optionally attaches Lead and opens a split)
+/// Handle view command (launches chat; optionally attaches Lead first)
 pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, String> {
     daemon::handle_view(project, attach)
 }

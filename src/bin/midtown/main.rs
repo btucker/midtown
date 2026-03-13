@@ -101,13 +101,13 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
-    /// Launch chat in this terminal (chat-only by default; use --attach to open Lead in a split)
+    /// Launch chat in this terminal (chat-only by default; use --attach to open Lead interactively first)
     #[command(alias = "attach")]
     View {
         /// Project name to view (default: inferred from cwd)
         project: Option<String>,
 
-        /// Attach to the Lead session and open it in a split pane
+        /// Attach to the Lead session before entering chat
         #[arg(long)]
         attach: bool,
     },
