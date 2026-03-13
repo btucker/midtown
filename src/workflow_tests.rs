@@ -587,3 +587,202 @@ fn test_coworker_message_includes_thread_and_message_id() {
     assert_eq!(json["thread_id"], "thread-task");
     assert_eq!(json["message_id"], "msg-cw");
 }
+
+// ── format_for_lead() ────────────────────────────────────────────────────────
+
+#[test]
+fn test_format_for_lead_pr_opened() {
+    let event = WorkflowEvent::PrOpened {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+        coworker: "park".into(),
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 opened by park for task !55".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_pr_ci_failed_with_check_name() {
+    let event = WorkflowEvent::PrCiFailed {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+        check_name: Some("CI / build".into()),
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 CI failed: CI / build (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_pr_ci_failed_without_check_name() {
+    let event = WorkflowEvent::PrCiFailed {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+        check_name: None,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 CI failed (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_task_completed_with_coworker() {
+    let event = WorkflowEvent::TaskCompleted {
+        channel: "proj-workflows".into(),
+        task_id: "10".into(),
+        coworker: Some("lexington".into()),
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("Task !10 completed by lexington: Add auth".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_task_completed_without_coworker() {
+    let event = WorkflowEvent::TaskCompleted {
+        channel: "proj-workflows".into(),
+        task_id: "10".into(),
+        coworker: None,
+        subject: "Add auth".into(),
+        description: None,
+        thread_id: None,
+        message_id: None,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("Task !10 completed: Add auth".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_coworker_idle_with_task() {
+    let event = WorkflowEvent::CoworkerIdle {
+        channel: "proj-workflows".into(),
+        task_id: Some("37".into()),
+        coworker: "park".into(),
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("park is now idle (was on task !37)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_coworker_idle_without_task() {
+    let event = WorkflowEvent::CoworkerIdle {
+        channel: "proj-workflows".into(),
+        task_id: None,
+        coworker: "park".into(),
+    };
+    assert_eq!(event.format_for_lead(), Some("park is now idle".into()));
+}
+
+#[test]
+fn test_format_for_lead_returns_none_for_coworker_message() {
+    let event = WorkflowEvent::CoworkerMessage {
+        channel: "proj-workflows".into(),
+        task_id: Some("42".into()),
+        coworker: "park".into(),
+        message: "PR is ready".into(),
+        thread_id: None,
+        message_id: "msg-123".into(),
+    };
+    assert_eq!(event.format_for_lead(), None);
+}
+
+#[test]
+fn test_format_for_lead_returns_none_for_channel_message() {
+    let event = WorkflowEvent::ChannelMessage {
+        channel: "proj-workflows".into(),
+        sender: "user".into(),
+        message: "Looks good".into(),
+        thread_id: None,
+        message_id: "msg-456".into(),
+    };
+    assert_eq!(event.format_for_lead(), None);
+}
+
+#[test]
+fn test_format_for_lead_returns_none_for_timer_tick() {
+    let event = WorkflowEvent::TimerTick {
+        channel: "proj-workflows".into(),
+    };
+    assert_eq!(event.format_for_lead(), None);
+}
+
+#[test]
+fn test_format_for_lead_pr_approved() {
+    let event = WorkflowEvent::PrApproved {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 approved (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_pr_merged() {
+    let event = WorkflowEvent::PrMerged {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 merged (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_pr_conflict() {
+    let event = WorkflowEvent::PrConflict {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("PR #42 has a merge conflict (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_reviewer_complete() {
+    let event = WorkflowEvent::ReviewerComplete {
+        channel: "proj-workflows".into(),
+        task_id: "55".into(),
+        pr_number: 42,
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("Review complete for PR #42 (task !55)".into())
+    );
+}
+
+#[test]
+fn test_format_for_lead_coworker_stuck_with_task() {
+    let event = WorkflowEvent::CoworkerStuck {
+        channel: "proj-workflows".into(),
+        task_id: Some("37".into()),
+        coworker: "park".into(),
+    };
+    assert_eq!(
+        event.format_for_lead(),
+        Some("park appears stuck on task !37".into())
+    );
+}

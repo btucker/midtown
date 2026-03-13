@@ -284,6 +284,136 @@ impl WorkflowEvent {
         }
     }
 
+    /// Returns a human-readable summary suitable for relaying to a channel lead
+    /// in lead-driven mode.
+    ///
+    /// Returns `None` for events that shouldn't be relayed (CoworkerMessage,
+    /// ChannelMessage, TimerTick) — these are either noise or already visible.
+    pub fn format_for_lead(&self) -> Option<String> {
+        match self {
+            Self::TaskCreated {
+                task_id, subject, ..
+            } => Some(format!("Task !{} created: {}", task_id, subject)),
+
+            Self::TaskAssigned {
+                task_id,
+                coworker,
+                subject,
+                ..
+            } => Some(format!(
+                "Task !{} assigned to {}: {}",
+                task_id, coworker, subject
+            )),
+
+            Self::TaskCompleted {
+                task_id,
+                coworker,
+                subject,
+                ..
+            } => {
+                if let Some(cw) = coworker {
+                    Some(format!(
+                        "Task !{} completed by {}: {}",
+                        task_id, cw, subject
+                    ))
+                } else {
+                    Some(format!("Task !{} completed: {}", task_id, subject))
+                }
+            }
+
+            Self::PrOpened {
+                task_id,
+                pr_number,
+                coworker,
+                ..
+            } => Some(format!(
+                "PR #{} opened by {} for task !{}",
+                pr_number, coworker, task_id
+            )),
+
+            Self::PrApproved {
+                task_id, pr_number, ..
+            } => Some(format!("PR #{} approved (task !{})", pr_number, task_id)),
+
+            Self::PrChangesRequested {
+                task_id, pr_number, ..
+            } => Some(format!(
+                "PR #{} has changes requested (task !{})",
+                pr_number, task_id
+            )),
+
+            Self::PrMerged {
+                task_id, pr_number, ..
+            } => Some(format!("PR #{} merged (task !{})", pr_number, task_id)),
+
+            Self::PrCiPassed {
+                task_id, pr_number, ..
+            } => Some(format!("PR #{} CI passed (task !{})", pr_number, task_id)),
+
+            Self::PrCiFailed {
+                task_id,
+                pr_number,
+                check_name,
+                ..
+            } => {
+                if let Some(name) = check_name {
+                    Some(format!(
+                        "PR #{} CI failed: {} (task !{})",
+                        pr_number, name, task_id
+                    ))
+                } else {
+                    Some(format!("PR #{} CI failed (task !{})", pr_number, task_id))
+                }
+            }
+
+            Self::PrConflict {
+                task_id, pr_number, ..
+            } => Some(format!(
+                "PR #{} has a merge conflict (task !{})",
+                pr_number, task_id
+            )),
+
+            Self::PrAutoMerge {
+                task_id, pr_number, ..
+            } => Some(format!(
+                "PR #{} is eligible for auto-merge (task !{})",
+                pr_number, task_id
+            )),
+
+            Self::ReviewerComplete {
+                task_id, pr_number, ..
+            } => Some(format!(
+                "Review complete for PR #{} (task !{})",
+                pr_number, task_id
+            )),
+
+            Self::CoworkerIdle {
+                coworker, task_id, ..
+            } => {
+                if let Some(tid) = task_id {
+                    Some(format!("{} is now idle (was on task !{})", coworker, tid))
+                } else {
+                    Some(format!("{} is now idle", coworker))
+                }
+            }
+
+            Self::CoworkerStuck {
+                coworker, task_id, ..
+            } => {
+                if let Some(tid) = task_id {
+                    Some(format!("{} appears stuck on task !{}", coworker, tid))
+                } else {
+                    Some(format!("{} appears stuck", coworker))
+                }
+            }
+
+            // These events are either noise or already visible in the channel.
+            Self::CoworkerMessage { .. } | Self::ChannelMessage { .. } | Self::TimerTick { .. } => {
+                None
+            }
+        }
+    }
+
     /// Returns the task ID associated with this event, if any.
     pub fn task_id(&self) -> Option<&str> {
         match self {

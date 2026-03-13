@@ -17,6 +17,20 @@ use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
+// Lead-driven channel helpers
+// ============================================================================
+
+/// Returns true if a task belongs to a lead-driven channel.
+///
+/// Lead-driven channels skip automatic coworker dispatch — the channel lead
+/// manages coworker lifecycle manually.
+fn is_task_in_lead_driven_channel(task_id: &str, snap: &snapshot::WorldSnapshot) -> bool {
+    snap.task_channel
+        .get(task_id)
+        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
+}
+
+// ============================================================================
 // Spawn callback helpers
 // ============================================================================
 
@@ -577,9 +591,10 @@ where
 
 /// Session-aware dispatch for all in_progress tasks.
 ///
-/// Pre-filter: skips tasks owned by empty owners, the Lead, or channel leads
-/// (looked up via `channel_lead_sessions`). These are not managed by the
-/// coworker dispatch loop and must not be recovered as regular coworkers.
+/// Pre-filter: skips tasks owned by empty owners, the Lead, channel leads
+/// (looked up via `channel_lead_sessions`), or tasks in lead-driven channels.
+/// These are not managed by the coworker dispatch loop and must not be
+/// recovered as regular coworkers.
 ///
 /// For remaining tasks, handles three cases:
 /// 1. Task has running session -> skip (being worked on)
@@ -640,6 +655,15 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 .channel_lead_sessions
                 .contains_key(&owner.to_lowercase())
         {
+            continue;
+        }
+
+        // Skip tasks in lead-driven channels — the lead manages dispatch manually.
+        if is_task_in_lead_driven_channel(task_id, snap) {
+            debug!(
+                "Task !{}: skipping session recovery — channel is lead-driven",
+                task_id
+            );
             continue;
         }
 
@@ -1353,6 +1377,8 @@ fn dispatch_owned_pending_tasks(
 
     for (task_id, task_subject, owner) in snap.pending_tasks_with_owners.iter() {
         // Skip tasks whose explicit PR field references a merged PR.
+        // IMPORTANT: This must run before the lead-driven check so merged-PR
+        // auto-complete works regardless of channel mode.
         if let Some(pr_num) =
             get_merged_task_pr(task_id, &snap.all_tasks, &snap.pr.merged_pr_numbers)
         {
@@ -1368,6 +1394,15 @@ fn dispatch_owned_pending_tasks(
                 completed_task_id: task_id.clone(),
                 dir_key: snap.dir_key.clone(),
             });
+            continue;
+        }
+
+        // Skip tasks in lead-driven channels — the lead manages dispatch manually.
+        if is_task_in_lead_driven_channel(task_id, snap) {
+            debug!(
+                "Task !{}: skipping owned pending dispatch — channel is lead-driven",
+                task_id
+            );
             continue;
         }
 
@@ -1678,6 +1713,8 @@ fn dispatch_unowned_pending_tasks(
         }
 
         // Skip tasks whose explicit PR field references a merged PR.
+        // IMPORTANT: This must run before the lead-driven check so merged-PR
+        // auto-complete works regardless of channel mode.
         // We have the full Task struct here, so check task.pr directly (O(1))
         // instead of scanning all_tasks by ID like dispatch_owned_pending_tasks does.
         if let Some(pr_num) = task.pr.filter(|pr| snap.pr.merged_pr_numbers.contains(pr)) {
@@ -1700,6 +1737,19 @@ fn dispatch_unowned_pending_tasks(
         if snap.pr_protected_tasks.contains(&task.id) {
             debug!(
                 "Skipping dispatch for pending task !{} — PR-protected",
+                task.id
+            );
+            continue;
+        }
+
+        // Skip tasks in lead-driven channels — the lead manages dispatch manually.
+        if task
+            .channel
+            .as_ref()
+            .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
+        {
+            debug!(
+                "Task !{}: skipping unowned pending dispatch — channel is lead-driven",
                 task.id
             );
             continue;

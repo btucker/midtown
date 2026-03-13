@@ -84,6 +84,10 @@ struct PrContext {
     has_active_reviewer: bool,
     /// Channel→workflow assignments for checking if a channel has a workflow.
     channel_workflows: HashMap<String, String>,
+    /// Channels operating in lead-driven mode. When set, the daemon relays
+    /// events as @mentions to the channel lead instead of executing built-in
+    /// behavior (auto-dispatch, reviewer spawning, PR nudges).
+    lead_driven_channels: std::collections::HashSet<String>,
 }
 
 impl PrContext {
@@ -130,6 +134,7 @@ impl PrContext {
             task_session_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
+            lead_driven_channels: ps.lead_driven_channels.clone(),
         }
     }
 
@@ -146,6 +151,7 @@ impl PrContext {
             task_session_id: None,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
+            lead_driven_channels: ps.lead_driven_channels.clone(),
         }
     }
 
@@ -153,6 +159,12 @@ impl PrContext {
     fn get_channel(&self, pr_number: u64) -> Option<String> {
         let task_id = self.pr_task_associations.get(&pr_number)?;
         self.task_channel.get(task_id).cloned()
+    }
+
+    /// Returns true if the PR's task channel is in lead-driven mode.
+    fn is_lead_driven(&self, pr_number: u64) -> bool {
+        self.get_channel(pr_number)
+            .is_some_and(|ch| self.lead_driven_channels.contains(&ch))
     }
 
     /// Defense-in-depth: check snapshot signals for an active reviewer.
@@ -1562,34 +1574,34 @@ fn pr_action_to_effects(
         None
     };
 
-    // When a workflow script exists AND we have a workflow event, the script is
-    // authoritative for simple nudge actions (NudgeOwner, SpawnOwner, PostToChannel):
-    // emit only cooldown tracking + the event. The script handles nudging via
-    // rpc.nudge_coworker().
+    // When a workflow script or lead-driven mode exists AND we have a workflow
+    // event, the script/lead is authoritative: emit only cooldown tracking +
+    // the event. The script handles nudging via rpc.nudge_coworker(); in
+    // lead-driven mode, the EmitWorkflowEvent handler relays to the channel lead.
     //
-    // HandoffToCoworker is excluded: it involves spawning a different coworker with
-    // session context and task reassignment, which rpc.nudge_coworker() cannot
-    // replicate. Those effects fire alongside the workflow event instead.
+    // HandoffToCoworker is excluded for workflow scripts (involves spawning a
+    // different coworker with session context and task reassignment, which
+    // rpc.nudge_coworker() cannot replicate). In lead-driven mode, however,
+    // ALL actions including HandoffToCoworker are gated — the lead manages
+    // the full lifecycle.
     if let Some(ref event) = workflow_event {
         let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
+        let has_workflow = channel
+            .as_ref()
+            .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
+        let is_lead_driven = ctx.is_lead_driven(pr_number);
 
-        if !is_handoff {
-            let has_workflow = channel
-                .as_ref()
-                .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
-
-            if has_workflow {
-                // Workflow is authoritative — emit cooldown tracking + event only.
-                // This fires even for Skip actions so the workflow's state machine
-                // stays in sync.
-                return vec![
-                    Effect::RecordPrNudge {
-                        pr_number,
-                        issue_type,
-                    },
-                    Effect::EmitWorkflowEvent(event.clone()),
-                ];
-            }
+        // Lead-driven gates everything; workflow scripts gate non-handoff actions.
+        if is_lead_driven || (has_workflow && !is_handoff) {
+            // Authoritative — emit cooldown tracking + event only.
+            // This fires even for Skip actions so the state machine stays in sync.
+            return vec![
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+                Effect::EmitWorkflowEvent(event.clone()),
+            ];
         }
     }
 
@@ -1791,6 +1803,18 @@ struct StuckEvalContext<'a> {
     task_channel: HashMap<String, String>,
     /// Channel→workflow assignments for checking if a channel has a workflow.
     channel_workflows: HashMap<String, String>,
+    /// Channels in lead-driven mode (skip stuck-condition nudges).
+    lead_driven_channels: std::collections::HashSet<String>,
+}
+
+impl StuckEvalContext<'_> {
+    /// Returns true if a PR's task channel is in lead-driven mode.
+    fn is_lead_driven(&self, pr_number: u64) -> bool {
+        self.pr_task_associations
+            .get(&pr_number)
+            .and_then(|tid| self.task_channel.get(tid))
+            .is_some_and(|ch| self.lead_driven_channels.contains(ch))
+    }
 }
 
 /// Check for stuck conditions and return effects to nudge the lead.
@@ -1848,6 +1872,7 @@ async fn collect_stuck_condition_effects(
         let pr_task_associations = ps.github.pr_to_task_map();
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
+        let lead_driven_channels = ps.lead_driven_channels.clone();
         StuckEvalContext {
             review_mode,
             branch_owners,
@@ -1860,12 +1885,22 @@ async fn collect_stuck_condition_effects(
             pr_task_associations,
             task_channel,
             channel_workflows,
+            lead_driven_channels,
         }
     };
 
     for pr in prs {
         let pf = PrFields::from_json(pr);
         if pf.number == 0 || pf.is_draft {
+            continue;
+        }
+
+        // Skip PRs in lead-driven channels — the lead handles stuck-condition triage.
+        if ctx.is_lead_driven(pf.number) {
+            debug!(
+                "PR #{}: skipping stuck-condition check — channel is lead-driven",
+                pf.number
+            );
             continue;
         }
 
@@ -1913,8 +1948,8 @@ async fn collect_stuck_condition_effects(
         );
     }
 
-    // When a workflow is assigned, replace AutoMergePr with EmitWorkflowEvent(PrAutoMerge)
-    // so the workflow controls whether to proceed with auto-merge.
+    // When a workflow or lead-driven mode is active, replace AutoMergePr with
+    // EmitWorkflowEvent(PrAutoMerge) so the workflow/lead controls auto-merge.
     effects = effects
         .into_iter()
         .map(|effect| {
@@ -1925,7 +1960,8 @@ async fn collect_stuck_condition_effects(
                     && let Some(channel) = ctx.task_channel.get(task_id)
                 {
                     let has_workflow = ctx.channel_workflows.contains_key(channel);
-                    if has_workflow {
+                    let is_lead_driven = ctx.lead_driven_channels.contains(channel);
+                    if has_workflow || is_lead_driven {
                         return Effect::EmitWorkflowEvent(
                             crate::workflow::WorkflowEvent::PrAutoMerge {
                                 channel: channel.clone(),
@@ -3010,6 +3046,15 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
+        // Skip PRs in lead-driven channels — the lead manages reviewer spawning.
+        if pr_ctx.is_lead_driven(pr_number) {
+            debug!(
+                "PR #{}: skipping reviewer spawn — channel is lead-driven",
+                pr_number
+            );
+            continue;
+        }
+
         // Check if PR is old enough (enforce review delay).
         //
         // When the polling fallback encounters a PR whose channel has a workflow
@@ -3645,31 +3690,25 @@ fn review_complete_action_to_effects(
         None
     };
 
-    // When a workflow script exists AND we have a workflow event, the script is
-    // authoritative for simple nudge actions (NudgeOwner, SpawnOwner, PostToChannel):
-    // emit only cooldown tracking + the event. The script handles nudging via
-    // rpc.nudge_coworker().
-    //
-    // HandoffToCoworker is excluded: it involves spawning a different coworker with
-    // session context and task reassignment, which rpc.nudge_coworker() cannot
-    // replicate. Those effects fire alongside the workflow event instead.
+    // When a workflow script or lead-driven mode exists AND we have a workflow
+    // event, the script/lead is authoritative: emit only cooldown tracking +
+    // the event. HandoffToCoworker is excluded for workflow scripts but gated
+    // in lead-driven mode (the lead manages the full lifecycle).
     if let Some(ref event) = workflow_event {
         let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
+        let has_workflow = channel
+            .as_ref()
+            .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
+        let is_lead_driven = ctx.is_lead_driven(pr_number);
 
-        if !is_handoff {
-            let has_workflow = channel
-                .as_ref()
-                .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
-
-            if has_workflow {
-                return vec![
-                    Effect::RecordPrNudge {
-                        pr_number,
-                        issue_type,
-                    },
-                    Effect::EmitWorkflowEvent(event.clone()),
-                ];
-            }
+        if is_lead_driven || (has_workflow && !is_handoff) {
+            return vec![
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+                Effect::EmitWorkflowEvent(event.clone()),
+            ];
         }
     }
 
