@@ -164,6 +164,8 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
 
+**Task assignment persistence**: `RecordTaskAssignment` (emitted by both `SpawnSession` and `NudgeSessionWithCallbacks` callback chains) updates three things: (1) the in-memory `coworker_task_assignments` map for busy tracking, (2) `sessions[].task_id` in `DaemonPersistentState` so that insight routing and other session-aware features can resolve the task's channel, and (3) the `task_to_session` reverse map for dispatch lookups. All three are kept in sync by the single `RecordTaskAssignment` effect handler in `effects.rs`.
+
 On daemon startup, the `NamePool` is restored from persisted session records: names with active sessions are marked allocated, the rest are available in LRU order.
 
 **Daemon-controlled session IDs**: `spawn_coworker()` returns `Result<String>` — the session ID used for the spawn. For fresh sessions, a UUID is generated upfront and passed to the CLI via `--session-id`, so the daemon knows the session ID immediately at spawn time. For resumed sessions, the existing session ID from `SessionMode::ResumeSession` is reused. This eliminates the race window where `name_to_session`, `session_to_name`, and `channel_lead_sessions` were empty until the init StreamEvent arrived. All callers of `spawn_coworker` (effects.rs handlers, `expedite_lead_respawn_on_user_message`) capture the returned session ID and update their state eagerly.

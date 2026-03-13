@@ -364,7 +364,8 @@ pub enum Effect {
         pr_number: u64,
         issue_type: PrIssueType,
     },
-    /// Record an in-memory task assignment for busy tracking.
+    /// Record a task assignment: updates in-memory busy tracking, persistent
+    /// session state (`sessions[].task_id`), and the `task_to_session` reverse map.
     ///
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
@@ -1803,6 +1804,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 state.record_task_assignment(&coworker, &task_id);
+
+                // Also update sessions[].task_id in persistent state so that
+                // post_insight (which resolves channel via session records) can
+                // route insights to the correct task channel. Without this,
+                // NudgeSessionWithCallbacks (reassigning an idle session to a new
+                // task) only updates the in-memory coworker_task_assignments map,
+                // leaving session records stale — causing insights to fall back
+                // to the default #midtown channel.
+                let session_id = state
+                    .name_to_session
+                    .lock()
+                    .unwrap()
+                    .get(&coworker.to_lowercase())
+                    .cloned();
+                if let Some(sid) = session_id {
+                    let mut ps = state.persistent_state.lock().await;
+                    if let Some(record) = ps.sessions.get_mut(&sid) {
+                        record.task_id = Some(task_id.clone());
+                    }
+                    // Also update task_to_session reverse map
+                    state
+                        .task_to_session
+                        .lock()
+                        .unwrap()
+                        .insert(task_id.clone(), sid);
+                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                        warn!(
+                            "Failed to save persistent state after RecordTaskAssignment: {}",
+                            e
+                        );
+                    }
+                }
             }
             Effect::ClearPrBreakSession { name } => {
                 let mut sessions = state.pr_break_sessions.write().unwrap();
