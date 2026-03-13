@@ -51,7 +51,7 @@ let newString = $derived(block.input?.new_string || "");
     gap: 6px;
     width: 100%;
     padding: 5px 10px;
-    background: hsl(var(--accent));
+    background: hsl(var(--sidebar-background));
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
@@ -61,7 +61,7 @@ let newString = $derived(block.input?.new_string || "");
   }
 
   .edit-header:hover {
-    background: hsl(var(--accent) / 0.8);
+    background: hsl(var(--sidebar-background) / 0.8);
   }
 
   .edit-chevron {
@@ -93,7 +93,7 @@ let newString = $derived(block.input?.new_string || "");
     left: 0;
     right: 0;
     height: 3em;
-    background: linear-gradient(transparent, hsl(var(--card)));
+    background: linear-gradient(transparent, hsl(var(--background)));
     pointer-events: none;
   }
 </style>

@@ -112,7 +112,7 @@ let shortPath = $derived.by(() => {
     gap: 6px;
     width: 100%;
     padding: 5px 10px;
-    background: hsl(var(--accent));
+    background: hsl(var(--sidebar-background));
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
@@ -122,7 +122,7 @@ let shortPath = $derived.by(() => {
   }
 
   .read-header:hover {
-    background: hsl(var(--accent) / 0.8);
+    background: hsl(var(--sidebar-background) / 0.8);
   }
 
   .read-chevron {
@@ -164,7 +164,7 @@ let shortPath = $derived.by(() => {
 
   .read-body {
     overflow-x: auto;
-    background: hsl(var(--card));
+    background: transparent;
   }
 
   .read-scrollable {
@@ -185,7 +185,7 @@ let shortPath = $derived.by(() => {
     left: 0;
     right: 0;
     height: 1.45em;
-    background: linear-gradient(to bottom, transparent, hsl(var(--card)));
+    background: linear-gradient(to bottom, transparent, hsl(var(--background)));
     pointer-events: none;
   }
 
