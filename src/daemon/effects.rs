@@ -3606,7 +3606,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Some(msg) = event.format_for_lead() {
                         let nudge_msg = format!("@{} {}", channel, msg);
                         Box::pin(execute_effects(
-                            vec![Effect::post_to_channel("midtown", nudge_msg, Some(channel))],
+                            vec![
+                                Effect::post_to_channel(
+                                    "midtown",
+                                    nudge_msg.clone(),
+                                    Some(channel.clone()),
+                                ),
+                                Effect::nudge_channel_lead(channel, nudge_msg),
+                            ],
                             state,
                         ))
                         .await;
