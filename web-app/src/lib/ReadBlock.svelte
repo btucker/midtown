@@ -26,7 +26,7 @@ let parsedLines = $derived.by(() => {
 		.split("\n")
 		.filter((l) => l.length > 0)
 		.map((line) => {
-			const match = line.match(/^\s*(\d+)\t(.*)$/);
+			const match = line.match(/^\s*(\d+)[→\t](.*)$/);
 			if (match) {
 				return { num: match[1], content: match[2] };
 			}
