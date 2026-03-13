@@ -15,6 +15,7 @@ import {
 	resolveMessageTapAction,
 } from "./channelUtils.js";
 import { handleCodePaste } from "./codePaste.js";
+import { getCommandNames, parseCommand } from "./commands.js";
 import DayDivider from "./DayDivider.svelte";
 import { extractPastedFile, updatePreviewUrl, uploadAndSend } from "./filePaste.js";
 import MessageRow from "./MessageRow.svelte";
@@ -282,6 +283,13 @@ function getAutocompleteItems(type, query) {
 			.slice(0, 10); // Limit to 10 results
 	}
 
+	if (type === "/") {
+		// Slash commands
+		return getCommandNames()
+			.filter((cmd) => cmd.name.toLowerCase().startsWith(lowerQuery))
+			.map((cmd) => ({ type: "command", name: cmd.name, description: cmd.description }));
+	}
+
 	if (type === "#") {
 		// PRs from kanban data + channels
 		const prs = $kanbanData.review.map((pr) => ({
@@ -310,6 +318,7 @@ function getAutocompleteItems(type, query) {
 
 function getAutocompleteLabel(item) {
 	if (typeof item === "object" && item !== null) {
+		if (item.type === "command") return `/${item.name}`;
 		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
 		if (item.type === "pr") return `#${item.number}`;
 		if (item.type === "channel") return `#${item.name}`;
@@ -320,6 +329,7 @@ function getAutocompleteLabel(item) {
 
 function getAutocompleteValue(item) {
 	if (typeof item === "object" && item !== null) {
+		if (item.type === "command") return `/${item.name}`;
 		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
 		if (item.type === "pr") return `#${item.number}`;
 		if (item.type === "channel") return `#${item.name}`;
@@ -330,6 +340,7 @@ function getAutocompleteValue(item) {
 
 function getAutocompleteDescription(item) {
 	if (typeof item === "object" && item !== null) {
+		if (item.type === "command") return item.description;
 		if ((item.type === "coworker" || item.type === "lead") && item.task) return item.task;
 		if (item.type === "pr") return item.title;
 		if (item.subject) return item.subject; // task
@@ -372,7 +383,7 @@ function detectAutocompleteTrigger() {
 		const prevChar = i > 0 ? text[i - 1] : " ";
 
 		// Check if this is a trigger character preceded by whitespace or start of line
-		if ("@!#".includes(char) && (prevChar === " " || prevChar === "\n" || i === 0)) {
+		if ("@!#/".includes(char) && (prevChar === " " || prevChar === "\n" || i === 0)) {
 			triggerPos = i;
 			triggerChar = char;
 			break;
@@ -643,6 +654,24 @@ async function handleSubmit(e) {
 			return;
 		}
 	} else if (inputText.trim()) {
+		// Check for slash commands before sending as a message
+		const cmd = parseCommand(inputText.trim());
+		if (cmd.handled) {
+			if (cmd.needsConfirmation && !confirm(cmd.confirmMessage)) {
+				return;
+			}
+			inputText = "";
+			channelDrafts.delete($activeChannel);
+			clearMobileTextarea(textareaElement, () => {
+				inputText = "";
+			});
+			const result = await cmd.execute();
+			if (!result.ok) {
+				alert(result.error);
+			}
+			return;
+		}
+
 		sendMessage(inputText.trim(), $activeChannel);
 		inputText = "";
 		channelDrafts.delete($activeChannel);

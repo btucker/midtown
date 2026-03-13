@@ -163,6 +163,40 @@ export async function fetchChannels(includeArchived = false) {
 	return [];
 }
 
+// Archive a channel
+export async function archiveChannel(channelName) {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channelName)}/archive`, {
+			method: "POST",
+		});
+		if (res.ok) {
+			return { ok: true };
+		}
+		const data = await res.json().catch(() => ({}));
+		return { ok: false, error: data.error || `HTTP ${res.status}` };
+	} catch (err) {
+		console.error("Failed to archive channel:", err);
+		return { ok: false, error: err.message };
+	}
+}
+
+// Unarchive a channel
+export async function unarchiveChannel(channelName) {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channelName)}/unarchive`, {
+			method: "POST",
+		});
+		if (res.ok) {
+			return { ok: true };
+		}
+		const data = await res.json().catch(() => ({}));
+		return { ok: false, error: data.error || `HTTP ${res.status}` };
+	} catch (err) {
+		console.error("Failed to unarchive channel:", err);
+		return { ok: false, error: err.message };
+	}
+}
+
 // Switch to a different project by name
 export function switchProject(projectName, webhookPort) {
 	// Disconnect existing WebSocket

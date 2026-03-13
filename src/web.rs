@@ -442,6 +442,11 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/directory",
             get(api_channel_directory_get).put(api_channel_directory_put),
         )
+        .route("/api/channels/{channel}/archive", post(api_channel_archive))
+        .route(
+            "/api/channels/{channel}/unarchive",
+            post(api_channel_unarchive),
+        )
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -585,6 +590,83 @@ async fn api_channels_create(
     Ok((
         StatusCode::CREATED,
         axum::Json(serde_json::json!({ "name": channel_name })),
+    ))
+}
+
+/// Archive a channel.
+///
+/// POST /api/channels/{channel}/archive
+/// Returns 200 OK on success, 400 if the channel is the main channel, 404 if not found.
+async fn api_channel_archive(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = channel.trim();
+    validate_channel_name(channel_name, &state.config.project_name)?;
+
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key);
+    let channel_dir = base_dir.join("channels").join(channel_name);
+    if !channel_dir.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            axum::Json(
+                serde_json::json!({ "error": format!("Channel '{}' does not exist", channel_name) }),
+            ),
+        ));
+    }
+
+    let ch = Channel::new(&base_dir, channel_name).map_err(|e| {
+        error!("Failed to open channel '{}': {}", channel_name, e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Failed to open channel" })),
+        )
+    })?;
+
+    ch.archive(&state.config.project_name).map_err(|e| {
+        error!("Failed to archive channel '{}': {}", channel_name, e);
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    info!("Archived channel '{}'", channel_name);
+    let _ = state
+        .updates_tx
+        .send(channel_list_changed("archived", channel_name));
+    Ok(axum::Json(
+        serde_json::json!({ "name": channel_name, "archived": true }),
+    ))
+}
+
+/// Unarchive a channel.
+///
+/// POST /api/channels/{channel}/unarchive
+/// Returns 200 OK on success, 404 if no archived channel found.
+async fn api_channel_unarchive(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = channel.trim();
+    validate_channel_name_for_history(channel_name)?;
+
+    let base_dir = crate::paths::projects_dir_for_repo(&state.config.dir_key);
+
+    Channel::unarchive_channel(&base_dir, channel_name).map_err(|e| {
+        error!("Failed to unarchive channel '{}': {}", channel_name, e);
+        (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+
+    info!("Unarchived channel '{}'", channel_name);
+    let _ = state
+        .updates_tx
+        .send(channel_list_changed("unarchived", channel_name));
+    Ok(axum::Json(
+        serde_json::json!({ "name": channel_name, "archived": false }),
     ))
 }
 
