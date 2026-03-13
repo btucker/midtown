@@ -531,6 +531,121 @@ async fn test_cleanup_merged_worktree_removes_pr_author_session() {
     assert_eq!(persistent_state.github.pr_author_sessions.len(), 1);
 }
 
+#[tokio::test]
+async fn test_execute_effects_cleanup_merged_worktree_removes_registry_entry_and_posts_ops_message()
+{
+    use chrono::Utc;
+
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-cleanup-merged");
+    let assignment = crate::worktree_registry::WorktreeAssignment {
+        worktree_id: "task-42-dry-up-cleanup".to_string(),
+        branch_name: "riverside/task-42-dry-up-cleanup".to_string(),
+        task_id: Some("42".to_string()),
+        current_coworker: Some("riverside".to_string()),
+        pr_number: Some(4242),
+        created_at: Utc::now(),
+        completed_at: None,
+    };
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(assignment.clone())
+            .expect("assign worktree");
+    }
+
+    execute_effects(
+        vec![Effect::CleanupMergedWorktree {
+            pr_number: 4242,
+            branch: assignment.branch_name.clone(),
+        }],
+        &state,
+    )
+    .await;
+
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.worktree_registry.get(&assignment.worktree_id).is_none(),
+            "merged cleanup should remove assignment from registry"
+        );
+    }
+
+    let ops_messages = read_channel_messages(&project_dir, "ops");
+    let cleanup_msg = ops_messages
+        .iter()
+        .find(|m| {
+            m["content"].as_str().is_some_and(|c| {
+                c.contains("Cleaned up worktree task-42-dry-up-cleanup")
+                    && c.contains("after PR #4242 merged")
+                    && c.contains("(task !42)")
+            })
+        })
+        .expect("cleanup message should be posted to ops channel");
+    assert_eq!(
+        cleanup_msg["channel"].as_str(),
+        Some("ops"),
+        "cleanup notification should target ops channel"
+    );
+}
+
+#[tokio::test]
+async fn test_execute_effects_cleanup_stale_worktree_removes_registry_entry_and_posts_ops_message()
+{
+    use chrono::Utc;
+
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo-cleanup-stale");
+    let assignment = crate::worktree_registry::WorktreeAssignment {
+        worktree_id: "task-99-expired-worktree".to_string(),
+        branch_name: "riverside/task-99-expired-worktree".to_string(),
+        task_id: Some("99".to_string()),
+        current_coworker: Some("riverside".to_string()),
+        pr_number: None,
+        created_at: Utc::now(),
+        completed_at: None,
+    };
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(assignment.clone())
+            .expect("assign worktree");
+    }
+
+    execute_effects(
+        vec![Effect::CleanupStaleWorktree {
+            worktree_id: assignment.worktree_id.clone(),
+        }],
+        &state,
+    )
+    .await;
+
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.worktree_registry.get(&assignment.worktree_id).is_none(),
+            "stale cleanup should remove assignment from registry"
+        );
+    }
+
+    let ops_messages = read_channel_messages(&project_dir, "ops");
+    let cleanup_msg = ops_messages
+        .iter()
+        .find(|m| {
+            m["content"].as_str().is_some_and(|c| {
+                c.contains("Cleaned up worktree task-99-expired-worktree")
+                    && c.contains("retention period expired")
+                    && c.contains("(task !99)")
+            })
+        })
+        .expect("stale cleanup message should be posted to ops channel");
+    assert_eq!(
+        cleanup_msg["channel"].as_str(),
+        Some("ops"),
+        "cleanup notification should target ops channel"
+    );
+}
+
 // ── Session-centric effect tests ──────────────────────────────────────
 
 #[test]
