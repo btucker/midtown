@@ -333,12 +333,7 @@ pub(super) async fn handle_channel_post(
         drop(records); // Release write lock before acquiring read lock
 
         // Emit CoworkerMessage workflow event
-        let task_id = state
-            .coworker_task_assignments
-            .lock()
-            .unwrap()
-            .get(&from.to_lowercase())
-            .map(|a| a.task_id.clone());
+        let task_id = state.get_task_id_for_coworker(from).await;
         let workflow_effect = crate::daemon::effects::Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerMessage {
                 channel: channel_name.to_string(),

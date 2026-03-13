@@ -422,12 +422,10 @@ pub(super) async fn handle_coworker_report_state(
     // If --pr was provided, write it to task.pr so the daemon can auto-complete
     // the task when the PR merges (the merge handler checks task.pr against merged PR numbers).
     if let Some(pr_num) = pr_number {
-        let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
-            let assignments = state.coworker_task_assignments.lock().unwrap();
-            assignments
-                .get(&name.to_lowercase())
-                .map(|a| a.task_id.clone())
-        });
+        let effective_task_id: Option<String> = match task_id {
+            Some(id) => Some(id.to_string()),
+            None => state.get_task_id_for_coworker(name).await,
+        };
 
         if let Some(ref tid) = effective_task_id {
             if let Err(e) = crate::tasks::update_task_fields_for_repo(
@@ -560,12 +558,10 @@ pub(super) async fn handle_coworker_report_state(
 
     // For Completed phase, handle task cleanup.
     if phase == crate::coworker_state::WorkflowPhase::Completed {
-        let effective_task_id: Option<String> = task_id.map(|id| id.to_string()).or_else(|| {
-            let assignments = state.coworker_task_assignments.lock().unwrap();
-            assignments
-                .get(&name.to_lowercase())
-                .map(|a| a.task_id.clone())
-        });
+        let effective_task_id: Option<String> = match task_id {
+            Some(id) => Some(id.to_string()),
+            None => state.get_task_id_for_coworker(name).await,
+        };
 
         if let Some(ref tid) = effective_task_id {
             let has_open_pr = task_has_open_pr(tid, state).await;
@@ -620,8 +616,34 @@ pub(super) async fn handle_coworker_report_state(
             }
         }
 
-        // Always clear the coworker's assignment (they're done regardless)
-        state.clear_coworker_assignments(name);
+        // Clear the task assignment — use clear_task_assignment_by_task when we
+        // have a task_id so it defensively clears ALL session records that might
+        // reference this task (e.g., stale records from crash recovery).
+        if let Some(ref tid) = effective_task_id {
+            state.clear_task_assignment_by_task(tid).await;
+        } else {
+            // No task_id known — clear this coworker's session record directly
+            let session_id = state
+                .name_to_session
+                .lock()
+                .unwrap()
+                .get(&name.to_lowercase())
+                .cloned();
+            if let Some(sid) = session_id {
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(record) = ps.sessions.get_mut(&sid)
+                    && let Some(task_id) = record.task_id.take()
+                {
+                    state.task_to_session.lock().unwrap().remove(&task_id);
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save state after clearing coworker assignment for {}: {}",
+                        name, e
+                    );
+                }
+            }
+        }
     }
 
     // Store in unified coworker record and capture updated progress for broadcast

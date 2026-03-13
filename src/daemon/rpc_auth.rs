@@ -325,13 +325,7 @@ pub(super) async fn handle_auth_switch(
             .collect();
         (lead_names, channels)
     };
-    let task_id_by_coworker: HashMap<String, String> = {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assignments
-            .iter()
-            .map(|(coworker_name, assignment)| (coworker_name.clone(), assignment.task_id.clone()))
-            .collect()
-    };
+    let task_id_by_coworker: HashMap<String, String> = state.get_coworker_task_assignments().await;
 
     // Re-launch lead only if it currently runs on the switched provider.
     // Target provider always comes from role-based config (lead provider).

@@ -103,13 +103,9 @@ use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
-/// An in-memory task assignment record with timing metadata.
-///
-/// Tracks in-memory task assignment for busy coworker tracking.
-#[derive(Debug, Clone)]
-pub(crate) struct TaskAssignment {
-    pub task_id: String,
-}
+// Task assignments are tracked via `sessions[].task_id` on `SessionRecord` —
+// no separate in-memory HashMap needed. See `get_task_id_for_coworker()` and
+// `get_busy_coworker_names()` which derive this from persistent session state.
 
 /// An in-memory record of a coworker's pending question (from AskUserQuestion tool).
 ///
@@ -521,15 +517,7 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
-    /// Internal tracking of coworker task assignments (coworker name → assignment).
-    ///
-    /// With isolated task lists, the daemon can't see coworker tasks on disk.
-    /// This map tracks which coworker is working on which task, enabling busy
-    /// detection for dispatch and idle protection.
-    ///
-    /// Updated when: AssignAndSpawn succeeds, task.claim RPC is received.
-    /// Cleared when: coworker shuts down, task is completed or reset to pending.
-    coworker_task_assignments: std::sync::Mutex<HashMap<String, TaskAssignment>>,
+    // Task assignments are tracked via sessions[].task_id — no separate HashMap needed.
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
     ///
     /// Key: coworker name (lowercase), Value: (message text, sent timestamp).
@@ -1019,8 +1007,8 @@ impl DaemonState {
         }
         // Clear any pending nudge
         self.clear_pending_nudge(name);
-        // Clear task assignment tracking (coworker is no longer active)
-        self.clear_coworker_assignments(name);
+        // Task assignment tracking is derived from sessions[].task_id,
+        // which is cleared when the session record is cleaned up.
         // Clear tool activity headers (prevents stale activity on respawn)
         {
             let mut headers_map = self.tool_activity_headers.write().unwrap();
@@ -1470,7 +1458,7 @@ impl DaemonState {
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
-            coworker_task_assignments: std::sync::Mutex::new(HashMap::new()),
+            // Task assignments are tracked via sessions[].task_id
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
@@ -1858,98 +1846,163 @@ impl DaemonState {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
     }
 
-    /// Record that a coworker has been assigned a task.
+    /// Get the task ID for a coworker from session records.
     ///
-    /// Called when `AssignAndSpawn` succeeds or `task.claim` RPC is received.
-    pub(crate) fn record_task_assignment(&self, coworker: &str, task_id: &str) {
-        let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.insert(
-            coworker.to_lowercase(),
-            TaskAssignment {
-                task_id: task_id.to_string(),
-            },
-        );
+    /// Looks up the coworker's running session and returns its `task_id`.
+    /// This is the single source of truth for coworker→task mapping.
+    pub(crate) async fn get_task_id_for_coworker(&self, coworker: &str) -> Option<String> {
+        let session_id = self
+            .name_to_session
+            .lock()
+            .unwrap()
+            .get(&coworker.to_lowercase())
+            .cloned()?;
+        let ps = self.persistent_state.lock().await;
+        ps.sessions.get(&session_id).and_then(|r| r.task_id.clone())
     }
 
-    /// Clear the task assignment for a specific task (by task ID).
+    /// Get all coworker→task_id mappings from session records.
     ///
-    /// Called when a task is completed or reset to pending.
-    pub(crate) fn clear_task_assignment_by_task(&self, task_id: &str) {
-        let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.retain(|_, a| a.task_id != task_id);
+    /// Derives the mapping by iterating running sessions with task bindings.
+    /// Used by snapshot collection and RPC handlers.
+    pub(crate) async fn get_coworker_task_assignments(&self) -> HashMap<String, String> {
+        let n2s = self.name_to_session.lock().unwrap().clone();
+        let ps = self.persistent_state.lock().await;
+        n2s.iter()
+            .filter_map(|(name, session_id)| {
+                let record = ps.sessions.get(session_id)?;
+                let task_id = record.task_id.as_ref()?;
+                Some((name.clone(), task_id.clone()))
+            })
+            .collect()
     }
 
-    /// Clear all task assignments for a coworker.
+    /// Get busy coworkers from both disk-based task storage and session records.
     ///
-    /// Called when a coworker is shut down.
-    pub(crate) fn clear_coworker_assignments(&self, coworker: &str) {
-        let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.remove(&coworker.to_lowercase());
-    }
-
-    /// Restore task assignments from disk after daemon restart.
-    ///
-    /// Rebuilds the in-memory `coworker_task_assignments` map by reading
-    /// in_progress tasks with owners from Claude Code's task storage.
-    /// This ensures task assignments survive daemon restarts.
-    ///
-    /// Called during daemon startup, after DaemonState is constructed but
-    /// before the event loop starts.
-    pub(crate) fn restore_task_assignments_from_disk(&self) {
-        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
-
-        let mut assignments = self.coworker_task_assignments.lock().unwrap();
-        let mut restored_count = 0;
-
-        for (task_id, _subject, owner) in in_progress_tasks {
-            if !owner.is_empty() {
-                assignments.insert(
-                    owner.to_lowercase(),
-                    TaskAssignment {
-                        task_id: task_id.clone(),
-                    },
-                );
-                restored_count += 1;
-            }
-        }
-
-        if restored_count > 0 {
-            info!(
-                "Restored {} task assignment(s) from disk during daemon startup",
-                restored_count
-            );
-        }
-    }
-
-    /// Get the set of coworker names that have active task assignments.
-    pub(crate) fn get_busy_coworker_names(&self) -> HashSet<String> {
-        let assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments.keys().cloned().collect()
-    }
-
-    /// Get busy coworkers from both disk-based task storage and internal tracking.
-    ///
-    /// This is the canonical way to check busy status. Callers should use this
-    /// instead of `crate::tasks::get_busy_coworkers_for_repo()` directly, since
-    /// the disk-based reader cannot see coworker task lists.
-    pub(crate) fn get_all_busy_coworkers(&self) -> Vec<String> {
+    /// This is the canonical way to check busy status. Merges disk-based
+    /// in_progress task owners with session-record-derived assignments.
+    pub(crate) async fn get_all_busy_coworkers(&self) -> Vec<String> {
         let mut busy: HashSet<String> =
             crate::tasks::get_busy_coworkers_for_repo(self.paths.dir_key())
                 .into_iter()
                 .map(|n| n.to_lowercase())
                 .collect();
-        busy.extend(self.get_busy_coworker_names());
+        let assignments = self.get_coworker_task_assignments().await;
+        busy.extend(assignments.into_keys());
         busy.into_iter().collect()
     }
 
-    /// Get the task ID currently assigned to a coworker.
+    /// Clear the task_id from all session records matching a given task ID.
     ///
-    /// Used by the insight nudge to attribute the insight to the agent's task.
-    pub(crate) fn get_task_id_for_coworker(&self, coworker: &str) -> Option<String> {
-        let assignments = self.coworker_task_assignments.lock().unwrap();
-        assignments
-            .get(&coworker.to_lowercase())
-            .map(|a| a.task_id.clone())
+    /// Called when a task is completed, reset to pending, or unassigned.
+    /// Also clears the task_to_session reverse map.
+    pub(crate) async fn clear_task_assignment_by_task(&self, task_id: &str) {
+        // Clear task_to_session reverse map
+        self.task_to_session.lock().unwrap().remove(task_id);
+        // Clear from session records
+        let mut ps = self.persistent_state.lock().await;
+        let mut cleared = false;
+        for record in ps.sessions.values_mut() {
+            if record.task_id.as_deref() == Some(task_id) {
+                record.task_id = None;
+                cleared = true;
+            }
+        }
+        if cleared && let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
+            warn!(
+                "Failed to save state after clearing task assignment for !{}: {}",
+                task_id, e
+            );
+        }
+    }
+
+    /// Restore task assignments from disk after daemon restart.
+    ///
+    /// Reconciles `sessions[].task_id` with disk-based task storage:
+    /// 1. Clears stale task_id values (task no longer in_progress)
+    /// 2. Backfills missing task_id from in_progress tasks with owners
+    pub(crate) async fn restore_task_assignments_from_disk(&self) {
+        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+        let in_progress_task_ids: std::collections::HashSet<&str> = in_progress_tasks
+            .iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect();
+
+        let mut ps = self.persistent_state.lock().await;
+        let n2s = self.name_to_session.lock().unwrap().clone();
+        let mut restored_count = 0;
+        let mut cleared_count = 0;
+
+        // Clear stale task_id values from sessions whose tasks are no longer in_progress.
+        // This handles tasks completed/reassigned while the daemon was down.
+        for record in ps.sessions.values_mut() {
+            if let Some(ref tid) = record.task_id
+                && !in_progress_task_ids.contains(tid.as_str())
+            {
+                record.task_id = None;
+                cleared_count += 1;
+            }
+        }
+
+        // Backfill missing task_id from in_progress tasks with owners
+        for (task_id, _subject, owner) in &in_progress_tasks {
+            if owner.is_empty() {
+                continue;
+            }
+            let owner_lower = owner.to_lowercase();
+            if let Some(session_id) = n2s.get(&owner_lower)
+                && let Some(record) = ps.sessions.get_mut(session_id)
+                && record.task_id.is_none()
+            {
+                record.task_id = Some(task_id.clone());
+                restored_count += 1;
+            }
+        }
+
+        if restored_count > 0 || cleared_count > 0 {
+            info!(
+                "Task assignment restore: {} backfilled, {} stale cleared",
+                restored_count, cleared_count
+            );
+            if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
+                warn!(
+                    "Failed to save state after restoring task assignments: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    /// Test helper: set up a mock session with a task assignment.
+    ///
+    /// Creates a session record and name→session mapping so that
+    /// `get_task_id_for_coworker` and `get_coworker_task_assignments` work.
+    #[cfg(test)]
+    pub(crate) async fn set_test_task_assignment(&self, coworker: &str, task_id: &str) {
+        let session_id = format!("test-session-{}", coworker.to_lowercase());
+        let coworker_lower = coworker.to_lowercase();
+        // Register name→session mapping
+        self.name_to_session
+            .lock()
+            .unwrap()
+            .insert(coworker_lower.clone(), session_id.clone());
+        // Create session record with task_id
+        let mut ps = self.persistent_state.lock().await;
+        let record =
+            ps.sessions
+                .entry(session_id.clone())
+                .or_insert_with(|| state::SessionRecord {
+                    session_id: session_id.clone(),
+                    current_name: Some(coworker_lower),
+                    is_running: true,
+                    ..Default::default()
+                });
+        record.task_id = Some(task_id.to_string());
+        // Update task_to_session reverse map
+        self.task_to_session
+            .lock()
+            .unwrap()
+            .insert(task_id.to_string(), session_id);
     }
 
     /// Record a pending nudge sent to a coworker.
@@ -3128,10 +3181,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     startup::kill_zombie_claude_processes(std::process::id(), &session_pids_to_preserve);
 
     // CRITICAL: Restore task assignments from disk BEFORE session recovery.
-    // This must happen first so that the in-memory coworker_task_assignments map
-    // is populated before any dispatch ticks fire. Otherwise, the task dispatch
-    // sees in_progress tasks as "orphaned" and spawns duplicate coworkers.
-    state.restore_task_assignments_from_disk();
+    // Backfills sessions[].task_id from in_progress tasks with owners so that
+    // dispatch can see the assignments before any ticks fire.
+    state.restore_task_assignments_from_disk().await;
 
     // Pre-register recovering coworker names so dispatch doesn't double-assign.
     // This creates CoworkerRecords for coworkers about to be resumed, ensuring

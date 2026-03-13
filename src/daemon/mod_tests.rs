@@ -1574,7 +1574,7 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
         cooldowns.record("nudge", name);
     }
     state.record_pending_nudge(name, "test nudge");
-    state.record_task_assignment(name, "42");
+    state.set_test_task_assignment(name, "42").await;
     {
         let mut headers_map = state.tool_activity_headers.write().unwrap();
         headers_map.insert(name.to_string(), vec!["› $ git status".to_string()]);
@@ -1582,13 +1582,7 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
 
     // Verify state was populated
     assert!(!state.cooldowns.lock().unwrap().is_empty());
-    assert!(
-        state
-            .coworker_task_assignments
-            .lock()
-            .unwrap()
-            .contains_key(name)
-    );
+    assert!(state.get_task_id_for_coworker(name).await.is_some());
     assert!(
         state
             .tool_activity_headers
@@ -1615,13 +1609,10 @@ async fn test_cleanup_coworker_state_clears_all_transient_state() {
             "pending nudge should be cleared"
         );
     }
-    {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assert!(
-            !assignments.contains_key(name),
-            "task assignments should be cleared"
-        );
-    }
+    assert!(
+        state.get_task_id_for_coworker(name).await.is_none(),
+        "task assignment should not be visible after cleanup"
+    );
     {
         let headers_map = state.tool_activity_headers.read().unwrap();
         assert!(
@@ -1643,8 +1634,8 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
     }
     state.record_pending_nudge("madison", "nudge madison");
     state.record_pending_nudge("park", "nudge park");
-    state.record_task_assignment("madison", "42");
-    state.record_task_assignment("park", "43");
+    state.set_test_task_assignment("madison", "42").await;
+    state.set_test_task_assignment("park", "43").await;
     {
         let mut headers_map = state.tool_activity_headers.write().unwrap();
         headers_map.insert("madison".to_string(), vec!["› $ cargo build".to_string()]);
@@ -1670,13 +1661,10 @@ async fn test_cleanup_coworker_state_preserves_other_coworkers() {
             "madison's pending nudge should be cleared"
         );
     }
-    {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assert!(
-            assignments.contains_key("park"),
-            "park's task assignment should still exist"
-        );
-    }
+    assert!(
+        state.get_task_id_for_coworker("park").await.is_some(),
+        "park's task assignment should still exist"
+    );
     {
         let headers_map = state.tool_activity_headers.read().unwrap();
         assert!(

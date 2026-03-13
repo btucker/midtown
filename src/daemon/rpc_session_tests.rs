@@ -182,8 +182,8 @@ async fn test_resolve_attach_target_multi_match_error_uses_verb() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Create two coworkers assigned to the same task so task lookup returns multiple
-    state.record_task_assignment("park", "42");
-    state.record_task_assignment("madison", "42");
+    state.set_test_task_assignment("park", "42").await;
+    state.set_test_task_assignment("madison", "42").await;
 
     // "clear" verb should appear in the disambiguation error
     let err = resolve_attach_target("task/42", &state, "clear")
@@ -394,7 +394,7 @@ async fn test_session_clear_cleans_up_transient_state() {
         cooldowns.record("nudge", name);
     }
     state.record_pending_nudge(name, "test nudge");
-    state.record_task_assignment(name, "42");
+    state.set_test_task_assignment(name, "42").await;
 
     // The handler will try to spawn a new session, which will fail since
     // there's no actual worktree. That's fine — we're testing that cleanup
@@ -416,13 +416,10 @@ async fn test_session_clear_cleans_up_transient_state() {
             "pending nudges should be cleared after session clear"
         );
     }
-    {
-        let assignments = state.coworker_task_assignments.lock().unwrap();
-        assert!(
-            !assignments.contains_key(name),
-            "task assignments should be cleared after session clear"
-        );
-    }
+    assert!(
+        state.get_task_id_for_coworker(name).await.is_none(),
+        "task assignment should not be visible after session clear"
+    );
 }
 
 #[tokio::test]
