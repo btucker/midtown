@@ -1081,8 +1081,8 @@ fn test_channel_router_default_channel() {
 
     // Message::text() creates a message with channel: None
     let msg = Message::text("agent1", "Test");
-    // channel_name() returns "midtown" as a fallback when channel field is None
-    assert_eq!(msg.channel_name(), "midtown");
+    // channel_name() returns "unknown" as a fallback when channel field is None
+    assert_eq!(msg.channel_name(), "unknown");
     // But the channel field itself is None
     assert!(msg.channel.is_none());
 
