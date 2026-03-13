@@ -600,7 +600,7 @@ async fn test_create_fork_session_returns_err_when_pending() {
     );
 }
 
-/// When spawn fails (no real claude process in tests), the pending sentinel is
+/// When spawn fails (non-existent CWD), the pending sentinel is
 /// removed from `topic_sessions` so the slot is available for retry.
 #[tokio::test]
 async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
@@ -609,7 +609,8 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
     let thread_id = "thread-spawn-fail-abc";
     let calling_session_id = "fake-session-for-spawn-test";
 
-    // Insert a parent session record so create_fork_session finds metadata
+    // Insert a parent session record with a non-existent working_dir so spawn fails.
+    // Fresh session spawn fails when the CWD doesn't exist.
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -618,7 +619,7 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
                 session_id: calling_session_id.to_string(),
                 current_name: Some("web".to_string()),
                 preferred_name: Some("web".to_string()),
-                working_dir: "/tmp/test".to_string(),
+                working_dir: "/dev/null/nonexistent".to_string(),
                 coworker_type: "channel-lead".to_string(),
                 channel: Some("web".to_string()),
                 ..Default::default()
@@ -636,7 +637,7 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
         .unwrap()
         .insert(calling_session_id.to_string(), "web".to_string());
 
-    // spawn_fork will fail since there's no real claude process
+    // spawn_fork will fail because the CWD doesn't exist
     let result = create_fork_session(
         thread_id,
         calling_session_id,
@@ -701,7 +702,7 @@ async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
                 session_id: calling_session_id.to_string(),
                 current_name: Some("daemon-core".to_string()),
                 preferred_name: Some("daemon-core".to_string()),
-                working_dir: "/tmp/test".to_string(),
+                working_dir: "/dev/null/nonexistent".to_string(),
                 coworker_type: "channel-lead".to_string(),
                 channel: Some("daemon-core".to_string()),
                 ..Default::default()
@@ -840,7 +841,7 @@ async fn test_create_fork_session_falls_back_to_repo_name() {
                 session_id: calling_session_id.to_string(),
                 current_name: Some("main-lead".to_string()),
                 preferred_name: Some("main-lead".to_string()),
-                working_dir: "/tmp/test".to_string(),
+                working_dir: "/dev/null/nonexistent".to_string(),
                 coworker_type: "lead".to_string(),
                 channel: None, // no channel — will trigger fallback
                 ..Default::default()
@@ -936,7 +937,7 @@ async fn test_handle_session_fork_with_initial_message() {
                 session_id: calling_session_id.to_string(),
                 current_name: Some("daemon-core".to_string()),
                 preferred_name: Some("daemon-core".to_string()),
-                working_dir: "/tmp/test".to_string(),
+                working_dir: "/dev/null/nonexistent".to_string(),
                 coworker_type: "channel-lead".to_string(),
                 channel: Some("daemon-core".to_string()),
                 ..Default::default()
@@ -1555,14 +1556,11 @@ fn test_build_fork_config_skips_settings_path_for_codex() {
 // build_fork_config HeadlessConfig field verification
 // ============================================================================
 
-/// `build_fork_config` must set `fork_session: true` in HeadlessConfig.
-///
-/// This flag tells `build_claude_headless_args` to add `--fork-session` and
-/// skip `--setting-sources` (step 1 of the two-step launch). Without it,
-/// the fork would be launched as a normal resume and fail with a CLI
-/// incompatibility error.
+/// `build_fork_config` must set `fork_session: false` — forks launch as
+/// fresh sessions (not `--resume --fork-session`) because headless sessions
+/// don't persist JSONL files to disk.
 #[test]
-fn test_build_fork_config_sets_fork_session_flag() {
+fn test_build_fork_config_sets_fork_session_false() {
     let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
     let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
@@ -1580,8 +1578,8 @@ fn test_build_fork_config_sets_fork_session_flag() {
     );
 
     assert!(
-        config.fork_session,
-        "HeadlessConfig.fork_session must be true for fork sessions"
+        !config.fork_session,
+        "HeadlessConfig.fork_session must be false — forks are fresh sessions"
     );
 }
 
@@ -1619,19 +1617,16 @@ fn test_build_fork_config_sets_bound_thread_env() {
     );
 }
 
-/// `build_fork_config` sets `resume_session_id` to the calling session's ID.
-///
-/// The fork is created by resuming the parent session with `--fork-session`,
-/// so `resume_session_id` must point to the calling (parent) session.
+/// `build_fork_config` sets `resume_session_id` to `None` — forks launch
+/// as fresh sessions, not resumes of the parent session.
 #[test]
-fn test_build_fork_config_sets_resume_session_id() {
+fn test_build_fork_config_sets_resume_session_id_none() {
     let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
     let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
-    let calling_session = "parent-session-abc123";
     let (_fork_name, config) = build_fork_config(
         "thread-resume-test",
-        calling_session,
+        "parent-session-abc123",
         Some("web"),
         None,
         Some("web"),
@@ -1643,9 +1638,8 @@ fn test_build_fork_config_sets_resume_session_id() {
     );
 
     assert_eq!(
-        config.resume_session_id.as_deref(),
-        Some(calling_session),
-        "resume_session_id should be set to the calling session ID"
+        config.resume_session_id, None,
+        "resume_session_id should be None — forks are fresh sessions"
     );
 }
 
