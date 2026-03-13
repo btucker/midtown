@@ -158,6 +158,20 @@ async fn test_collect_health_empty() {
 }
 
 #[tokio::test]
+async fn test_is_nudgeable_rejects_starting_session() {
+    let sm = SessionManager::new("test-repo".to_string());
+    insert_test_session(&sm, "madison", SessionStatus::Starting).await;
+    sm.set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
+        name.eq_ignore_ascii_case("madison")
+    })));
+
+    assert!(
+        !sm.is_nudgeable("madison").await,
+        "sessions that have not emitted init yet should not be nudgeable"
+    );
+}
+
+#[tokio::test]
 async fn test_list_alive_names_excludes_stopped() {
     let sm = SessionManager::new("test-repo".to_string());
 

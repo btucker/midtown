@@ -581,7 +581,7 @@ fn test_filter_coworkers_by_provider() {
             started_at: chrono::Utc::now(),
             current_task: Some("Review PR".to_string()),
             session_id: None,
-            model: "gpt-5-codex".to_string(),
+            model: "gpt-5.4".to_string(),
             provider: crate::auth::AuthProvider::Codex,
             profile: "default".to_string(),
         },

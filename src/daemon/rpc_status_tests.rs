@@ -220,6 +220,51 @@ async fn test_handle_status_excludes_legacy_lead_session() {
     );
 }
 
+#[tokio::test]
+async fn test_handle_status_reports_headless_starting_until_session_init() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            &uuid::Uuid::new_v4().to_string(),
+            "madison",
+            "/tmp/madison".to_string(),
+            None,
+            "gpt-5".to_string(),
+            crate::auth::AuthProvider::Codex,
+            "ben@btucker.net".to_string(),
+        )
+        .expect("register starting coworker");
+    state
+        .session_manager
+        .insert_test_session("madison", crate::daemon::sessions::SessionStatus::Starting)
+        .await;
+
+    let response = handle_status(RequestId::Number(1), &state).await;
+    assert!(!response.is_error(), "status should succeed");
+
+    let result = response.result.expect("should have result");
+    assert_eq!(
+        result["active_coworkers"].as_u64(),
+        Some(0),
+        "starting headless coworkers should not count as active"
+    );
+
+    let coworkers = result["coworkers"]
+        .as_array()
+        .expect("should have coworkers array");
+    let madison = coworkers
+        .iter()
+        .find(|cw| cw["name"] == "madison")
+        .expect("madison should be present");
+    assert_eq!(
+        madison["status"].as_str(),
+        Some("starting"),
+        "headless coworker should remain starting until session init arrives"
+    );
+}
+
 // ─── Tests for resolve_pr_number (PR number resolution priority chain) ───
 
 #[test]

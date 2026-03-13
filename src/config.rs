@@ -67,7 +67,7 @@ use toml_edit::{Item, Table};
 /// These abstract size terms are resolved to concrete model names at launch time
 /// by `normalize_size_alias_for_provider()` in `daemon/helpers.rs`:
 /// - Claude/z.ai: small → haiku, medium → sonnet, large → opus
-/// - Codex: small → gpt-5.1-codex-mini, medium → gpt-5.3-codex-spark, large → gpt-5.3-codex
+/// - Codex: small → gpt-5.1-codex-mini, medium → gpt-5.3-codex-spark, large → gpt-5.4
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelSize {

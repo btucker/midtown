@@ -1105,7 +1105,7 @@ impl SessionManager {
                 let Some(cs) = sessions.get(&slot_id) else {
                     return false;
                 };
-                return cs.status != SessionStatus::Stopped
+                return cs.status == SessionStatus::Running
                     && !cs.has_usage_limit
                     && !cs.has_auth_error
                     && !cs.has_tool_name_conflict;
@@ -1119,7 +1119,18 @@ impl SessionManager {
         let Some(cs) = sessions.get(&slot_id) else {
             return false;
         };
-        !cs.has_usage_limit && !cs.has_auth_error && !cs.has_tool_name_conflict
+        cs.status == SessionStatus::Running
+            && !cs.has_usage_limit
+            && !cs.has_auth_error
+            && !cs.has_tool_name_conflict
+    }
+
+    /// Get the current session lifecycle status for a coworker (if tracked).
+    pub async fn status_for_name(&self, name: &str) -> Option<SessionStatus> {
+        let sessions = self.sessions.read().await;
+        let slot_id = Self::select_slot_for_name(&sessions, name, true)
+            .or_else(|| Self::select_slot_for_name(&sessions, name, false))?;
+        sessions.get(&slot_id).map(|cs| cs.status)
     }
 
     /// Drain events from all sessions and update health state.

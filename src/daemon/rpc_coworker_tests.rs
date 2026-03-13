@@ -410,7 +410,7 @@ async fn test_coworker_list_excludes_legacy_lead_session() {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            model: "gpt-5-codex".to_string(),
+            model: "gpt-5.4".to_string(),
             provider: crate::auth::AuthProvider::Codex,
             profile: crate::auth::DEFAULT_PROFILE.to_string(),
         });
@@ -479,7 +479,7 @@ async fn test_report_idle_keeps_project_lead_running() {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            model: "gpt-5-codex".to_string(),
+            model: "gpt-5.4".to_string(),
             provider: crate::auth::AuthProvider::Codex,
             profile: crate::auth::DEFAULT_PROFILE.to_string(),
         });
@@ -517,7 +517,7 @@ async fn test_report_idle_still_breaks_non_lead_coworker() {
             started_at: chrono::Utc::now(),
             current_task: None,
             session_id: None,
-            model: "gpt-5-codex".to_string(),
+            model: "gpt-5.4".to_string(),
             provider: crate::auth::AuthProvider::Codex,
             profile: crate::auth::DEFAULT_PROFILE.to_string(),
         });
