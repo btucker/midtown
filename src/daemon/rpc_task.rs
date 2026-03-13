@@ -274,7 +274,7 @@ pub(super) async fn handle_task_request(
 
 /// Handle task.create RPC — daemon creates a task directly in shared storage.
 ///
-/// Creates the task with the specified channel (or the default "midtown" channel).
+/// Creates the task with the specified channel (or the project's default channel).
 /// Dispatch for the new task happens on the next `TaskDispatchTick` via the
 /// canonical event loop pipeline.
 #[allow(clippy::too_many_arguments)]

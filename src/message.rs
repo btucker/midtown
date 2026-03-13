@@ -134,7 +134,8 @@ pub struct Message {
     /// Type of message
     #[serde(rename = "type")]
     pub message_type: MessageType,
-    /// Channel name (defaults to "midtown" for backward compatibility).
+    /// Channel name (defaults to "unknown" when unset; callers should set
+    /// explicitly via `for_channel()` or fill from `SendResult`).
     /// Stored as Option for backward compat with existing struct literals,
     /// but always initialized in constructors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
