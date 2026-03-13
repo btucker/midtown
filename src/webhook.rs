@@ -32,7 +32,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::coworker::CoworkerManager;
 use crate::message::{Message, MessageType};
-use crate::web::{self, MobileChannelPost, WebConfig, WebState, WebUpdate};
+use crate::web::{self, MobileChannelPost, WebCommand, WebConfig, WebState, WebUpdate};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -308,10 +308,12 @@ pub async fn start_webhook_server(
     broadcast::Sender<WebUpdate>,
     mpsc::Receiver<MobileChannelPost>,
     Option<Arc<crate::push::PushManager>>,
+    mpsc::Receiver<WebCommand>,
 )> {
     let (tx, rx) = mpsc::channel(100);
     let (web_updates_tx, _) = broadcast::channel(100);
     let (mobile_tx, mobile_rx) = mpsc::channel(100);
+    let (web_cmd_tx, web_cmd_rx) = mpsc::channel(32);
 
     let webhook_state = Arc::new(WebhookState {
         config: config.clone(),
@@ -341,6 +343,7 @@ pub async fn start_webhook_server(
         updates_tx: web_updates_tx.clone(),
         coworkers: coworker_manager,
         channel_post_tx: mobile_tx,
+        web_command_tx: web_cmd_tx,
         push_manager: push_manager.clone(),
         all_repo_paths,
         default_branch,
@@ -375,7 +378,7 @@ pub async fn start_webhook_server(
         }
     });
 
-    Ok((rx, web_updates_tx, mobile_rx, push_manager))
+    Ok((rx, web_updates_tx, mobile_rx, push_manager, web_cmd_rx))
 }
 
 /// Health check endpoint

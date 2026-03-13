@@ -3039,6 +3039,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     let mut webhook_rx = None;
     let mut web_updates_tx = None;
     let mut mobile_rx: Option<tokio::sync::mpsc::Receiver<crate::web::MobileChannelPost>> = None;
+    let mut web_command_rx: Option<tokio::sync::mpsc::Receiver<crate::web::WebCommand>> = None;
     let mut shared_push_manager: Option<std::sync::Arc<crate::push::PushManager>> = None;
     let (forwarder_shutdown_tx, forwarder_shutdown_rx) = watch::channel(false);
 
@@ -3065,12 +3066,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         )
         .await
         {
-            Ok((rx, updates_tx, mob_rx, push_mgr)) => {
+            Ok((rx, updates_tx, mob_rx, push_mgr, cmd_rx)) => {
                 info!("Webhook server started on port {}", port);
                 webhook_rx = Some(rx);
                 web_updates_tx = Some(updates_tx);
                 mobile_rx = Some(mob_rx);
                 shared_push_manager = push_mgr;
+                web_command_rx = Some(cmd_rx);
 
                 // Spawn webhook forwarder watchdog task
                 let restart_interval = config.webhook_restart_interval_secs;
@@ -3356,6 +3358,51 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     &post_state,
                 )
                 .await;
+            }
+        });
+    }
+
+    // Spawn dedicated task for web commands (archive/unarchive) that need
+    // daemon-side processing with access to DaemonState.
+    if let Some(mut cmd_rx) = web_command_rx.take() {
+        let cmd_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    crate::web::WebCommand::ArchiveChannel { name, response } => {
+                        let resp = rpc_channel::handle_channel_archive(
+                            crate::rpc::RequestId::Null,
+                            &name,
+                            &cmd_state,
+                        )
+                        .await;
+                        let result = if resp.error.is_some() {
+                            Err(resp
+                                .error
+                                .map(|e| e.message)
+                                .unwrap_or_else(|| "Unknown error".into()))
+                        } else {
+                            Ok(())
+                        };
+                        let _ = response.send(result);
+                    }
+                    crate::web::WebCommand::UnarchiveChannel { name, response } => {
+                        let resp = rpc_channel::handle_channel_unarchive(
+                            crate::rpc::RequestId::Null,
+                            &name,
+                            &cmd_state,
+                        );
+                        let result = if resp.error.is_some() {
+                            Err(resp
+                                .error
+                                .map(|e| e.message)
+                                .unwrap_or_else(|| "Unknown error".into()))
+                        } else {
+                            Ok(())
+                        };
+                        let _ = response.send(result);
+                    }
+                }
             }
         });
     }

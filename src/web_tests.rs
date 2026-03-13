@@ -44,12 +44,14 @@ async fn test_mobile_send_message_forwards_to_daemon() {
     // channel_post_tx instead of writing directly to the channel file.
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, mut channel_post_rx) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     let state = Arc::new(WebState {
         config: WebConfig::default(),
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -232,12 +234,14 @@ async fn test_coworker_nudge_returns_error() {
     // Coworker nudges are not supported via the web UI - only lead nudges are allowed.
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     let state = Arc::new(WebState {
         config: WebConfig::default(),
         updates_tx,
         coworkers: None, // No coworker manager available
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -264,6 +268,7 @@ async fn test_coworker_nudge_not_supported_via_web_ui() {
 
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     // Create a minimal CoworkerManager for testing
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -297,6 +302,7 @@ async fn test_coworker_nudge_not_supported_via_web_ui() {
         updates_tx,
         coworkers: Some(coworkers),
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -325,6 +331,7 @@ async fn test_error_channel_backpressure() {
 
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     // Create a minimal CoworkerManager
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -358,6 +365,7 @@ async fn test_error_channel_backpressure() {
         updates_tx,
         coworkers: Some(coworkers),
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -622,12 +630,14 @@ async fn test_answer_question_invalid_coworker_name() {
     // Verify that an invalid coworker name (with special chars) returns an error.
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     let state = Arc::new(WebState {
         config: WebConfig::default(),
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -649,12 +659,14 @@ async fn test_answer_question_empty_answer() {
     // Verify that an empty answer returns an error.
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
 
     let state = Arc::new(WebState {
         config: WebConfig::default(),
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -1019,11 +1031,13 @@ fn test_validate_channel_name_rejects_main_channel() {
 async fn test_api_get_screenshot_string_guard_rejects_traversal_patterns() {
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig::default(),
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -1054,6 +1068,7 @@ async fn test_api_get_screenshot_not_found_for_missing_file() {
 
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
             dir_key: "test-proj".to_string(),
@@ -1062,6 +1077,7 @@ async fn test_api_get_screenshot_not_found_for_missing_file() {
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -1099,6 +1115,7 @@ async fn test_api_get_screenshot_canonicalize_containment() {
 
         let (updates_tx, _) = broadcast::channel(10);
         let (channel_post_tx, _) = mpsc::channel(10);
+        let (web_command_tx, _) = mpsc::channel(10);
         let state = Arc::new(WebState {
             config: WebConfig {
                 dir_key: "test-proj".to_string(),
@@ -1107,6 +1124,7 @@ async fn test_api_get_screenshot_canonicalize_containment() {
             updates_tx,
             coworkers: None,
             channel_post_tx,
+            web_command_tx,
             push_manager: None,
             all_repo_paths: Vec::new(),
             default_branch: "main".to_string(),
@@ -1133,6 +1151,7 @@ async fn test_api_get_screenshot_serves_valid_image() {
 
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
             dir_key: "test-proj".to_string(),
@@ -1141,6 +1160,7 @@ async fn test_api_get_screenshot_serves_valid_image() {
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -1165,6 +1185,7 @@ async fn test_api_get_screenshot_rejects_non_image() {
 
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     let state = Arc::new(WebState {
         config: WebConfig {
             dir_key: "test-proj".to_string(),
@@ -1173,6 +1194,7 @@ async fn test_api_get_screenshot_rejects_non_image() {
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
@@ -1189,6 +1211,7 @@ async fn test_api_get_screenshot_rejects_non_image() {
 fn make_workflow_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> Arc<WebState> {
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     Arc::new(WebState {
         config: WebConfig {
             dir_key: dir_key.to_string(),
@@ -1197,6 +1220,7 @@ fn make_workflow_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> Ar
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: repo_paths,
         default_branch: "main".to_string(),
@@ -1473,6 +1497,7 @@ async fn test_set_workflow_rejects_path_traversal() {
 fn make_agents_md_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> Arc<WebState> {
     let (updates_tx, _) = broadcast::channel(10);
     let (channel_post_tx, _) = mpsc::channel(10);
+    let (web_command_tx, _) = mpsc::channel(10);
     Arc::new(WebState {
         config: WebConfig {
             dir_key: dir_key.to_string(),
@@ -1481,6 +1506,7 @@ fn make_agents_md_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> A
         updates_tx,
         coworkers: None,
         channel_post_tx,
+        web_command_tx,
         push_manager: None,
         all_repo_paths: repo_paths,
         default_branch: "main".to_string(),
