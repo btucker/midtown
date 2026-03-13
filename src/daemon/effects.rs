@@ -364,7 +364,8 @@ pub enum Effect {
         pr_number: u64,
         issue_type: PrIssueType,
     },
-    /// Record an in-memory task assignment for busy tracking.
+    /// Record a task assignment: updates in-memory busy tracking, persistent
+    /// session state (`sessions[].task_id`), and the `task_to_session` reverse map.
     ///
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
