@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
-use crate::message::Message;
+use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
 use crate::web;
 
@@ -1494,6 +1494,48 @@ fn format_blockquote(content: &str) -> String {
         .join("\n")
 }
 
+/// Build a concise summary of recent channel activity for fork context.
+///
+/// Returns a formatted summary of the last ~20 top-level messages (excluding
+/// thread replies, auto-output, and nudges) to give the fork situational
+/// awareness of what's happening in the channel.
+async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Option<String> {
+    let messages = match channel.read_last_n_messages_async(30).await {
+        Ok((msgs, _)) => msgs,
+        Err(e) => {
+            debug!("Failed to read channel messages for fork summary: {}", e);
+            return None;
+        }
+    };
+
+    let lines: Vec<String> = messages
+        .iter()
+        .filter(|m| m.thread_parent_id.is_none())
+        .filter(|m| !m.auto_output)
+        .filter(|m| m.message_type != MessageType::Nudge)
+        .map(|m| {
+            let time = m.timestamp.format("%H:%M");
+            let content = if m.content.len() > 150 {
+                format!("{}...", &m.content[..150])
+            } else {
+                m.content.clone()
+            };
+            // Collapse multiline content to single line for summary brevity.
+            let content = content.replace('\n', " ");
+            format!("[{time}] {}: {content}", m.from)
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "## Recent channel activity\n\n{}",
+        lines.join("\n")
+    ))
+}
+
 /// Handle session.fork RPC method.
 ///
 /// Forks the calling session into a new independent session bound to a thread.
@@ -1597,33 +1639,27 @@ pub(super) async fn handle_session_fork(
             let nudge_message = if let Some(msg) = initial_message {
                 Some(msg.to_string())
             } else {
-                // Look up the parent message content as fallback context.
-                let parent_content = if let Some(ref ch) = fork_channel {
+                // Open channel once for both parent message lookup and summary.
+                let channel_obj = fork_channel.as_ref().and_then(|ch| {
                     let base_dir = state.paths.base_dir().to_path_buf();
-                    match crate::channel::Channel::new(&base_dir, ch) {
-                        Ok(channel) => {
-                            match channel.find_message_by_id_async(thread_parent_id).await {
-                                Ok(Some(msg)) => Some((msg.from, msg.content)),
-                                Ok(None) => {
-                                    debug!(
-                                        "Parent message {} not found in channel {}",
-                                        thread_parent_id, ch
-                                    );
-                                    None
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to look up parent message {}: {}",
-                                        thread_parent_id, e
-                                    );
-                                    None
-                                }
-                            }
+                    crate::channel::Channel::new(&base_dir, ch).ok()
+                });
+
+                let parent_content = if let Some(ref channel) = channel_obj {
+                    match channel.find_message_by_id_async(thread_parent_id).await {
+                        Ok(Some(msg)) => Some((msg.from, msg.content)),
+                        Ok(None) => {
+                            debug!(
+                                "Parent message {} not found in channel {}",
+                                thread_parent_id,
+                                fork_channel.as_deref().unwrap_or("?")
+                            );
+                            None
                         }
                         Err(e) => {
                             warn!(
-                                "Failed to open channel {} for parent message lookup: {}",
-                                ch, e
+                                "Failed to look up parent message {}: {}",
+                                thread_parent_id, e
                             );
                             None
                         }
@@ -1632,28 +1668,46 @@ pub(super) async fn handle_session_fork(
                     None
                 };
 
+                let channel_summary = if let Some(ref channel) = channel_obj {
+                    build_channel_summary_for_fork(channel).await
+                } else {
+                    None
+                };
+
                 match (is_channel_lead, parent_content) {
-                    // Channel lead + parent message: framing + quoted message
+                    // Channel lead + parent message: framing + summary + quoted message
                     (true, Some((from, content))) => {
                         let framing = fork_channel
                             .as_ref()
                             .map(|ch| super::rpc_channel::fork_initial_framing(ch))
                             .unwrap_or_default();
-                        Some(format!(
-                            "{framing}\n\n{from} wrote:\n{}",
-                            format_blockquote(&content)
-                        ))
+                        let mut parts = vec![framing];
+                        if let Some(ref summary) = channel_summary {
+                            parts.push(summary.clone());
+                        }
+                        parts.push(format!("{from} wrote:\n{}", format_blockquote(&content)));
+                        Some(parts.join("\n\n"))
                     }
-                    // Non-channel-lead + parent message: just the message context
-                    (false, Some((from, content))) => Some(format!(
-                        "The following message needs investigation:\n\n\
-                             {from} wrote:\n{}",
-                        format_blockquote(&content)
-                    )),
-                    // Channel lead, no parent found: bare framing
-                    (true, None) => fork_channel
-                        .as_ref()
-                        .map(|ch| super::rpc_channel::fork_initial_framing(ch)),
+                    // Non-channel-lead + parent message: summary + investigation context
+                    (false, Some((from, content))) => {
+                        let mut parts =
+                            vec!["The following message needs investigation:".to_string()];
+                        if let Some(ref summary) = channel_summary {
+                            parts.push(summary.clone());
+                        }
+                        parts.push(format!("{from} wrote:\n{}", format_blockquote(&content)));
+                        Some(parts.join("\n\n"))
+                    }
+                    // Channel lead, no parent found: framing + optional summary
+                    (true, None) => {
+                        let mut framing = fork_channel
+                            .as_ref()
+                            .map(|ch| super::rpc_channel::fork_initial_framing(ch));
+                        if let (Some(f), Some(summary)) = (&mut framing, &channel_summary) {
+                            f.push_str(&format!("\n\n{summary}"));
+                        }
+                        framing
+                    }
                     // Non-channel-lead, no parent: no nudge
                     (false, None) => None,
                 }
