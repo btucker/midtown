@@ -240,8 +240,31 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         // Convert MentionAction → Effects, execute via the standard pipeline.
         let name_session_map: std::collections::HashMap<String, String> =
             state.name_to_session.lock().unwrap().clone();
-        let effects =
-            mention_action_to_effects(action, &target_name, &state.project_name, &name_session_map);
+
+        // Look up whether the @mentioned name has an existing reviewer session.
+        // If so, we resume it instead of spawning a fresh dev session.
+        let reviewer_session = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions
+                .iter()
+                .find(|(_, r)| {
+                    r.is_reviewer
+                        && (r.preferred_name.as_deref() == Some(&target_name)
+                            || r.current_name.as_deref() == Some(&target_name))
+                })
+                .map(|(sid, r)| ReviewerSessionInfo {
+                    session_id: sid.clone(),
+                    task_id: r.task_id.clone(),
+                })
+        };
+
+        let effects = mention_action_to_effects(
+            action,
+            &target_name,
+            &state.project_name,
+            &name_session_map,
+            reviewer_session,
+        );
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -339,11 +362,23 @@ fn render_thread_context(msg: &Message) -> String {
 ///
 /// Pure conversion: takes the decision from `decide_mention_action` and maps
 /// it to `Effect` variants that the standard `execute_effects` pipeline handles.
+/// Info about an existing reviewer session for the @mentioned name.
+///
+/// When set, the `Spawn` arm of `mention_action_to_effects` produces a
+/// `ResumeCoworker` effect instead of `SpawnCoworkerWithCallbacks`, preserving
+/// the reviewer's session context and role.
+#[derive(Debug, Clone)]
+pub(crate) struct ReviewerSessionInfo {
+    pub session_id: String,
+    pub task_id: Option<String>,
+}
+
 fn mention_action_to_effects(
     action: crate::rules::MentionAction,
     coworker_name: &str,
     repo_name: &str,
     name_session_map: &std::collections::HashMap<String, String>,
+    reviewer_session: Option<ReviewerSessionInfo>,
 ) -> Vec<super::effects::Effect> {
     use super::effects::Effect;
 
@@ -356,6 +391,24 @@ fn mention_action_to_effects(
             vec![Effect::nudge_session(session_id, message)]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
+            // If the @mentioned name has an existing reviewer session, resume it
+            // instead of spawning a fresh dev session. This preserves reviewer
+            // context (ephemeral lifecycle, review state, etc.).
+            if let Some(info) = reviewer_session {
+                let config = crate::launch::LaunchConfig::coworker(
+                    name.clone(),
+                    repo_name.to_string(),
+                    crate::launch::SessionMode::ResumeSession(info.session_id.clone()),
+                    Some(message),
+                    info.task_id,
+                );
+                return vec![Effect::ResumeCoworker {
+                    name,
+                    session_id: info.session_id,
+                    config,
+                }];
+            }
+
             let config = crate::launch::LaunchConfig::coworker(
                 name.clone(),
                 repo_name.to_string(),
