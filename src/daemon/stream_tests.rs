@@ -348,7 +348,7 @@ fn test_process_lead_output_returns_post_effect() {
         } => {
             assert_eq!(sender, "myproject");
             assert_eq!(message, "Hello from lead");
-            assert!(channel.is_none());
+            assert_eq!(channel.as_deref(), Some("myproject"));
             assert!(auto_output, "stream output should be auto_output");
         }
         _ => panic!("Expected PostToChannel effect"),
@@ -413,6 +413,84 @@ fn test_process_lead_output_empty_text_posts_tool_data_only() {
             assert!(tool_data.is_some(), "should have tool_data");
         }
         _ => panic!("Expected PostToChannel with tool_data"),
+    }
+}
+
+// ── main lead channel name tests ────────────────────────────────────
+
+#[test]
+fn test_process_lead_output_main_lead_sets_channel_to_project_name() {
+    // Bug regression: main lead auto-output was posted with channel: None,
+    // causing Message::channel_name() to default to hardcoded "midtown".
+    // For projects NOT named "midtown", WebSocket broadcasts sent the wrong
+    // channel name, so real-time messages disappeared in the frontend.
+    let mut events = HashMap::new();
+    events.insert(
+        "myproject".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{"type": "text", "text": "Hello from lead"}]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "myproject", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender,
+            message,
+            channel,
+            auto_output,
+            ..
+        } => {
+            assert_eq!(sender, "myproject");
+            assert_eq!(message, "Hello from lead");
+            assert_eq!(
+                channel.as_deref(),
+                Some("myproject"),
+                "Main lead channel should be set to project name, not None"
+            );
+            assert!(auto_output, "stream output should be auto_output");
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_main_lead_tool_data_sets_channel() {
+    // Tool-data-only effects for the main lead should also have the channel set.
+    let mut events = HashMap::new();
+    events.insert(
+        "myproject".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({
+                "content": [{
+                    "type": "tool_use",
+                    "id": "tc_1",
+                    "name": "Read",
+                    "input": {"file_path": "src/main.rs"}
+                }]
+            }),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let effects = process_lead_output(&events, &HashMap::new(), "myproject", &HashMap::new());
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel { channel, .. } => {
+            assert_eq!(
+                channel.as_deref(),
+                Some("myproject"),
+                "Main lead tool_data channel should also be set"
+            );
+        }
+        _ => panic!("Expected PostToChannel effect"),
     }
 }
 
@@ -593,7 +671,11 @@ fn test_process_lead_output_main_and_channel_lead_both_post() {
         .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "lead"));
     assert!(main_effect.is_some());
     if let Some(Effect::PostToChannel { channel, .. }) = main_effect {
-        assert!(channel.is_none(), "Main lead posts to main channel");
+        assert_eq!(
+            channel.as_deref(),
+            Some("lead"),
+            "Main lead posts to main channel"
+        );
     }
 
     let cl_effect = effects
@@ -712,7 +794,11 @@ fn test_process_lead_output_tool_data_populated_for_main_lead() {
         } => {
             assert_eq!(sender, "lead");
             assert_eq!(message, "");
-            assert!(channel.is_none(), "Main lead posts to main channel");
+            assert_eq!(
+                channel.as_deref(),
+                Some("lead"),
+                "Main lead posts to main channel"
+            );
             assert!(*auto_output);
             let blocks = tool_data.as_ref().expect("should have tool_data");
             assert_eq!(blocks.len(), 1);
