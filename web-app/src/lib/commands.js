@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
 import { archiveChannel, fetchChannels, unarchiveChannel } from "./api.js";
-import { activeChannel } from "./store.js";
+import { activeChannel, showArchivedChannels } from "./store.js";
 
 /**
  * Registry of slash commands available in the web UI.
@@ -32,7 +32,7 @@ const commands = [
 			}
 			const result = await unarchiveChannel(target);
 			if (result.ok) {
-				await fetchChannels();
+				await fetchChannels(get(showArchivedChannels));
 				return { ok: true, message: `Channel #${target} unarchived` };
 			}
 			return { ok: false, error: result.error || "Failed to unarchive channel" };

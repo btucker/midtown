@@ -696,10 +696,14 @@ async fn api_channel_unarchive(
         Ok(()) => Ok(axum::Json(
             serde_json::json!({ "name": channel_name, "archived": false }),
         )),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            axum::Json(serde_json::json!({ "error": e })),
-        )),
+        Err(e) => {
+            let status = if e.contains("not archived or does not exist") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            Err((status, axum::Json(serde_json::json!({ "error": e }))))
+        }
     }
 }
 
