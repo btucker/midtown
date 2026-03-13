@@ -31,7 +31,7 @@ export function filterChannelPosts(toolData) {
  *
  * Returns an array of segments:
  *   { type: 'message', message }           — a normal message
- *   { type: 'tool-run', messages, toolCount, lastTimestamp } — 1+ consecutive tool-only messages
+ *   { type: 'tool-run', messages, lastTimestamp } — 1+ consecutive tool-only messages
  */
 export function groupToolRuns(messages) {
 	const segments = [];
@@ -39,11 +39,9 @@ export function groupToolRuns(messages) {
 
 	function flushRun() {
 		if (currentRun.length >= 1) {
-			const toolCount = currentRun.reduce((sum, m) => sum + (m.tool_data?.length || 0), 0);
 			segments.push({
 				type: "tool-run",
 				messages: currentRun,
-				toolCount,
 				lastTimestamp: currentRun[currentRun.length - 1].timestamp,
 			});
 		}
@@ -75,11 +73,9 @@ export function groupTimelineToolRuns(timeline) {
 
 	function flushRun() {
 		if (currentRun.length >= 1) {
-			const toolCount = currentRun.reduce((sum, e) => sum + (e.data.tool_data?.length || 0), 0);
 			segments.push({
 				type: "tool-run",
 				entries: currentRun,
-				toolCount,
 				lastTimestamp: currentRun[currentRun.length - 1].data.timestamp,
 			});
 		}

@@ -682,7 +682,6 @@ let prevThreadId = null;
         {#if entry.type === 'tool-run'}
           <ToolRunSummary
             messages={entry.entries.map(e => e.data)}
-            toolCount={entry.toolCount}
             lastTimestamp={entry.lastTimestamp}
             allMessages={timelineMessages}
             startIndex={entry.entries[0].msgIndex}
@@ -842,7 +841,6 @@ let prevThreadId = null;
         {#if entry.type === 'tool-run'}
           <ToolRunSummary
             messages={entry.entries.map(e => e.data)}
-            toolCount={entry.toolCount}
             lastTimestamp={entry.lastTimestamp}
             allMessages={timelineMessages}
             startIndex={entry.entries[0].msgIndex}

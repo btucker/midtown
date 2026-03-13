@@ -138,7 +138,6 @@ describe("groupToolRuns", () => {
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
 		expect(groups[0].messages).toEqual(msgs);
-		expect(groups[0].toolCount).toBe(4);
 	});
 
 	it("creates a run from a single tool message", () => {
@@ -147,7 +146,6 @@ describe("groupToolRuns", () => {
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
 		expect(groups[0].messages).toEqual(msgs);
-		expect(groups[0].toolCount).toBe(1);
 	});
 
 	it("breaks runs on text messages", () => {
@@ -161,11 +159,9 @@ describe("groupToolRuns", () => {
 		const groups = groupToolRuns(msgs);
 		expect(groups).toHaveLength(3);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].toolCount).toBe(2);
 		expect(groups[1].type).toBe("message");
 		expect(groups[1].message.id).toBe("3");
 		expect(groups[2].type).toBe("tool-run");
-		expect(groups[2].toolCount).toBe(2);
 	});
 
 	it("treats whitespace-only content as tool-only", () => {
@@ -200,9 +196,8 @@ describe("filterChannelPosts — visible tool count", () => {
 			},
 		];
 
-		// Raw toolCount from groupToolRuns includes the channel post
-		const groups = groupToolRuns(messages);
-		expect(groups[0].toolCount).toBe(2);
+		// groupToolRuns produces a valid group; visible count is computed in the component
+		groupToolRuns(messages);
 
 		// Visible count after filtering should be 1
 		const visibleToolCount = messages.reduce((sum, m) => sum + filterChannelPosts(m.tool_data).length, 0);
@@ -267,7 +262,6 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].toolCount).toBe(3);
 		expect(groups[0].entries).toEqual(entries);
 	});
 
@@ -276,7 +270,6 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].toolCount).toBe(1);
 		expect(groups[0].entries).toEqual(entries);
 	});
 
@@ -285,10 +278,8 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(3);
 		expect(groups[0].type).toBe("tool-run"); // single tool, still grouped
-		expect(groups[0].toolCount).toBe(1);
 		expect(groups[1].type).toBe("edit");
 		expect(groups[2].type).toBe("tool-run"); // single tool, still grouped
-		expect(groups[2].toolCount).toBe(1);
 	});
 
 	it("text messages break tool runs", () => {
@@ -302,10 +293,8 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(3);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].toolCount).toBe(2);
 		expect(groups[1].type).toBe("message");
 		expect(groups[1].data.id).toBe("3");
 		expect(groups[2].type).toBe("tool-run");
-		expect(groups[2].toolCount).toBe(2);
 	});
 });

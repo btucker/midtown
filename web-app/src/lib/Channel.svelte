@@ -820,7 +820,6 @@ function getToolCallStatusIcon(entry) {
           {#if segment.type === 'tool-run'}
             <ToolRunSummary
               messages={segment.messages}
-              toolCount={segment.toolCount}
               lastTimestamp={segment.lastTimestamp}
               allMessages={channelMessages}
               startIndex={renderStartIndex + segment._offset}
