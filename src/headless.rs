@@ -740,6 +740,18 @@ fn codex_thread_id(parsed: &serde_json::Value) -> Option<String> {
                 .and_then(parse_thread)
                 .or_else(|| {
                     params
+                        .get("threadId")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    params
+                        .get("conversationId")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    params
                         .get("turn")
                         .and_then(|turn| turn.get("thread"))
                         .and_then(parse_thread)

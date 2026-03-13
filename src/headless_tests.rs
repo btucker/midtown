@@ -979,3 +979,42 @@ fn test_codex_translate_stale_fork_only_retries_once() {
     assert!(event.is_some());
     assert_ne!(post_action, CodexPostAction::RetryThreadStart);
 }
+
+#[test]
+fn test_codex_thread_id_reads_flat_thread_id() {
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "item/agentMessage/delta",
+        "params": {
+            "threadId": "thread-flat-123",
+            "turnId": "turn-1",
+            "delta": "hello"
+        }
+    });
+
+    assert_eq!(
+        codex_thread_id(&parsed),
+        Some("thread-flat-123".to_string())
+    );
+}
+
+#[test]
+fn test_codex_thread_id_reads_conversation_id_for_codex_event() {
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "codex/event/task_complete",
+        "params": {
+            "id": "turn-1",
+            "conversationId": "thread-conversation-123",
+            "msg": {
+                "type": "task_complete",
+                "turn_id": "turn-1"
+            }
+        }
+    });
+
+    assert_eq!(
+        codex_thread_id(&parsed),
+        Some("thread-conversation-123".to_string())
+    );
+}
