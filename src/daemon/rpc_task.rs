@@ -250,7 +250,8 @@ pub(super) async fn handle_task_request(
         state.project_name, from, message
     );
 
-    let msg = Message::new(
+    let msg = Message::for_channel(
+        state.default_channel_name(),
         &state.project_name,
         channel_message.clone(),
         MessageType::Text,

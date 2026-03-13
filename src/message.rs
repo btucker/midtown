@@ -268,9 +268,14 @@ impl Message {
         self.thread_parent_id.as_deref().unwrap_or(self.id.as_str())
     }
 
-    /// Get the channel name (defaults to "midtown" if not set).
+    /// Get the channel name (defaults to "unknown" if not set).
+    ///
+    /// All production code paths should set the channel explicitly via
+    /// `Message::for_channel()` or `Message::thread_reply()`. The "unknown"
+    /// fallback exists only for backwards compatibility with old serialized
+    /// messages that lack a channel field.
     pub fn channel_name(&self) -> &str {
-        self.channel.as_deref().unwrap_or("midtown")
+        self.channel.as_deref().unwrap_or("unknown")
     }
 
     /// Create a text message.
@@ -432,9 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_defaults_to_midtown() {
+    fn test_channel_defaults_to_unknown() {
         let msg = Message::text("agent1", "Hello");
-        assert_eq!(msg.channel_name(), "midtown");
+        assert_eq!(msg.channel_name(), "unknown");
     }
 
     #[test]
@@ -457,7 +462,7 @@ mod tests {
         }"#;
 
         let msg: Message = serde_json::from_str(old_json).unwrap();
-        assert_eq!(msg.channel_name(), "midtown"); // Should default
+        assert_eq!(msg.channel_name(), "unknown"); // Should default
         assert_eq!(msg.from, "agent1");
         assert_eq!(msg.content, "Hello");
     }
@@ -481,7 +486,7 @@ mod tests {
             provider: None,
             tool_use_id: None,
         };
-        assert_eq!(msg.channel_name(), "midtown"); // channel_name() handles None
+        assert_eq!(msg.channel_name(), "unknown"); // channel_name() handles None
     }
 
     #[test]

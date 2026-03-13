@@ -69,3 +69,23 @@ fn test_nudge_type_backward_compat_deserialize() {
     let msg: Message = serde_json::from_str(old_json).unwrap();
     assert_eq!(msg.nudge_type, None);
 }
+
+#[test]
+fn test_channel_name_fallback_is_not_hardcoded_midtown() {
+    // Regression: channel_name() used to return "midtown" when channel was None,
+    // which silently worked for the "midtown" project but broke all others.
+    // It should now return "unknown" to make missing channels obvious.
+    let msg = Message::new("agent1", "test", MessageType::Text);
+    assert!(msg.channel.is_none());
+    assert_eq!(msg.channel_name(), "unknown");
+    assert_ne!(msg.channel_name(), "midtown");
+}
+
+#[test]
+fn test_for_channel_sets_channel_explicitly() {
+    // Verify that for_channel() always produces a message with an explicit channel,
+    // avoiding the fallback path entirely.
+    let msg = Message::for_channel("my-project", "agent1", "test", MessageType::Text);
+    assert_eq!(msg.channel, Some("my-project".to_string()));
+    assert_eq!(msg.channel_name(), "my-project");
+}
