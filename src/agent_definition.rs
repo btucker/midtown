@@ -93,6 +93,17 @@ pub fn parse_agent_file(path: &Path) -> Result<AgentDefinition, String> {
     parse_agent_content(&content, path)
 }
 
+/// Strip surrounding YAML quotes (`"` or `'`) from a value string.
+fn strip_yaml_quotes(s: &str) -> String {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 /// Parse agent definition content (testable without filesystem).
 fn parse_agent_content(content: &str, source_path: &Path) -> Result<AgentDefinition, String> {
     let trimmed = content.trim_start();
@@ -140,7 +151,7 @@ fn parse_agent_content(content: &str, source_path: &Path) -> Result<AgentDefinit
         }
         if let Some((key, value)) = line.split_once(':') {
             let key = key.trim();
-            let value = value.trim();
+            let value = strip_yaml_quotes(value.trim());
             match key {
                 "name" => name = Some(value.to_string()),
                 "description" => description = Some(value.to_string()),
