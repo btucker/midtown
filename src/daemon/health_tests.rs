@@ -4293,3 +4293,178 @@ fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
         "should clean up abandoned task worktree"
     );
 }
+
+/// Integration test: GC pruning dead fork SessionRecords does not interfere
+/// with liveness checks that query `name_session_map` in the same tick.
+///
+/// The scenario: a fork session has died (not running, not active) and is old
+/// enough for GC to prune. In the same tick, liveness checks use
+/// `name_session_map` (built from SessionRecords) to resolve session IDs.
+/// GC identifies the dead fork for removal, but since both GC and liveness
+/// operate on the same immutable snapshot, the liveness lookup still succeeds
+/// within the tick. After GC applies, the fork disappears from future snapshots.
+#[test]
+fn gc_and_liveness_do_not_interfere_for_dead_fork_sessions() {
+    use std::collections::{HashMap, HashSet};
+
+    let now = chrono::Utc::now();
+
+    // ── Build session records (simulating persistent state) ──────────
+    let mut sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+
+    // Dead fork session — old enough to be GC'd
+    let mut dead_fork = make_session(
+        "fork-dead-1",
+        false, // not running
+        false, // not a reviewer
+        false, // not resume_on_startup
+        now - chrono::Duration::hours(48),
+        Some("100"),
+    );
+    dead_fork.current_name = Some("riverside".to_string());
+    dead_fork.bound_thread_id = Some("thread-abc".to_string());
+    sessions.insert("fork-dead-1".to_string(), dead_fork);
+
+    // Live fork session — running, should survive GC
+    let mut live_fork = make_session(
+        "fork-live-1",
+        true, // running
+        false,
+        true,
+        now,
+        Some("101"),
+    );
+    live_fork.current_name = Some("amsterdam".to_string());
+    live_fork.bound_thread_id = Some("thread-def".to_string());
+    sessions.insert("fork-live-1".to_string(), live_fork);
+
+    // Regular (non-fork) dead session — also old enough to be GC'd
+    let mut dead_regular = make_session(
+        "dev-dead-1",
+        false,
+        false,
+        false,
+        now - chrono::Duration::hours(48),
+        Some("102"),
+    );
+    dead_regular.current_name = Some("park".to_string());
+    sessions.insert("dev-dead-1".to_string(), dead_regular);
+
+    let active_session_ids = HashSet::from(["fork-live-1".to_string()]);
+    let retention = chrono::Duration::hours(24);
+
+    // ── Step 1: Build name_session_map (as snapshot.rs does) ─────────
+    let mut name_session_map: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &sessions {
+        if let Some(name) = &record.current_name {
+            name_session_map.insert(name.clone(), session_id.clone());
+        }
+    }
+
+    // All three sessions appear in name_session_map (snapshot is built
+    // before GC runs)
+    assert_eq!(
+        name_session_map.get("riverside"),
+        Some(&"fork-dead-1".to_string()),
+        "dead fork should be visible in name_session_map within the same tick"
+    );
+    assert_eq!(
+        name_session_map.get("amsterdam"),
+        Some(&"fork-live-1".to_string()),
+        "live fork should be visible in name_session_map"
+    );
+    assert_eq!(
+        name_session_map.get("park"),
+        Some(&"dev-dead-1".to_string()),
+        "dead regular session should be visible in name_session_map"
+    );
+
+    // ── Step 2: Liveness lookups succeed for all sessions ────────────
+    // (simulates shutdown_effect / health checks using name_session_map)
+    assert!(
+        name_session_map.contains_key("riverside"),
+        "liveness lookup for dead fork must succeed within the tick"
+    );
+
+    // ── Step 3: GC identifies dead sessions ──────────────────────────
+    let effects = check_for_state_gc(
+        &sessions,
+        &active_session_ids,
+        &HashSet::new(),
+        &HashSet::new(),
+        retention,
+    );
+
+    assert_eq!(effects.len(), 1, "should produce exactly one GC effect");
+    let (dead_ids, _orphaned) = match &effects[0] {
+        Effect::GarbageCollectState {
+            dead_session_ids,
+            orphaned_task_ids,
+        } => (dead_session_ids.clone(), orphaned_task_ids.clone()),
+        other => panic!("Expected GarbageCollectState, got {:?}", other),
+    };
+
+    // Both dead sessions (fork + regular) should be marked for removal
+    assert!(
+        dead_ids.contains(&"fork-dead-1".to_string()),
+        "dead fork session should be in GC list"
+    );
+    assert!(
+        dead_ids.contains(&"dev-dead-1".to_string()),
+        "dead regular session should be in GC list"
+    );
+    assert_eq!(dead_ids.len(), 2, "only dead sessions should be GC'd");
+
+    // Live fork must NOT be in the GC list
+    assert!(
+        !dead_ids.contains(&"fork-live-1".to_string()),
+        "live fork session must not be GC'd"
+    );
+
+    // ── Step 4: Liveness lookups still work (snapshot is immutable) ──
+    // Even though GC has identified these sessions for removal, the
+    // name_session_map snapshot hasn't changed — liveness checks in
+    // the same tick still resolve correctly.
+    assert_eq!(
+        name_session_map.get("riverside"),
+        Some(&"fork-dead-1".to_string()),
+        "dead fork must remain resolvable in the same-tick snapshot"
+    );
+
+    // ── Step 5: Apply GC and verify post-GC state ────────────────────
+    let mut state = crate::daemon::state::DaemonPersistentState {
+        sessions,
+        ..Default::default()
+    };
+    let result = state.apply_gc(&dead_ids, &[]);
+
+    assert_eq!(result.sessions_removed, 2, "GC should remove 2 sessions");
+
+    // Rebuild name_session_map from post-GC state
+    let mut post_gc_map: HashMap<String, String> = HashMap::new();
+    for (session_id, record) in &state.sessions {
+        if let Some(name) = &record.current_name {
+            post_gc_map.insert(name.clone(), session_id.clone());
+        }
+    }
+
+    // Dead fork and dead regular are gone
+    assert!(
+        !post_gc_map.contains_key("riverside"),
+        "dead fork must be gone from post-GC name_session_map"
+    );
+    assert!(
+        !post_gc_map.contains_key("park"),
+        "dead regular session must be gone from post-GC name_session_map"
+    );
+    // Live fork survives
+    assert_eq!(
+        post_gc_map.get("amsterdam"),
+        Some(&"fork-live-1".to_string()),
+        "live fork must survive GC"
+    );
+
+    // Only the live fork's session record remains
+    assert_eq!(state.sessions.len(), 1);
+    assert!(state.sessions.contains_key("fork-live-1"));
+}
