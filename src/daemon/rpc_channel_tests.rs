@@ -1599,6 +1599,18 @@ async fn test_topic_sessions_dedup_returns_existing() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), first_fork.to_string());
+    // Set up session_to_name + is_alive so liveness check passes.
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(first_fork.to_string(), "fork-dedup".to_string());
+    let fork_name_alive = "fork-dedup".to_string();
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == fork_name_alive
+        })));
 
     // Call handle_session_fork for the same thread — should hit the guard and
     // return the existing session without attempting to spawn.

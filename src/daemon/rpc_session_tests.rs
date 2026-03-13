@@ -539,6 +539,22 @@ async fn test_session_clear_handles_channel_lead_metadata() {
 // create_fork_session tests
 // ============================================================================
 
+/// Helper: populate the state so that `create_fork_session` treats an existing
+/// `topic_sessions` entry as alive (sets session_to_name + is_alive hook).
+fn setup_alive_fork(state: &DaemonState, session_id: &str, fork_name: &str) {
+    state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), fork_name.to_string());
+    let name_owned = fork_name.to_string();
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name == name_owned
+        })));
+}
+
 /// When `topic_sessions` already has a non-pending entry for the thread,
 /// `create_fork_session` returns `Ok((existing_sid, true))` without spawning.
 #[tokio::test]
@@ -552,6 +568,7 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
+    setup_alive_fork(&state, &existing_sid, "fork-already-exists");
 
     let result =
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
@@ -568,6 +585,52 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
     let topic = state.topic_sessions.lock().unwrap();
     assert_eq!(topic.len(), 1);
     assert_eq!(topic.get(thread_id).unwrap(), &existing_sid);
+}
+
+/// When `topic_sessions` has an entry for a dead session (e.g. after daemon
+/// restart), `create_fork_session` clears the stale entry and attempts to
+/// create a new fork rather than returning the stale session_id.
+#[tokio::test]
+async fn test_create_fork_session_clears_stale_entry() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let thread_id = "thread-stale-session-abc";
+    let stale_sid = "stale-session-xyz".to_string();
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(thread_id.to_string(), stale_sid.clone());
+    // No is_alive hook → session reports as dead.
+
+    // The function should detect the stale entry and try to create a new fork.
+    let result =
+        create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
+
+    // The key assertion: if it succeeded, it must NOT have returned the stale
+    // session_id. The stale entry should have been replaced with a fresh fork.
+    match result {
+        Ok((returned_sid, already_existed, _)) => {
+            assert_ne!(
+                returned_sid, stale_sid,
+                "should NOT return the stale session_id"
+            );
+            assert!(
+                !already_existed,
+                "should create a new fork, not return existing"
+            );
+        }
+        Err(_) => {
+            // Spawn failure is acceptable in test — the important thing is
+            // that it didn't short-circuit with the stale session_id.
+            // Sentinel should be cleaned up.
+            let topic = state.topic_sessions.lock().unwrap();
+            assert!(
+                !topic.contains_key(thread_id) || topic.get(thread_id) != Some(&stale_sid),
+                "stale entry should be cleared"
+            );
+        }
+    }
 }
 
 /// When `topic_sessions` has a "pending" entry (concurrent fork in progress),
@@ -671,6 +734,7 @@ async fn test_create_fork_session_existing_returns_none_fork_channel() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
+    setup_alive_fork(&state, &existing_sid, "fork-existing-channel");
 
     let result =
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
@@ -757,6 +821,7 @@ async fn test_handle_session_fork_already_exists_response() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
+    setup_alive_fork(&state, &existing_sid, "fork-rpc-existing");
 
     let resp = handle_session_fork(
         RequestId::Number(1),
@@ -897,6 +962,7 @@ async fn test_handle_session_fork_existing_does_not_nudge() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
+    setup_alive_fork(&state, &existing_sid, "fork-no-nudge");
 
     // Fork already exists — handle_session_fork should return immediately
     // without sending nudge or broadcasting ThreadOwnership.

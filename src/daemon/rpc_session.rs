@@ -1281,21 +1281,64 @@ pub(super) async fn create_fork_session(
     caller: &str,
     state: &DaemonState,
 ) -> Result<(String, bool, Option<String>), String> {
-    // Atomic guard: check-and-reserve the topic_sessions slot in a single lock
-    // acquisition. This prevents the race where two concurrent fork requests for
-    // the same thread_parent_id both pass the guard and spawn duplicate forks.
-    // We insert a sentinel value ("pending") to reserve the slot; on success we
-    // update it with the real session_id, on failure we remove it.
-    {
-        let mut topic = state.topic_sessions.lock().unwrap();
-        if let Some(existing_sid) = topic.get(thread_parent_id) {
-            if existing_sid == "pending" {
-                // Another concurrent fork is in progress — bail rather than duplicate.
-                return Err("fork in progress for this thread".to_string());
-            }
+    // Check-and-reserve the topic_sessions slot. Two-phase to allow async
+    // liveness verification: phase 1 extracts any existing entry under a sync
+    // lock, phase 2 (async) verifies liveness, phase 3 re-acquires the lock
+    // to either return the existing entry or insert a "pending" sentinel.
+    let existing_entry = {
+        let topic = state.topic_sessions.lock().unwrap();
+        topic.get(thread_parent_id).cloned()
+    };
+
+    if let Some(ref existing_sid) = existing_entry {
+        if existing_sid == "pending" {
+            // Another concurrent fork is in progress — bail rather than duplicate.
+            return Err("fork in progress for this thread".to_string());
+        }
+
+        // Verify the session is actually alive. After daemon restart, fork
+        // sessions have resume_on_startup=false so their processes are never
+        // relaunched, but topic_sessions is rebuilt from persisted records.
+        // Without this check, new fork requests silently return a dead
+        // session_id (!2259).
+        let session_name = state
+            .session_to_name
+            .lock()
+            .unwrap()
+            .get(existing_sid)
+            .cloned();
+        let is_alive = if let Some(ref name) = session_name {
+            state.session_manager.is_alive(name).await
+        } else {
+            false
+        };
+        if is_alive {
             return Ok((existing_sid.clone(), true, None));
         }
-        // Reserve the slot to prevent concurrent forks for the same thread.
+        // Stale entry — session died or was never resumed after restart.
+        // Clear it and proceed to create a fresh fork.
+        warn!(
+            "{}: clearing stale topic_sessions entry for thread {} (session_id={}, name={:?})",
+            caller, thread_parent_id, existing_sid, session_name
+        );
+    }
+
+    // Reserve the slot to prevent concurrent forks for the same thread.
+    // This also clears any stale entry detected above.
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        // Re-check for concurrent insertion between our check and this lock acquisition.
+        let empty = String::new();
+        let stale = existing_entry.as_ref().unwrap_or(&empty);
+        if let Some(sid) = topic.get(thread_parent_id)
+            && sid != stale
+        {
+            // Another request inserted a fresh entry while we were checking liveness.
+            if sid == "pending" {
+                return Err("fork in progress for this thread".to_string());
+            }
+            return Ok((sid.clone(), true, None));
+        }
         topic.insert(thread_parent_id.to_string(), "pending".to_string());
     }
 
@@ -1382,12 +1425,6 @@ pub(super) async fn create_fork_session(
         }
     };
 
-    // Update the topic session mapping from sentinel to real session_id.
-    {
-        let mut topic = state.topic_sessions.lock().unwrap();
-        topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
-    }
-
     // Backfill the data structures that the event loop normally populates from the
     // init event. Fork sessions launch as fresh sessions (which do emit system/init),
     // but we backfill eagerly because the caller needs these mappings immediately —
@@ -1446,7 +1483,10 @@ pub(super) async fn create_fork_session(
         }
     }
 
-    // Populate in-memory reverse maps for the fork session.
+    // Populate in-memory reverse maps BEFORE updating topic_sessions from
+    // "pending" to the real session_id. This ordering prevents a race where
+    // a concurrent fork request sees the real session_id in topic_sessions
+    // but finds no session_to_name entry, misclassifying a live fork as dead.
     state
         .name_to_session
         .lock()
@@ -1471,6 +1511,14 @@ pub(super) async fn create_fork_session(
             .lock()
             .unwrap()
             .insert(fork_name.clone(), fork_ch.clone());
+    }
+
+    // Update the topic session mapping from sentinel to real session_id.
+    // This MUST happen after session_to_name is populated (above) so that
+    // concurrent fork requests can resolve the name for liveness checks.
+    {
+        let mut topic = state.topic_sessions.lock().unwrap();
+        topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
     }
 
     info!(
