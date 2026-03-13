@@ -18,7 +18,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
@@ -26,6 +26,21 @@ use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
 use crate::tasks::extract_task_id_from_pr_title;
+
+/// A command from the web API that needs daemon-side processing.
+///
+/// Unlike `MobileChannelPost` (fire-and-forget), these carry a oneshot sender
+/// so the web handler can await the daemon's result and return it to the HTTP client.
+pub enum WebCommand {
+    ArchiveChannel {
+        name: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+    UnarchiveChannel {
+        name: String,
+        response: oneshot::Sender<Result<(), String>>,
+    },
+}
 
 /// TTL for cached API responses (30 seconds).
 const CACHE_TTL: Duration = Duration::from_secs(30);
@@ -157,6 +172,8 @@ pub struct WebState {
     pub coworkers: Option<CoworkerManager>,
     /// Sender for channel posts to be processed by the daemon
     pub channel_post_tx: mpsc::Sender<MobileChannelPost>,
+    /// Sender for commands that need daemon-side processing (archive, etc.)
+    pub web_command_tx: mpsc::Sender<WebCommand>,
     /// Web Push notification manager (shared with daemon)
     pub push_manager: Option<Arc<PushManager>>,
     /// Paths to all repos in the project (for multi-repo PR URL resolution)
@@ -442,6 +459,11 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/directory",
             get(api_channel_directory_get).put(api_channel_directory_put),
         )
+        .route("/api/channels/{channel}/archive", post(api_channel_archive))
+        .route(
+            "/api/channels/{channel}/unarchive",
+            post(api_channel_unarchive),
+        )
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -586,6 +608,103 @@ async fn api_channels_create(
         StatusCode::CREATED,
         axum::Json(serde_json::json!({ "name": channel_name })),
     ))
+}
+
+/// Archive a channel by proxying through the daemon's RPC handler.
+///
+/// POST /api/channels/{channel}/archive
+///
+/// The daemon RPC handler does critical cleanup beyond the filesystem rename:
+/// shutting down the channel lead session, removing from persistent state, and
+/// marking session records as stopped. Calling `Channel::archive()` directly
+/// would leave orphaned lead sessions.
+async fn api_channel_archive(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = channel.trim().to_string();
+
+    let (resp_tx, resp_rx) = oneshot::channel();
+    state
+        .web_command_tx
+        .send(WebCommand::ArchiveChannel {
+            name: channel_name.clone(),
+            response: resp_tx,
+        })
+        .await
+        .map_err(|_| {
+            error!("Daemon command channel closed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": "Daemon unavailable" })),
+            )
+        })?;
+
+    let result = resp_rx.await.map_err(|_| {
+        error!("Daemon dropped response channel for archive");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Daemon unavailable" })),
+        )
+    })?;
+
+    match result {
+        Ok(()) => Ok(axum::Json(
+            serde_json::json!({ "name": channel_name, "archived": true }),
+        )),
+        Err(e) => Err((
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({ "error": e })),
+        )),
+    }
+}
+
+/// Unarchive a channel by proxying through the daemon's RPC handler.
+///
+/// POST /api/channels/{channel}/unarchive
+async fn api_channel_unarchive(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, axum::Json<serde_json::Value>)> {
+    let channel_name = channel.trim().to_string();
+
+    let (resp_tx, resp_rx) = oneshot::channel();
+    state
+        .web_command_tx
+        .send(WebCommand::UnarchiveChannel {
+            name: channel_name.clone(),
+            response: resp_tx,
+        })
+        .await
+        .map_err(|_| {
+            error!("Daemon command channel closed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": "Daemon unavailable" })),
+            )
+        })?;
+
+    let result = resp_rx.await.map_err(|_| {
+        error!("Daemon dropped response channel for unarchive");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(serde_json::json!({ "error": "Daemon unavailable" })),
+        )
+    })?;
+
+    match result {
+        Ok(()) => Ok(axum::Json(
+            serde_json::json!({ "name": channel_name, "archived": false }),
+        )),
+        Err(e) => {
+            let status = if e.contains("not archived or does not exist") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            Err((status, axum::Json(serde_json::json!({ "error": e }))))
+        }
+    }
 }
 
 /// Returns true if a message belongs to the given thread: either it is the
