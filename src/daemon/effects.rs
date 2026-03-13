@@ -4332,12 +4332,14 @@ async fn respawn_fork(
     let mut was_resumed = false;
     let fork_session_id = if let Some(old_sid) = old_session_id {
         // Resume the fork's own session — plain resume, not a fork.
-        // Don't pre-assign session_id: it's meant for fresh sessions only,
-        // and Codex rejects it outright. Let spawn_fork discover the session
-        // ID from the init event instead.
+        // Clear session_id: the old session already has an ID on disk, and
+        // leaving the pre-assigned UUID from build_fork_config would cause
+        // spawn_fork to enter the wrong code path (fresh-session or two-step
+        // instead of Codex init-event discovery).
         let mut resume_config = headless_config.clone();
         resume_config.resume_session_id = Some(old_sid.to_string());
         resume_config.fork_session = false;
+        resume_config.session_id = None;
 
         match state.session_manager.spawn_fork(&name, resume_config).await {
             Ok(sid) => {

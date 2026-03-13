@@ -117,10 +117,11 @@ fn build_codex_common_args(model: Option<&str>, additional_dirs: &[PathBuf]) -> 
 /// Resume sessions get: `--resume <id>`, `--setting-sources`, and skip `--settings`
 ///   to avoid "Tool names must be unique" errors.
 ///
-/// Fork-resume sessions get: `--resume <id>`, `--fork-session`, `--session-id <uuid>`,
-///   and skip both `--settings` and `--setting-sources` (the latter is incompatible
-///   with `--fork-session`). The two-step fork in `spawn_fork()` handles re-launching
-///   with full args after the fork is created.
+/// Fork-resume sessions (legacy two-step path) get: `--resume <id>`,
+///   `--fork-session`, `--session-id <uuid>`, and skip both `--settings` and
+///   `--setting-sources` (the latter is incompatible with `--fork-session`).
+///   Note: `build_fork_config` now launches forks as fresh sessions instead,
+///   so this path is only used by explicit `fork_session: true` configs.
 ///
 /// Both modes may include `--disallowedTools` (comma-separated) for hard tool
 /// restrictions that the LLM cannot bypass (e.g., channel lead code-edit blocks).
@@ -155,10 +156,10 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         &[], // headless sessions don't use additional_dirs
     );
 
-    // Setting sources — skip for fork sessions because --setting-sources is
-    // incompatible with --resume --fork-session in the Claude CLI. The two-step
-    // fork process in spawn_fork() handles this: fork first with minimal args,
-    // then respawn as a normal resume where --setting-sources is safe.
+    // Setting sources — skip for legacy fork-resume sessions because
+    // --setting-sources is incompatible with --resume --fork-session in the
+    // Claude CLI. New fork sessions launch as fresh sessions (fork_session=false)
+    // and always get --setting-sources.
     if !is_fork {
         args.push("--setting-sources".to_string());
         args.push("project,local".to_string());

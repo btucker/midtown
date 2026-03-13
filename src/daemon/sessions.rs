@@ -570,20 +570,19 @@ impl SessionManager {
 
     /// Spawn a forked session and return its session ID.
     ///
-    /// Two strategies depending on the platform:
+    /// Two strategies depending on the config:
     ///
-    /// 1. **Two-step fork** (Claude/Zai, `config.session_id = Some(uuid)`):
-    ///    - Step 1: Launch with `--resume <parent> --fork-session --session-id <uuid>`
-    ///      using minimal args (no `--setting-sources`) to create the fork on disk.
-    ///    - Step 2: Kill the fork process, then re-launch as a normal
-    ///      `--resume <new-session-id>` with full args (`--setting-sources`, etc.).
+    /// 1. **Fresh session with pre-assigned ID** (Claude/Zai,
+    ///    `config.session_id = Some(uuid)`): Launches as a fresh session with
+    ///    `-p` (system prompt), `--setting-sources`, and `--session-id`.
+    ///    Context arrives via the initial nudge message. This avoids the
+    ///    `--fork-session` / `--setting-sources` incompatibility and the fact
+    ///    that headless sessions don't persist JSONL files to disk (so
+    ///    `--fork-session` has nothing to fork from).
     ///
-    ///    This avoids the incompatibility between `--setting-sources` and `--fork-session`.
-    ///
-    /// 2. **Init-event discovery** (Codex, `config.session_id = None`): The daemon
-    ///    waits up to 30 seconds for the process to emit a `system/init` event
-    ///    containing the session/thread ID. Used for Codex forks, where the
-    ///    thread/start response generates a synthetic init event.
+    /// 2. **Init-event discovery** (Codex, `config.session_id = None`): The
+    ///    daemon waits up to 30 seconds for the process to emit a `system/init`
+    ///    event containing the session/thread ID.
     ///
     /// **Architectural invariant:** Fork sessions are NOT registered in
     /// `CoworkerManager`. They bypass `spawn_coworker()` entirely. This means they
@@ -598,7 +597,7 @@ impl SessionManager {
         let slot_id = uuid::Uuid::new_v4().to_string();
         let preassigned_session_id = config.session_id.clone();
 
-        // Spawn the headless process (with fork_session: true in config)
+        // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
             .await
             .map_err(|e| crate::Error::Rpc {
@@ -615,12 +614,10 @@ impl SessionManager {
         }
 
         let fork_session_id = if let Some(sid) = preassigned_session_id {
-            // Claude/Zai path: two-step fork process.
-            //
-            // Step 1: The fork process (--resume <parent> --fork-session --session-id <uuid>)
-            // was launched with minimal args to create the forked session file. We verify
-            // it didn't crash, then kill it immediately — the fork step's only job is to
-            // create the session on disk.
+            // Fresh session with pre-assigned ID (Claude/Zai fork).
+            // The session was launched as a fresh session with --session-id <uuid>,
+            // --setting-sources, and -p (system prompt). No two-step needed.
+            // Verify the process didn't crash immediately.
             if let Ok(Some(status)) = session.try_wait() {
                 let stderr = session.drain_stderr().await;
                 let stderr_summary = if stderr.is_empty() {
@@ -637,54 +634,8 @@ impl SessionManager {
                 });
             }
 
-            // Step 2: Kill the fork process and re-launch as a normal resume of the
-            // new session. This second launch can safely include --setting-sources,
-            // --settings, and other flags that are incompatible with --fork-session.
-            let _ = session.kill().await;
-
-            let mut resume_config = config.clone();
-            resume_config.resume_session_id = Some(sid.clone());
-            resume_config.fork_session = false;
-            resume_config.session_id = None; // not needed for resume of a known session
-
-            session =
-                HeadlessSession::spawn(&resume_config)
-                    .await
-                    .map_err(|e| crate::Error::Rpc {
-                        code: -32603,
-                        message: format!(
-                            "Failed to respawn fork session for '{}' (step 2): {}",
-                            name, e
-                        ),
-                    })?;
-
-            if let Err(e) = session.ensure_ready().await {
-                let _ = session.kill().await;
-                return Err(crate::Error::Rpc {
-                    code: -32603,
-                    message: format!("Fork session resume failed for '{}' (step 2): {}", name, e),
-                });
-            }
-
-            // Verify the resumed process didn't crash immediately
-            if let Ok(Some(status)) = session.try_wait() {
-                let stderr = session.drain_stderr().await;
-                let stderr_summary = if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (stderr: {})", stderr.join("; "))
-                };
-                return Err(crate::Error::Rpc {
-                    code: -32603,
-                    message: format!(
-                        "Fork session for '{}' exited immediately after resume with {}{}",
-                        name, status, stderr_summary
-                    ),
-                });
-            }
-
             info!(
-                "Two-step fork for '{}': forked session {} created, now resumed",
+                "Spawned fresh fork session for '{}' (session_id={})",
                 name, sid
             );
             sid

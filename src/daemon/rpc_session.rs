@@ -1140,13 +1140,20 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 /// Extracted from `create_fork_session` so tests can verify the config
 /// (especially auth profile resolution) without spawning a real process.
 ///
+/// **Architecture note:** Fork sessions launch as *fresh* sessions (not
+/// `--resume --fork-session`) because headless sessions don't persist JSONL
+/// files to disk, so `--fork-session` has nothing to fork from. The fork
+/// receives context via its initial nudge message instead.  This also means
+/// `--setting-sources project,local` is always included, enabling autoCompact
+/// to trim large inherited context before the first API call.
+///
 /// Uses the **project-aware** auth profile resolution
 /// (`active_profile_dir_for_project_with_provider`) so that per-project
 /// `auth switch` overrides are picked up by forked sessions.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_fork_config(
     thread_parent_id: &str,
-    calling_session_id: &str,
+    _calling_session_id: &str,
     caller_name: Option<&str>,
     fork_name_hint: Option<&str>,
     fork_channel: Option<&str>,
@@ -1191,6 +1198,12 @@ pub(super) fn build_fork_config(
         thread_parent_id.to_string(),
     );
 
+    // Ensure `.claude/settings.json` with `autoCompact: true` exists in the
+    // fork's working directory so `--setting-sources project,local` picks it up.
+    if let Some(wd) = working_dir {
+        crate::settings::ensure_auto_compact_settings(std::path::Path::new(wd));
+    }
+
     let headless_config = crate::headless::HeadlessConfig {
         model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
         system_prompt: crate::agents::main_lead_system_prompt(repo_name),
@@ -1200,7 +1213,10 @@ pub(super) fn build_fork_config(
         max_budget_usd: None,
         allow_tools: true,
         persist_session: true,
-        resume_session_id: Some(calling_session_id.to_string()),
+        // Fresh session — headless sessions don't persist JSONL files, so
+        // --fork-session has nothing to fork from.  Context is injected via
+        // the initial nudge message instead.
+        resume_session_id: None,
         inactivity_timeout: None,
         settings_path: if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
             None
@@ -1220,7 +1236,7 @@ pub(super) fn build_fork_config(
             crate::auth::AuthProvider::Codex => None,
             _ => Some(uuid::Uuid::new_v4().to_string()),
         },
-        fork_session: true,
+        fork_session: false,
         disallowed_tools: if is_channel_lead
             && !matches!(auth_provider, crate::auth::AuthProvider::Codex)
         {
