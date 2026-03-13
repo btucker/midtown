@@ -1360,6 +1360,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     }
 }
 
@@ -1372,6 +1373,7 @@ fn make_pr_context_empty() -> PrContext {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     }
 }
 
@@ -1667,6 +1669,7 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     // Call pr_action_to_effects with SpawnOwner action
@@ -1723,6 +1726,7 @@ fn comment_action_to_effects_includes_record_task_assignment() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     let effects = comment_action_to_effects(
@@ -1775,6 +1779,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     let effects = handoff_to_coworker_effects(
@@ -1830,6 +1835,7 @@ fn review_complete_action_to_effects_includes_record_task_assignment() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     let effects = review_complete_action_to_effects(
@@ -3424,6 +3430,7 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     }
 }
 
@@ -5160,6 +5167,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     let effects = vec![
@@ -5231,6 +5239,7 @@ fn log_pr_decision_appends_multiple_entries() {
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
     };
 
     // Write two entries

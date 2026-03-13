@@ -3594,12 +3594,35 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
 
             Effect::EmitWorkflowEvent(event) => {
-                let _default_prevented = dispatch_workflow_event(state, event).await;
-                // When default_prevented is true, the plugin has taken full ownership
-                // of this event — compiled-in behavior is suppressed. Currently pr.rs
-                // already skips inline effects when plugins are configured, so this
-                // flag confirms the plugin's intent. Future: use this to conditionally
-                // re-emit compiled-in fallback effects when default_prevented is false.
+                // Lead-driven mode: relay the event as a human-readable @mention
+                // to the channel lead instead of dispatching to the Python plugin.
+                let channel = event.channel().to_string();
+                let is_lead_driven = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.lead_driven_channels.contains(&channel)
+                };
+
+                if is_lead_driven {
+                    if let Some(msg) = event.format_for_lead() {
+                        let nudge_msg = format!("@{} {}", channel, msg);
+                        Box::pin(execute_effects(
+                            vec![
+                                Effect::post_to_channel(
+                                    "midtown",
+                                    nudge_msg.clone(),
+                                    Some(channel.clone()),
+                                ),
+                                Effect::nudge_channel_lead(channel, nudge_msg),
+                            ],
+                            state,
+                        ))
+                        .await;
+                    }
+                } else {
+                    let _default_prevented = dispatch_workflow_event(state, event).await;
+                    // When default_prevented is true, the plugin has taken full ownership
+                    // of this event — compiled-in behavior is suppressed.
+                }
             }
 
             Effect::RespawnFork {

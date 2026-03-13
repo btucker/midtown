@@ -754,6 +754,12 @@ Two RPC methods in `rpc_workflow.rs` provide access:
 
 **Lead-driven mode:** Channels can be put into "lead-driven" mode via `workflow.set_lead_driven` RPC (CLI: `midtown workflow lead-driven <channel>`). When enabled, the daemon relays workflow events as human-readable @mentions to the channel lead instead of executing its built-in state machine (auto-dispatch, reviewer spawning, PR nudges). State is stored in `DaemonPersistentState::lead_driven_channels: HashSet<String>` and exposed to pure decision functions via `WorldSnapshot::lead_driven_channels`. The web API extends `GET /api/channels/{channel}/workflow` with a `lead_driven` boolean and `PUT /api/channels/{channel}/workflow` accepts `{"lead_driven": true/false}`.
 
+Effect gating for lead-driven channels spans three decision modules:
+
+- **Dispatch** (`dispatch.rs`): `dispatch_via_sessions_inner`, `dispatch_owned_pending_tasks`, and `dispatch_unowned_pending_tasks` skip coworker spawning/nudging for tasks in lead-driven channels. Merged-PR auto-complete runs *before* the lead-driven check so task lifecycle cleanup still works.
+- **PR actions** (`pr.rs`): `pr_action_to_effects` and `review_complete_action_to_effects` replace inline effects (NudgeOwner, SpawnOwner, HandoffToCoworker) with `RecordPrNudge` + `EmitWorkflowEvent` when the PR's channel is lead-driven. Reviewer spawning is gated in `collect_reviewer_effects_with_source`. Stuck-condition scenarios (`collect_stuck_condition_effects`) skip PRs in lead-driven channels entirely.
+- **Effect execution** (`effects.rs`): `EmitWorkflowEvent` dispatches to either the workflow plugin daemon (when a script exists) or posts a human-readable @mention to the channel lead (lead-driven mode). The `PrContext::lead_driven_channels` field provides the lookup for all PR-related gating via `is_lead_driven(pr_number)`.
+
 ### Plugin Daemon (Unix Socket IPC)
 
 `WorkflowDaemon` (`sdk/python/midtown/daemon.py`) is a long-lived Python process that serves plugin hook dispatch over a Unix domain socket. The Rust daemon connects to it to dispatch events to pluggy-based plugins.
