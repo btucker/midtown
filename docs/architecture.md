@@ -262,6 +262,10 @@ Review source strategy is controlled separately by `execution.review_mode`:
 
 This means `lead_provider` acts as a shared fallback for both the Project Lead and Channel Leads. Setting `project_lead_provider` overrides only the Project Lead's provider without affecting channel leads, and vice versa for `channel_lead_provider`. The resolved provider is stored in `LaunchConfig.auth_provider` and is also used to derive the default model via `default_model_for_provider_role()`.
 
+**Agent definition model overrides:** When `coworker call-in --agent <name>` specifies an agent definition with a `model` field, the call-in handler (`rpc_coworker.rs`) resolves the auth_provider from the model alias via `provider_for_model_alias()` before building the `LaunchConfig`. This ensures the model and provider are consistent — without it, `spawn_coworker()` would silently normalize the model to match the caller's provider via `normalize_model_for_provider_role()`, defeating the agent definition's model intent.
+
+**Agent definitions** (`src/agent_definition.rs`): Markdown files with YAML frontmatter (name, description, model) and a system prompt body. Searched in `.claude/agents/{name}.md` (project-level) then `~/.claude/agents/{name}.md` (user-level). The parsed `AgentDefinition.model` feeds into provider resolution, and the body becomes the coworker's system prompt.
+
 ## Channel Leads
 
 Channel leads are headless Claude Code sessions attached to individual topic channels. They are on-demand domain experts — spawned when triggered, shut down when idle, and resumed within a daemon run.

@@ -142,3 +142,63 @@ Review the code carefully."#;
     assert!(def.description.unwrap().contains("reviewing pull requests"));
     assert_eq!(def.model.as_deref(), Some("sonnet"));
 }
+
+#[test]
+fn test_body_with_horizontal_rules_preserved() {
+    let content = r#"---
+name: test-agent
+---
+
+First paragraph.
+
+---
+
+Second paragraph after horizontal rule.
+
+---
+
+Third paragraph."#;
+
+    let def = parse_agent_content(content, Path::new("/tmp/test-agent.md")).unwrap();
+    assert!(
+        def.system_prompt.contains("Second paragraph"),
+        "Body should preserve content after horizontal rules"
+    );
+    assert!(
+        def.system_prompt.contains("Third paragraph"),
+        "Body should preserve all content after multiple horizontal rules"
+    );
+}
+
+#[test]
+fn test_quoted_model_value_stripped() {
+    let content = r#"---
+name: test
+model: "opus"
+---
+
+Prompt."#;
+
+    let def = parse_agent_content(content, Path::new("/tmp/test.md")).unwrap();
+    assert_eq!(
+        def.model.as_deref(),
+        Some("opus"),
+        "Quoted model value should have quotes stripped"
+    );
+}
+
+#[test]
+fn test_single_quoted_values_stripped() {
+    let content = r#"---
+name: 'my-agent'
+description: 'A test agent'
+model: 'sonnet'
+---
+
+Prompt."#;
+
+    let def = parse_agent_content(content, Path::new("/tmp/test.md")).unwrap();
+    assert_eq!(def.name, "my-agent");
+    assert_eq!(def.description.as_deref(), Some("A test agent"));
+    assert_eq!(def.model.as_deref(), Some("sonnet"));
+}
