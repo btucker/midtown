@@ -1496,7 +1496,7 @@ fn format_blockquote(content: &str) -> String {
 
 /// Build a concise summary of recent channel activity for fork context.
 ///
-/// Returns a formatted summary of the last ~20 top-level messages (excluding
+/// Returns a formatted summary of the last ~30 top-level messages (excluding
 /// thread replies, auto-output, and nudges) to give the fork situational
 /// awareness of what's happening in the channel.
 async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Option<String> {
@@ -1553,11 +1553,13 @@ async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Op
 ///   1. Explicit `initial_message` from the caller (always preferred).
 ///   2. Parent message content looked up by `thread_parent_id` from the
 ///      channel history. For channel leads, this is combined with
-///      `fork_initial_framing`; for non-channel-lead callers, the parent
-///      message is wrapped as "The following message needs investigation".
-///   3. Bare `fork_initial_framing` for channel leads when no parent
-///      message is found. Non-channel-lead callers get no nudge in this
-///      case (the framing text assumes a channel-lead role).
+///      `fork_initial_framing` and a channel summary; for non-channel-lead
+///      callers, the parent message is wrapped as "The following message
+///      needs investigation" with a channel summary appended.
+///   3. Bare `fork_initial_framing` (with channel summary) for channel
+///      leads when no parent message is found. Non-channel-lead callers
+///      get no nudge in this case (the framing text assumes a
+///      channel-lead role).
 /// - Broadcasts `ThreadOwnership` to web clients so the "Dedicated session"
 ///   indicator appears in the UI regardless of whether the fork was created
 ///   via CLI or web UI.
@@ -1646,7 +1648,13 @@ pub(super) async fn handle_session_fork(
                 // Open channel once for both parent message lookup and summary.
                 let channel_obj = fork_channel.as_ref().and_then(|ch| {
                     let base_dir = state.paths.base_dir().to_path_buf();
-                    crate::channel::Channel::new(&base_dir, ch).ok()
+                    match crate::channel::Channel::new(&base_dir, ch) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            warn!("Failed to open channel {:?} for fork summary: {}", ch, e);
+                            None
+                        }
+                    }
                 });
 
                 let parent_content = if let Some(ref channel) = channel_obj {
