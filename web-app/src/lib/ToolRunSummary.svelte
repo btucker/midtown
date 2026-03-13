@@ -105,8 +105,8 @@ function toggle() {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 4px 10px;
-		margin: 4px 0 4px calc(2.4rem + 0.5rem);
+		padding: 0 10px;
+		margin: 0 0 0 calc(2.4rem + 0.5rem);
 		background: transparent;
 		border: none;
 		border-radius: 12px;

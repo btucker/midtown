@@ -263,7 +263,7 @@ function handleKeyDown(event) {
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
-    <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
+    <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
       <button
         class="w-6 h-6 p-0 border-none rounded bg-transparent text-muted-foreground text-sm leading-none cursor-pointer transition-all duration-150 flex items-center justify-center hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -321,7 +321,7 @@ function handleKeyDown(event) {
 
   {#if completedThreads.length > 0}
     <div class="px-3 pt-2 pb-1">
-      <div class="text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs Attention</div>
+      <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs Attention</div>
     </div>
     <div class="needs-attention-list">
       {#each completedThreads as thread}
@@ -428,7 +428,7 @@ function handleKeyDown(event) {
   {#if dmChannels.length > 0}
     <div class="flex items-center px-3 pt-3 pb-1">
       <button
-        class="flex items-center gap-1.5 p-0 border-none bg-transparent cursor-pointer text-xs font-bold text-muted-foreground uppercase tracking-wide hover:text-sidebar-foreground transition-colors duration-150"
+        class="section-heading flex items-center gap-1.5 p-0 border-none bg-transparent cursor-pointer text-xs font-bold text-muted-foreground uppercase tracking-wide hover:text-sidebar-foreground transition-colors duration-150"
         onclick={() => { dmSectionExpanded = !dmSectionExpanded; if (!dmSectionExpanded) showAllDms = false }}
         aria-label={dmSectionExpanded ? 'Collapse direct messages' : 'Expand direct messages'}
       >
@@ -485,6 +485,10 @@ function handleKeyDown(event) {
     box-shadow:
       0 -4px 6px -4px rgba(0, 0, 0, 0.1),
       0 4px 6px -4px rgba(0, 0, 0, 0.1);
+  }
+
+  :global(.dark) .section-heading {
+    color: hsl(var(--sidebar-foreground) / 0.7);
   }
 
   :global(.dark .channel-tab-active) {
