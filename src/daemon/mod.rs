@@ -2392,7 +2392,17 @@ impl DaemonState {
             ));
         }
 
-        self.broadcast_web_update(web::channel_message_update(message));
+        // Broadcast with the resolved channel name so WebSocket clients route
+        // the message to the correct frontend channel bucket.  The channel
+        // router already resolved `None` → the project's main channel name,
+        // but `message.channel` may still be `None` (main lead auto-output).
+        if message.channel.is_none() {
+            let mut resolved = message.clone();
+            resolved.channel = Some(send_result.channel_name.clone());
+            self.broadcast_web_update(web::channel_message_update(&resolved));
+        } else {
+            self.broadcast_web_update(web::channel_message_update(message));
+        }
 
         Ok(())
     }

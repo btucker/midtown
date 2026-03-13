@@ -1848,3 +1848,37 @@ async fn test_channel_directory_rejects_nonexistent_directory() {
     .await;
     assert_eq!(result.unwrap_err(), StatusCode::BAD_REQUEST);
 }
+
+/// Regression test: main lead auto-output messages have `channel: None`, and
+/// `channel_name()` falls back to hardcoded "midtown".  Before the fix in
+/// `send_and_broadcast_async`, the WebSocket broadcast would always send
+/// "midtown" regardless of the actual project name.  The fix sets
+/// `message.channel` to the resolved name from the channel router before
+/// broadcasting.  This test verifies the contract: when a caller resolves
+/// the channel and sets it on the message, the broadcast carries the
+/// correct project-specific channel name.
+#[test]
+fn test_channel_message_update_resolved_channel_overrides_default() {
+    // Simulate what send_and_broadcast_async now does: resolve None → actual project name
+    let mut msg = crate::message::Message::text("midtown", "lead output");
+    assert!(
+        msg.channel.is_none(),
+        "main lead messages start with channel: None"
+    );
+
+    // Before fix: channel_name() returns "midtown" regardless of project
+    assert_eq!(msg.channel_name(), "midtown");
+
+    // After fix: send_and_broadcast_async sets the resolved channel
+    msg.channel = Some("my-custom-project".to_string());
+    let update = channel_message_update(&msg);
+    match update {
+        WebUpdate::ChannelMessage(data) => {
+            assert_eq!(
+                data.channel, "my-custom-project",
+                "WebSocket broadcast must use the resolved channel name, not the hardcoded default"
+            );
+        }
+        _ => panic!("Expected ChannelMessage update"),
+    }
+}
