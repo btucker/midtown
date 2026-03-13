@@ -3224,3 +3224,144 @@ fn test_post_to_ops_constructor() {
         _ => panic!("expected PostToChannel variant"),
     }
 }
+
+// ── RecordTaskAssignment session update tests ───────────────────────────────
+
+/// RecordTaskAssignment should update the persistent session record's task_id
+/// so that post_insight can resolve the correct channel for insights.
+#[tokio::test]
+async fn test_record_task_assignment_updates_session_task_id() {
+    let (state, _temp_dir, _guard) = make_insight_test_state("task-assign-session");
+
+    let session_id = "session-abc";
+    let coworker_name = "houston";
+
+    // Set up a session record with no task_id (simulating an idle session)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.to_string(),
+            super::super::state::SessionRecord {
+                session_id: session_id.to_string(),
+                current_name: Some(coworker_name.to_string()),
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                task_id: None,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Set up the name_to_session reverse map
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(coworker_name.to_string(), session_id.to_string());
+
+    // Execute RecordTaskAssignment
+    let effects = vec![Effect::RecordTaskAssignment {
+        coworker: coworker_name.to_string(),
+        task_id: "42".to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    // Verify sessions[].task_id was updated
+    {
+        let ps = state.persistent_state.lock().await;
+        let record = ps.sessions.get(session_id).expect("session should exist");
+        assert_eq!(
+            record.task_id.as_deref(),
+            Some("42"),
+            "RecordTaskAssignment should update session record's task_id"
+        );
+    }
+
+    // Verify task_to_session reverse map was updated
+    {
+        let map = state.task_to_session.lock().unwrap();
+        assert_eq!(
+            map.get("42").map(String::as_str),
+            Some(session_id),
+            "task_to_session should map the new task to the session"
+        );
+    }
+}
+
+/// When a session is reassigned to a new task via RecordTaskAssignment,
+/// insights should route to the new task's channel (not the old one).
+#[tokio::test]
+async fn test_record_task_assignment_fixes_insight_routing() {
+    let (state, temp_dir, _guard) = make_insight_test_state("insight-routing-fix");
+
+    let session_id = "session-xyz";
+    let coworker_name = "houston";
+
+    // Set up a session with a stale task_id from a previous assignment
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.to_string(),
+            super::super::state::SessionRecord {
+                session_id: session_id.to_string(),
+                current_name: Some(coworker_name.to_string()),
+                coworker_type: "dev".to_string(),
+                is_running: true,
+                task_id: Some("old-task".to_string()),
+                ..Default::default()
+            },
+        );
+
+        // Old task routes to old channel
+        ps.task_channel
+            .insert("old-task".to_string(), "old-channel".to_string());
+
+        // New task routes to new channel
+        ps.task_channel
+            .insert("new-task".to_string(), "new-channel".to_string());
+        ps.task_thread_id
+            .insert("new-task".to_string(), "new-thread-id".to_string());
+    }
+
+    state
+        .name_to_session
+        .lock()
+        .unwrap()
+        .insert(coworker_name.to_string(), session_id.to_string());
+
+    // Reassign the session to the new task
+    execute_effects(
+        vec![Effect::RecordTaskAssignment {
+            coworker: coworker_name.to_string(),
+            task_id: "new-task".to_string(),
+        }],
+        &state,
+    )
+    .await;
+
+    // Now post an insight — it should route to "new-channel"
+    super::post_insight(&state, coworker_name, "Insight after reassignment").await;
+
+    let messages = read_channel_messages(&temp_dir, "new-channel");
+    let found = messages.iter().any(|m| {
+        m["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Insight after reassignment"))
+    });
+    assert!(
+        found,
+        "insight should route to the new task's channel after RecordTaskAssignment"
+    );
+
+    // Verify it did NOT go to the old channel
+    let old_messages = read_channel_messages(&temp_dir, "old-channel");
+    let in_old = old_messages.iter().any(|m| {
+        m["content"]
+            .as_str()
+            .is_some_and(|c| c.contains("Insight after reassignment"))
+    });
+    assert!(
+        !in_old,
+        "insight should NOT route to the old task's channel"
+    );
+}
