@@ -3142,9 +3142,23 @@ async fn api_channel_directory_put(
         // Validate the directory exists within any repo path and doesn't
         // escape via symlinks. canonicalize() resolves symlinks so we can check
         // the real path stays within a repo root.
+        //
+        // In multi-repo setups, api_list_directories returns paths prefixed with
+        // the repo label (e.g. "backend/src"). Strip that label before joining
+        // with the repo root so both formats resolve correctly.
+        let is_multi_repo = state.all_repo_paths.len() > 1;
         let mut found = false;
         for repo_root in &state.all_repo_paths {
-            let full_path = repo_root.join(dir);
+            let rel_path = if is_multi_repo {
+                // Try stripping the repo label prefix (e.g. "backend/src" -> "src")
+                let label = repo_root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                dir.strip_prefix(label)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .unwrap_or(dir)
+            } else {
+                dir
+            };
+            let full_path = repo_root.join(rel_path);
             if !full_path.is_dir() {
                 continue;
             }

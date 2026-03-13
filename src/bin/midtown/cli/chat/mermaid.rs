@@ -6,8 +6,6 @@
 //! Results are cached by content hash.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
 
 /// A segment of message content: either plain text, a mermaid diagram, a fenced code block,
 /// or an insight block
@@ -196,12 +194,9 @@ pub fn content_hash(source: &str) -> u64 {
 pub struct MermaidCache {
     /// Completed renders: hash -> RenderedDiagram
     diagrams: HashMap<u64, RenderedDiagram>,
-    /// Hashes currently being rendered (to avoid duplicate work)
+    /// Hashes tracked as pending (used only in tests now that server-side
+    /// rendering is removed)
     pending: HashMap<u64, ()>,
-    /// Receiver for completed renders from background threads
-    receiver: Option<Receiver<(u64, Option<RenderedDiagram>)>>,
-    /// Sender for queueing render requests
-    sender: Option<std::sync::mpsc::Sender<(u64, Option<RenderedDiagram>)>>,
 }
 
 impl MermaidCache {
@@ -209,8 +204,6 @@ impl MermaidCache {
         Self {
             diagrams: HashMap::new(),
             pending: HashMap::new(),
-            receiver: None,
-            sender: None,
         }
     }
 
@@ -224,70 +217,28 @@ impl MermaidCache {
 
     /// Get a cached rendered diagram, or queue it for rendering
     ///
-    /// Returns Some(RenderedDiagram) if cached, None if not yet rendered.
-    /// Automatically queues un-cached diagrams for background rendering.
+    /// Returns Some(RenderedDiagram) if cached, None if server-side rendering
+    /// is unavailable. Since selkie-rs was removed, this always returns None
+    /// for uncached diagrams without spawning background threads.
     pub fn get_or_render(&mut self, mermaid_source: &str) -> Option<&RenderedDiagram> {
         let hash = content_hash(mermaid_source);
 
-        // Already cached
+        // Return cached diagram if available (e.g. inserted via tests)
         if self.diagrams.contains_key(&hash) {
             return self.diagrams.get(&hash);
         }
 
-        // Already pending render
-        if self.pending.contains_key(&hash) {
-            return None;
-        }
-
-        // Queue for background rendering
-        self.pending.insert(hash, ());
-
-        let (tx, rx) = if self.sender.is_some() {
-            // Reuse existing channel
-            (self.sender.clone().unwrap(), None)
-        } else {
-            let (tx, rx) = mpsc::channel();
-            self.sender = Some(tx.clone());
-            (tx, Some(rx))
-        };
-
-        if let Some(rx) = rx {
-            self.receiver = Some(rx);
-        }
-
-        let source = mermaid_source.to_string();
-        thread::spawn(move || {
-            let result = render_mermaid_diagram(&source);
-            let _ = tx.send((hash, result));
-        });
-
+        // Server-side rendering disabled — mermaid rendering now happens
+        // client-side only (web app via mermaid-js, TUI shows raw source).
+        // Don't spawn background threads that would always return None.
         None
     }
 
-    /// Poll for completed renders from background threads
-    pub fn poll_completed(&mut self) {
-        if let Some(ref receiver) = self.receiver {
-            // Drain all available results
-            loop {
-                match receiver.try_recv() {
-                    Ok((hash, Some(diagram))) => {
-                        self.pending.remove(&hash);
-                        self.diagrams.insert(hash, diagram);
-                    }
-                    Ok((hash, None)) => {
-                        // Render failed - remove from pending so we don't retry forever
-                        self.pending.remove(&hash);
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        self.receiver = None;
-                        self.sender = None;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    /// Poll for completed renders from background threads.
+    ///
+    /// No-op since server-side rendering was removed, but kept for API
+    /// compatibility with callers (e.g. app.rs tick loop).
+    pub fn poll_completed(&mut self) {}
 
     /// Get a cached diagram by mermaid source (without queuing render)
     pub fn get_cached(&self, mermaid_source: &str) -> Option<&RenderedDiagram> {
@@ -316,17 +267,15 @@ impl MermaidCache {
     }
 }
 
-/// Render mermaid source to ASCII art + SVG
-///
-/// Returns None — selkie-rs has been removed. Mermaid rendering now happens
-/// client-side only (web app via mermaid-js, TUI shows raw source).
-fn render_mermaid_diagram(_source: &str) -> Option<RenderedDiagram> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Render mermaid source — always returns None since selkie-rs was removed.
+    /// Kept only for test verification.
+    fn render_mermaid_diagram(_source: &str) -> Option<RenderedDiagram> {
+        None
+    }
 
     #[test]
     fn test_parse_no_mermaid() {
