@@ -807,6 +807,118 @@ async fn update_pr_caches(
     effects
 }
 
+#[allow(clippy::too_many_arguments)]
+/// Shared pipeline for deciding and building effects for a single PR issue.
+///
+/// Both `process_pr_issue_nudges` and `collect_green_with_feedback_effects`
+/// follow the same 7-step pipeline once they've identified a PR + issue to act on.
+/// This helper encapsulates that shared logic: build message, get PrContext,
+/// augment reviewer, decide action, convert to effects, and log.
+///
+/// `review_content` should be pre-fetched by the caller (no I/O here beyond
+/// the mutex locks on persistent state).
+async fn decide_and_build_pr_issue_effects(
+    owner: &str,
+    pr_number: u64,
+    title: &str,
+    issue_type: PrIssueType,
+    review_content: Option<&str>,
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+) -> Vec<Effect> {
+    use crate::rules::decide_pr_issue_action_with_handoff;
+
+    let message = format!(
+        "PR #{} ({}) - {}: {}{}",
+        pr_number,
+        truncate_str(title, 40),
+        issue_type,
+        get_issue_action(issue_type),
+        review_content.unwrap_or("")
+    );
+
+    let (mut pr_ctx, channel_lead_names) = {
+        let ps = state.persistent_state.lock().await;
+        (
+            PrContext::from_persistent_state(&ps, pr_number),
+            ps.channel_lead_names(),
+        )
+    };
+
+    pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
+
+    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let action = decide_pr_issue_action_with_handoff(
+        owner,
+        active_coworkers,
+        idle_coworkers,
+        at_dev_limit,
+        pr_ctx.session_context.as_ref(),
+        &message,
+    );
+
+    let action_name = pr_action_name(&action);
+
+    let new_effects = pr_action_to_effects(action, pr_number, title, issue_type, state, &pr_ctx);
+
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: state.paths.dir_key(),
+        pr_number,
+        title,
+        owner,
+        issue_type,
+        action_name,
+        effects: &new_effects,
+        ctx: &pr_ctx,
+        owner_is_active: active_coworkers.contains(&owner.to_string()),
+        owner_is_idle: idle_coworkers.contains(&owner.to_string()),
+        at_dev_limit,
+        source: "polling",
+    });
+
+    new_effects
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Shared single-issue pipeline gate: cooldown check + decision/effect build.
+///
+/// `process_pr_issue_nudges` and `collect_green_with_feedback_effects` both
+/// run this same sequence once they identify an owner + issue for a PR.
+async fn maybe_decide_pr_issue_effects(
+    owner: &str,
+    pf: &PrFields<'_>,
+    issue_type: PrIssueType,
+    review_content: Option<&str>,
+    snap: &WorldSnapshot,
+    state: &DaemonState,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+) -> Vec<Effect> {
+    let should_nudge = {
+        let tracker = state.pr_issue_tracker.lock().await;
+        tracker.should_nudge(pf.number, issue_type)
+    };
+
+    if !should_nudge {
+        return Vec::new();
+    }
+
+    decide_and_build_pr_issue_effects(
+        owner,
+        pf.number,
+        pf.title,
+        issue_type,
+        review_content,
+        snap,
+        state,
+        active_coworkers,
+        idle_coworkers,
+    )
+    .await
+}
+
 /// Process per-PR issue detection and generate nudge effects.
 ///
 /// For each non-draft PR: resolves the owner, detects actionable issues (merge
@@ -869,17 +981,6 @@ async fn process_pr_issue_nudges(
         };
 
         for issue_type in issues {
-            let should_nudge = {
-                let tracker = state.pr_issue_tracker.lock().await;
-                tracker.should_nudge(pf.number, issue_type)
-            };
-
-            if !should_nudge {
-                continue;
-            }
-
-            use crate::rules::decide_pr_issue_action_with_handoff;
-
             let review_content = match issue_type {
                 PrIssueType::ChangesRequested | PrIssueType::Approved => {
                     fetch_review_content(pf.number).await
@@ -887,56 +988,19 @@ async fn process_pr_issue_nudges(
                 _ => None,
             };
 
-            let message = format!(
-                "PR #{} ({}) - {}: {}{}",
-                pf.number,
-                truncate_str(pf.title, 40),
-                issue_type,
-                get_issue_action(issue_type),
-                review_content.as_deref().unwrap_or("")
-            );
-
-            let (mut pr_ctx, channel_lead_names) = {
-                let ps = state.persistent_state.lock().await;
-                (
-                    PrContext::from_persistent_state(&ps, pf.number),
-                    ps.channel_lead_names(),
+            effects.extend(
+                maybe_decide_pr_issue_effects(
+                    &owner,
+                    &pf,
+                    issue_type,
+                    review_content.as_deref(),
+                    snap,
+                    state,
+                    active_coworkers,
+                    idle_coworkers,
                 )
-            };
-
-            pr_ctx.augment_reviewer_from_snapshot(pf.number, snap);
-
-            let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-            let action = decide_pr_issue_action_with_handoff(
-                &owner,
-                active_coworkers,
-                idle_coworkers,
-                at_dev_limit,
-                pr_ctx.session_context.as_ref(),
-                &message,
+                .await,
             );
-
-            let action_name = pr_action_name(&action);
-
-            let new_effects =
-                pr_action_to_effects(action, pf.number, pf.title, issue_type, state, &pr_ctx);
-
-            log_pr_decision(&PrDecisionEntry {
-                repo_name: state.paths.dir_key(),
-                pr_number: pf.number,
-                title: pf.title,
-                owner: &owner,
-                issue_type,
-                action_name,
-                effects: &new_effects,
-                ctx: &pr_ctx,
-                owner_is_active: active_coworkers.contains(&owner),
-                owner_is_idle: idle_coworkers.contains(&owner),
-                at_dev_limit,
-                source: "polling",
-            });
-
-            effects.extend(new_effects);
         }
     }
 
@@ -1388,80 +1452,25 @@ async fn collect_green_with_feedback_effects(
             }
         }
 
-        // Check cooldown to avoid spamming
-        let should_nudge = {
-            let tracker = state.pr_issue_tracker.lock().await;
-            tracker.should_nudge(pr_number, PrIssueType::GreenWithFeedback)
-        };
-        if !should_nudge {
-            continue;
-        }
-
         // Use pre-fetched review content (fetched at the top of poll_prs_for_issues
         // to keep this function free of I/O — CLAUDE.md: "Decision functions are pure").
-        let review_suffix = pre_fetched_review_content
+        let review_content = pre_fetched_review_content
             .get(&pr_number)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let message = format!(
-            "PR #{} ({}) - {}: {}{}",
-            pr_number,
-            truncate_str(pf.title, 40),
-            PrIssueType::GreenWithFeedback,
-            get_issue_action(PrIssueType::GreenWithFeedback),
-            review_suffix
-        );
+            .map(|s| s.as_str());
 
-        // Extract all decision context from persistent state in one lock
-        let (mut pr_ctx, channel_lead_names) = {
-            let ps = state.persistent_state.lock().await;
-            (
-                PrContext::from_persistent_state(&ps, pr_number),
-                ps.channel_lead_names(),
+        effects.extend(
+            maybe_decide_pr_issue_effects(
+                &owner,
+                &pf,
+                PrIssueType::GreenWithFeedback,
+                review_content,
+                snap,
+                state,
+                active_coworkers,
+                idle_coworkers,
             )
-        };
-
-        // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
-        pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
-
-        // Decide action using handoff-aware decision function (matches webhook path)
-        let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-        let action = crate::rules::decide_pr_issue_action_with_handoff(
-            &owner,
-            active_coworkers,
-            idle_coworkers,
-            at_dev_limit,
-            pr_ctx.session_context.as_ref(),
-            &message,
+            .await,
         );
-
-        let action_name = pr_action_name(&action);
-
-        let new_effects = pr_action_to_effects(
-            action,
-            pr_number,
-            pf.title,
-            PrIssueType::GreenWithFeedback,
-            state,
-            &pr_ctx,
-        );
-
-        log_pr_decision(&PrDecisionEntry {
-            repo_name: state.paths.dir_key(),
-            pr_number,
-            title: pf.title,
-            owner: &owner,
-            issue_type: PrIssueType::GreenWithFeedback,
-            action_name,
-            effects: &new_effects,
-            ctx: &pr_ctx,
-            owner_is_active: active_coworkers.contains(&owner),
-            owner_is_idle: idle_coworkers.contains(&owner),
-            at_dev_limit,
-            source: "polling",
-        });
-
-        effects.extend(new_effects);
     }
 
     effects
