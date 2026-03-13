@@ -83,6 +83,9 @@ pub mod coworker_state;
 // Agent system prompts
 pub mod agents;
 
+// Agent definition file loading (Claude Code agent format)
+pub mod agent_definition;
+
 // Claude Code task storage integration
 pub mod tasks;
 

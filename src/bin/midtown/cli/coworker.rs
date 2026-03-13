@@ -34,6 +34,15 @@ pub enum CoworkerCommand {
         /// Execution provider for this coworker
         #[arg(long, value_enum)]
         provider: Option<ProviderArg>,
+        /// Load an agent definition file (~/.claude/agents/{name}.md or .claude/agents/{name}.md)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Route coworker messages to a specific channel
+        #[arg(long)]
+        channel: Option<String>,
+        /// Route coworker messages to a specific thread
+        #[arg(long)]
+        thread: Option<String>,
     },
     /// Send a coworker on a break
     Break {
@@ -83,6 +92,9 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
             resume,
             prompt,
             provider,
+            agent,
+            channel,
+            thread,
         } => {
             let resolved_provider = provider.map(Into::into).unwrap_or_else(|| {
                 let project_name = midtown::paths::detect_repo_name().unwrap_or_default();
@@ -91,7 +103,14 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
                     midtown::config::ExecutionRole::Coworker,
                 )
             });
-            client.coworker_spawn(*resume, prompt.as_deref(), resolved_provider)
+            client.coworker_spawn(
+                *resume,
+                prompt.as_deref(),
+                resolved_provider,
+                agent.as_deref(),
+                channel.as_deref(),
+                thread.as_deref(),
+            )
         }
         CoworkerCommand::Break { name } => client.coworker_break(name),
         CoworkerCommand::List => client.coworker_list(),
