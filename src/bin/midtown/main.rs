@@ -940,7 +940,7 @@ fn main() {
         } => unreachable!("UploadImage is handled before daemon connection"),
         Commands::Agent { command: Some(cmd) } => cli::handle_agent(cmd, &client),
         // Bare `midtown agent` → list all agents
-        Commands::Agent { command: None } => cli::handle_agent(&cli::AgentCommand::Ls, &client),
+        Commands::Agent { command: None } => cli::handle_agent(&cli::AgentCommand::List, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Workflow { command } => cli::handle_workflow(command, &client),
         Commands::Status => cli::handle_status(&client),

@@ -971,6 +971,22 @@ fn fork_requires_thread_id_flag() {
     );
 }
 
+// ── List / ls alias ───────────────────────────────────────────────────
+
+#[test]
+fn parse_agent_list() {
+    use clap::Parser;
+    let cli = TestAgentCli::try_parse_from(["test", "list"]).unwrap();
+    assert!(matches!(cli.command, AgentCommand::List));
+}
+
+#[test]
+fn parse_agent_ls_alias() {
+    use clap::Parser;
+    let cli = TestAgentCli::try_parse_from(["test", "ls"]).unwrap();
+    assert!(matches!(cli.command, AgentCommand::List));
+}
+
 // ── Upload image tests ────────────────────────────────────────────────
 
 #[test]
