@@ -1580,14 +1580,14 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
             );
         }
 
-        let cwd = super::session::ensure_attach_worktree(&ctx.project_name, cwd, true)?;
-        let lead_shell_command = super::session::build_attach_shell_command(
+        let cwd = super::agent::ensure_attach_worktree(&ctx.project_name, cwd, true)?;
+        let lead_shell_command = super::agent::build_attach_shell_command(
             &cwd,
             &ctx.project_name,
             provider,
             session_id,
-            super::session::AttachShellOptions {
-                launch: super::session::AttachLaunchOptions {
+            super::agent::AttachShellOptions {
+                launch: super::agent::AttachLaunchOptions {
                     profile: profile.as_deref(),
                     coworker_type: Some("lead"),
                     channel: None,

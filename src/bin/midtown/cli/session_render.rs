@@ -1,4 +1,4 @@
-//! ANSI rendering for `midtown session view`.
+//! ANSI rendering for `midtown agent show`.
 //!
 //! Converts the rich-text output produced by `format_events_as_rich_text`
 //! (which contains markdown prose + labeled code fences) into ANSI-escaped

@@ -66,6 +66,11 @@ pub enum ChannelCommand {
         /// New channel name
         new: String,
     },
+    /// Manage reminders (condition-based notifications)
+    Remind {
+        #[command(subcommand)]
+        command: crate::RemindCommand,
+    },
 }
 
 #[path = "channel_post_tests.rs"]
@@ -122,5 +127,19 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
         ChannelCommand::Archive { name } => client.channel_archive(name),
         ChannelCommand::Unarchive { name } => client.channel_unarchive(name),
         ChannelCommand::Rename { old, new } => client.channel_rename(old, new),
+        ChannelCommand::Remind { command } => handle_remind(command, client),
+    }
+}
+
+pub fn handle_remind(
+    cmd: &crate::RemindCommand,
+    client: &DaemonClient,
+) -> Result<Response, String> {
+    match cmd {
+        crate::RemindCommand::AllWorkMerged { message } => {
+            client.reminder_create("all-work-merged", message)
+        }
+        crate::RemindCommand::List => client.reminder_list(),
+        crate::RemindCommand::Cancel { id } => client.reminder_cancel(id),
     }
 }

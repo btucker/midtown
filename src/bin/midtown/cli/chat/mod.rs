@@ -1296,7 +1296,7 @@ fn auto_focus_and_insert_str(app: &mut App, s: &str) {
 
 /// Ctrl+L no longer auto-opens terminal split panes.
 fn attach_lead_split() {
-    eprintln!("Lead split attach was removed. Use `midtown session attach lead`.");
+    eprintln!("Lead split attach was removed. Use `midtown agent attach lead`.");
 }
 
 /// Check if the OS clipboard contains an image, and if so, save it to the temp

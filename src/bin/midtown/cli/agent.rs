@@ -1,7 +1,7 @@
-//! CLI subcommands for `midtown session` — attach/detach headless coworker sessions.
+//! CLI subcommands for `midtown agent` — unified agent management.
 //!
-//! `midtown session attach` pauses a headless coworker and opens an interactive
-//! terminal pane/session to resume that exact provider session.
+//! Merges the former `midtown session`, `midtown coworker`, and `midtown lead`
+//! commands into a single `midtown agent` namespace.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
@@ -13,8 +13,65 @@ use super::Response;
 use super::session_render;
 use crate::client::DaemonClient;
 
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderArg {
+    Claude,
+    Codex,
+    Zai,
+}
+
+impl From<ProviderArg> for midtown::auth::AuthProvider {
+    fn from(value: ProviderArg) -> Self {
+        match value {
+            ProviderArg::Claude => midtown::auth::AuthProvider::Claude,
+            ProviderArg::Codex => midtown::auth::AuthProvider::Codex,
+            ProviderArg::Zai => midtown::auth::AuthProvider::Zai,
+        }
+    }
+}
+
 #[derive(Subcommand, Debug, Clone)]
-pub enum SessionCommand {
+pub enum AgentCommand {
+    /// Spawn a new coworker
+    #[command(alias = "call-in")]
+    Spawn {
+        /// Resume the previous Claude session (passes --continue to claude)
+        #[arg(long)]
+        resume: bool,
+        /// Initial prompt to send after spawning (avoids separate nudge step)
+        #[arg(long, short)]
+        prompt: Option<String>,
+        /// Execution provider for this coworker
+        #[arg(long, value_enum)]
+        provider: Option<ProviderArg>,
+        /// Load an agent definition file (~/.claude/agents/{name}.md or .claude/agents/{name}.md)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Route coworker messages to a specific channel
+        #[arg(long)]
+        channel: Option<String>,
+        /// Route coworker messages to a specific thread
+        #[arg(long)]
+        thread: Option<String>,
+        /// Immediately assign this task to the spawned coworker
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Stop a coworker (send on break)
+    #[command(alias = "break")]
+    Stop {
+        /// Name of the coworker to stop
+        name: String,
+    },
+    /// Show an agent's current output with rich rendering
+    #[command(alias = "view")]
+    Show {
+        /// Agent target (coworker name, task/<id>, pr/<number>, claude, etc.)
+        target: String,
+        /// Continuously tail and render new output as it arrives (headless sessions only)
+        #[arg(long, short = 'w')]
+        watch: bool,
+    },
     /// Attach to a headless coworker's session.
     Attach {
         #[command(flatten)]
@@ -25,20 +82,13 @@ pub enum SessionCommand {
         /// Name of the coworker to detach
         name: String,
     },
-    /// List attachable headless sessions
-    List,
-    /// View a session's current output with rich rendering
-    View {
-        /// Session target (coworker name, task/<id>, pr/<number>, claude, etc.)
-        target: String,
-        /// Continuously tail and render new output as it arrives (headless sessions only)
-        #[arg(long, short = 'w')]
-        watch: bool,
-    },
-    /// Clear a session: stop it and restart fresh with the same initial prompt.
-    Clear {
-        /// Session target (coworker name, task/<id>, pr/<number>, etc.)
-        target: String,
+    /// Nudge a coworker to check in
+    Nudge {
+        /// Name of the coworker to nudge
+        name: String,
+        /// Custom message (optional)
+        #[arg(short, long)]
+        message: Option<String>,
     },
     /// Fork the current session to handle a specific thread.
     ///
@@ -59,7 +109,85 @@ pub enum SessionCommand {
         #[arg(long = "initial-message")]
         initial_message: Option<String>,
     },
+    /// Clear a session: stop it and restart fresh with the same initial prompt.
+    Clear {
+        /// Session target (coworker name, task/<id>, pr/<number>, etc.)
+        target: String,
+    },
+    /// Upload a local image to GitHub and return embeddable markdown
+    UploadImage {
+        /// Path to the local image file
+        path: String,
+        /// Alt text for the markdown image tag (default: "screenshot")
+        #[arg(long, default_value = "screenshot")]
+        alt: String,
+    },
+    /// List agents / attachable sessions
+    #[command(alias = "list")]
+    Ls,
+    /// Register this session for task sharing with coworkers
+    #[command(hide = true)]
+    RegisterSession,
 }
+
+pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, String> {
+    match cmd {
+        AgentCommand::Spawn {
+            resume,
+            prompt,
+            provider,
+            agent,
+            channel,
+            thread,
+            task,
+        } => {
+            let resolved_provider = provider.map(Into::into).unwrap_or_else(|| {
+                let project_name = midtown::paths::detect_repo_name().unwrap_or_default();
+                midtown::config::get_execution_provider_for_role(
+                    &project_name,
+                    midtown::config::ExecutionRole::Coworker,
+                )
+            });
+            client.coworker_spawn(
+                *resume,
+                prompt.as_deref(),
+                resolved_provider,
+                agent.as_deref(),
+                channel.as_deref(),
+                thread.as_deref(),
+                task.as_deref(),
+            )
+        }
+        AgentCommand::Stop { name } => client.coworker_break(name),
+        AgentCommand::Show { target, watch } => handle_show(target, *watch, client),
+        AgentCommand::Attach { target } => handle_attach(target, client),
+        AgentCommand::Detach { name } => client.session_detach(name),
+        AgentCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
+        AgentCommand::Fork {
+            thread_id,
+            session_id,
+            name,
+            initial_message,
+        } => {
+            let sid = session_id
+                .clone()
+                .or_else(|| std::env::var("MIDTOWN_SESSION_ID").ok())
+                .ok_or_else(|| {
+                    "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
+                })?;
+            client.session_fork(thread_id, &sid, name.as_deref(), initial_message.as_deref())
+        }
+        AgentCommand::Clear { target } => client.session_clear(target),
+        AgentCommand::UploadImage { .. } => {
+            // Handled before daemon connection in main.rs
+            unreachable!("UploadImage is handled locally without daemon connection")
+        }
+        AgentCommand::Ls => client.session_list(),
+        AgentCommand::RegisterSession => super::handle_register_session(),
+    }
+}
+
+// ── Attach types ─────────────────────────────────────────────────────
 
 #[derive(Args, Debug, Clone)]
 pub(crate) struct AttachArgs {
@@ -109,29 +237,27 @@ struct ResolvePayload {
     resolved_at_monotonic_ms: Option<u64>,
 }
 
-pub fn handle(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, String> {
-    match cmd {
-        SessionCommand::Attach { target } => handle_attach(target, client),
-        SessionCommand::Detach { name } => client.session_detach(name),
-        SessionCommand::List => client.session_list(),
-        SessionCommand::View { target, watch } => handle_view(target, *watch, client),
-        SessionCommand::Clear { target } => client.session_clear(target),
-        SessionCommand::Fork {
-            thread_id,
-            session_id,
-            name,
-            initial_message,
-        } => {
-            let sid = session_id
-                .clone()
-                .or_else(|| std::env::var("MIDTOWN_SESSION_ID").ok())
-                .ok_or_else(|| {
-                    "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
-                })?;
-            client.session_fork(thread_id, &sid, name.as_deref(), initial_message.as_deref())
-        }
-    }
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttachLaunchOptions<'a> {
+    pub profile: Option<&'a str>,
+    pub coworker_type: Option<&'a str>,
+    pub channel: Option<&'a str>,
 }
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttachShellOptions<'a> {
+    pub launch: AttachLaunchOptions<'a>,
+    pub include_detach: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct AttachLaunchSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+}
+
+// ── Attach handler ───────────────────────────────────────────────────
 
 /// Handle attach: resolve target -> pause headless -> run interactive CLI -> auto-detach on exit.
 fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response, String> {
@@ -209,8 +335,6 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         }
 
         // Ensure worktree is set up before launching.
-        // For the lead, this updates the worktree to the current HEAD.
-        // For coworkers, this validates the daemon-provided worktree path.
         let cwd = ensure_attach_worktree(name, cwd, coworker_type.as_deref() == Some("lead"))?;
 
         let launch_spec = build_attach_launch_spec(
@@ -242,7 +366,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
                         "ERROR: Attach launch failed AND detach RPC failed for {}.\n\
                          Launch error: {}\n\
                          Detach error: {}\n\
-                         Manual recovery: run `midtown session detach {}`",
+                         Manual recovery: run `midtown agent detach {}`",
                         name, e, detach_err, name
                     ),
                 }
@@ -255,7 +379,7 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
                 "ERROR: Interactive session exited but detach RPC failed for {}.\n\
                  Exit status: {:?}\n\
                  Detach error: {}\n\
-                 Manual recovery: run `midtown session detach {}`",
+                 Manual recovery: run `midtown agent detach {}`",
                 name,
                 status.code(),
                 detach_err,
@@ -273,6 +397,8 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
     }
 }
 
+// ── Worktree management ──────────────────────────────────────────────
+
 /// Ensure the worktree for an attach target exists and is up to date.
 ///
 /// For the lead session, this updates the worktree to the main repo's current
@@ -289,7 +415,6 @@ pub(crate) fn ensure_attach_worktree(
     is_lead: bool,
 ) -> Result<String, String> {
     // Resolve the main repo root from daemon_cwd (which may itself be a worktree).
-    // git-common-dir gives us the main repo's .git dir; its parent is the repo root.
     let repo_root = std::process::Command::new("git")
         .args(["rev-parse", "--git-common-dir"])
         .current_dir(daemon_cwd)
@@ -299,7 +424,6 @@ pub(crate) fn ensure_attach_worktree(
             if o.status.success() {
                 let git_dir = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if git_dir == ".git" {
-                    // Already in the repo root
                     Some(std::path::PathBuf::from(daemon_cwd))
                 } else {
                     std::path::Path::new(&git_dir)
@@ -328,16 +452,10 @@ pub(crate) fn ensure_attach_worktree(
             }
         }
     } else {
-        // For coworkers, the daemon provides the working_dir (task-based worktree)
-        // when spawning. If the provided CWD exists, use it directly.
-        // No need to create worktrees here — the daemon handles that via
-        // Effect::EnsureWorktree during spawn.
         let cwd_path = std::path::Path::new(daemon_cwd);
         if cwd_path.exists() {
             return Ok(daemon_cwd.to_string());
         }
-        // CWD doesn't exist — the worktree may have been cleaned up.
-        // Fall back to the repo root rather than using the non-existent path.
         eprintln!(
             "Warning: Coworker worktree {} does not exist, falling back to repo root",
             daemon_cwd
@@ -347,6 +465,8 @@ pub(crate) fn ensure_attach_worktree(
 
     Ok(daemon_cwd.to_string())
 }
+
+// ── Attach resolution helpers ────────────────────────────────────────
 
 fn resolve_attach_candidates(
     client: &DaemonClient,
@@ -380,8 +500,6 @@ fn create_attach_target(client: &DaemonClient, target: &str) -> Result<String, S
     let spawn_response = client.coworker_spawn(false, None, provider, None, None, None, None)?;
     let spawned_name = extract_spawned_name(&spawn_response)?;
 
-    // Wait for the new headless session to persist a resumable session ID.
-    // This is async in the daemon (stream init event), so poll briefly.
     let new_target = format!("name/{}", spawned_name);
     for _ in 0..100 {
         if resolve_attach_candidates(client, &new_target).is_ok() {
@@ -544,6 +662,8 @@ fn is_platform_session_target(target: &str) -> bool {
     lower.starts_with("claude/") || lower.starts_with("codex/")
 }
 
+// ── Target normalization ─────────────────────────────────────────────
+
 fn normalize_attach_target(args: &AttachArgs) -> Result<String, String> {
     let first = args.target.trim();
     if first.is_empty() {
@@ -620,37 +740,19 @@ fn normalize_target_kind(kind: &str) -> Result<String, String> {
 }
 
 fn usage_attach() -> &'static str {
-    "Usage: midtown session attach <target>\n\
+    "Usage: midtown agent attach <target>\n\
      Examples:\n\
-       midtown session attach codex\n\
-       midtown session attach claude\n\
-       midtown session attach name/park\n\
-       midtown session attach task/42\n\
-       midtown session attach pr/123\n\
-       midtown session attach claude/abc-123\n\
-       midtown session attach codex/thread-1\n\
-       midtown session attach park"
+       midtown agent attach codex\n\
+       midtown agent attach claude\n\
+       midtown agent attach name/park\n\
+       midtown agent attach task/42\n\
+       midtown agent attach pr/123\n\
+       midtown agent attach claude/abc-123\n\
+       midtown agent attach codex/thread-1\n\
+       midtown agent attach park"
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttachLaunchOptions<'a> {
-    pub profile: Option<&'a str>,
-    pub coworker_type: Option<&'a str>,
-    pub channel: Option<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AttachShellOptions<'a> {
-    pub launch: AttachLaunchOptions<'a>,
-    pub include_detach: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct AttachLaunchSpec {
-    pub program: String,
-    pub args: Vec<String>,
-    pub env: std::collections::BTreeMap<String, String>,
-}
+// ── Launch spec builders ─────────────────────────────────────────────
 
 pub(crate) fn build_attach_launch_spec(
     cwd: &str,
@@ -739,7 +841,6 @@ pub(crate) fn build_attach_launch_spec(
     let system_prompt = match &launch_config.role {
         midtown::launch::CoworkerRole::Lead => midtown::agents::main_lead_system_prompt(&repo_name),
         midtown::launch::CoworkerRole::Reviewer => {
-            // In CLI attach context, no channel lead info is available — fall back to project name
             midtown::agents::reviewer_system_prompt(name, &repo_name, &repo_name, provider, None)
         }
         midtown::launch::CoworkerRole::Coworker => {
@@ -802,12 +903,8 @@ pub(crate) fn build_attach_launch_spec(
 /// Build the shell command for split-pane attach flows (`midtown view` paths).
 ///
 /// When `include_detach` is `true`, the shell command ends with
-/// `midtown session detach <name>`, which resumes the headless session when the
-/// interactive pane closes. Set this to `true` only for pane flows that should
-/// auto-resume on process exit, and `false` for `midtown view`, which calls
-/// `session_detach` explicitly when the chat UI exits, avoiding a race where
-/// the pane's provider process exits before the chat UI and triggers an early
-/// headless respawn that creates a dual-lead situation.
+/// `midtown agent detach <name>`, which resumes the headless session when the
+/// interactive pane closes.
 pub(crate) fn build_attach_shell_command(
     cwd: &str,
     name: &str,
@@ -817,29 +914,23 @@ pub(crate) fn build_attach_shell_command(
 ) -> Result<String, String> {
     let launch_spec = build_attach_launch_spec(cwd, name, provider, session_id, options.launch)?;
 
-    // Convert env map to shell-quoted env var assignments (key=value format, with shell_quote on values)
     let env_parts: Vec<String> = launch_spec
         .env
         .iter()
         .map(|(k, v)| format!("{}={}", k, shell_quote(v)))
         .collect();
 
-    // Build the provider command as a shell command string.
-    // Each part is individually shell-escaped, then joined with spaces.
-    // The resulting string will be passed to `sh -lc` as a single argument.
     let provider_cmd = std::iter::once(&launch_spec.program)
         .chain(launch_spec.args.iter())
         .map(|part| shell_quote(part))
         .collect::<Vec<_>>()
         .join(" ");
 
-    // Direct exec: run the provider CLI directly with inherited stdio.
-    // No PTY wrapper — the process gets the real terminal.
     let attach_cmd = format!("sh -lc {}", shell_quote(&provider_cmd));
 
     if options.include_detach {
         let bin_command = midtown::config::get_bin_command();
-        let detach_cmd = format!("{} session detach {}", bin_command, shell_quote(name));
+        let detach_cmd = format!("{} agent detach {}", bin_command, shell_quote(name));
         Ok(format!(
             "export {}; {}; _midtown_rc=$?; {} >/dev/null 2>&1 || true; exit $_midtown_rc",
             env_parts.join(" "),
@@ -851,6 +942,8 @@ pub(crate) fn build_attach_shell_command(
     }
 }
 
+// ── Provider parsing ─────────────────────────────────────────────────
+
 fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
     match raw.trim().to_ascii_lowercase().as_str() {
         "claude" | "anthropic" | "antropic" => midtown::auth::AuthProvider::Claude,
@@ -861,19 +954,32 @@ fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
 }
 
 /// Shell-quote a string using the `shell-escape` crate.
-/// This properly handles all special characters for Unix shells.
 fn shell_quote(input: &str) -> String {
     shell_escape::escape(input.into()).into_owned()
 }
 
-/// Handle `midtown session view` with rich ANSI rendering and optional `--watch` mode.
+// ── Show handler ─────────────────────────────────────────────────────
+
+/// Handle `midtown agent show` with rich ANSI rendering and optional `--watch` mode.
 ///
-/// Fetches the session's current output from the daemon (which returns the rich-text
-/// format with tool calls as code fences), renders it with ANSI syntax highlighting,
-/// and optionally tails the log file for new events.
-fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Response, String> {
-    // Fetch current snapshot from daemon (includes log_path for watch mode)
-    let raw = client.session_view_raw(target)?;
+/// Tries `session_view_raw` first (handles all target formats: name, task/N, pr/N, etc.).
+/// If that fails, falls back to `coworker_view` for simple name lookups.
+fn handle_show(target: &str, watch: bool, client: &DaemonClient) -> Result<Response, String> {
+    // Try session_view_raw first — handles all target formats
+    let raw = match client.session_view_raw(target) {
+        Ok(raw) => raw,
+        Err(_session_err) => {
+            // Fall back to coworker_view for simple name lookups
+            let response = client.coworker_view(target)?;
+            let raw = match response {
+                Response::Message { message } => message,
+                other => return Ok(other),
+            };
+            let rendered = session_render::render_ansi(&raw);
+            return Ok(Response::message(rendered.trim_end().to_string()));
+        }
+    };
+
     let output = raw
         .get("output")
         .and_then(|v| v.as_str())
@@ -883,17 +989,12 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         .get("log_path")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // Byte offset at which the daemon stopped reading the log file.
-    // Used as the starting tail position to avoid missing events that
-    // were appended after the snapshot was taken but before we query
-    // metadata.len() ourselves.
     let snapshot_log_offset = raw.get("log_offset").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // Render the initial snapshot
     let rendered = session_render::render_ansi(&output);
 
     if !watch {
-        // Return rendered output for standard handle_result printing
         return Ok(Response::message(rendered.trim_end().to_string()));
     }
 
@@ -903,7 +1004,6 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         .flush()
         .map_err(|e| format!("Failed to flush stdout: {e}"))?;
 
-    // --- Watch mode: tail the log file for new events ---
     let log_path = log_path.ok_or_else(|| {
         "Daemon did not return a log path; --watch is not available for this session".to_string()
     })?;
@@ -913,9 +1013,6 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         return Err(format!("Log file not found: {log_path}"));
     }
 
-    // Start tailing from where the daemon stopped reading the file.
-    // Using the daemon's snapshot boundary (not a fresh metadata.len() call)
-    // ensures we don't skip events appended between the daemon's read and now.
     let mut file_offset = snapshot_log_offset;
 
     eprintln!(
@@ -933,29 +1030,25 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         let current_size = metadata.len();
 
         if current_size <= file_offset {
-            continue; // Nothing new yet
+            continue;
         }
 
-        // Read new bytes since our last offset
         let file = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(_) => continue,
         };
         let mut reader = std::io::BufReader::new(file);
 
-        // Seek to our last position
         use std::io::Seek;
         if reader.seek(std::io::SeekFrom::Start(file_offset)).is_err() {
             continue;
         }
 
-        // Read lines with read_line() (not .lines()) to keep the reader
-        // alive so we can call stream_position() afterward.
         let mut new_lines: Vec<String> = Vec::new();
         loop {
             let mut buf = String::new();
             match reader.read_line(&mut buf) {
-                Ok(0) => break, // EOF
+                Ok(0) => break,
                 Ok(_) => {
                     let line = buf.trim_end_matches('\n').trim_end_matches('\r');
                     if !line.is_empty() {
@@ -966,10 +1059,6 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
             }
         }
 
-        // Use the actual reader position after consuming lines, not the
-        // pre-read metadata size. New bytes appended between the metadata
-        // call and the file read would otherwise cause duplication on the
-        // next poll because current_size would rewind our offset.
         file_offset = reader.stream_position().unwrap_or(current_size);
 
         for line in &new_lines {
@@ -981,6 +1070,403 @@ fn handle_view(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
     }
 }
 
-#[path = "session_tests.rs"]
+// ── Upload image ─────────────────────────────────────────────────────
+
+/// Upload a local image file to GitHub and return `![alt](url)` markdown.
+pub fn handle_upload_image(path: &str, alt: &str) -> Result<Response, String> {
+    let image_path = std::path::Path::new(path);
+    if !image_path.exists() {
+        return Err(format!("File not found: {}", path));
+    }
+
+    let ext = image_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png");
+
+    match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => {}
+        _ => {
+            return Err(format!(
+                "Unsupported image format: .{}. Supported: png, jpg, jpeg, gif, webp",
+                ext
+            ));
+        }
+    }
+
+    let github_url = upload_to_github(image_path, ext)?;
+    Ok(Response::message(format!("![{}]({})", alt, github_url)))
+}
+
+fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, String> {
+    let token = std::env::var("GH_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .or_else(|_| {
+            std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .output()
+                .map_err(|_| std::env::VarError::NotPresent)
+                .and_then(|output| {
+                    if output.status.success() {
+                        let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if token.is_empty() {
+                            Err(std::env::VarError::NotPresent)
+                        } else {
+                            Ok(token)
+                        }
+                    } else {
+                        Err(std::env::VarError::NotPresent)
+                    }
+                })
+        })
+        .map_err(|_| "No GitHub token found. Set GH_TOKEN or run `gh auth login`.".to_string())?;
+
+    let repo_full_name = get_github_repo_name().ok_or(
+        "Could not determine GitHub repository. Run from a git repo with a GitHub remote.",
+    )?;
+
+    let image_data =
+        std::fs::read(image_path).map_err(|e| format!("Failed to read screenshot file: {}", e))?;
+
+    let content_type = match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => unreachable!("extension validated in handle_upload_image"),
+    };
+
+    let filename = image_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("screenshot.png")
+        .to_string();
+
+    eprintln!("Uploading screenshot to GitHub...");
+
+    let file_part = reqwest::blocking::multipart::Part::bytes(image_data)
+        .file_name(filename)
+        .mime_str(content_type)
+        .map_err(|e| format!("Failed to build multipart form: {}", e))?;
+
+    let form = reqwest::blocking::multipart::Form::new().part("file", file_part);
+
+    let upload_url = format!(
+        "https://uploads.github.com/repos/{}/issues/import/images",
+        repo_full_name
+    );
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .post(&upload_url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/json")
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("Failed to upload to GitHub: {}", e))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        return Err(format!("GitHub image upload failed ({}): {}", status, body));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|e| format!("Failed to parse GitHub upload response: {}", e))?;
+
+    if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
+        eprintln!("Screenshot uploaded to GitHub: {}", url);
+        return Ok(url.to_string());
+    }
+
+    Err(format!(
+        "GitHub upload succeeded but response missing 'url' field: {}",
+        body
+    ))
+}
+
+fn get_github_repo_name() -> Option<String> {
+    std::process::Command::new("gh")
+        .args([
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "-q",
+            ".nameWithOwner",
+        ])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+// ── Coworker boot (headed session) ──────────────────────────────────
+
+/// Boot a headed (interactive terminal) coworker session for a task.
+pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+
+    let repo_name = midtown::paths::detect_repo_name()
+        .ok_or("Not in a git repository. Run from a git repo.")?;
+
+    let task = if let Some(id) = task_id {
+        midtown::tasks::read_task(id).ok_or_else(|| format!("Task !{} not found", id))?
+    } else {
+        select_task()?
+    };
+
+    eprintln!("Booting coworker for task !{}: {}", task.id, task.subject);
+
+    let worktree_id = midtown::worktree_registry::branch_slug_for_task(&task.id, &task.subject);
+    let wt_manager = midtown::worktree::WorktreeManager::from_current_dir()
+        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
+    let worktree_path = wt_manager
+        .create_task_worktree(&worktree_id)
+        .map_err(|e| format!("Failed to create worktree: {}", e))?;
+
+    let mut config = midtown::launch::LaunchConfig::coworker(
+        &worktree_id,
+        &repo_name,
+        midtown::launch::SessionMode::Resume,
+        None,
+        Some(task.id.clone()),
+    );
+    config.working_dir = Some(worktree_path.clone());
+
+    let profile_dir = midtown::auth::active_profile_dir_for_project_with_provider(
+        &repo_name,
+        config.auth_provider,
+    );
+    config.auth_profile_dir = Some(profile_dir);
+
+    let system_prompt = midtown::agents::coworker_system_prompt(&worktree_id, &repo_name, None);
+    let prompt_file =
+        std::env::temp_dir().join(format!("midtown-coworker-prompt-{}.md", std::process::id()));
+    std::fs::write(&prompt_file, &system_prompt)
+        .map_err(|e| format!("Failed to write system prompt: {}", e))?;
+
+    let settings_file = midtown::settings::write_coworker_settings_file()
+        .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    let initial_prompt = midtown::agents::coworker_task_prompt(&task.id, &task.subject, "");
+    let initial_prompt_file = std::env::temp_dir().join(format!(
+        "midtown-coworker-initial-{}.md",
+        std::process::id()
+    ));
+    std::fs::write(&initial_prompt_file, &initial_prompt)
+        .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
+
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(
+        config.auth_provider,
+        config.auth_profile_dir.as_deref(),
+    ) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
+    }
+
+    let launch = config.to_shell_command(
+        &settings_file,
+        &prompt_file,
+        Some(&initial_prompt_file),
+        &worktree_path,
+        &repo_name,
+    );
+
+    let err = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(&launch.shell_command)
+        .current_dir(&worktree_path)
+        .exec();
+    Err(format!("Failed to exec: {}", err))
+}
+
+/// Interactive task picker for bare `midtown agent` (no --task flag).
+fn select_task() -> Result<midtown::tasks::Task, String> {
+    let mut tasks: Vec<midtown::tasks::Task> = midtown::tasks::read_tasks()
+        .into_iter()
+        .filter(|t| t.status != midtown::tasks::TaskStatus::Completed)
+        .collect();
+
+    if tasks.is_empty() {
+        return Err("No unresolved tasks. Create tasks first, then run `midtown agent`.".into());
+    }
+
+    tasks.sort_by(|a, b| {
+        a.id.parse::<u64>()
+            .unwrap_or(0)
+            .cmp(&b.id.parse::<u64>().unwrap_or(0))
+    });
+
+    if tasks.len() == 1 {
+        eprintln!("Auto-selecting task !{}: {}", tasks[0].id, tasks[0].subject);
+        return Ok(tasks[0].clone());
+    }
+
+    eprintln!("Select a task:");
+    for (idx, task) in tasks.iter().enumerate() {
+        let status = match task.status {
+            midtown::tasks::TaskStatus::Pending => "pending",
+            midtown::tasks::TaskStatus::InProgress => "in_progress",
+            midtown::tasks::TaskStatus::Completed => "completed",
+        };
+        let owner_suffix = task
+            .owner
+            .as_deref()
+            .filter(|o| !o.is_empty())
+            .map(|o| format!(" ({})", o))
+            .unwrap_or_default();
+        eprintln!(
+            "  {}. !{} [{}] {}{}",
+            idx + 1,
+            task.id,
+            status,
+            task.subject,
+            owner_suffix
+        );
+    }
+
+    loop {
+        use std::io::Write;
+        eprint!("Choice [1-{}]: ", tasks.len());
+        std::io::stderr()
+            .flush()
+            .map_err(|e| format!("Failed to flush: {}", e))?;
+
+        let mut input = String::new();
+        let bytes_read = std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| format!("Failed to read input: {}", e))?;
+
+        if bytes_read == 0 {
+            return Err("No input (EOF). Run with --task <id> to specify a task.".into());
+        }
+
+        let trimmed = input.trim();
+        if let Ok(index) = trimmed.parse::<usize>()
+            && (1..=tasks.len()).contains(&index)
+        {
+            return Ok(tasks[index - 1].clone());
+        }
+        eprintln!("Enter a number between 1 and {}.", tasks.len());
+    }
+}
+
+// ── Lead boot ────────────────────────────────────────────────────────
+
+/// Boot a headed (interactive terminal) lead session.
+pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+
+    let dir_key = midtown::paths::detect_repo_name()
+        .ok_or("Not in a git repository. Run from a git repo.")?;
+    let project_name = midtown::paths::project_name_for_dir_key(&dir_key);
+
+    // Warn if the daemon is already running a headless lead session
+    if let Ok(client) = crate::client::DaemonClient::connect()
+        && let Ok(super::Response::Message { message }) = client.status()
+        && message.contains("Lead:")
+        && !message.contains("Lead: not running")
+    {
+        eprintln!(
+            "Warning: A daemon-managed lead session is already running.\n\
+             This headed session will be independent. Use `midtown agent attach lead`\n\
+             to attach to the daemon session instead, or proceed to start a separate one."
+        );
+    }
+
+    let mut config = midtown::launch::LaunchConfig::lead(&dir_key, channel);
+    config.session_mode = midtown::launch::SessionMode::Resume;
+
+    // Load channel notes into domain_context for channel leads
+    if let Some(channel_name) = channel {
+        let base_dir = midtown::paths::projects_dir_for_repo(&dir_key);
+        let notes = midtown::load_channel_notes(&base_dir, channel_name);
+        if !notes.is_empty()
+            && let midtown::launch::CoworkerRole::ChannelLead {
+                ref mut domain_context,
+                ..
+            } = config.role
+        {
+            *domain_context = notes;
+        }
+    }
+
+    let profile_dir =
+        midtown::auth::active_profile_dir_for_project_with_provider(&dir_key, config.auth_provider);
+    config.auth_profile_dir = Some(profile_dir);
+
+    let system_prompt = match &config.role {
+        midtown::launch::CoworkerRole::Lead => {
+            midtown::agents::main_lead_system_prompt(&project_name)
+        }
+        midtown::launch::CoworkerRole::ChannelLead {
+            channel_name,
+            domain_context,
+            agents_md,
+        } => midtown::agents::channel_lead_system_prompt(
+            channel_name,
+            domain_context,
+            &project_name,
+            agents_md.as_deref(),
+        ),
+        _ => unreachable!("LaunchConfig::lead() always produces Lead or ChannelLead role"),
+    };
+
+    let prompt_file =
+        std::env::temp_dir().join(format!("midtown-lead-prompt-{}.md", std::process::id()));
+    std::fs::write(&prompt_file, &system_prompt)
+        .map_err(|e| format!("Failed to write system prompt: {}", e))?;
+
+    let settings_file = if matches!(config.role, midtown::launch::CoworkerRole::Lead) {
+        midtown::settings::write_lead_settings_file()
+    } else {
+        midtown::settings::write_coworker_settings_file()
+    }
+    .map_err(|e| format!("Failed to write settings: {}", e))?;
+
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
+
+    let initial_prompt_file = if let Some(ref prompt_text) = config.initial_prompt {
+        let path =
+            std::env::temp_dir().join(format!("midtown-lead-initial-{}.md", std::process::id()));
+        std::fs::write(&path, prompt_text)
+            .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
+        Some(path)
+    } else {
+        None
+    };
+
+    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(
+        config.auth_provider,
+        config.auth_profile_dir.as_deref(),
+    ) {
+        eprintln!(
+            "Warning: Platform pre-launch hook failed (continuing): {}",
+            e
+        );
+    }
+
+    let launch = config.to_shell_command(
+        &settings_file,
+        &prompt_file,
+        initial_prompt_file.as_deref(),
+        &cwd,
+        &dir_key,
+    );
+
+    let err = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(&launch.shell_command)
+        .exec();
+    Err(format!("Failed to exec: {}", err))
+}
+
+#[path = "agent_tests.rs"]
 #[cfg(test)]
 mod tests;
