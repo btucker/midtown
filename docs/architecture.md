@@ -192,15 +192,21 @@ Additional call-in flags: `--channel <name>` sets `LaunchConfig.channel` for mes
 
 ## Prompt Architecture
 
-Prompts are assembled from composable markdown files in `agents/` and loaded at runtime by `src/agents.rs`. The file-based approach allows customization without recompilation: the binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence.
+Prompts are assembled from three distinct layers in `src/agents.rs`:
 
-**Assembly by agent type:**
-- **Project Lead**: `project-lead.md` + `lead.md` + `common.md`
+1. **Agent definition (Layer 1)** — Role identity and behavioral instructions, loaded from composable markdown files in `agents/`. The binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence. A parallel set of new-format agent definitions (`agents/definitions/midtown-*.md`) is accessible via `load_agent_definition_for_role()` but not yet wired into the public assembly functions.
+
+2. **Shared prompt (Layer 2)** — Operational rules shared across roles, loaded via `shared_prompt_for_role()`. Coworkers/reviewers get `common.md` only; leads get `lead-common.md` + `common.md`.
+
+3. **Runtime context (Layer 3)** — Template variable replacement and runtime content injection, applied via `build_runtime_context()`. Ops extras are appended before substitution (so `{name}` IS replaced in ops content). AGENTS.md is appended after substitution (so literal `{name}` in AGENTS.md is preserved).
+
+**Assembly by agent type (current, transitional):**
+- **Project Lead**: `project-lead.md` + `lead-common.md` + `common.md`
 - **Coworker**: `coworker.md` + `common.md`
-- **Reviewer**: `coworker.md` + `common.md` + `reviewer.md`
-- **Channel lead**: `channel-lead.md` (with optional `ops-channel-lead.md` suffix for the ops channel)
+- **Reviewer**: `coworker.md` + `common.md` + `reviewer.md` (common.md appears before reviewer instructions)
+- **Channel lead**: `channel-lead.md` + `lead-common.md` + `common.md` (+ `ops-channel-lead.md` for ops channel)
 
-**Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_name}`, `{domain_context}` (channel lead only).
+**Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_lead}`, `{escalation_target}` (reviewer only), `{channel_name}`, `{domain_context}` (channel lead only), `{code_review_invocation}` (reviewer only).
 
 **@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the Project Lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
 
@@ -289,7 +295,7 @@ Channel leads participate in normal idle shutdown (same timeout as coworkers). T
 
 Note: `route_mentions()` is enabled for non-user, non-system senders in topic channels (e.g., channel leads and coworkers). User `@coworker` and `@all` mentions in topic channels are still silently dropped — only agent-to-agent mentions are routed. Protected senders (`SKIP_SENDERS`: "midtown", "system", "github", "user") are excluded, consistent with the chat monitor guard.
 
-**System prompt:** Channel leads use the `agents/channel-lead.md` template, instantiated with `{channel_name}`, `{domain_context}`, and `{project_name}` via `channel_lead_system_prompt()` in `src/agents.rs`. The system prompt is assembled in two phases: (1) the base template is built and template variables are substituted, then (2) optional `AGENTS.md` workflow facilitation content and `SKILL.md` plugin bodies are appended *after* substitution to preserve any literal placeholder-like text in plugin content. The `CoworkerRole::ChannelLead` variant carries `agents_md: Option<String>` and `skill_bodies: Vec<(String, String)>` alongside the existing `channel_name` and `domain_context` fields.
+**System prompt:** Channel leads use the three-layer architecture via `channel_lead_system_prompt()` in `src/agents.rs`: Layer 1 (`channel-lead.md`) + Layer 2 (`lead-common.md` + `common.md`) + Layer 3 (ops extras, template substitution, AGENTS.md). Ops extras are appended and substituted in Layer 3; `AGENTS.md` and `SKILL.md` plugin bodies are appended *after* substitution to preserve any literal placeholder-like text in injected content. The `CoworkerRole::ChannelLead` variant carries `agents_md: Option<String>` and `skill_bodies: Vec<(String, String)>` alongside the existing `channel_name` and `domain_context` fields.
 
 **Plugin discovery for channel leads:** At spawn time (in `effects.rs` and `rpc_auth.rs`), three items are loaded via `spawn_blocking`: (1) channel notes via `load_channel_notes()`, (2) `AGENTS.md` content via `agents_md_for_channel()` in `src/paths.rs` (searches channel-specific then project-wide paths, both in-repo and local), and (3) `SKILL.md` bodies via `collect_skill_md_bodies()` in `src/paths.rs` (strips YAML frontmatter, extracts name and markdown body from each plugin's `SKILL.md`). All three discovery functions are also called in the `handle_auth_switch` path to ensure channel leads retain plugin context across auth profile rotations.
 
