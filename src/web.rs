@@ -466,6 +466,7 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/unarchive",
             post(api_channel_unarchive),
         )
+        .route("/api/directories", get(api_list_directories))
         .layer(DefaultBodyLimit::max(11 * 1024 * 1024))
         .with_state(state)
 }
@@ -3138,24 +3139,41 @@ async fn api_channel_directory_put(
             return Err(StatusCode::BAD_REQUEST);
         }
 
-        // Validate the directory exists within the first repo path and doesn't
+        // Validate the directory exists within any repo path and doesn't
         // escape via symlinks. canonicalize() resolves symlinks so we can check
-        // the real path stays within the repo root.
-        let repo_root = state
-            .all_repo_paths
-            .first()
-            .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-        let full_path = repo_root.join(dir);
-        if !full_path.is_dir() {
-            return Err(StatusCode::BAD_REQUEST);
+        // the real path stays within a repo root.
+        //
+        // In multi-repo setups, api_list_directories returns paths prefixed with
+        // the repo label (e.g. "backend/src"). Strip that label before joining
+        // with the repo root so both formats resolve correctly.
+        let is_multi_repo = state.all_repo_paths.len() > 1;
+        let mut found = false;
+        for repo_root in &state.all_repo_paths {
+            let rel_path = if is_multi_repo {
+                // Try stripping the repo label prefix (e.g. "backend/src" -> "src")
+                let label = repo_root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                dir.strip_prefix(label)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .unwrap_or(dir)
+            } else {
+                dir
+            };
+            let full_path = repo_root.join(rel_path);
+            if !full_path.is_dir() {
+                continue;
+            }
+            let Ok(canonical) = full_path.canonicalize() else {
+                continue;
+            };
+            let Ok(canonical_root) = repo_root.canonicalize() else {
+                continue;
+            };
+            if canonical.starts_with(&canonical_root) {
+                found = true;
+                break;
+            }
         }
-        let canonical = full_path
-            .canonicalize()
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let canonical_root = repo_root
-            .canonicalize()
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        if !canonical.starts_with(&canonical_root) {
+        if !found {
             return Err(StatusCode::BAD_REQUEST);
         }
     }
@@ -3191,6 +3209,86 @@ async fn api_channel_directory_put(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// List directories available as working directories for channel coworkers.
+///
+/// Path: `GET /api/directories`
+///
+/// Walks all repo paths in the project and returns their subdirectories
+/// (excluding hidden dirs and common build artifacts). Each entry includes
+/// the repo label and relative path.
+async fn api_list_directories(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    use std::collections::BTreeSet;
+
+    let skip_dirs: std::collections::HashSet<&str> = [
+        "node_modules",
+        "target",
+        ".git",
+        ".next",
+        ".svelte-kit",
+        "dist",
+        "build",
+        "__pycache__",
+        ".venv",
+        "vendor",
+        "coverage",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut dirs = BTreeSet::new();
+    let is_multi_repo = state.all_repo_paths.len() > 1;
+
+    for repo_path in &state.all_repo_paths {
+        let repo_label = if is_multi_repo {
+            repo_path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+        } else {
+            ""
+        };
+
+        // Walk up to 3 levels deep
+        let mut stack: Vec<(std::path::PathBuf, usize)> = vec![(repo_path.clone(), 0)];
+        while let Some((dir, depth)) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if !ft.is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with('.') || skip_dirs.contains(name_str.as_ref()) {
+                    continue;
+                }
+                let full = entry.path();
+                let rel = full
+                    .strip_prefix(repo_path)
+                    .unwrap_or(&full)
+                    .to_string_lossy()
+                    .to_string();
+
+                dirs.insert(if is_multi_repo {
+                    format!("{}/{}", repo_label, rel)
+                } else {
+                    rel.clone()
+                });
+
+                if depth < 2 {
+                    stack.push((full, depth + 1));
+                }
+            }
+        }
+    }
+
+    let list: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
+    Json(serde_json::json!({ "directories": list }))
 }
 
 #[path = "web_tests.rs"]

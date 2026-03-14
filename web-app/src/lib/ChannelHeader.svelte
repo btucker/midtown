@@ -91,7 +91,7 @@ onDestroy(() => {
 });
 </script>
 
-<div class="hidden md:block bg-card shrink-0">
+<div class="channel-header-wrap hidden md:block bg-card shrink-0">
   <div class="flex items-center justify-between px-4 py-2 min-h-[var(--header-height)]">
     <!-- Left: channel name -->
     <div class="flex items-baseline gap-1 shrink-0">
@@ -187,6 +187,10 @@ onDestroy(() => {
 </div>
 
 <style>
+  :global(.dark) .channel-header-wrap :global(.text-muted-foreground) {
+    color: hsl(var(--foreground) / 0.7);
+  }
+
   .just-merged {
     font-size: 0.75rem;
     font-weight: 600;

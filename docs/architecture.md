@@ -290,7 +290,7 @@ The project lead is the channel lead for the main channel — `NudgeChannelLead`
 
 Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is rebuilt at startup from session records and then maintained during runtime; `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts. Typed variants (`TaskAssigned`, `TaskClaimed`, `SessionRecovery`, `ReviewAssigned`) carry structured data and generate rich messages (e.g., `ReviewAssigned` loads the `agents/reviewer-resume.md` template (a brief resume that references the system prompt and includes the code-review skill invocation)); the generic `Nudge` variant wraps freeform strings for health alerts and ops notifications. `UserMessage` and `Mention` both carry an optional `ThreadContext` (parent ID + channel name) so that nudge recipients receive `--thread`/`--channel` reply instructions when the triggering message is a thread reply.
 
-**Nudge-to-DM-thread routing:** When `PostToChannel` carries a `nudge_type` (set by `WakeReason::to_nudge_type()`), the message is written to the coworker's DM channel (`dm-<name>`) with `MessageType::Nudge` and the `nudge_type` field preserved. The RPC layer (`rpc_channel.rs`) includes `nudge_type` in channel history responses, and `WebUpdate::ChannelMessage` broadcasts it to WebSocket clients so the web UI can render nudge-specific styling. The `MessageType::wire_name()` method provides stable wire-protocol strings for all message types (explicit match, not `Debug` format).
+**Nudge-to-DM-thread routing:** When `PostToChannel` carries a `nudge_type` (set by `WakeReason::to_nudge_type()`), the message is written to the coworker's DM channel (`dm-<name>`) with `MessageType::Nudge` and the `nudge_type` field preserved. Root leads are excluded from DM mirroring because they already own a native channel surface; only agents without a home channel (coworkers, reviewers, and currently forks) use DM mirrors. The RPC layer (`rpc_channel.rs`) includes `nudge_type` in channel history responses, and `WebUpdate::ChannelMessage` broadcasts it to WebSocket clients so the web UI can render nudge-specific styling. The `MessageType::wire_name()` method provides stable wire-protocol strings for all message types (explicit match, not `Debug` format).
 
 Note: `route_mentions()` is enabled for non-user, non-system senders in topic channels (e.g., channel leads and coworkers). User `@coworker` and `@all` mentions in topic channels are still silently dropped — only agent-to-agent mentions are routed. Protected senders (`SKIP_SENDERS`: "midtown", "system", "github", "user") are excluded, consistent with the chat monitor guard.
 
@@ -580,7 +580,7 @@ The `midtown chat` command opens a split-panel interface with:
 
 **Features**:
 - Real-time channel message display
-- Mermaid diagram detection and rendering (via `selkie-rs` with content-hash caching)
+- Mermaid diagram detection and rendering (content-hash caching; web app uses mermaid-js)
 - Inline ASCII art for flowchart diagrams (press number keys to open SVG in browser)
 - **Type-anywhere UX**: Character keys auto-focus the input bar (like Slack/Discord)
 - Tab-based focus navigation (Board → Chat → InputBar)
@@ -680,7 +680,7 @@ StreamEvent (NDJSON drain) → extract_tool_events() → Vec<ToolBlock>
 
 ## DM Channel Streaming
 
-Each coworker's text output is streamed to a per-coworker DM channel (`dm-<name>`), mirroring how channel leads stream their output to topic channels. This allows the web UI and TUI to show real-time coworker activity when viewing a specific coworker's DM channel.
+Agents without a native home channel get a DM mirror (`dm-<name>`). In practice this means coworkers, reviewers, and currently thread-bound forks. Root leads do not get DM mirrors because their canonical surface is already the main/topic channel, and duplicating that output created noisy parallel histories in the UI.
 
 **Data flow:**
 ```
@@ -689,13 +689,14 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
                            → detect_provider()        → Option<String> ("claude" | "codex")
     → process_lead_output()     → Effect::PostToChannel { channel: Some("<name>"), tool_data, provider }
                                   (main lead → main channel, channel leads → topic channels, forks → bound topic channels)
-    → process_coworker_output() → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
+    → process_agent_output()    → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
+                                  (coworkers, reviewers, and currently forks only)
     → channel JSONL file + WebSocket broadcast
 ```
 
-- **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_coworker_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
+- **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_agent_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
 
-- **`process_coworker_output()`** (`daemon/stream.rs`): Takes the set of active coworker session names (excluding the main lead, channel leads, and fork-bound sessions) and posts each coworker's aggregated text output to `dm-<name>`. This includes reviewer sessions — their output streams to DM channels alongside regular coworkers. For messages containing tool calls, the effect carries empty `content` with structured `tool_data: Vec<ToolBlock>` and `provider: String` — each client renders tool data its own way (the TUI generates a `[Bash, Read]` text summary locally, the web app renders rich expandable blocks).
+- **`process_agent_output()`** (`daemon/stream.rs`): Takes the set of active agent session names selected for DM mirroring and posts each agent's aggregated text output to `dm-<name>`. The caller excludes the project lead and root channel leads, so DM mirroring currently covers coworkers, reviewers, and forks. For messages containing tool calls, the effect carries empty `content` with structured `tool_data: Vec<ToolBlock>` and `provider: String` — each client renders tool data its own way (the TUI generates a `[Bash, Read]` text summary locally, the web app renders rich expandable blocks).
 - **Structured tool data** (`ToolBlock` in `message.rs`): Preserves raw tool call JSON (`tool_name`, `input`, `output`, `error`) extracted from stream events. `extract_tool_blocks()` pairs `tool_use` blocks from Assistant events with `tool_result` blocks from User events by `call_id`. `detect_provider()` identifies the AI provider (`"claude"` or `"codex"`) from stream event metadata. Both fields are `Option` with `serde(default)` for backward compatibility with legacy messages.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
 - **Task separator**: A `PostSystemMessage` separator is posted to `dm-<name>` to visually delineate task boundaries. For regular coworkers this uses the format "─── Task !42: Fix auth bug ───" and happens in three paths: (1) `SpawnSession` when a session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions receive a PR-based separator (e.g., "─── Reviewing PR #42 ───") in their `SpawnCoworkerWithCallbacks` `on_success` effects.

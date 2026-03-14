@@ -4,7 +4,7 @@ use super::Response;
 
 #[derive(Subcommand, Clone)]
 pub enum DiagramCommand {
-    /// Validate mermaid diagram syntax via selkie (reads from stdin)
+    /// Validate mermaid diagram syntax (reads from stdin)
     Validate,
 }
 
@@ -27,9 +27,8 @@ fn handle_validate() -> Result<Response, String> {
         return Err("No input provided. Pipe mermaid source via stdin.".to_string());
     }
 
-    selkie::render::render_text(input).map_err(|e| format!("Invalid mermaid diagram: {}", e))?;
-
+    // selkie-rs removed — server-side validation no longer available
     Ok(Response::Message {
-        message: "Valid mermaid diagram.".to_string(),
+        message: "Mermaid validation not available (selkie-rs removed). Diagrams are rendered client-side.".to_string(),
     })
 }

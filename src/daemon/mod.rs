@@ -103,6 +103,18 @@ use crate::web::{self, WebUpdate};
 use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
+fn dm_mirror_agent_names(
+    name_to_session: &HashMap<String, String>,
+    channel_lead_sessions: &HashMap<String, String>,
+    project_name: &str,
+) -> HashSet<String> {
+    name_to_session
+        .keys()
+        .filter(|name| name.as_str() != project_name && !channel_lead_sessions.contains_key(*name))
+        .cloned()
+        .collect()
+}
+
 // Task assignments are tracked via `sessions[].task_id` on `SessionRecord` —
 // no separate in-memory HashMap needed. See `get_task_id_for_coworker()` and
 // `get_busy_coworker_names()` which derive this from persistent session state.
@@ -3980,20 +3992,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         &fork_bound_channels,
                     );
 
-                    // All active sessions get DM output (dm-<name>). Channel leads
-                    // and forks retain their topic channel output via process_lead_output
-                    // in addition to this new DM output. Always include project_name so the
-                    // lead's DM channel is populated even if it runs headless without a
-                    // SessionRecord yet (headed sessions produce no events here, but when the
-                    // lead runs headless its events are keyed by project_name in drain_events).
-                    let mut dm_agent_names: std::collections::HashSet<String> = state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .keys()
-                        .cloned()
-                        .collect();
-                    dm_agent_names.insert(state.project_name.clone());
+                    // Only agents without a native home channel get DM mirrors.
+                    // Root leads already stream to their real channel, so a dm-*
+                    // copy is duplicate noise in the UI.
+                    let name_to_session = state.name_to_session.lock().unwrap();
+                    let dm_agent_names = dm_mirror_agent_names(
+                        &name_to_session,
+                        &ps.channel_lead_sessions,
+                        &state.project_name,
+                    );
                     let coworker_effects =
                         stream::process_agent_output(&events, &dm_agent_names);
 

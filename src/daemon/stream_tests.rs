@@ -1288,35 +1288,6 @@ fn test_process_agent_output_ignores_non_coworker_events() {
 }
 
 #[test]
-fn test_process_agent_output_channel_lead_gets_dm() {
-    // A channel lead named "auth" should get output posted to "dm-auth"
-    let mut events = HashMap::new();
-    events.insert(
-        "auth".to_string(),
-        vec![StreamEvent::Assistant {
-            message: json!({
-                "content": [{"type": "text", "text": "Channel lead checking auth module"}]
-            }),
-            session_id: None,
-            extra: json!(null),
-        }],
-    );
-    let agent_names = HashSet::from(["auth".to_string()]);
-    let effects = process_agent_output(&events, &agent_names);
-
-    assert_eq!(effects.len(), 1);
-    match &effects[0] {
-        Effect::PostToChannel {
-            channel, sender, ..
-        } => {
-            assert_eq!(channel.as_deref(), Some("dm-auth"));
-            assert_eq!(sender, "auth");
-        }
-        other => panic!("Expected PostToChannel, got {:?}", other),
-    }
-}
-
-#[test]
 fn test_process_agent_output_trims_text() {
     let mut events = HashMap::new();
     events.insert(

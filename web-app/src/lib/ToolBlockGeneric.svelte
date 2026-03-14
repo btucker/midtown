@@ -51,7 +51,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
   </button>
 
   {#if !expanded && block.output}
-    <div class="tool-body tool-preview">
+    <div class="tool-body tool-preview" onclick={() => expanded = true} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
       <pre>{@html highlightedOutputPreview}</pre>
     </div>
   {:else if expanded}
@@ -86,7 +86,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
     gap: 6px;
     width: 100%;
     padding: 5px 10px;
-    background: hsl(var(--accent));
+    background: hsl(var(--sidebar-background));
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
@@ -96,7 +96,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
   }
 
   .tool-header:hover {
-    background: hsl(var(--accent) / 0.8);
+    background: hsl(var(--sidebar-background) / 0.8);
   }
 
   .tool-chevron {
@@ -128,7 +128,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
     overflow-x: auto;
     max-height: 300px;
     overflow-y: auto;
-    background: hsl(var(--card));
+    background: transparent;
   }
 
   .tool-body pre {
@@ -152,6 +152,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
     max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
+    cursor: pointer;
   }
 
   .tool-preview::after {
@@ -161,7 +162,7 @@ let highlightedOutputPreview = $derived(highlightBlock(outputPreview, "json"));
     left: 0;
     right: 0;
     height: 1.4em;
-    background: linear-gradient(to bottom, transparent, hsl(var(--card)));
+    background: linear-gradient(to bottom, transparent, hsl(var(--background)));
     pointer-events: none;
   }
 </style>

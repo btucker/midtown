@@ -58,7 +58,7 @@ let isLong = $derived(outputLines.length > 3);
   </button>
 
   {#if hasOutput && !expanded && isLong}
-    <div class="bash-output bash-preview">
+    <div class="bash-output bash-preview" onclick={() => expanded = true} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && (expanded = true)}>
       <pre>{@html highlightedPreview}</pre>
     </div>
   {:else if hasOutput && (expanded || !isLong)}
@@ -89,7 +89,7 @@ let isLong = $derived(outputLines.length > 3);
     gap: 6px;
     width: 100%;
     padding: 5px 10px;
-    background: hsl(var(--accent));
+    background: hsl(var(--sidebar-background));
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
@@ -99,7 +99,7 @@ let isLong = $derived(outputLines.length > 3);
   }
 
   .bash-header:hover {
-    background: hsl(var(--accent) / 0.8);
+    background: hsl(var(--sidebar-background) / 0.8);
   }
 
   .bash-chevron {
@@ -126,7 +126,7 @@ let isLong = $derived(outputLines.length > 3);
   .bash-output {
     padding: 6px 10px;
     overflow-x: auto;
-    background: hsl(var(--card));
+    background: transparent;
   }
 
   .bash-output pre {
@@ -143,6 +143,7 @@ let isLong = $derived(outputLines.length > 3);
     max-height: calc(3 * 1.4em);
     overflow: hidden;
     position: relative;
+    cursor: pointer;
   }
 
   .bash-preview::after {
@@ -152,7 +153,7 @@ let isLong = $derived(outputLines.length > 3);
     left: 0;
     right: 0;
     height: 1.4em;
-    background: linear-gradient(to bottom, transparent, hsl(var(--card)));
+    background: linear-gradient(to bottom, transparent, hsl(var(--background)));
     pointer-events: none;
   }
 

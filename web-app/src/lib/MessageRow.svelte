@@ -1,6 +1,7 @@
 <script lang="ts">
 import GitFork from "@lucide/svelte/icons/git-fork";
 import { getApiBase, selectDm } from "./api.ts";
+import { getDisplayableDmChannels } from "./channelUtils.ts";
 import { renderContent } from "./markdown.ts";
 import {
 	formatTime,
@@ -12,7 +13,7 @@ import {
 	senderChanged,
 	timeChanged,
 } from "./messageUtils.ts";
-import { activeProject, channels, coworkers, daemonStatus } from "./store.ts";
+import { activeProject, channels, coworkers } from "./store.ts";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
 import { isToolOnly } from "./toolRunGrouping.ts";
 
@@ -66,12 +67,11 @@ let clickName = $derived(msg.from);
 
 const agentNames = $derived(
 	new Set([
-		// Agents with existing DM channels (covers forks, historical agents)
-		...$channels.filter((ch) => ch.name.startsWith("dm-")).map((ch) => ch.name.slice(3)),
+		// Agents with existing displayable DM channels (covers coworkers, forks,
+		// and historical DMs that don't shadow a real channel lead home).
+		...getDisplayableDmChannels($channels).map((ch) => ch.name.slice(3)),
 		// Active coworkers (selectDm creates channel on demand)
 		...$coworkers.map((cw) => cw.name),
-		// Channel leads
-		...($daemonStatus?.channel_leads || []),
 	]),
 );
 

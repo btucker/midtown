@@ -1,12 +1,11 @@
 //! Mermaid diagram parsing and rendering for the chat TUI
 //!
-//! Detects ```mermaid code fences in chat messages, renders them to ASCII art
-//! (for inline terminal display) and SVG (for browser viewing) using selkie-rs.
+//! Detects ```mermaid code fences in chat messages. Server-side rendering has
+//! been removed (selkie-rs dependency dropped). The web app renders diagrams
+//! client-side via mermaid-js; the TUI shows raw mermaid source.
 //! Results are cached by content hash.
 
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
 
 /// A segment of message content: either plain text, a mermaid diagram, a fenced code block,
 /// or an insight block
@@ -195,12 +194,9 @@ pub fn content_hash(source: &str) -> u64 {
 pub struct MermaidCache {
     /// Completed renders: hash -> RenderedDiagram
     diagrams: HashMap<u64, RenderedDiagram>,
-    /// Hashes currently being rendered (to avoid duplicate work)
+    /// Hashes tracked as pending (used only in tests now that server-side
+    /// rendering is removed)
     pending: HashMap<u64, ()>,
-    /// Receiver for completed renders from background threads
-    receiver: Option<Receiver<(u64, Option<RenderedDiagram>)>>,
-    /// Sender for queueing render requests
-    sender: Option<std::sync::mpsc::Sender<(u64, Option<RenderedDiagram>)>>,
 }
 
 impl MermaidCache {
@@ -208,8 +204,6 @@ impl MermaidCache {
         Self {
             diagrams: HashMap::new(),
             pending: HashMap::new(),
-            receiver: None,
-            sender: None,
         }
     }
 
@@ -223,70 +217,28 @@ impl MermaidCache {
 
     /// Get a cached rendered diagram, or queue it for rendering
     ///
-    /// Returns Some(RenderedDiagram) if cached, None if not yet rendered.
-    /// Automatically queues un-cached diagrams for background rendering.
+    /// Returns Some(RenderedDiagram) if cached, None if server-side rendering
+    /// is unavailable. Since selkie-rs was removed, this always returns None
+    /// for uncached diagrams without spawning background threads.
     pub fn get_or_render(&mut self, mermaid_source: &str) -> Option<&RenderedDiagram> {
         let hash = content_hash(mermaid_source);
 
-        // Already cached
+        // Return cached diagram if available (e.g. inserted via tests)
         if self.diagrams.contains_key(&hash) {
             return self.diagrams.get(&hash);
         }
 
-        // Already pending render
-        if self.pending.contains_key(&hash) {
-            return None;
-        }
-
-        // Queue for background rendering
-        self.pending.insert(hash, ());
-
-        let (tx, rx) = if self.sender.is_some() {
-            // Reuse existing channel
-            (self.sender.clone().unwrap(), None)
-        } else {
-            let (tx, rx) = mpsc::channel();
-            self.sender = Some(tx.clone());
-            (tx, Some(rx))
-        };
-
-        if let Some(rx) = rx {
-            self.receiver = Some(rx);
-        }
-
-        let source = mermaid_source.to_string();
-        thread::spawn(move || {
-            let result = render_mermaid_diagram(&source);
-            let _ = tx.send((hash, result));
-        });
-
+        // Server-side rendering disabled — mermaid rendering now happens
+        // client-side only (web app via mermaid-js, TUI shows raw source).
+        // Don't spawn background threads that would always return None.
         None
     }
 
-    /// Poll for completed renders from background threads
-    pub fn poll_completed(&mut self) {
-        if let Some(ref receiver) = self.receiver {
-            // Drain all available results
-            loop {
-                match receiver.try_recv() {
-                    Ok((hash, Some(diagram))) => {
-                        self.pending.remove(&hash);
-                        self.diagrams.insert(hash, diagram);
-                    }
-                    Ok((hash, None)) => {
-                        // Render failed - remove from pending so we don't retry forever
-                        self.pending.remove(&hash);
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Disconnected) => {
-                        self.receiver = None;
-                        self.sender = None;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+    /// Poll for completed renders from background threads.
+    ///
+    /// No-op since server-side rendering was removed, but kept for API
+    /// compatibility with callers (e.g. app.rs tick loop).
+    pub fn poll_completed(&mut self) {}
 
     /// Get a cached diagram by mermaid source (without queuing render)
     pub fn get_cached(&self, mermaid_source: &str) -> Option<&RenderedDiagram> {
@@ -315,25 +267,15 @@ impl MermaidCache {
     }
 }
 
-/// Render mermaid source to ASCII art + SVG using selkie-rs
-///
-/// Returns None if rendering fails (invalid syntax, etc.)
-fn render_mermaid_diagram(source: &str) -> Option<RenderedDiagram> {
-    let dark_source = format!("%%{{init: {{\"theme\": \"dark\"}}}}%%\n{}", source);
-
-    // Render SVG (works for all diagram types)
-    let svg = selkie::render::render_text(&dark_source).ok()?;
-
-    // Render ASCII art (selkie v0.3 supports all diagram types)
-    let ascii_art =
-        selkie::render::render_text_ascii(source).unwrap_or_else(|_| source.to_string());
-
-    Some(RenderedDiagram { ascii_art, svg })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Render mermaid source — always returns None since selkie-rs was removed.
+    /// Kept only for test verification.
+    fn render_mermaid_diagram(_source: &str) -> Option<RenderedDiagram> {
+        None
+    }
 
     #[test]
     fn test_parse_no_mermaid() {
@@ -556,58 +498,9 @@ mod tests {
     }
 
     #[test]
-    fn test_render_mermaid_diagram_simple_flowchart() {
+    fn test_render_mermaid_diagram_returns_none() {
+        // selkie-rs removed — render_mermaid_diagram always returns None
         let result = render_mermaid_diagram("graph TD\n  A-->B");
-        assert!(result.is_some(), "Simple flowchart should render");
-        let diagram = result.unwrap();
-        assert!(!diagram.svg.is_empty(), "SVG should not be empty");
-        assert!(diagram.svg.contains("<svg"), "SVG should contain <svg tag");
-        assert!(
-            !diagram.ascii_art.is_empty(),
-            "ASCII art should not be empty"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_sequence() {
-        let source = "sequenceDiagram\n    Alice->>Bob: Hello\n    Bob->>Alice: Hi";
-        let result = render_mermaid_diagram(source);
-        assert!(result.is_some(), "Sequence diagram should render");
-        let diagram = result.unwrap();
-        assert!(!diagram.svg.is_empty(), "SVG should not be empty");
-        assert!(diagram.svg.contains("<svg"), "SVG should contain <svg tag");
-        assert!(
-            diagram.ascii_art.contains("Alice"),
-            "ASCII art should contain participant names"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_invalid_input() {
-        let result = render_mermaid_diagram("this is not valid mermaid syntax }{}{}{");
-        // Invalid input should return None (selkie-rs parse failure)
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_flowchart_ascii() {
-        let result = render_mermaid_diagram("graph TD\n  A[Hello]-->B[World]");
-        assert!(result.is_some(), "Flowchart should render");
-        let diagram = result.unwrap();
-        assert!(
-            diagram.ascii_art.contains("Hello"),
-            "ASCII art should contain node labels"
-        );
-    }
-
-    #[test]
-    fn test_render_mermaid_diagram_sequence_ascii() {
-        let result = render_mermaid_diagram("sequenceDiagram\n    Alice->>Bob: Hello");
-        assert!(result.is_some(), "Sequence diagram should render");
-        let diagram = result.unwrap();
-        assert!(
-            diagram.ascii_art.contains("Alice"),
-            "ASCII art should contain participant names"
-        );
     }
 }

@@ -108,6 +108,10 @@ function handleDismiss(e, threadId) {
     position: relative;
   }
 
+  :global(.dark) .thread-row {
+    color: hsl(var(--sidebar-foreground) / 0.7);
+  }
+
   .thread-row:hover {
     background: hsl(var(--sidebar-accent));
   }

@@ -657,6 +657,10 @@ function selectProject(project) {
     border-bottom-color: hsl(var(--primary));
   }
 
+  :global(.dark) .channel-tab {
+    color: hsl(var(--foreground) / 0.7);
+  }
+
   /* Channel main area */
   .board-content {
     position: relative;

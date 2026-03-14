@@ -2,6 +2,42 @@ use super::helpers::*;
 use super::*;
 use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
+#[test]
+fn test_dm_mirror_agent_names_excludes_root_leads() {
+    let name_to_session = std::collections::HashMap::from([
+        ("midtown".to_string(), "sess-lead".to_string()),
+        ("auth".to_string(), "sess-auth".to_string()),
+        ("park".to_string(), "sess-park".to_string()),
+        ("reviewer-42".to_string(), "sess-reviewer".to_string()),
+        ("auth-discuss-a1b2".to_string(), "sess-fork".to_string()),
+    ]);
+    let channel_lead_sessions =
+        std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
+
+    let dm_names = dm_mirror_agent_names(&name_to_session, &channel_lead_sessions, "midtown");
+
+    assert!(
+        !dm_names.contains("midtown"),
+        "project lead already owns #midtown and should not get a DM mirror"
+    );
+    assert!(
+        !dm_names.contains("auth"),
+        "root channel leads already own their topic channel and should not get a DM mirror"
+    );
+    assert!(
+        dm_names.contains("park"),
+        "regular coworkers still need DMs"
+    );
+    assert!(
+        dm_names.contains("reviewer-42"),
+        "reviewers still need DMs for streamed output"
+    );
+    assert!(
+        dm_names.contains("auth-discuss-a1b2"),
+        "thread-bound forks keep DMs until their thread UX is revisited"
+    );
+}
+
 // URL parsing tests for extract_repo_name_from_url
 #[test]
 fn test_extract_repo_name_https_url() {

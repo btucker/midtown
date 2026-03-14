@@ -1390,6 +1390,18 @@ export async function selectDm(coworkerName: string): Promise<void> {
 	closeThread({ pushState: false });
 
 	const currentChannels = get(channels);
+	const matchingLeadChannel = currentChannels.find(
+		(ch) => ch.name === coworkerName && !(ch.is_dm || ch.name.startsWith("dm-")),
+	);
+	if (matchingLeadChannel) {
+		// Root leads already own a real channel. Keep accidental DM navigation
+		// pinned to that channel instead of recreating a duplicate dm-* mirror.
+		activeChannel.set(coworkerName);
+		pushNavState({ channel: coworkerName });
+		channels.update((channelList) => channelList.map((ch) => (ch.name === coworkerName ? { ...ch, unread: 0 } : ch)));
+		fetchHistory(coworkerName);
+		return;
+	}
 	const exists = currentChannels.some((ch) => ch.name === channelName);
 
 	if (!exists) {
@@ -1519,4 +1531,19 @@ export async function saveChannelDirectory(
 		console.error("Failed to save channel directory:", err);
 		return { ok: false, error: (err as Error).message };
 	}
+}
+
+// Fetch available directories across all project repos
+export async function fetchDirectories() {
+	try {
+		const res = await fetch(`${getApiBase()}/directories`);
+		if (res.ok) {
+			const data = await res.json();
+			return data.directories || [];
+		}
+		console.warn("Failed to fetch directories:", res.status);
+	} catch (err) {
+		console.warn("Failed to fetch directories:", err);
+	}
+	return [];
 }

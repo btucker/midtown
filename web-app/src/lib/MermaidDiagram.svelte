@@ -14,8 +14,8 @@ let counter = 0;
 function sanitizeSvg(svg) {
 	const parser = new DOMParser();
 	const doc = parser.parseFromString(svg, "image/svg+xml");
-	// Remove script tags and foreignObject
-	for (const tag of ["script", "foreignObject"]) {
+	// Remove script tags (mermaid uses foreignObject for text rendering, so keep it)
+	for (const tag of ["script"]) {
 		for (const el of doc.querySelectorAll(tag)) {
 			el.remove();
 		}
@@ -45,11 +45,11 @@ $effect(() => {
 	svgHtml = "";
 
 	getSelkie()
-		.then((selkie) => {
+		.then(async (renderer) => {
 			try {
 				const id = `mermaid-${counter++}`;
 				const themedCode = `%%{init: {"theme": "${mermaidTheme}"}}%%\n${currentCode}`;
-				const result = selkie.render(id, themedCode);
+				const result = await renderer.render(id, themedCode);
 				svgHtml = sanitizeSvg(result.svg);
 				error = "";
 			} catch (e) {

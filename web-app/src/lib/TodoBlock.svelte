@@ -54,7 +54,7 @@ let summaryText = $derived(`Todos (${doneCount}/${totalCount} done)`);
     gap: 6px;
     width: 100%;
     padding: 4px 10px;
-    background: hsl(var(--accent));
+    background: hsl(var(--sidebar-background));
     border: none;
     cursor: pointer;
     font-family: var(--font-mono);
@@ -65,7 +65,7 @@ let summaryText = $derived(`Todos (${doneCount}/${totalCount} done)`);
   }
 
   .todo-header:hover {
-    background: hsl(var(--accent) / 0.8);
+    background: hsl(var(--sidebar-background) / 0.8);
   }
 
   .todo-chevron {

@@ -666,6 +666,25 @@ describe("selectDm", () => {
 		expect(ch).toBeTruthy();
 		expect(ch?.is_dm).toBe(true);
 	});
+
+	it("redirects channel-lead DM navigation back to the real channel", async () => {
+		channels.set([
+			{ name: "midtown", unread: 0, has_pr: false, ci_status: null, is_dm: false },
+			{ name: "auth", unread: 2, has_pr: false, ci_status: null, is_dm: false },
+		]);
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => [{ id: 1, content: "lead context", channel: "auth" }],
+		});
+
+		await selectDm("auth");
+
+		expect(get(activeChannel)).toBe("auth");
+		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch.mock.calls[0][0]).toContain("/channels/history");
+		expect(globalThis.fetch.mock.calls[0][0]).toContain("channel=auth");
+		expect(get(channels).some((c) => c.name === "dm-auth")).toBe(false);
+	});
 });
 
 describe("fetchChannels — is_dm name-prefix fallback", () => {
