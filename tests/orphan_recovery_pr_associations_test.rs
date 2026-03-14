@@ -141,7 +141,12 @@ fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
     // Scenario: Task !42 is in pr_task_associations (pointing to PR #1000),
     // BUT PR #1000 is actually merged. This can happen if pr_author_sessions
     // cleanup is async and hasn't run yet, leaving a stale entry.
-    // Expected: Recovery SHOULD proceed (the PR is merged, just not cleaned up yet)
+    //
+    // Expected: Recovery should NOT proceed. Merged PRs always protect the task
+    // (regardless of session state) so that auto-completion can handle it.
+    // The merged-PR guard fires before the active-owner check to prevent
+    // recovery-loops where orphan recovery re-dispatches a task whose PR
+    // already landed.
     let task = create_test_task("42", "Add auth endpoint", None);
 
     let mut merged_pr_numbers = HashSet::new();
@@ -152,7 +157,7 @@ fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
 
     let repo_path = PathBuf::from("/fake/repo");
 
-    // Expected: Should recover (PR is merged, stale association doesn't block)
+    // Expected: Should NOT recover — merged PR protects task for auto-completion
     let result = midtown::daemon::should_recover_task_test_helper(
         &task,
         &merged_pr_numbers,
@@ -162,7 +167,7 @@ fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
     );
 
     assert!(
-        result,
-        "should_recover_task should return true when pr_task_associations is stale (PR merged)"
+        !result,
+        "should_recover_task should return false when PR is merged (merged-PR guard protects for auto-completion)"
     );
 }

@@ -577,14 +577,17 @@ pub struct WorldSnapshot {
     // ── Dispatch pre-filters ──────────────────────────────────────────────
     /// Tasks that should not be spawned/recovered due to PR status or completion.
     ///
-    /// Pre-computed from `all_tasks` during snapshot collection. Checks:
-    /// - Task is already completed
-    /// - Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
-    /// - Task has an explicit `task.pr` pointing to a merged PR
-    /// - Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+    /// Pre-computed from `all_tasks` during snapshot collection. Checks (in order):
+    /// 1. Task is already completed → always protected
+    /// 2. Task has a merged PR (via `tasks_with_open_prs` or `task.pr`) → always
+    ///    protected regardless of session state (prevents recovery-loops)
+    /// 3. Task owner has no active session → not protected by open PRs (allows
+    ///    dispatch of pending tasks or tasks whose owner went away)
+    /// 4. Task has an open PR via `tasks_with_open_prs` → protected
+    /// 5. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
     ///
     /// Dispatch checks `pr_protected_tasks.contains(&task_id)` instead of calling
-    /// `should_recover_task` at each site.
+    /// `is_task_pr_protected` at each site.
     #[serde(default)]
     pub pr_protected_tasks: HashSet<String>,
 }
@@ -1412,6 +1415,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 &merged_pr_numbers,
                 &tasks_with_open_prs,
                 &github_open_pr_task_ids,
+                &active_names,
             )
         })
         .map(|task| task.id.clone())
