@@ -107,6 +107,19 @@ pub(super) async fn handle_coworker_spawn(
                         RpcError::new(-32602, format!("Task !{} is already completed", tid)),
                     );
                 }
+                if t.status == crate::tasks::TaskStatus::InProgress {
+                    return Response::error(
+                        id,
+                        RpcError::new(
+                            -32602,
+                            format!(
+                                "Task !{} is already in progress (owner: {})",
+                                tid,
+                                t.owner.as_deref().unwrap_or("unknown")
+                            ),
+                        ),
+                    );
+                }
                 Some(t)
             }
             None => {
@@ -120,24 +133,25 @@ pub(super) async fn handle_coworker_spawn(
         None
     };
 
-    // Build initial prompt: prepend agent system prompt if present,
-    // and append task prompt if --task was provided
+    // Build initial prompt, combining agent instructions, user prompt, and task prompt.
+    // Priority: agent instructions wrap everything, user --prompt is preserved, task
+    // prompt is appended when --task is provided.
     let task_prompt = task
         .as_ref()
         .map(|t| crate::agents::coworker_task_prompt(&t.id, &t.subject, ""));
-    let effective_prompt = match (&agent_def, &prompt, &task_prompt) {
-        (Some(def), Some(p), _) => Some(format!(
+    let base_prompt = match (&prompt, &task_prompt) {
+        (Some(p), Some(tp)) => Some(format!("{}\n\n{}", p, tp)),
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(tp)) => Some(tp.clone()),
+        (None, None) => None,
+    };
+    let effective_prompt = match (&agent_def, &base_prompt) {
+        (Some(def), Some(bp)) => Some(format!(
             "## Agent Instructions\n\n{}\n\n---\n\n{}",
-            def.system_prompt, p
+            def.system_prompt, bp
         )),
-        (Some(def), None, Some(tp)) => Some(format!(
-            "## Agent Instructions\n\n{}\n\n---\n\n{}",
-            def.system_prompt, tp
-        )),
-        (Some(def), None, None) => Some(format!("## Agent Instructions\n\n{}", def.system_prompt)),
-        (None, Some(p), _) => Some(p.clone()),
-        (None, None, Some(tp)) => Some(tp.clone()),
-        (None, None, None) => None,
+        (Some(def), None) => Some(format!("## Agent Instructions\n\n{}", def.system_prompt)),
+        (None, bp) => bp.clone(),
     };
 
     // Resolve auth_provider: if the agent definition specifies a model,
@@ -230,9 +244,25 @@ pub(super) async fn handle_coworker_spawn(
             info!("Spawned coworker: {}", config.name);
             state.broadcast_coworker_update(&config.name, "running", None);
 
-            // If --task was provided, execute task assignment effects
-            // (same as dispatch does via spawn_success_effects)
+            // If --task was provided, execute task assignment effects and update
+            // the task file on disk (same as dispatch + AssignAndSpawn do)
             if let (Some(tid), Some((worktree_id, _))) = (&task_id, &task_worktree) {
+                // Update task file on disk: set owner and transition to in_progress
+                if let Err(e) = crate::tasks::update_task_owner(tid, &config.name) {
+                    warn!(
+                        "Failed to set task !{} owner to {} after spawn: {}",
+                        tid, config.name, e
+                    );
+                }
+                if let Err(e) =
+                    crate::tasks::set_task_in_progress_for_repo(tid, state.paths.dir_key())
+                {
+                    warn!(
+                        "Failed to set task !{} to in_progress after spawn: {}",
+                        tid, e
+                    );
+                }
+
                 let task_effects = vec![
                     effects::Effect::RecordTaskAssignment {
                         coworker: config.name.clone(),
