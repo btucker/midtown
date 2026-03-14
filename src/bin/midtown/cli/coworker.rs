@@ -64,25 +64,13 @@ pub enum CoworkerCommand {
         #[arg(short, long)]
         message: Option<String>,
     },
-    /// Take a screenshot of a URL using Playwright
-    Screenshot {
-        /// URL to screenshot
-        url: String,
-        /// Output filename (default: screenshot.png)
-        #[arg(long, short)]
-        output: Option<String>,
-        /// Label as a "before" screenshot (auto-names file)
-        #[arg(long, conflicts_with = "after")]
-        before: bool,
-        /// Label as an "after" screenshot (auto-names file)
-        #[arg(long, conflicts_with = "before")]
-        after: bool,
-        /// Output GitHub-compatible markdown (![screenshot](URL)) instead of [Attached: /path]
-        #[arg(long)]
-        github: bool,
-        /// Wait for a CSS selector to appear before taking the screenshot
-        #[arg(long)]
-        wait_for_selector: Option<String>,
+    /// Upload a local image to GitHub and return embeddable markdown
+    UploadImage {
+        /// Path to the local image file
+        path: String,
+        /// Alt text for the markdown image tag (default: "screenshot")
+        #[arg(long, default_value = "screenshot")]
+        alt: String,
     },
 }
 
@@ -116,9 +104,9 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
         CoworkerCommand::List => client.coworker_list(),
         CoworkerCommand::View { name } => handle_view(name, client),
         CoworkerCommand::Nudge { name, message } => client.coworker_nudge(name, message.as_deref()),
-        CoworkerCommand::Screenshot { .. } => {
+        CoworkerCommand::UploadImage { .. } => {
             // Handled before daemon connection in main.rs
-            unreachable!("Screenshot is handled locally without daemon connection")
+            unreachable!("UploadImage is handled locally without daemon connection")
         }
     }
 }
@@ -135,148 +123,34 @@ fn handle_view(name: &str, client: &DaemonClient) -> Result<Response, String> {
     Ok(Response::message(rendered.trim_end().to_string()))
 }
 
-/// RAII guard that removes a temp file on drop, ensuring cleanup on all exit paths.
-pub(crate) struct TempFileGuard {
-    pub(crate) path: std::path::PathBuf,
-}
-
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Take a screenshot of a URL using Playwright, save it locally, and return
-/// the `[Attached: /path]` markdown ready for channel posts.
+/// Upload a local image file to GitHub and return `![alt](url)` markdown.
 ///
-/// When `github` is true, uploads the screenshot to GitHub's image hosting CDN
-/// and returns `![screenshot](URL)` markdown suitable for embedding in PR descriptions.
-///
-/// Does not require a daemon connection — runs Playwright locally and saves
-/// the screenshot to the project's screenshots directory with a UUID filename.
-/// The file is then served at `/api/projects/:name/screenshots/:filename`
-/// on the shared gateway and `/api/screenshots/:filename` on the per-project daemon.
-pub fn handle_screenshot(
-    url: &str,
-    output: Option<&str>,
-    before: bool,
-    after: bool,
-    github: bool,
-    wait_for_selector: Option<&str>,
-) -> Result<Response, String> {
-    // Determine the desired extension from the output filename
-    let ext = if let Some(name) = output {
-        std::path::Path::new(name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("png")
-            .to_string()
-    } else {
-        "png".to_string()
-    };
-
-    // Write to a unique temp file (PID-scoped to avoid clobbering from concurrent coworkers)
-    let tmp_dir = std::env::temp_dir();
-    let tmp_filename = format!("midtown-screenshot-{}.{}", std::process::id(), ext);
-    let tmp_path = tmp_dir.join(&tmp_filename);
-
-    // Run Playwright to capture the screenshot
-    eprintln!("Capturing screenshot of {}...", url);
-    let mut cmd = std::process::Command::new("npx");
-    cmd.args(["playwright@latest", "screenshot", "--browser", "chromium"]);
-    if let Some(selector) = wait_for_selector {
-        cmd.args(["--wait-for-selector", selector]);
-    } else {
-        // Default: wait 3s for SPA async initialization
-        cmd.args(["--wait-for-timeout", "3000"]);
-    }
-    let playwright_output = cmd
-        .arg(url)
-        .arg(&tmp_path)
-        .output()
-        .map_err(|e| format!("Failed to run npx playwright: {}. Is Node.js installed?", e))?;
-
-    if !playwright_output.status.success() {
-        let stderr = String::from_utf8_lossy(&playwright_output.stderr);
-        let stdout = String::from_utf8_lossy(&playwright_output.stdout);
-        return Err(format!(
-            "Playwright screenshot failed:\n{}\n{}",
-            stderr.trim(),
-            stdout.trim()
-        ));
+/// Does not require a daemon connection — uploads directly via the GitHub API.
+/// This bridges the Playwright MCP output (which saves screenshots as local files)
+/// to GitHub-embeddable URLs for PR descriptions.
+pub fn handle_upload_image(path: &str, alt: &str) -> Result<Response, String> {
+    let image_path = std::path::Path::new(path);
+    if !image_path.exists() {
+        return Err(format!("File not found: {}", path));
     }
 
-    // Verify the file was created
-    if !tmp_path.exists() {
-        return Err("Playwright did not produce a screenshot file".to_string());
+    let ext = image_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png");
+
+    match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => {}
+        _ => {
+            return Err(format!(
+                "Unsupported image format: .{}. Supported: png, jpg, jpeg, gif, webp",
+                ext
+            ));
+        }
     }
 
-    // Guard ensures temp file is cleaned up on all exit paths (including upload_to_github errors)
-    let _guard = TempFileGuard {
-        path: tmp_path.clone(),
-    };
-
-    let repo = midtown::paths::detect_repo_name()
-        .ok_or("Not in a git repository. Cannot determine screenshot directory.")?;
-    let screenshots_dir = midtown::paths::screenshots_dir_for_repo(&repo);
-
-    if github {
-        // Upload to GitHub's image hosting for PR-compatible URLs.
-        let github_url = upload_to_github(&tmp_path, &ext)?;
-        let alt = if before {
-            "before"
-        } else if after {
-            "after"
-        } else {
-            "screenshot"
-        };
-        // Still save locally for backup/channel reference
-        let _ = save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir);
-        Ok(Response::message(format!("![{}]({})", alt, github_url)))
-    } else {
-        save_screenshot_locally(&tmp_path, &ext, before, after, &screenshots_dir)
-    }
-}
-
-/// Save a screenshot to the given screenshots directory and return
-/// the `[Attached: /path]` markdown.
-///
-/// Creates a `TempFileGuard` over `tmp_path` so the temp file is removed on all
-/// exit paths (success, early error return, or panic). Generates a UUID-based
-/// filename and copies the screenshot to the provided directory.
-pub(crate) fn save_screenshot_locally(
-    tmp_path: &std::path::Path,
-    ext: &str,
-    before: bool,
-    after: bool,
-    screenshots_dir: &std::path::Path,
-) -> Result<Response, String> {
-    // Guard ensures temp file is cleaned up on all exit paths (including early returns)
-    let _guard = TempFileGuard {
-        path: tmp_path.to_path_buf(),
-    };
-
-    std::fs::create_dir_all(screenshots_dir)
-        .map_err(|e| format!("Failed to create screenshots directory: {}", e))?;
-
-    // Generate a UUID-based filename, with optional before/after prefix
-    let uuid = uuid::Uuid::new_v4();
-    let filename = if before {
-        format!("before-{}.{}", uuid, ext)
-    } else if after {
-        format!("after-{}.{}", uuid, ext)
-    } else {
-        format!("{}.{}", uuid, ext)
-    };
-
-    let dest_path = screenshots_dir.join(&filename);
-
-    std::fs::copy(tmp_path, &dest_path).map_err(|e| format!("Failed to save screenshot: {}", e))?;
-
-    eprintln!("Screenshot saved: {}", dest_path.display());
-
-    let attached = format!("[Attached: {}]", dest_path.display());
-    Ok(Response::message(attached))
+    let github_url = upload_to_github(image_path, ext)?;
+    Ok(Response::message(format!("![{}]({})", alt, github_url)))
 }
 
 /// Upload a screenshot to GitHub's image hosting and return the permanent URL.
@@ -327,7 +201,7 @@ fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, S
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        _ => "image/png",
+        _ => unreachable!("extension validated in handle_upload_image"),
     };
 
     let filename = image_path

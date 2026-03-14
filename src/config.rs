@@ -612,8 +612,8 @@ pub struct WebserverSection {
     #[serde(default)]
     pub tls_key: Option<PathBuf>,
 
-    /// External URL for the webserver, used in screenshot URLs for GitHub PRs.
-    /// When set, screenshot `--github` URLs use this as the base instead of
+    /// External URL for the webserver, used in asset URLs for GitHub PRs.
+    /// When set, asset URLs use this as the base instead of
     /// `localhost`. Example: `https://macbook-pro.taile2dd2b.ts.net:47022`
     #[serde(default)]
     pub external_url: Option<String>,

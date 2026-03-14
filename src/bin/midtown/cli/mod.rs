@@ -234,16 +234,9 @@ pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
     coworker::handle_coworker_boot(task_id)
 }
 
-/// Handle `midtown coworker screenshot` — capture and upload a screenshot.
-pub fn handle_coworker_screenshot(
-    url: &str,
-    output: Option<&str>,
-    before: bool,
-    after: bool,
-    github: bool,
-    wait_for_selector: Option<&str>,
-) -> Result<Response, String> {
-    coworker::handle_screenshot(url, output, before, after, github, wait_for_selector)
+/// Handle `midtown coworker upload-image` — upload a local image to GitHub.
+pub fn handle_coworker_upload_image(path: &str, alt: &str) -> Result<Response, String> {
+    coworker::handle_upload_image(path, alt)
 }
 
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.

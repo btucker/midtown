@@ -217,46 +217,48 @@ gh pr list --search "Midtown !XXX" --state open --json number,headRefName
 
 ### Screenshots for Visual Changes
 
-> **You CAN capture screenshots in a headless session.** `midtown coworker screenshot` uses Playwright's headless Chromium — no display server needed.
+> **You CAN capture screenshots in a headless session.** The Playwright MCP plugin runs headless Chromium — no display server needed.
 
-When your PR includes visual changes, capture before/after screenshots:
+When your PR includes visual changes, use the **Playwright MCP tools** to capture screenshots. You have access to `browser_navigate`, `browser_click`, `browser_type`, `browser_screenshot`, and other browser automation tools via the Playwright MCP plugin.
 
-```bash
-# Before/after for channel posts:
-BEFORE=$(midtown coworker screenshot http://localhost:5173 --before)
-# ... make your changes ...
-AFTER=$(midtown coworker screenshot http://localhost:5173 --after)
-midtown channel post "Before: $BEFORE\nAfter: $AFTER" --task 42
+**Workflow:**
 
-# Single screenshot with custom name:
-midtown coworker screenshot http://localhost:5173 --output sidebar-collapsed.png
-```
+1. **Navigate and interact** — use MCP tools to browse to the right page and click into the desired UI state:
+   - `browser_navigate` to open the dev server URL (e.g., `http://localhost:5173`)
+   - `browser_click`, `browser_type`, etc. to reach the specific state you want to capture
+   - `browser_screenshot` to save to a local file
 
-**For GitHub PR descriptions**, use `--github` to get `![alt](URL)` markdown instead of `[Attached: /path]`:
+2. **Upload for GitHub** — use `midtown coworker upload-image` to get a GitHub-embeddable URL:
+   ```bash
+   SCREENSHOT=$(midtown coworker upload-image /path/to/screenshot.png --alt "description")
+   ```
+   This returns `![description](https://user-images.githubusercontent.com/...)` markdown.
 
-```bash
-BEFORE=$(midtown coworker screenshot http://localhost:5173 --before --github)
-# ... make changes ...
-AFTER=$(midtown coworker screenshot http://localhost:5173 --after --github)
+3. **Embed in PR description** — include the returned markdown in your PR body:
+   ```bash
+   BEFORE=$(midtown coworker upload-image /tmp/before.png --alt before)
+   AFTER=$(midtown coworker upload-image /tmp/after.png --alt after)
 
-gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<EOF
-<!-- midtown: {name} -->
+   gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<EOF
+   <!-- midtown: {name} -->
 
-## Summary
-- Added authentication endpoint
+   ## Summary
+   - Added authentication endpoint
 
-## Screenshots
-| Before | After |
-|--------|-------|
-| $BEFORE | $AFTER |
+   ## Screenshots
+   | Before | After |
+   |--------|-------|
+   | $BEFORE | $AFTER |
 
-## Test plan
-- [x] Unit tests pass
+   ## Test plan
+   - [x] Unit tests pass
 
-🌃 Co-built with [Midtown](https://github.com/btucker/midtown)
-EOF
-)"
-```
+   🌃 Co-built with [Midtown](https://github.com/btucker/midtown)
+   EOF
+   )"
+   ```
+
+The key advantage over the old CLI: you can **click around** to capture the exact UI state, not just screenshot a URL.
 
 ## Requesting PR Reviews
 When your PR is ready for review:

@@ -128,9 +128,11 @@ Both use `SessionMode::Resume`, but the concrete CLI shape is provider-specific 
 
 Some CLI subcommands bypass the daemon RPC entirely, communicating directly with the webhook HTTP API or performing local-only work:
 
-- `midtown coworker screenshot <url>` — runs Playwright locally to capture a screenshot, saves it to `~/.midtown/projects/<repo>/screenshots/{uuid}.png`, and prints an `[Attached: /path]` reference for channel posts. With `--github`, uploads the image to GitHub's CDN via the `uploads.github.com` endpoint and outputs `![alt](URL)` markdown using the returned `user-images.githubusercontent.com` URL, which renders in PR descriptions without any infrastructure dependency. The image is also saved locally as a backup. Screenshots are served locally via `GET /api/projects/<repo>/screenshots/<filename>` on the shared gateway (port 47022) and `GET /api/screenshots/<filename>` on the per-project daemon. No daemon RPC connection is needed for capture.
+- `midtown coworker upload-image <path>` — uploads a local image file to GitHub's CDN via the `uploads.github.com` endpoint and outputs `![alt](URL)` markdown using the returned `user-images.githubusercontent.com` URL. This bridges Playwright MCP screenshot output (local files) to GitHub-embeddable URLs for PR descriptions. No daemon RPC connection is needed. Coworkers use the Playwright MCP tools (`browser_navigate`, `browser_screenshot`, etc.) to capture screenshots interactively, then `upload-image` to get a PR-ready URL.
 
-These commands are intercepted in `main.rs` *before* the `DaemonClient::connect()` call and return early. Most bypass commands are listed in the consolidated `unreachable!()` catch-all at the end of the daemon-connected match. Screenshot is the exception — it has its own `unreachable!()` arm above the general `Coworker { Some(cmd) }` handler, because Rust's top-to-bottom match evaluation would otherwise route it to `handle_coworker`. Both locations have cross-referencing comments to keep the dispatch intent auditable.
+Legacy screenshot-serving endpoints (`GET /api/screenshots/<filename>` on the per-project daemon, `GET /api/projects/<repo>/screenshots/<filename>` on the shared gateway) are preserved for backward compatibility — old channel messages reference `[Attached: .../screenshots/<file>]` which the frontend rewrites to these endpoints.
+
+These commands are intercepted in `main.rs` *before* the `DaemonClient::connect()` call and return early. Most bypass commands are listed in the consolidated `unreachable!()` catch-all at the end of the daemon-connected match.
 
 ### HeadlessSession I/O Architecture
 

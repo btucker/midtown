@@ -450,6 +450,8 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         )
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
+        // Legacy route: old channel messages reference [Attached: .../screenshots/<file>]
+        // and the frontend rewrites those to /api/screenshots/<file>. Keep serving them.
         .route("/api/screenshots/{filename}", get(api_get_screenshot))
         .route(
             "/api/channels/{channel}/agents-md",
@@ -2154,12 +2156,11 @@ async fn api_get_upload(
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
 }
 
-/// Serve a screenshot file by filename.
+/// Legacy endpoint: serve screenshot files from the per-project screenshots directory.
 ///
-/// Files are served from `~/.midtown/projects/<repo>/screenshots/<filename>`.
-/// Only image content types are served. Includes path traversal protection:
-/// the resolved file path must remain within the screenshots directory
-/// (validated via `canonicalize` containment, matching `project_asset`).
+/// Old channel messages contain `[Attached: .../screenshots/<file>]` references that the
+/// frontend rewrites to `/api/screenshots/<file>`. This route keeps those working even
+/// though new screenshots use the Playwright MCP + upload-image workflow.
 async fn api_get_screenshot(
     State(state): State<Arc<WebState>>,
     Path(filename): Path<String>,
@@ -2168,35 +2169,23 @@ async fn api_get_screenshot(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let screenshots_dir = crate::paths::screenshots_dir_for_repo(&state.config.dir_key);
-    let file_path = screenshots_dir.join(&filename);
+    let file_path = crate::paths::projects_dir_for_repo(&state.config.dir_key)
+        .join("screenshots")
+        .join(&filename);
 
-    // Canonicalize containment check (defense-in-depth, matching project_asset)
-    let canonical_dir = match std::fs::canonicalize(&screenshots_dir) {
-        Ok(p) => p,
-        Err(_) => return Err(StatusCode::NOT_FOUND),
-    };
-
-    if !file_path.exists() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let canonical_file = std::fs::canonicalize(&file_path).map_err(|_| StatusCode::NOT_FOUND)?;
-
-    if !canonical_file.starts_with(&canonical_dir) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let content = tokio::fs::read(&canonical_file)
+    let data = tokio::fs::read(&file_path)
         .await
         .map_err(|_| StatusCode::NOT_FOUND)?;
 
-    let content_type = crate::webserver::mime_type_for_path(&canonical_file);
-    if !content_type.starts_with("image/") {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
+    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
 
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], content))
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
 }
 
 /// Query parameters for the workflow endpoint.
