@@ -5181,3 +5181,97 @@ fn test_lead_driven_channel_still_auto_completes_merged_pr_tasks() {
         effects
     );
 }
+
+// ============================================================================
+// build_plan_prompt_section_from_parts — standalone plan section builder
+// ============================================================================
+
+#[test]
+fn test_plan_section_empty_when_no_plan_or_skill() {
+    let result = build_plan_prompt_section_from_parts("42", None, None);
+    assert!(
+        result.is_empty(),
+        "Should return empty string when neither plan nor skill is set"
+    );
+}
+
+#[test]
+fn test_plan_section_with_execution_skill_only() {
+    let result =
+        build_plan_prompt_section_from_parts("42", None, Some("subagent-driven-development"));
+    assert!(
+        result.contains("## Execution Skill"),
+        "Should include execution skill heading"
+    );
+    assert!(
+        result.contains("superpowers:subagent-driven-development"),
+        "Should include the skill name"
+    );
+    assert!(
+        !result.contains("## Plan Context"),
+        "Should not include plan section"
+    );
+}
+
+#[test]
+fn test_plan_section_with_plan_file() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let plan_path = temp_dir.path().join("plan.md");
+    std::fs::write(&plan_path, "# My Plan\n\nStep 1: Do the thing").unwrap();
+
+    let result =
+        build_plan_prompt_section_from_parts("42", Some(plan_path.to_str().unwrap()), None);
+    assert!(
+        result.contains("## Plan Context"),
+        "Should include plan context heading"
+    );
+    assert!(
+        result.contains("Step 1: Do the thing"),
+        "Should include plan file content"
+    );
+    assert!(
+        result.contains("<plan>"),
+        "Should wrap plan content in <plan> tags"
+    );
+}
+
+#[test]
+fn test_plan_section_with_both_skill_and_plan() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let plan_path = temp_dir.path().join("plan.md");
+    std::fs::write(&plan_path, "Plan content here").unwrap();
+
+    let result = build_plan_prompt_section_from_parts(
+        "42",
+        Some(plan_path.to_str().unwrap()),
+        Some("executing-plans"),
+    );
+    assert!(result.contains("## Execution Skill"));
+    assert!(result.contains("superpowers:executing-plans"));
+    assert!(result.contains("## Plan Context"));
+    assert!(result.contains("Plan content here"));
+}
+
+#[test]
+fn test_plan_section_with_missing_plan_file() {
+    let result = build_plan_prompt_section_from_parts("42", Some("/nonexistent/plan.md"), None);
+    // Should return empty — the warn! fires but doesn't panic
+    assert!(
+        !result.contains("## Plan Context"),
+        "Should not include plan section when file doesn't exist"
+    );
+}
+
+#[test]
+fn test_plan_section_with_missing_plan_file_preserves_skill() {
+    let result = build_plan_prompt_section_from_parts(
+        "42",
+        Some("/nonexistent/plan.md"),
+        Some("executing-plans"),
+    );
+    // Skill section should still be present even if plan file is missing
+    assert!(
+        result.contains("## Execution Skill"),
+        "Should preserve execution skill even when plan file is missing"
+    );
+}

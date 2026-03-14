@@ -193,7 +193,7 @@ The `coworker call-in` command supports `--agent <name>` to load agent definitio
 - **Body**: Used as the agent's system prompt, prepended to the coworker's initial prompt under `## Agent Instructions`
 - **Model override**: If the agent specifies `model`, it overrides the default provider-resolved model (subject to downstream normalization by `normalize_model_for_provider_role`)
 
-Additional call-in flags: `--channel <name>` sets `LaunchConfig.channel` for message routing; `--thread <id>` registers a `fork_bound_threads` binding so the coworker's posts auto-route to the specified thread.
+Additional call-in flags: `--channel <name>` sets `LaunchConfig.channel` for message routing; `--thread <id>` registers a `fork_bound_threads` binding so the coworker's posts auto-route to the specified thread; `--task <id>` assigns the coworker to a task with full lifecycle management (worktree creation, task ownership, plan/execution-skill context in prompt, disk state updates). The `--task` flag replicates the same assignment flow that the daemon's automatic dispatch uses: it validates the task is pending, creates/reuses a task worktree, sets the task to `in_progress` with the coworker as owner, and reads plan/execution-skill metadata from persistent state via `build_plan_prompt_section_from_parts`. Channel is auto-resolved from the task if `--channel` is not explicitly provided.
 
 ## Prompt Architecture
 
