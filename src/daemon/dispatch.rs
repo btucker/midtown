@@ -302,11 +302,12 @@ fn find_session_for_task<'a>(
 ///
 /// Checks (in order):
 /// 1. Task is already completed → always protected
-/// 2. Task owner has no active session → never protected (allows dispatch of
-///    pending tasks or tasks whose owner went away, even with open PRs)
-/// 3. Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
-/// 4. Task has an explicit `task.pr` pointing to a merged PR
-/// 5. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+/// 2. Task has a merged PR (via `tasks_with_open_prs` or `task.pr`) → always protected
+///    (prevents recovery-loops regardless of session state)
+/// 3. Task owner has no active session → not protected by open PRs (allows dispatch
+///    of pending tasks or tasks whose owner went away)
+/// 4. Task has an open PR via `tasks_with_open_prs` → protected
+/// 5. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`) → protected
 pub(crate) fn is_task_pr_protected(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
@@ -320,7 +321,32 @@ pub(crate) fn is_task_pr_protected(
         return true;
     }
 
-    // If the task's owner has no active session, PR protection doesn't apply.
+    // Merged-PR guards fire BEFORE the active-owner check — a merged PR always
+    // protects the task (preventing recovery-loops) regardless of session state.
+
+    // Check pr_task_associations for a merged PR
+    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id)
+        && merged_pr_numbers.contains(&pr_number)
+    {
+        debug!(
+            "Task !{} is in pr_task_associations and PR #{} is merged — protected for auto-completion",
+            task.id, pr_number
+        );
+        return true;
+    }
+
+    // Explicit task.pr pointing to a merged PR
+    if let Some(pr_number) = task.pr
+        && merged_pr_numbers.contains(&pr_number)
+    {
+        debug!(
+            "Skipping recovery for task !{}: explicit PR #{} is in merged cache",
+            task.id, pr_number
+        );
+        return true;
+    }
+
+    // If the task's owner has no active session, open-PR protection doesn't apply.
     // This handles the catch-22 where a pending task is created for an existing PR
     // (e.g., "rebase and land PR #X") — without this, nobody could pick it up.
     let owner_is_active = task
@@ -329,34 +355,16 @@ pub(crate) fn is_task_pr_protected(
         .is_some_and(|owner| active_names.contains(&owner.to_lowercase()));
     if !owner_is_active {
         debug!(
-            "Task !{} has no active owner session — PR protection does not apply",
+            "Task !{} has no active owner session — open-PR protection does not apply",
             task.id
         );
         return false;
     }
 
-    // Open PR via pr_task_associations (unless the PR was merged)
+    // Open PR via pr_task_associations (not merged — merged case handled above)
     if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
-        if !merged_pr_numbers.contains(&pr_number) {
-            debug!(
-                "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
-                task.id, pr_number
-            );
-            return true;
-        } else {
-            debug!(
-                "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
-                task.id, pr_number
-            );
-        }
-    }
-
-    // Explicit PR that's been merged
-    if let Some(pr_number) = task.pr
-        && merged_pr_numbers.contains(&pr_number)
-    {
         debug!(
-            "Skipping recovery for task !{}: explicit PR #{} is in merged cache",
+            "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
             task.id, pr_number
         );
         return true;

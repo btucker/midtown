@@ -3813,6 +3813,44 @@ fn test_is_task_pr_protected_blocks_task_with_open_pr_and_active_session() {
 }
 
 #[test]
+fn test_is_task_pr_protected_merged_pr_inactive_owner_still_protected() {
+    use crate::tasks::{Task, TaskStatus};
+
+    // An in-progress task whose owner session died, but whose PR has merged.
+    // The merged-PR guard must still apply — without it the daemon could
+    // re-dispatch or recover the task, causing a recovery-loop.
+    let task = Task {
+        id: "2281".to_string(),
+        subject: "Implement feature X".to_string(),
+        description: None,
+        status: TaskStatus::InProgress,
+        owner: Some("lexington".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(42),
+        created_at: None,
+    };
+
+    let mut merged_prs = HashSet::new();
+    merged_prs.insert(42u64);
+    let tasks_with_open_prs = HashMap::new();
+    let github_open_pr_task_ids = HashMap::new();
+
+    let active_names: HashSet<String> = HashSet::new(); // Owner NOT active
+
+    assert!(
+        is_task_pr_protected(
+            &task,
+            &merged_prs,
+            &tasks_with_open_prs,
+            &github_open_pr_task_ids,
+            &active_names,
+        ),
+        "Task with merged PR should be protected even when owner session is inactive"
+    );
+}
+
+#[test]
 fn test_reset_orphaned_tasks_resets_ownerless_in_progress_task() {
     // Bug: When a coworker goes on break and the task owner is cleared,
     // the task becomes in_progress with no owner. reset_orphaned_tasks() was
