@@ -87,8 +87,18 @@ fn test_layer1_agent_definitions_have_no_template_vars() {
 // ── Layer 2: shared_prompt_for_role ──────────────────────────────
 
 #[test]
-fn test_layer2_coworker_returns_common_only() {
+fn test_layer2_coworker_returns_coworker_common_and_common() {
     let shared = shared_prompt_for_role(AgentRole::Coworker);
+    // coworker-common.md content
+    assert!(
+        shared.contains("Channel Usage"),
+        "Coworker shared prompt should include Channel Usage from coworker-common.md"
+    );
+    assert!(
+        shared.contains("Coordination"),
+        "Coworker shared prompt should include Coordination from coworker-common.md"
+    );
+    // common.md content
     assert!(
         shared.contains("GitHub Etiquette"),
         "Coworker shared prompt should include common.md content"
@@ -105,8 +115,14 @@ fn test_layer2_coworker_returns_common_only() {
 }
 
 #[test]
-fn test_layer2_reviewer_returns_common_only() {
+fn test_layer2_reviewer_returns_coworker_common_and_common() {
     let shared = shared_prompt_for_role(AgentRole::Reviewer);
+    // coworker-common.md content (reviewers share operational rules with coworkers)
+    assert!(
+        shared.contains("Channel Usage"),
+        "Reviewer shared prompt should include Channel Usage from coworker-common.md"
+    );
+    // common.md content
     assert!(
         shared.contains("GitHub Etiquette"),
         "Reviewer shared prompt should include common.md content"
@@ -193,7 +209,29 @@ fn test_layer3_channel_lead_defaults_to_project_name() {
 }
 
 #[test]
-fn test_layer3_replaces_channel_name() {
+fn test_layer3_injects_channel_configuration() {
+    let input = "Base prompt";
+    let result = build_runtime_context(
+        input,
+        &RuntimeContext {
+            name: "web",
+            project_name: "midtown",
+            channel_name: Some("web-interface"),
+            ..RuntimeContext::default()
+        },
+    );
+    assert!(
+        result.contains("#web-interface"),
+        "Channel config injection should include channel name with # prefix"
+    );
+    assert!(
+        result.contains("--channel web-interface"),
+        "Channel config injection should include --channel flag"
+    );
+}
+
+#[test]
+fn test_layer3_replaces_channel_name_in_template() {
     let input = "Channel: #{channel_name}";
     let result = build_runtime_context(
         input,
@@ -208,8 +246,8 @@ fn test_layer3_replaces_channel_name() {
 }
 
 #[test]
-fn test_layer3_replaces_domain_context() {
-    let input = "Context: {domain_context}";
+fn test_layer3_injects_domain_context() {
+    let input = "Base prompt";
     let result = build_runtime_context(
         input,
         &RuntimeContext {
@@ -219,12 +257,19 @@ fn test_layer3_replaces_domain_context() {
             ..RuntimeContext::default()
         },
     );
-    assert!(result.contains("Context: Active tasks: !42"));
+    assert!(
+        result.contains("Active tasks: !42"),
+        "Domain context injection should include the provided context"
+    );
+    assert!(
+        result.contains("## Domain Context"),
+        "Domain context injection should have a section header"
+    );
 }
 
 #[test]
-fn test_layer3_replaces_escalation_target() {
-    let input = "@{escalation_target} [Review Note]";
+fn test_layer3_injects_escalation_target() {
+    let input = "Base prompt";
     let result = build_runtime_context(
         input,
         &RuntimeContext {
@@ -234,7 +279,14 @@ fn test_layer3_replaces_escalation_target() {
             ..RuntimeContext::default()
         },
     );
-    assert!(result.contains("@daemon-core [Review Note]"));
+    assert!(
+        result.contains("@daemon-core"),
+        "Escalation target injection should include the target with @ prefix"
+    );
+    assert!(
+        result.contains("## Escalation Target"),
+        "Escalation target injection should have a section header"
+    );
 }
 
 #[test]
@@ -345,7 +397,7 @@ fn test_layer3_no_ops_extra_for_non_ops_channel() {
 // ── Section ordering tests ───────────────────────────────────────
 
 #[test]
-fn test_reviewer_prompt_common_md_before_reviewer_instructions() {
+fn test_reviewer_prompt_layer1_before_layer2() {
     let prompt = reviewer_system_prompt(
         "york",
         "midtown",
@@ -353,16 +405,17 @@ fn test_reviewer_prompt_common_md_before_reviewer_instructions() {
         crate::auth::AuthProvider::Claude,
         Some(42),
     );
-    let common_pos = prompt
+    // Layer 1 (agent definition) comes before Layer 2 (shared prompts)
+    let layer1_pos = prompt
+        .find("Code Reviewer")
+        .expect("Agent definition content should be present");
+    let layer2_pos = prompt
         .find("GitHub Etiquette")
         .expect("common.md content should be present");
-    let reviewer_pos = prompt
-        .find("## Reviewer Instructions")
-        .expect("Reviewer Instructions section should be present");
     assert!(
-        common_pos < reviewer_pos,
-        "common.md content must appear BEFORE '## Reviewer Instructions' \
-         (common at {common_pos}, reviewer at {reviewer_pos})"
+        layer1_pos < layer2_pos,
+        "Agent definition (Layer 1) must appear BEFORE shared prompt (Layer 2) \
+         (layer1 at {layer1_pos}, layer2 at {layer2_pos})"
     );
 }
 

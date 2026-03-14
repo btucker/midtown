@@ -3,44 +3,41 @@
 //! Prompts are assembled from three distinct layers:
 //!
 //! 1. **Agent definition (Layer 1)** — Role identity and behavioral instructions.
-//!    Currently loaded from `agents/*.md` (e.g., `coworker.md`, `project-lead.md`)
-//!    with compiled-in fallback. A parallel set of new-format agent definitions
-//!    (`agents/definitions/midtown-*.md`) exists and is accessible via
-//!    `load_agent_definition_for_role()`, but the public assembly functions still
-//!    use the old-format files during this transition.
+//!    Loaded via `load_agent_definition_for_role()` from `agents/definitions/midtown-*.md`
+//!    with filesystem override support (`~/.claude/agents/midtown-*.md`).
+//!    Agent definitions are static — no template variables.
 //!
-//! 2. **Shared prompt (Layer 2)** — Operational rules shared across roles. `common.md` for
-//!    all agents, plus `lead-common.md` for leads. Loaded from `agents/` dir or compiled-in.
+//! 2. **Shared prompt (Layer 2)** — Operational rules shared across role categories.
+//!    `coworker-common.md` + `common.md` for coworkers/reviewers,
+//!    `lead-common.md` + `common.md` for leads.
+//!    May contain template variables (replaced by Layer 3).
 //!
 //! 3. **Runtime context (Layer 3)** — Template variable replacement (`{name}`, `{project_name}`,
 //!    `{channel_lead}`, `{escalation_target}`, `{channel_name}`, `{domain_context}`,
 //!    `{code_review_invocation}`) and runtime-only content injection (ops extras, AGENTS.md).
 //!
 //! The public functions (`coworker_system_prompt`, `main_lead_system_prompt`, etc.)
-//! use `shared_prompt_for_role()` for Layer 2 and `build_runtime_context()` for Layer 3.
+//! assemble: `load_agent_definition_for_role()` + `shared_prompt_for_role()` + `build_runtime_context()`.
 
 use std::path::PathBuf;
 
 /// Embedded default for the shared lead coordination prompt.
 const DEFAULT_LEAD_PROMPT: &str = include_str!("../agents/lead-common.md");
 
-/// Embedded default for the Project Lead overlay prompt.
-const DEFAULT_PROJECT_LEAD_PROMPT: &str = include_str!("../agents/project-lead.md");
-
-/// Embedded default for the coworker system prompt template.
-const DEFAULT_COWORKER_PROMPT: &str = include_str!("../agents/coworker.md");
-
 /// Embedded default for common prompt content shared by all agents.
 const DEFAULT_COMMON_PROMPT: &str = include_str!("../agents/common.md");
+
+/// Embedded default for coworker-common prompt content shared by coworkers and reviewers.
+///
+/// Contains operational rules (Channel Usage, Coordination, Don't Poll GitHub)
+/// that both code authors and reviewers need but leads do not.
+const DEFAULT_COWORKER_COMMON_PROMPT: &str = include_str!("../agents/coworker-common.md");
 
 /// Embedded default for the reviewer launch prompt template.
 const DEFAULT_REVIEWER_PROMPT: &str = include_str!("../agents/reviewer.md");
 
 /// Embedded default for the reviewer resume prompt template.
 const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-resume.md");
-
-/// Embedded default for the channel lead system prompt template.
-const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.md");
 
 /// Embedded default for the ops channel lead additional instructions.
 ///
@@ -134,12 +131,16 @@ pub fn load_agent_definition_for_role(role: AgentRole) -> String {
 
 /// Layer 2: Get the shared prompt content for a role.
 ///
-/// - Coworker/Reviewer: `common.md` only
+/// - Coworker/Reviewer: `coworker-common.md` + `common.md`
 /// - ProjectLead/ChannelLead: `lead-common.md` + `common.md`
 pub fn shared_prompt_for_role(role: AgentRole) -> String {
     let common = common_prompt();
     match role {
-        AgentRole::Coworker | AgentRole::Reviewer => common,
+        AgentRole::Coworker | AgentRole::Reviewer => {
+            let coworker_common = load_prompt_file("coworker-common.md")
+                .unwrap_or_else(|| DEFAULT_COWORKER_COMMON_PROMPT.to_string());
+            format!("{coworker_common}\n\n{common}")
+        }
         AgentRole::ProjectLead | AgentRole::ChannelLead => {
             let lead = load_prompt_file("lead-common.md")
                 .unwrap_or_else(|| DEFAULT_LEAD_PROMPT.to_string());
@@ -194,6 +195,38 @@ pub fn build_runtime_context(base_prompt: &str, ctx: &RuntimeContext) -> String 
     if let Some(platform) = ctx.platform {
         let invocation = code_review_invocation_for_platform(platform, ctx.pr_number);
         prompt = prompt.replace("{code_review_invocation}", &invocation);
+    }
+
+    // Inject channel configuration for channel leads (after template substitution
+    // so we use the actual values, not placeholders)
+    if let Some(channel_name) = ctx.channel_name {
+        prompt = format!(
+            "{prompt}\n\n\
+             ## Channel Configuration\n\n\
+             Your channel is **#{cn}**.\n\
+             Post to your channel: `midtown channel post \"...\" --channel {cn}`\n\
+             Read your channel: `midtown channel read --channel {cn}`",
+            cn = channel_name
+        );
+    }
+
+    // Inject domain context for channel leads
+    if let Some(domain_context) = ctx.domain_context {
+        let dc = domain_context.trim();
+        if !dc.is_empty() {
+            prompt = format!("{prompt}\n\n## Domain Context\n\n{dc}");
+        }
+    }
+
+    // Inject escalation target for reviewers
+    if let Some(escalation_target) = ctx.escalation_target {
+        prompt = format!(
+            "{prompt}\n\n\
+             ## Escalation Target\n\n\
+             Address review notes and escalations to @{et}.\n\n\
+             Example: `@{et} [Review Note] PR #N: <issues>`",
+            et = escalation_target
+        );
     }
 
     // Append AGENTS.md AFTER template substitution to preserve literal placeholders
@@ -280,15 +313,14 @@ fn common_prompt() -> String {
 /// Load the main Lead agent's system prompt.
 ///
 /// Three-layer assembly:
-/// - Layer 1: project-lead.md agent definition (+ old project-lead.md for transition)
+/// - Layer 1: Agent definition from `midtown-project-lead.md`
 /// - Layer 2: lead-common.md + common.md
 /// - Layer 3: Runtime context with project_name substitutions
 ///
 /// For the Project Lead, `{name}` = project_name (e.g., "midtown").
 pub fn main_lead_system_prompt(project_name: &str) -> String {
-    // Layer 1: Old-style project-lead.md (transition — will move to agent definition)
-    let layer1 = load_prompt_file("project-lead.md")
-        .unwrap_or_else(|| DEFAULT_PROJECT_LEAD_PROMPT.to_string());
+    // Layer 1: Agent definition
+    let layer1 = load_agent_definition_for_role(AgentRole::ProjectLead);
     // Layer 2: Shared prompt
     let layer2 = shared_prompt_for_role(AgentRole::ProjectLead);
     let prompt = format!("{layer1}\n\n{layer2}");
@@ -307,8 +339,8 @@ pub fn main_lead_system_prompt(project_name: &str) -> String {
 /// Load the coworker agent's system prompt with name and project substitution.
 ///
 /// Three-layer assembly:
-/// - Layer 1: coworker.md (transition — will move to agent definition)
-/// - Layer 2: common.md
+/// - Layer 1: Agent definition from `midtown-code-author.md`
+/// - Layer 2: coworker-common.md + common.md
 /// - Layer 3: Runtime context with name, project_name, channel_lead substitutions
 ///
 /// `channel_lead` is the name of the channel lead to @mention for domain questions.
@@ -318,12 +350,11 @@ pub fn coworker_system_prompt(
     project_name: &str,
     channel_lead: Option<&str>,
 ) -> String {
-    // Layer 1: Old-style coworker.md (transition — will move to agent definition)
-    let layer1 =
-        load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
-    // Layer 2: Shared prompt
+    // Layer 1: Agent definition
+    let layer1 = load_agent_definition_for_role(AgentRole::Coworker);
+    // Layer 2: Shared prompt (coworker-common + common)
     let layer2 = shared_prompt_for_role(AgentRole::Coworker);
-    let prompt = format!("{layer1}\n{layer2}");
+    let prompt = format!("{layer1}\n\n{layer2}");
     // Layer 3: Runtime context
     build_runtime_context(
         &prompt,
@@ -339,8 +370,8 @@ pub fn coworker_system_prompt(
 /// Load the reviewer agent's system prompt with name and project substitution.
 ///
 /// Three-layer assembly:
-/// - Layer 1: coworker.md + reviewer.md (transition — will move to agent definition)
-/// - Layer 2: common.md
+/// - Layer 1: Agent definition from `midtown-code-reviewer.md` (self-contained)
+/// - Layer 2: coworker-common.md + common.md (shared operational rules)
 /// - Layer 3: Runtime context with name, escalation_target, platform substitutions
 pub fn reviewer_system_prompt(
     name: &str,
@@ -349,16 +380,11 @@ pub fn reviewer_system_prompt(
     platform: crate::auth::AuthProvider,
     pr_number: Option<u64>,
 ) -> String {
-    // Layer 1: Old-style coworker.md (transition — will move to agent definition)
-    let coworker_template =
-        load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
-    // Layer 2: Shared prompt (common.md — operational rules)
+    // Layer 1: Agent definition (self-contained reviewer identity + instructions)
+    let layer1 = load_agent_definition_for_role(AgentRole::Reviewer);
+    // Layer 2: Shared prompt (coworker-common + common — operational rules)
     let layer2 = shared_prompt_for_role(AgentRole::Reviewer);
-    // Reviewer-specific instructions come AFTER common operational rules
-    // (preserves original ordering: coworker.md → common.md → reviewer.md)
-    let reviewer =
-        load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
-    let prompt = format!("{coworker_template}\n{layer2}\n\n## Reviewer Instructions\n\n{reviewer}");
+    let prompt = format!("{layer1}\n\n{layer2}");
     // Layer 3: Runtime context
     build_runtime_context(
         &prompt,
@@ -551,7 +577,7 @@ pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
 /// Load the channel lead system prompt with channel name and domain context substitution.
 ///
 /// Three-layer assembly:
-/// - Layer 1: channel-lead.md (transition — will move to agent definition)
+/// - Layer 1: Agent definition from `midtown-channel-lead.md`
 /// - Layer 2: lead-common.md + common.md
 /// - Layer 3: Runtime context with channel_name, domain_context, ops extras, AGENTS.md
 ///
@@ -564,9 +590,8 @@ pub fn channel_lead_system_prompt(
     project_name: &str,
     agents_md: Option<&str>,
 ) -> String {
-    // Layer 1: Old-style channel-lead.md (transition — will move to agent definition)
-    let layer1 = load_prompt_file("channel-lead.md")
-        .unwrap_or_else(|| DEFAULT_CHANNEL_LEAD_PROMPT.to_string());
+    // Layer 1: Agent definition
+    let layer1 = load_agent_definition_for_role(AgentRole::ChannelLead);
     // Layer 2: Shared prompt
     let layer2 = shared_prompt_for_role(AgentRole::ChannelLead);
     let prompt = format!("{layer1}\n\n{layer2}");
