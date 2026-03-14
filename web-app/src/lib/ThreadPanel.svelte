@@ -560,9 +560,13 @@ let prevThreadId = null;
     if (!textareaEl) return
     textareaEl.style.overflowY = 'hidden'
     textareaEl.style.height = 'auto'
-    textareaEl.style.height = textareaEl.scrollHeight + 'px'
-    textareaEl.style.overflowY =
-      textareaEl.scrollHeight > textareaEl.clientHeight ? 'auto' : 'hidden'
+    const sh = textareaEl.scrollHeight
+    textareaEl.style.height = sh + 'px'
+    // Only show scrollbar when content exceeds max-height (50vh).
+    // Using clientHeight comparison alone can be off by 1px at single-line
+    // height, causing a spurious scrollbar.
+    const maxH = parseFloat(getComputedStyle(textareaEl).maxHeight)
+    textareaEl.style.overflowY = sh > maxH ? 'auto' : 'hidden'
   }
 
   // Re-measure textarea height when its width changes (e.g., thread panel resized,

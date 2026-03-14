@@ -13,6 +13,7 @@ import {
 	dismissedThreads,
 	kanbanData,
 	maxCoworkers,
+	mentionedThreads,
 	messages,
 	messagesByChannel,
 	pendingQuestions,
@@ -94,6 +95,21 @@ function trackThread(
 	});
 }
 
+// Check if a message contains an @mention of the current user.
+function containsUserMention(content: string | null | undefined): boolean {
+	if (!content) return false;
+	const uName = get(userSenderName);
+	const pattern = new RegExp(`@(user|${uName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\b`, "i");
+	return pattern.test(content);
+}
+
+// Mark a thread as mentioned (for needs-attention section).
+function markThreadMentioned(threadId: string): void {
+	const dismissed = get(dismissedThreads);
+	if (dismissed.has(threadId)) return;
+	mentionedThreads.update((s) => new Set([...s, threadId]));
+}
+
 // Dismiss a tracked thread — removes from sidebar, prevents re-tracking.
 export function dismissThread(threadParentId: string): void {
 	trackedThreads.update((tracked) => {
@@ -102,6 +118,11 @@ export function dismissThread(threadParentId: string): void {
 		return next;
 	});
 	dismissedThreads.update((s) => new Set([...s, threadParentId]));
+	mentionedThreads.update((s) => {
+		const next = new Set(s);
+		next.delete(threadParentId);
+		return next;
+	});
 	threadUnreadCounts.update((counts) => {
 		const next = { ...counts };
 		delete next[threadParentId];
@@ -735,6 +756,20 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					}
 				}
 
+				// @mention detection: if someone mentions @user in a thread reply,
+				// track the thread and flag it for the needs-attention section.
+				if (
+					!isToolOnly(msg) &&
+					msg.from !== "user" &&
+					msg.from !== get(userSenderName) &&
+					containsUserMention(msg.content)
+				) {
+					const channelMsgs = get(messagesByChannel)[channelName];
+					const parentMsg = channelMsgs?.find((m: Message) => m.id === msg.thread_parent_id);
+					trackThread(msg.thread_parent_id, channelName, parentMsg?.content);
+					markThreadMentioned(msg.thread_parent_id);
+				}
+
 				// DM channels: thread replies stay in the thread panel (consistent
 				// with regular channels). The coworker owns the DM like a channel lead.
 			} else {
@@ -778,6 +813,19 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					}
 					return channelList;
 				});
+
+				// @mention detection: if a top-level message mentions @user,
+				// track it as a thread (the message itself is the thread root)
+				// and flag it for needs-attention.
+				if (
+					!isToolOnly(msg) &&
+					msg.from !== "user" &&
+					msg.from !== get(userSenderName) &&
+					containsUserMention(msg.content)
+				) {
+					trackThread(msg.id, channelName, msg.content);
+					markThreadMentioned(msg.id);
+				}
 			}
 			break;
 		}

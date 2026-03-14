@@ -774,8 +774,13 @@ function resizeTextarea() {
 	if (!textareaElement) return;
 	textareaElement.style.overflowY = "hidden";
 	textareaElement.style.height = "auto";
-	textareaElement.style.height = `${textareaElement.scrollHeight}px`;
-	textareaElement.style.overflowY = textareaElement.scrollHeight > textareaElement.clientHeight ? "auto" : "hidden";
+	const sh = textareaElement.scrollHeight;
+	textareaElement.style.height = `${sh}px`;
+	// Only show scrollbar when content exceeds max-height (50vh).
+	// Using clientHeight comparison alone can be off by 1px at single-line
+	// height, causing a spurious scrollbar.
+	const maxH = parseFloat(getComputedStyle(textareaElement).maxHeight);
+	textareaElement.style.overflowY = sh > maxH ? "auto" : "hidden";
 }
 
 // Re-measure textarea height when its width changes (e.g., thread panel opens/closes,

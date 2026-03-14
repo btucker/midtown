@@ -361,6 +361,74 @@ export function getAllCompletedThreads(
 }
 
 /**
+ * Get all @mentioned threads across all channels, sorted by lastActivity (newest first).
+ * These are threads where someone @mentioned the user — they appear in the
+ * "needs attention" sidebar section with orange styling.
+ *
+ * When the same thread appears in both a DM channel and a regular channel
+ * (e.g., the lead posts @user in #main and the DM echoes it), we keep the
+ * regular-channel entry and drop the DM duplicate.
+ */
+export function getAllMentionedThreads(
+	tracked: Record<string, TrackedThread>,
+	unreadCounts: Record<string, number>,
+	taskThreadIds: Set<string>,
+	mentionedThreadIds: Set<string>,
+) {
+	const threads: {
+		id: string;
+		subject: string;
+		fullText: string;
+		lastActivity: string;
+		replyCount: number;
+		unread: number;
+		channelName: string;
+	}[] = [];
+	for (const [id, entry] of Object.entries(tracked)) {
+		if (taskThreadIds.has(id)) continue;
+		if (!mentionedThreadIds.has(id)) continue;
+		threads.push({
+			id,
+			subject: entry.subject,
+			fullText: entry.fullText || entry.subject,
+			lastActivity: entry.lastActivity,
+			replyCount: entry.replyCount || 0,
+			unread: unreadCounts[id] || 0,
+			channelName: entry.channelName,
+		});
+	}
+	// Deduplicate: if the same thread ID appears from both a DM and a regular
+	// channel, keep the regular channel version.
+	const seen = new Map<string, number>();
+	for (let i = 0; i < threads.length; i++) {
+		const t = threads[i];
+		const prev = seen.get(t.id);
+		if (prev !== undefined) {
+			const isDm = t.channelName.startsWith("dm-");
+			const prevIsDm = threads[prev].channelName.startsWith("dm-");
+			if (isDm && !prevIsDm) {
+				// Current is DM, previous is regular — drop current
+				threads.splice(i, 1);
+				i--;
+				continue;
+			}
+			if (!isDm && prevIsDm) {
+				// Current is regular, previous is DM — replace previous
+				threads.splice(prev, 1);
+				i--;
+				// Re-index
+				seen.clear();
+				for (let j = 0; j <= i; j++) seen.set(threads[j].id, j);
+				continue;
+			}
+		}
+		seen.set(t.id, i);
+	}
+	threads.sort((a, b) => (b.lastActivity || "").localeCompare(a.lastActivity || ""));
+	return threads;
+}
+
+/**
  * Returns true if a channel has any tracked threads that aren't task-backed
  * and aren't completed (completed threads appear in needs-attention instead).
  */

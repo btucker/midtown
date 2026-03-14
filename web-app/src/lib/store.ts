@@ -237,3 +237,8 @@ threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_
 const _dismissedArr = loadFromLocalStorage<string[]>("midtown_dismissed_threads", []);
 export const dismissedThreads = writable<Set<string>>(new Set(_dismissedArr));
 dismissedThreads.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_threads", [...s]));
+
+// Mentioned threads: threads where @user was mentioned. Stored as array, used as Set.
+const _mentionedArr = loadFromLocalStorage<string[]>("midtown_mentioned_threads", []);
+export const mentionedThreads = writable<Set<string>>(new Set(_mentionedArr));
+mentionedThreads.subscribe((s) => debouncedSaveToLocalStorage("midtown_mentioned_threads", [...s]));

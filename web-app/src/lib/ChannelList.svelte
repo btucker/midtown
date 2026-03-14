@@ -1,5 +1,6 @@
 <script lang="ts">
 import ArchiveIcon from "@lucide/svelte/icons/archive";
+import AtSign from "@lucide/svelte/icons/at-sign";
 import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";
 import { SvelteSet } from "svelte/reactivity";
@@ -17,6 +18,7 @@ import {
 	computeExpandedAfterChannelNameClick,
 	computeVisibleDmChannels,
 	getAllCompletedThreads,
+	getAllMentionedThreads,
 	getChannelCiStatus,
 	getChannelHasActiveTasks,
 	getChannelHasTrackedThreads,
@@ -35,6 +37,7 @@ import {
 	coworkers,
 	dismissedThreads,
 	kanbanData,
+	mentionedThreads,
 	messagesByChannel,
 	showArchivedChannels,
 	threadData,
@@ -122,6 +125,16 @@ $: completedThreads = getAllCompletedThreads(
 	taskThreadIds,
 	completedTaskThreadIds,
 );
+
+// @mentioned threads across all channels (for "Needs Attention" section)
+$: mentionedThreadsList = getAllMentionedThreads(
+	$trackedThreads,
+	$threadUnreadCounts,
+	taskThreadIds,
+	$mentionedThreads,
+);
+
+$: hasNeedsAttention = completedThreads.length > 0 || mentionedThreadsList.length > 0;
 
 function selectChannel(channelName) {
 	// Switch channel immediately for instant UI response (non-blocking).
@@ -263,6 +276,66 @@ function handleKeyDown(event) {
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
+  {#if hasNeedsAttention}
+    <div class="px-3 pt-2 pb-1">
+      <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs Attention</div>
+    </div>
+    <div class="needs-attention-list">
+      {#each mentionedThreadsList as thread}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="attention-thread-row mention"
+          role="button"
+          tabindex="0"
+          title={thread.fullText}
+          data-testid="needs-attention-mention"
+          onclick={() => handleCompletedThreadClick(thread)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleCompletedThreadClick(thread) }}
+        >
+          <span class="attention-icon mention"><AtSign size={10} /></span>
+          <div class="attention-thread-content">
+            <span class="attention-thread-subject">{thread.subject}</span>
+            <span class="attention-thread-channel">#{thread.channelName}</span>
+          </div>
+          <button
+            class="attention-dismiss-btn"
+            title="Dismiss"
+            data-testid="needs-attention-dismiss"
+            onclick={(e) => handleCompletedThreadDismiss(e, thread.id)}
+          >
+            <X size={10} />
+          </button>
+        </div>
+      {/each}
+      {#each completedThreads as thread}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="attention-thread-row completed"
+          role="button"
+          tabindex="0"
+          title={thread.fullText}
+          data-testid="needs-attention-thread"
+          onclick={() => handleCompletedThreadClick(thread)}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleCompletedThreadClick(thread) }}
+        >
+          <span class="attention-icon completed"><Check size={10} /></span>
+          <div class="attention-thread-content">
+            <span class="attention-thread-subject">{thread.subject}</span>
+            <span class="attention-thread-channel">#{thread.channelName}</span>
+          </div>
+          <button
+            class="attention-dismiss-btn"
+            title="Dismiss"
+            data-testid="needs-attention-dismiss"
+            onclick={(e) => handleCompletedThreadDismiss(e, thread.id)}
+          >
+            <X size={10} />
+          </button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
     <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
@@ -317,40 +390,6 @@ function handleKeyDown(event) {
           Cancel
         </button>
       </div>
-    </div>
-  {/if}
-
-  {#if completedThreads.length > 0}
-    <div class="px-3 pt-2 pb-1">
-      <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs Attention</div>
-    </div>
-    <div class="needs-attention-list">
-      {#each completedThreads as thread}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="completed-thread-row"
-          role="button"
-          tabindex="0"
-          title={thread.fullText}
-          data-testid="needs-attention-thread"
-          onclick={() => handleCompletedThreadClick(thread)}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleCompletedThreadClick(thread) }}
-        >
-          <span class="completed-check-icon"><Check size={10} /></span>
-          <div class="completed-thread-content">
-            <span class="completed-thread-subject">{thread.subject}</span>
-            <span class="completed-thread-channel">#{thread.channelName}</span>
-          </div>
-          <button
-            class="completed-dismiss-btn"
-            title="Dismiss"
-            data-testid="needs-attention-dismiss"
-            onclick={(e) => handleCompletedThreadDismiss(e, thread.id)}
-          >
-            <X size={10} />
-          </button>
-        </div>
-      {/each}
     </div>
   {/if}
 
@@ -539,7 +578,7 @@ function handleKeyDown(event) {
     padding: 2px 8px 8px;
   }
 
-  .completed-thread-row {
+  .attention-thread-row {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -553,23 +592,37 @@ function handleKeyDown(event) {
     font-family: var(--font-mono);
     font-size: 0.68rem;
     line-height: 1.3;
+  }
+
+  .attention-thread-row.completed {
     color: hsl(var(--accent-green, 145 40% 38%) / 0.8);
   }
 
-  .completed-thread-row:hover {
+  .attention-thread-row.mention {
+    color: hsl(30 90% 50% / 0.9);
+  }
+
+  .attention-thread-row:hover {
     background: hsl(var(--sidebar-accent));
   }
 
-  .completed-check-icon {
+  .attention-icon {
     width: 14px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  .attention-icon.completed {
     color: hsl(var(--accent-green, 145 40% 38%));
   }
 
-  .completed-thread-content {
+  .attention-icon.mention {
+    color: hsl(30 90% 50%);
+  }
+
+  .attention-thread-content {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -577,7 +630,7 @@ function handleKeyDown(event) {
     gap: 6px;
   }
 
-  .completed-thread-subject {
+  .attention-thread-subject {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -585,13 +638,13 @@ function handleKeyDown(event) {
     white-space: nowrap;
   }
 
-  .completed-thread-channel {
+  .attention-thread-channel {
     flex-shrink: 0;
     font-size: 0.6rem;
     color: hsl(var(--muted-foreground) / 0.5);
   }
 
-  .completed-dismiss-btn {
+  .attention-dismiss-btn {
     flex-shrink: 0;
     width: 16px;
     height: 16px;
@@ -608,11 +661,11 @@ function handleKeyDown(event) {
     transition: opacity 0.1s, color 0.1s, background 0.1s;
   }
 
-  .completed-thread-row:hover .completed-dismiss-btn {
+  .attention-thread-row:hover .attention-dismiss-btn {
     opacity: 1;
   }
 
-  .completed-dismiss-btn:hover {
+  .attention-dismiss-btn:hover {
     color: hsl(var(--muted-foreground));
     background: hsl(var(--sidebar-accent));
   }
