@@ -81,7 +81,7 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 						});
 					}
 				}
-				return self.clients.openWindow(targetUrl);
+				return self.clients.openWindow(new URL(targetUrl, self.location.origin).href);
 			}),
 	);
 });

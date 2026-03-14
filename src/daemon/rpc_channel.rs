@@ -608,14 +608,12 @@ pub(super) async fn handle_channel_post(
         info!("Bell notification: @user mentioned by {}", from);
         let display = state.user_display_name.as_deref().unwrap_or("user");
         let summary = truncate_str(&content, 100);
-        // Build deep-link URL: /{project}?channel={channel}&msg={msgId}[&thread={parentId}]
-        let mut push_url = format!(
-            "/{}?channel={}&msg={}",
-            state.project_name, channel_name, msg.id
+        let push_url = super::dispatch::build_push_deep_link(
+            &state.project_name,
+            channel_name,
+            Some(&msg.id),
+            thread_parent_id,
         );
-        if let Some(parent_id) = thread_parent_id {
-            push_url.push_str(&format!("&thread={}", parent_id));
-        }
         state.send_push_notification(
             &format!("@{} from {}", display, from),
             &summary,

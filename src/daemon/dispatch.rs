@@ -22,8 +22,8 @@ use super::{DaemonState, snapshot};
 
 /// Build a deep-link URL for push notifications.
 ///
-/// Format: `/{project}?channel={channel}&msg={msg_id}[&thread={thread_id}]`
-fn build_push_deep_link(
+/// Format: `/{project}?channel={channel}[&msg={msg_id}][&thread={thread_id}]`
+pub fn build_push_deep_link(
     project_name: &str,
     channel: &str,
     msg_id: Option<&str>,
@@ -2220,17 +2220,20 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
 
         let task_channel = snap.task_channel.get(&task.id).cloned();
 
-        // Build deep-link URL from task channel + message metadata
+        // Build deep-link URL from task channel + message metadata.
+        // Use task_message_id as the scroll target. Don't combine thread_id
+        // with message_id — they can refer to different threads when a task
+        // was dispatched from a user-created thread, causing a silent scroll
+        // failure (message Y doesn't exist in thread X).
         let task_msg_id = snap.task_message_id_map.get(&task.id).map(|s| s.as_str());
-        let task_thread_id = snap.task_thread_id_map.get(&task.id).map(|s| s.as_str());
 
         if let Some(pr_number) = task.pr {
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
             if snap.pr.merged_pr_numbers.contains(&pr_number) {
-                let push_url = task_channel.as_ref().map(|ch| {
-                    build_push_deep_link(&snap.project_name, ch, task_msg_id, task_thread_id)
-                });
+                let push_url = task_channel
+                    .as_ref()
+                    .map(|ch| build_push_deep_link(&snap.project_name, ch, task_msg_id, None));
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.dir_key,
@@ -2279,9 +2282,9 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     .map(|n| format!("#{}", n))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let push_url = task_channel.as_ref().map(|ch| {
-                    build_push_deep_link(&snap.project_name, ch, task_msg_id, task_thread_id)
-                });
+                let push_url = task_channel
+                    .as_ref()
+                    .map(|ch| build_push_deep_link(&snap.project_name, ch, task_msg_id, None));
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.dir_key,

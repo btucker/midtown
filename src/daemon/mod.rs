@@ -3705,11 +3705,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "PR #{} merged into {}",
                             pr_number, state.default_branch
                         );
+                        let push_url = dispatch::build_push_deep_link(
+                            &state.project_name,
+                            &state.project_name,
+                            None,
+                            None,
+                        );
                         state.send_push_notification(
                             &format!("PR #{} merged", pr_number),
                             &push_body,
                             &format!("pr_merged_{}", pr_number),
-                            None,
+                            Some(&push_url),
                         );
                     }
                 }
