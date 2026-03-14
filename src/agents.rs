@@ -177,7 +177,14 @@ pub fn build_runtime_context(base_prompt: &str, ctx: &RuntimeContext) -> String 
         prompt = prompt.replace("{channel_name}", channel_name);
     }
     if let Some(domain_context) = ctx.domain_context {
-        prompt = prompt.replace("{domain_context}", domain_context);
+        if prompt.contains("{domain_context}") {
+            // Layer 1 has the placeholder (old monolithic path) — replace inline
+            prompt = prompt.replace("{domain_context}", domain_context);
+        } else if !domain_context.is_empty() {
+            // --agent path: Layer 1 is loaded by CLI, so append domain context
+            // as a section in Layers 2+3 (the append prompt)
+            prompt = format!("{prompt}\n\n## Domain Context\n\n{domain_context}");
+        }
     }
     if let Some(escalation_target) = ctx.escalation_target {
         prompt = prompt.replace("{escalation_target}", escalation_target);
