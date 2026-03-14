@@ -201,7 +201,7 @@ fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, S
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
-        _ => "image/png",
+        _ => unreachable!("extension validated in handle_upload_image"),
     };
 
     let filename = image_path
