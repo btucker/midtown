@@ -1,7 +1,7 @@
-<script>
+<script lang="ts">
 import GitFork from "@lucide/svelte/icons/git-fork";
-import { getApiBase, selectDm } from "./api.js";
-import { renderContent } from "./markdown.js";
+import { getApiBase, selectDm } from "./api.ts";
+import { renderContent } from "./markdown.ts";
 import {
 	formatTime,
 	formatTimeCompact,
@@ -11,10 +11,10 @@ import {
 	parseInsightSegments,
 	senderChanged,
 	timeChanged,
-} from "./messageUtils.js";
-import { activeProject, channels, coworkers, daemonStatus } from "./store.js";
+} from "./messageUtils.ts";
+import { activeProject, channels, coworkers, daemonStatus } from "./store.ts";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
-import { isToolOnly } from "./toolRunGrouping.js";
+import { isToolOnly } from "./toolRunGrouping.ts";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";

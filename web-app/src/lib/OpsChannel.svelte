@@ -1,8 +1,8 @@
-<script>
+<script lang="ts">
 import { tick } from "svelte";
-import { fetchHistory, openThread } from "./api.js";
-import { formatTime, getPermalinkUrl, getSenderColor } from "./messageUtils.js";
-import { activeProject, messagesByChannel } from "./store.js";
+import { fetchHistory, openThread } from "./api.ts";
+import { formatTime, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";
+import { activeProject, messagesByChannel } from "./store.ts";
 
 const OPS_SENDER_OVERRIDES = {
 	midtown: "#585858",

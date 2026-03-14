@@ -1,11 +1,11 @@
-<script>
+<script lang="ts">
 import { onDestroy, onMount, untrack } from "svelte";
 import { SvelteMap } from "svelte/reactivity";
-import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
-import * as Tooltip from "$lib/components/ui/tooltip/index.js";
-import { openTaskThread, selectDm } from "./api.js";
-import { getSenderColor } from "./messageUtils.js";
-import { coworkers, kanbanData, maxCoworkers, repoStatus } from "./store.js";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
+import * as Tooltip from "$lib/components/ui/tooltip/index.ts";
+import { openTaskThread, selectDm } from "./api.ts";
+import { getSenderColor } from "./messageUtils.ts";
+import { coworkers, kanbanData, maxCoworkers, repoStatus } from "./store.ts";
 
 const sidebar = useSidebar();
 
@@ -16,7 +16,7 @@ const OFFLINE_GRACE_MS = 10 * 60 * 1000;
 // rather than waiting up to 30s for the `now` tick.
 let lastSeenActive = new SvelteMap();
 let now = $state(Date.now());
-let interval;
+let interval: ReturnType<typeof setInterval> | undefined;
 
 onMount(() => {
 	interval = setInterval(() => {

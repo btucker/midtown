@@ -1,0 +1,43 @@
+// Muted avenue colors matching the terminal TUI palette (AVENUE_COLORS from ui.rs).
+// Non-avenue senders (lead, github, system, daemon, midtown) are listed here for
+// centralised color management; they are NOT part of the TUI avenue palette.
+// Note: daemon/github/system intentionally use #585858 (dim gray) — previously
+// daemon fell back to the #d0d0d0 getAvenueColor fallback, but muted is correct
+// since daemon output is infrastructure noise, not a human voice.
+export const AVENUE_COLORS = {
+	lexington: "#5fafaf",
+	park: "#5faf5f",
+	madison: "#ff5f5f",
+	broadway: "#af5faf",
+	amsterdam: "#5f87af",
+	columbus: "#af5f5f",
+	riverside: "#87d7d7",
+	york: "#87d787",
+	pleasant: "#d7afd7",
+	vernon: "#87afd7",
+	bleecker: "#d7875f",
+	houston: "#ff87d7",
+	canal: "#87d7ff",
+	spring: "#afff87",
+	prince: "#d7afff",
+	mercer: "#ffaf87",
+	lead: "#E3BD3F",
+	github: "#585858",
+	system: "#585858",
+	daemon: "#585858",
+	midtown: "#E3BD3F",
+};
+
+export function getAvenueColor(name: string | null | undefined, fallback = "#d0d0d0"): string {
+	return AVENUE_COLORS[name?.toLowerCase() as keyof typeof AVENUE_COLORS] || fallback;
+}
+
+// Extract the avenue color for a fork session owner.
+// Fork session names are compound: "{caller}-{slug}-{tid}" (e.g., "park-discuss-ab12")
+// or "fork-{tid}" for anonymous forks. Extract the first segment and look it up.
+// Falls back to lead gold for non-avenue prefixes (channel leads, anonymous forks).
+export function getForkOwnerColor(forkName: string | null | undefined): string {
+	if (!forkName) return AVENUE_COLORS.lead;
+	const prefix = forkName.split("-")[0].toLowerCase();
+	return AVENUE_COLORS[prefix as keyof typeof AVENUE_COLORS] || AVENUE_COLORS.lead;
+}

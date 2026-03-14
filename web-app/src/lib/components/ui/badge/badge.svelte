@@ -1,4 +1,4 @@
-<script module>
+<script module lang="ts">
 import { tv } from "tailwind-variants";
 
 export const badgeVariants = tv({
@@ -18,8 +18,8 @@ export const badgeVariants = tv({
 });
 </script>
 
-<script>
-	import { cn } from "$lib/utils.js";
+<script lang="ts">
+	import { cn } from "$lib/utils.ts";
 
 	let {
 		ref = $bindable(null),

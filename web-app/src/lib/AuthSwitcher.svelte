@@ -1,7 +1,7 @@
-<script>
+<script lang="ts">
 import { onMount } from "svelte";
-import { fetchAllAuthProfiles, switchAuthProfile } from "./api.js";
-import { authProfilesByProvider, authSwitching, selectedAuthProvider } from "./store.js";
+import { fetchAllAuthProfiles, switchAuthProfile } from "./api.ts";
+import { authProfilesByProvider, authSwitching, selectedAuthProvider } from "./store.ts";
 
 let open = $state(false);
 let error = $state(null);

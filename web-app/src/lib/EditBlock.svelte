@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * EditBlock — renders an Edit tool call with a collapsible header and DiffView.
  *

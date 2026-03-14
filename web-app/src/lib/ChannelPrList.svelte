@@ -1,7 +1,7 @@
-<script>
-import { getChannelPrs } from "./channelUtils.js";
-import { activeChannel, kanbanData, repoStatus, repoStatuses } from "./store.js";
-import { formatRelativeTime } from "./utils.js";
+<script lang="ts">
+import { getChannelPrs } from "./channelUtils.ts";
+import { activeChannel, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import { formatRelativeTime } from "./utils.ts";
 
 let openPrs = $derived(getChannelPrs($activeChannel, $kanbanData));
 // done PRs don't include task_id so they can't be channel-filtered; show all

@@ -1,8 +1,8 @@
-<script>
+<script lang="ts">
 import { onDestroy } from "svelte";
 import { fade } from "svelte/transition";
-import { activeChannel, channels, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.js";
-import { formatRelativeTime } from "./utils.js";
+import { activeChannel, channels, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import { formatRelativeTime } from "./utils.ts";
 
 let isMultiRepo = $derived($repoStatuses.length > 1);
 

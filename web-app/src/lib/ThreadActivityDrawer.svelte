@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ThreadActivityDrawer — slide-up drawer above the thread reply input showing tool call activity.
  *
@@ -18,8 +18,8 @@
 
 import { untrack } from "svelte";
 import { slide } from "svelte/transition";
-import { getForkOwnerColor } from "./avenue-colors.js";
-import { threadForkOwners } from "./store.js";
+import { getForkOwnerColor } from "./avenue-colors.ts";
+import { threadForkOwners } from "./store.ts";
 
 let { messages = [], channelName, threadParentId = null, thinking = false, inlineMode = false } = $props();
 

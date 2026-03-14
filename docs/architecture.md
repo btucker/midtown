@@ -637,7 +637,7 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
   - **No-daemon fallback**: If no daemon sockets are found (or all are stale), the CLI writes the profile config directly to disk.
 - Push notifications (W3C Push API with VAPID)
   - **Backend**: `src/push.rs` — VAPID key generation/storage, subscription management, encrypted push delivery via `web-push-native`. Keys stored in `~/.midtown/push/`.
-  - **Frontend**: `web-app/src/lib/push.js` — subscribe/unsubscribe flow, VAPID key fetch. `web-app/src/sw.js` — service worker handles incoming push events with foreground suppression (skips OS notification when the app window is focused).
+  - **Frontend**: `web-app/src/lib/push.ts` — subscribe/unsubscribe flow, VAPID key fetch. `web-app/src/sw.ts` — service worker handles incoming push events with foreground suppression (skips OS notification when the app window is focused).
   - **Triggers**: Three event types fire push notifications: (1) `@user`/`@{display_name}` mentions in channel posts (`rpc_channel.rs`), (2) task completions from PR merges with `[Midtown !XX]` tags (`dispatch.rs` via `task_completed_effects`), and (3) non-Midtown PR merges (`mod.rs` webhook handler). All use `DaemonState::send_push_notification()` or `Effect::SendPushNotification`.
   - **Tags**: Each notification uses a unique tag (e.g., `pr_merged_{pr_number}`, `task_completed_{task_id}`, `mention`) to prevent the Web Notifications API from silently replacing unread notifications.
   - **HTTPS requirement**: Mobile browsers require a secure context for `PushManager`. Desktop `localhost` is exempt, but LAN access (`http://192.168.x.x`) will not have push available.
@@ -937,7 +937,7 @@ When a channel is created, archived, unarchived, or renamed, the daemon broadcas
 - **Effects system** (`effects.rs`): `Effect::CreateChannel`, `Effect::ArchiveChannel`, `Effect::MergeChannels` — broadcast after successful execution. Each has an idempotency guard to prevent duplicate broadcasts from repeated ticks.
 - **Lazy channel creation** (`mod.rs`): `send_and_broadcast_async()` broadcasts `channel_list_changed("created")` when `ChannelRouter::send()` returns `is_new = true`, indicating the channel was lazily opened for the first time. This covers DM channels (`dm-<name>`) and any other channels auto-created by the first `PostToChannel`/`PostSystemMessage` write.
 
-**Web app handling** (`api.js`): The `channel_list_changed` WebSocket event triggers `fetchChannels()` to re-fetch the full channel list from the REST API (source of truth), rather than optimistically updating client-side state.
+**Web app handling** (`api.ts`): The `channel_list_changed` WebSocket event triggers `fetchChannels()` to re-fetch the full channel list from the REST API (source of truth), rather than optimistically updating client-side state.
 
 **TUI**: The TUI creates channels via daemon RPC when available (falling back to direct filesystem access if the daemon is unreachable), so the daemon handles broadcasting. The TUI's 30-second channel poll handles updates from other clients.
 

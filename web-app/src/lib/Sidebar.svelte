@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import Bell from "@lucide/svelte/icons/bell";
 import BellOff from "@lucide/svelte/icons/bell-off";
 import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -8,8 +8,8 @@ import AuthSwitcher from "./AuthSwitcher.svelte";
 import ChannelList from "./ChannelList.svelte";
 import CoworkerStatus from "./CoworkerStatus.svelte";
 import OpsChannel from "./OpsChannel.svelte";
-import { pushPermission, pushSubscribed, pushSupported, subscribePush, unsubscribePush } from "./push.js";
-import { connected } from "./store.js";
+import { pushPermission, pushSubscribed, pushSupported, subscribePush, unsubscribePush } from "./push.ts";
+import { connected } from "./store.ts";
 import UsageBars from "./UsageBars.svelte";
 
 let channelsExpanded = $state(true);

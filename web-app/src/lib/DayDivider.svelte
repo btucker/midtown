@@ -1,5 +1,5 @@
 <!-- Centered date label on a horizontal rule. Used for day dividers in channels and threads. -->
-<script>
+<script lang="ts">
 let { label } = $props();
 </script>
 

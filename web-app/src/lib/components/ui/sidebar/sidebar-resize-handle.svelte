@@ -1,6 +1,6 @@
-<script>
-import { cn } from "$lib/utils.js";
-import { useSidebar } from "./context.svelte.js";
+<script lang="ts">
+import { cn } from "$lib/utils.ts";
+import { useSidebar } from "./context.svelte.ts";
 
 let { ref = $bindable(null), class: className, ...restProps } = $props();
 

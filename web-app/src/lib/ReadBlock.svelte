@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ReadBlock — renders a Read tool call with syntax-highlighted file content.
  *
@@ -9,7 +9,7 @@
  * Props:
  *   block — ToolBlock { tool_name, input, output, error }
  */
-import { escapeHtml, getLanguage, highlightBlock } from "./highlighting.js";
+import { escapeHtml, getLanguage, highlightBlock } from "./highlighting.ts";
 
 let { block } = $props();
 

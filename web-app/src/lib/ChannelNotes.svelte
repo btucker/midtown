@@ -1,6 +1,6 @@
-<script>
-import { renderContent } from "./markdown.js";
-import { activeChannel, activeProject } from "./store.js";
+<script lang="ts">
+import { renderContent } from "./markdown.ts";
+import { activeChannel, activeProject } from "./store.ts";
 
 /** @type {Array<{filename: string, title: string, content: string}>} */
 let notes = $state([]);

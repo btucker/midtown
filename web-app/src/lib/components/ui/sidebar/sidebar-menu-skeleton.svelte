@@ -1,6 +1,6 @@
-<script>
-import { Skeleton } from "$lib/components/ui/skeleton/index.js";
-import { cn } from "$lib/utils.js";
+<script lang="ts">
+import { Skeleton } from "$lib/components/ui/skeleton/index.ts";
+import { cn } from "$lib/utils.ts";
 
 let { ref = $bindable(null), class: className, showIcon = false, children, ...restProps } = $props();
 

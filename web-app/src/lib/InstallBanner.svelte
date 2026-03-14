@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import Download from "@lucide/svelte/icons/download";
 import Share from "@lucide/svelte/icons/share";
 import X from "@lucide/svelte/icons/x";

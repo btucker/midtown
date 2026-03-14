@@ -1,4 +1,4 @@
-<script module>
+<script module lang="ts">
 // Module-level draft storage persists across mount/unmount cycles.
 // ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
 // state would be lost when the thread panel closes and reopens.
@@ -6,24 +6,24 @@ const threadDrafts = new Map();
 let prevThreadId = null;
 </script>
 
-<script>
-  import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.js'
-  import { sendMessage, closeThread, forkThread, unforkThread, clearErrorCallback, openTaskThread, selectDm } from './api.js'
-  import { handleCodePaste } from './codePaste.js'
-  import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.js'
-  import { getPrUrl as getPrUrlUtil } from './channelUtils.js'
+<script lang="ts">
+  import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.ts'
+  import { sendMessage, closeThread, forkThread, unforkThread, clearErrorCallback, openTaskThread, selectDm } from './api.ts'
+  import { handleCodePaste } from './codePaste.ts'
+  import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.ts'
+  import { getPrUrl as getPrUrlUtil } from './channelUtils.ts'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
-  import { dateChanged } from './messageUtils.js'
+  import { dateChanged } from './messageUtils.ts'
   import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
-  import { openImageLightbox } from './biggerPicture.js'
+  import { openImageLightbox } from './biggerPicture.ts'
   import MessageRow from './MessageRow.svelte'
   import DayDivider from './DayDivider.svelte'
   import ThreadActivityDrawer from './ThreadActivityDrawer.svelte'
   import TaskRow from './TaskRow.svelte'
   import DiffView from './DiffView.svelte'
   import ToolRunSummary from './ToolRunSummary.svelte'
-  import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.js'
-  import { clearMobileTextarea } from './mobileInput.js'
+  import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.ts'
+  import { clearMobileTextarea } from './mobileInput.ts'
 
   // Thread panel resize state (desktop only)
   const THREAD_PANEL_WIDTH_KEY = 'thread-panel:width'

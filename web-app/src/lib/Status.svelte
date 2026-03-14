@@ -1,12 +1,12 @@
-<script>
+<script lang="ts">
 import { onDestroy, onMount } from "svelte";
-import { fetchStatus, selectDm } from "./api.js";
-import { coworkers, daemonStatus } from "./store.js";
+import { fetchStatus, selectDm } from "./api.ts";
+import { coworkers, daemonStatus } from "./store.ts";
 
 // Braille spinner animation
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 let spinnerFrame = $state(0);
-let spinnerInterval;
+let spinnerInterval: ReturnType<typeof setInterval> | undefined;
 
 onMount(() => {
 	spinnerInterval = setInterval(() => {

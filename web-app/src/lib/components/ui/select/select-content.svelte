@@ -1,6 +1,6 @@
-<script>
+<script lang="ts">
 import { Select as SelectPrimitive } from "bits-ui";
-import { cn } from "$lib/utils.js";
+import { cn } from "$lib/utils.ts";
 import SelectPortal from "./select-portal.svelte";
 import SelectScrollDownButton from "./select-scroll-down-button.svelte";
 import SelectScrollUpButton from "./select-scroll-up-button.svelte";

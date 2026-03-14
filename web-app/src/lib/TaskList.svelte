@@ -1,7 +1,7 @@
-<script>
-import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
-import { openTaskThread } from "./api.js";
-import { coworkers, kanbanData } from "./store.js";
+<script lang="ts">
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
+import { openTaskThread } from "./api.ts";
+import { coworkers, kanbanData } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
 
 const sidebar = useSidebar();

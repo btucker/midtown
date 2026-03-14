@@ -1,8 +1,8 @@
-<script>
+<script lang="ts">
 import { onMount } from "svelte";
-import { closeThread } from "$lib/api.js";
-import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.js";
-import { threadData } from "$lib/store.js";
+import { closeThread } from "$lib/api.ts";
+import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
+import { threadData } from "$lib/store.ts";
 
 const sidebar = useSidebar();
 
