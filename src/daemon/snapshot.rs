@@ -1412,6 +1412,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 &merged_pr_numbers,
                 &tasks_with_open_prs,
                 &github_open_pr_task_ids,
+                &active_names,
             )
         })
         .map(|task| task.id.clone())

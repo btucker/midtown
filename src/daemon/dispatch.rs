@@ -310,11 +310,27 @@ pub(crate) fn is_task_pr_protected(
     merged_pr_numbers: &HashSet<u64>,
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
+    active_names: &HashSet<String>,
 ) -> bool {
     // Completed tasks are always protected
     if task.status == crate::tasks::TaskStatus::Completed {
         debug!("Skipping recovery for task !{}: already completed", task.id);
         return true;
+    }
+
+    // If the task's owner has no active session, PR protection doesn't apply.
+    // This handles the catch-22 where a pending task is created for an existing PR
+    // (e.g., "rebase and land PR #X") — without this, nobody could pick it up.
+    let owner_is_active = task
+        .owner
+        .as_ref()
+        .is_some_and(|owner| active_names.contains(&owner.to_lowercase()));
+    if !owner_is_active {
+        debug!(
+            "Task !{} has no active owner session — PR protection does not apply",
+            task.id
+        );
+        return false;
     }
 
     // Open PR via pr_task_associations (unless the PR was merged)
@@ -2325,11 +2341,17 @@ pub fn should_recover_task_test_helper(
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
+    // Test helper: assume owner is active (preserves existing test behavior)
+    let mut active_names = HashSet::new();
+    if let Some(owner) = &task.owner {
+        active_names.insert(owner.to_lowercase());
+    }
     !is_task_pr_protected(
         task,
         merged_pr_numbers,
         tasks_with_open_prs,
         github_open_pr_task_ids,
+        &active_names,
     )
 }
 
