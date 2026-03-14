@@ -1401,6 +1401,18 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Dispatch pre-filters ──────────────────────────────────────────────
+    // Pre-compute which tasks have a running session so that PR-protection
+    // only blocks dispatch when someone is actively working on the PR.
+    let tasks_with_running_sessions: HashSet<String> = session_task_map
+        .iter()
+        .filter(|(_, session_id)| {
+            sessions
+                .get(session_id.as_str())
+                .is_some_and(|s| s.is_running)
+        })
+        .map(|(task_id, _)| task_id.clone())
+        .collect();
+
     // Pre-compute which tasks should be skipped during dispatch/recovery due
     // to PR status or task completion. This moves the per-task filtering out
     // of dispatch decision functions so they can use a simple HashSet::contains.
@@ -1412,6 +1424,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 &merged_pr_numbers,
                 &tasks_with_open_prs,
                 &github_open_pr_task_ids,
+                &tasks_with_running_sessions,
             )
         })
         .map(|task| task.id.clone())

@@ -303,13 +303,20 @@ fn find_session_for_task<'a>(
 /// Checks (in order):
 /// 1. Task is already completed
 /// 2. Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
+///    — only if a running session exists for the task
 /// 3. Task has an explicit `task.pr` pointing to a merged PR
 /// 4. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+///    — only if a running session exists for the task
+///
+/// Open-PR checks (2, 4) require an active running session. Without one, the task
+/// is dispatchable — this prevents the catch-22 where a pending task linked to an
+/// existing PR can never be assigned because PR-protection blocks dispatch.
 pub(crate) fn is_task_pr_protected(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
+    tasks_with_running_sessions: &HashSet<String>,
 ) -> bool {
     // Completed tasks are always protected
     if task.status == crate::tasks::TaskStatus::Completed {
@@ -317,14 +324,22 @@ pub(crate) fn is_task_pr_protected(
         return true;
     }
 
+    let has_running_session = tasks_with_running_sessions.contains(&task.id);
+
     // Open PR via pr_task_associations (unless the PR was merged)
     if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
         if !merged_pr_numbers.contains(&pr_number) {
+            if has_running_session {
+                debug!(
+                    "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{}) and running session",
+                    task.id, pr_number
+                );
+                return true;
+            }
             debug!(
-                "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+                "Task !{} has open PR #{} but no running session — allowing dispatch",
                 task.id, pr_number
             );
-            return true;
         } else {
             debug!(
                 "Task !{} is in pr_task_associations but PR #{} is merged, allowing recovery for auto-completion",
@@ -346,11 +361,17 @@ pub(crate) fn is_task_pr_protected(
 
     // Defense-in-depth: GitHub title pattern match
     if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
-        info!(
-            "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
+        if has_running_session {
+            info!(
+                "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern and running session",
+                task.id, open_pr
+            );
+            return true;
+        }
+        debug!(
+            "Task !{} has open PR #{} via GitHub title but no running session — allowing dispatch",
             task.id, open_pr
         );
-        return true;
     }
 
     false
@@ -2325,11 +2346,13 @@ pub fn should_recover_task_test_helper(
     tasks_with_open_prs: &HashMap<String, u64>,
     github_open_pr_task_ids: &HashMap<String, u64>,
 ) -> bool {
+    // Test helper: pass empty running sessions to allow recovery (simulates no active session)
     !is_task_pr_protected(
         task,
         merged_pr_numbers,
         tasks_with_open_prs,
         github_open_pr_task_ids,
+        &HashSet::new(),
     )
 }
 
