@@ -815,3 +815,180 @@ fn test_channel_lead_system_prompt_preserves_literal_placeholders_in_injected_co
         prompt
     );
 }
+
+// ── Agent definition file tests ───────────────────────────────────
+//
+// These verify the compiled-in agent definition files in agents/definitions/
+// parse correctly and contain proper frontmatter, no template variables,
+// and role-specific content.
+
+/// Template variables that must NOT appear in any agent definition file.
+const TEMPLATE_VARS: &[&str] = &[
+    "{name}",
+    "{project_name}",
+    "{channel_name}",
+    "{channel_lead}",
+    "{escalation_target}",
+    "{pr_number}",
+    "{code_review_invocation}",
+    "{domain_context}",
+];
+
+/// Helper: parse an agent definition from a compiled-in constant and assert basic validity.
+fn assert_valid_agent_definition(
+    content: &str,
+    expected_name: &str,
+    filename: &str,
+) -> crate::agent_definition::AgentDefinition {
+    let path = std::path::PathBuf::from(format!("agents/definitions/{}", filename));
+    let def = crate::agent_definition::parse_agent_content(content, &path)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {}", filename, e));
+
+    // Must have the expected name
+    assert_eq!(
+        def.name, expected_name,
+        "{} should have name '{}'",
+        filename, expected_name
+    );
+
+    // Must have a description
+    assert!(
+        def.description.is_some(),
+        "{} must have a description in frontmatter",
+        filename
+    );
+
+    // Description should be non-empty
+    let desc = def.description.as_deref().unwrap();
+    assert!(
+        !desc.is_empty(),
+        "{} description must not be empty",
+        filename
+    );
+
+    // System prompt must be non-empty
+    assert!(
+        !def.system_prompt.is_empty(),
+        "{} system prompt must not be empty",
+        filename
+    );
+
+    // Must not contain any template variables
+    for var in TEMPLATE_VARS {
+        assert!(
+            !def.system_prompt.contains(var),
+            "{} must not contain template variable '{}'\nFound in: {}",
+            filename,
+            var,
+            def.system_prompt
+                .lines()
+                .find(|l| l.contains(var))
+                .unwrap_or("(not found)")
+        );
+    }
+
+    def
+}
+
+#[test]
+fn test_code_author_definition_parses_correctly() {
+    let def = assert_valid_agent_definition(
+        DEFAULT_CODE_AUTHOR_DEFINITION,
+        "midtown-code-author",
+        "midtown-code-author.md",
+    );
+
+    // Should contain code-author-specific content
+    assert!(
+        def.system_prompt.contains("coworker"),
+        "Code author definition should mention coworker role"
+    );
+    assert!(
+        def.system_prompt.contains("worktree"),
+        "Code author definition should mention git worktree"
+    );
+    assert!(
+        def.system_prompt.contains("PR"),
+        "Code author definition should mention PRs"
+    );
+}
+
+#[test]
+fn test_code_reviewer_definition_parses_correctly() {
+    let def = assert_valid_agent_definition(
+        DEFAULT_CODE_REVIEWER_DEFINITION,
+        "midtown-code-reviewer",
+        "midtown-code-reviewer.md",
+    );
+
+    // Should contain reviewer-specific content
+    assert!(
+        def.system_prompt.contains("review"),
+        "Code reviewer definition should mention reviewing"
+    );
+    assert!(
+        def.system_prompt.contains("THRESHOLD"),
+        "Code reviewer definition should mention threshold"
+    );
+}
+
+#[test]
+fn test_project_lead_definition_parses_correctly() {
+    let def = assert_valid_agent_definition(
+        DEFAULT_PROJECT_LEAD_DEFINITION,
+        "midtown-project-lead",
+        "midtown-project-lead.md",
+    );
+
+    // Should contain project-lead-specific content
+    assert!(
+        def.system_prompt.contains("Project Lead"),
+        "Project lead definition should mention Project Lead role"
+    );
+    assert!(
+        def.system_prompt.contains("delegate"),
+        "Project lead definition should mention delegation"
+    );
+}
+
+#[test]
+fn test_channel_lead_definition_parses_correctly() {
+    let def = assert_valid_agent_definition(
+        DEFAULT_CHANNEL_LEAD_DEFINITION,
+        "midtown-channel-lead",
+        "midtown-channel-lead.md",
+    );
+
+    // Should contain channel-lead-specific content
+    assert!(
+        def.system_prompt.contains("channel lead"),
+        "Channel lead definition should mention channel lead role"
+    );
+    assert!(
+        def.system_prompt.contains("domain"),
+        "Channel lead definition should mention domain expertise"
+    );
+}
+
+#[test]
+fn test_code_reviewer_is_not_superset_of_code_author() {
+    // The reviewer definition should NOT contain coworker operational content
+    // like "Channel Usage", "Git Workflow", etc. — those come from the shared layer.
+    let path = std::path::Path::new("agents/definitions/midtown-code-reviewer.md");
+    let reviewer =
+        crate::agent_definition::parse_agent_content(DEFAULT_CODE_REVIEWER_DEFINITION, path)
+            .unwrap();
+
+    assert!(
+        !reviewer.system_prompt.contains("## Channel Usage"),
+        "Reviewer definition should NOT contain Channel Usage — that's shared content"
+    );
+    assert!(
+        !reviewer.system_prompt.contains("## Git Workflow"),
+        "Reviewer definition should NOT contain Git Workflow — that's shared content"
+    );
+    assert!(
+        !reviewer.system_prompt.contains("## Your Task"),
+        "Reviewer definition should NOT contain Your Task — that's shared content"
+    );
+}

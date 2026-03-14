@@ -39,6 +39,31 @@ const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.m
 /// Appended to the generic channel lead prompt when the channel is "ops".
 const DEFAULT_OPS_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/ops-channel-lead.md");
 
+// ── Agent definition files (Claude Code --agent format) ──────────
+//
+// These are compiled in but not yet used by assembly functions.
+// Future tasks will wire them into the prompt assembly pipeline.
+
+/// Compiled-in agent definition for the code author role.
+#[allow(dead_code)]
+const DEFAULT_CODE_AUTHOR_DEFINITION: &str =
+    include_str!("../agents/definitions/midtown-code-author.md");
+
+/// Compiled-in agent definition for the code reviewer role.
+#[allow(dead_code)]
+const DEFAULT_CODE_REVIEWER_DEFINITION: &str =
+    include_str!("../agents/definitions/midtown-code-reviewer.md");
+
+/// Compiled-in agent definition for the project lead role.
+#[allow(dead_code)]
+const DEFAULT_PROJECT_LEAD_DEFINITION: &str =
+    include_str!("../agents/definitions/midtown-project-lead.md");
+
+/// Compiled-in agent definition for the channel lead role.
+#[allow(dead_code)]
+const DEFAULT_CHANNEL_LEAD_DEFINITION: &str =
+    include_str!("../agents/definitions/midtown-channel-lead.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
