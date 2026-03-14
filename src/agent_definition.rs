@@ -105,7 +105,10 @@ fn strip_yaml_quotes(s: &str) -> String {
 }
 
 /// Parse agent definition content (testable without filesystem).
-fn parse_agent_content(content: &str, source_path: &Path) -> Result<AgentDefinition, String> {
+pub(crate) fn parse_agent_content(
+    content: &str,
+    source_path: &Path,
+) -> Result<AgentDefinition, String> {
     let trimmed = content.trim_start();
 
     if !trimmed.starts_with("---") {
