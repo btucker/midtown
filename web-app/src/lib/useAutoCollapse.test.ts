@@ -20,7 +20,7 @@ describe("computeInitialState", () => {
 
 	it("returns 'collapsed' when timestamp is missing", () => {
 		expect(computeInitialState(null)).toBe("collapsed");
-		expect(computeInitialState(undefined)).toBe("collapsed");
+		expect(computeInitialState(undefined as unknown as null)).toBe("collapsed");
 	});
 
 	it("returns 'preview' when timestamp is exactly now", () => {
@@ -71,7 +71,7 @@ describe("createAutoCollapse", () => {
 		const cb = vi.fn();
 		ac.startTimer(cb);
 		expect(cb).not.toHaveBeenCalled();
-		vi.advanceTimersByTime(ac.timeoutMs);
+		vi.advanceTimersByTime(ac.timeoutMs ?? 0);
 		expect(cb).toHaveBeenCalledOnce();
 	});
 

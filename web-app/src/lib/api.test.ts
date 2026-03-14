@@ -25,6 +25,7 @@ import {
 	trackedThreads,
 	userSenderName,
 } from "./store.ts";
+import type { Message } from "./types.ts";
 
 describe("fetchHistory", () => {
 	let originalFetch: typeof globalThis.fetch;
@@ -34,7 +35,7 @@ describe("fetchHistory", () => {
 		// Reset store to known state: channel-a has existing messages
 		messagesByChannel.set({
 			midtown: [],
-			"channel-a": [{ id: 1, content: "existing message", channel: "channel-a" }],
+			"channel-a": [{ id: "1", content: "existing message", channel: "channel-a" } as Message],
 		});
 	});
 
@@ -86,8 +87,8 @@ describe("fetchHistory", () => {
 		messagesByChannel.set({
 			midtown: [],
 			web: [
-				{ id: "real-1", content: "existing confirmed", channel: "web", from: "coworker" },
-				{ id: "pending-ghost", content: "my unsent msg", channel: "web", from: "user", pending: true },
+				{ id: "real-1", content: "existing confirmed", channel: "web", from: "coworker" } as Message,
+				{ id: "pending-ghost", content: "my unsent msg", channel: "web", from: "user", pending: true } as Message,
 			],
 		});
 
@@ -192,8 +193,8 @@ describe("fetchHistory", () => {
 		messagesByChannel.set({
 			midtown: [],
 			"channel-a": [
-				{ id: 1, content: "confirmed msg", channel: "channel-a", from: "coworker" },
-				{ id: "pending-xyz", content: "my unsent msg", channel: "channel-a", from: "user", pending: true },
+				{ id: "1", content: "confirmed msg", channel: "channel-a", from: "coworker" } as Message,
+				{ id: "pending-xyz", content: "my unsent msg", channel: "channel-a", from: "user", pending: true } as Message,
 			],
 		});
 
@@ -207,7 +208,7 @@ describe("fetchHistory", () => {
 		const store = get(messagesByChannel);
 		// Confirmed message retained, pending message stripped
 		expect(store["channel-a"]).toHaveLength(1);
-		expect(store["channel-a"][0].id).toBe(1);
+		expect(store["channel-a"][0].id).toBe("1");
 		expect(store["channel-a"].some((m) => m.pending)).toBe(false);
 	});
 
@@ -216,7 +217,9 @@ describe("fetchHistory", () => {
 		// there's no confirmed data to retain — allow the empty response through.
 		messagesByChannel.set({
 			midtown: [],
-			"channel-a": [{ id: "pending-1", content: "unsent", channel: "channel-a", from: "user", pending: true }],
+			"channel-a": [
+				{ id: "pending-1", content: "unsent", channel: "channel-a", from: "user", pending: true } as Message,
+			],
 		});
 
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -252,7 +255,7 @@ describe("fetchHistory", () => {
 		// Pending messages in existing are discarded because the whole channel array
 		// is overwritten — this is the already-correct baseline behavior.
 		messagesByChannel.set({
-			midtown: [{ id: "pending-mt", content: "hello", channel: "midtown", from: "user", pending: true }],
+			midtown: [{ id: "pending-mt", content: "hello", channel: "midtown", from: "user", pending: true } as Message],
 		});
 
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -278,7 +281,7 @@ describe("fetchHistory — AbortController cancellation", () => {
 		originalFetch = globalThis.fetch;
 		messagesByChannel.set({
 			midtown: [],
-			"channel-a": [{ id: 1, content: "existing", channel: "channel-a" }],
+			"channel-a": [{ id: "1", content: "existing", channel: "channel-a" } as Message],
 		});
 	});
 
@@ -287,9 +290,9 @@ describe("fetchHistory — AbortController cancellation", () => {
 	});
 
 	it("aborts a previous in-flight request when a new one starts for the same channel", async () => {
-		const abortSignals = [];
-		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
-			abortSignals.push(opts?.signal);
+		const abortSignals: AbortSignal[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((_url: string, opts?: RequestInit) => {
+			if (opts?.signal) abortSignals.push(opts.signal);
 			return new Promise((resolve) => setTimeout(() => resolve({ ok: true, json: async () => [] }), 100));
 		});
 
@@ -306,10 +309,10 @@ describe("fetchHistory — AbortController cancellation", () => {
 	});
 
 	it("does not abort requests for different channels", async () => {
-		const abortSignals = {};
-		globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+		const abortSignals: Record<string, AbortSignal> = {};
+		globalThis.fetch = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
 			const ch = url.includes("channel=") ? new URL(url, "http://localhost").searchParams.get("channel") : "__all__";
-			abortSignals[ch] = opts?.signal;
+			if (ch && opts?.signal) abortSignals[ch] = opts.signal;
 			return Promise.resolve({ ok: true, json: async () => [] });
 		});
 
@@ -329,7 +332,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 	it("replaces a pending optimistic message with the real server message", () => {
 		// Simulate user hitting Send: a pending placeholder is in the store
 		messagesByChannel.set({
-			midtown: [{ id: "pending-abc", from: "user", content: "hello", channel: "midtown", pending: true }],
+			midtown: [{ id: "pending-abc", from: "user", content: "hello", channel: "midtown", pending: true } as Message],
 		});
 
 		// Server echoes back the real message
@@ -347,7 +350,15 @@ describe("handleUpdate — optimistic message deduplication", () => {
 
 	it("does not remove a pending message if content does not match", () => {
 		messagesByChannel.set({
-			midtown: [{ id: "pending-abc", from: "user", content: "different text", channel: "midtown", pending: true }],
+			midtown: [
+				{
+					id: "pending-abc",
+					from: "user",
+					content: "different text",
+					channel: "midtown",
+					pending: true,
+				} as Message,
+			],
 		});
 
 		// Real message arrives for a different content
@@ -366,8 +377,8 @@ describe("handleUpdate — optimistic message deduplication", () => {
 	it("only removes the first matching pending message when duplicates exist", () => {
 		messagesByChannel.set({
 			midtown: [
-				{ id: "pending-1", from: "user", content: "hello", channel: "midtown", pending: true },
-				{ id: "pending-2", from: "user", content: "hello", channel: "midtown", pending: true },
+				{ id: "pending-1", from: "user", content: "hello", channel: "midtown", pending: true } as Message,
+				{ id: "pending-2", from: "user", content: "hello", channel: "midtown", pending: true } as Message,
 			],
 		});
 
@@ -386,9 +397,10 @@ describe("handleUpdate — optimistic message deduplication", () => {
 	it("replaces a pending thread reply with the real server reply", () => {
 		const parentId = "parent-msg-1";
 		threadData.set({
-			parentMessage: { id: parentId, from: "lead", content: "original" },
+			parentMessage: { id: parentId, from: "lead", content: "original" } as Message,
 			channelName: "midtown",
-			messages: [{ id: "pending-reply-1", from: "user", content: "my reply", pending: true }],
+			messages: [{ id: "pending-reply-1", from: "user", content: "my reply", pending: true } as Message],
+			tasks: [],
 		});
 
 		// Server echoes the real thread reply
@@ -404,7 +416,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData);
+		const td = get(threadData)!;
 		expect(td.messages).toHaveLength(1);
 		expect(td.messages[0].id).toBe("real-reply-1");
 		expect(td.messages[0].pending).toBeUndefined();
@@ -413,12 +425,13 @@ describe("handleUpdate — optimistic message deduplication", () => {
 	it("only removes the first matching pending thread reply when duplicates exist", () => {
 		const parentId = "parent-msg-1";
 		threadData.set({
-			parentMessage: { id: parentId, from: "lead", content: "original" },
+			parentMessage: { id: parentId, from: "lead", content: "original" } as Message,
 			channelName: "midtown",
 			messages: [
-				{ id: "pending-t1", from: "user", content: "same text", pending: true },
-				{ id: "pending-t2", from: "user", content: "same text", pending: true },
+				{ id: "pending-t1", from: "user", content: "same text", pending: true } as Message,
+				{ id: "pending-t2", from: "user", content: "same text", pending: true } as Message,
 			],
+			tasks: [],
 		});
 
 		handleUpdate({
@@ -433,7 +446,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData);
+		const td = get(threadData)!;
 		// First pending removed, second preserved, real appended
 		expect(td.messages).toHaveLength(2);
 		expect(td.messages[0].id).toBe("pending-t2");
@@ -442,7 +455,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 
 	it("does not remove a pending message when a different user posts the same content", () => {
 		messagesByChannel.set({
-			midtown: [{ id: "pending-mine", from: "user", content: "hello", channel: "midtown", pending: true }],
+			midtown: [{ id: "pending-mine", from: "user", content: "hello", channel: "midtown", pending: true } as Message],
 		});
 
 		// Another participant sends identical content before the user's echo arrives
@@ -468,9 +481,10 @@ describe("handleUpdate — optimistic message deduplication", () => {
 		const parentId = "parent-msg-1";
 		const otherParentId = "parent-msg-2";
 		threadData.set({
-			parentMessage: { id: otherParentId, from: "lead", content: "other thread" },
+			parentMessage: { id: otherParentId, from: "lead", content: "other thread" } as Message,
 			channelName: "midtown",
-			messages: [{ id: "pending-reply-2", from: "user", content: "my reply", pending: true }],
+			messages: [{ id: "pending-reply-2", from: "user", content: "my reply", pending: true } as Message],
+			tasks: [],
 		});
 
 		handleUpdate({
@@ -485,7 +499,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData);
+		const td = get(threadData)!;
 		// Panel is for otherParentId — should be untouched
 		expect(td.messages).toHaveLength(1);
 		expect(td.messages[0].id).toBe("pending-reply-2");
@@ -520,8 +534,8 @@ describe("fetchChannels — is_dm field", () => {
 		const ch = get(channels);
 		const dmChannel = ch.find((c) => c.name === "dm-alice");
 		expect(dmChannel).toBeTruthy();
-		expect(dmChannel.is_dm).toBe(true);
-		expect(ch.find((c) => c.name === "midtown").is_dm).toBe(false);
+		expect(dmChannel?.is_dm).toBe(true);
+		expect(ch.find((c) => c.name === "midtown")?.is_dm).toBe(false);
 	});
 
 	it("defaults is_dm to false for string-format channels (legacy API)", async () => {
@@ -545,13 +559,16 @@ describe("selectDm", () => {
 		originalFetch = globalThis.fetch;
 		// Mock browser history API (not available in Node test environment)
 		originalHistory = globalThis.history;
-		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() };
+		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() } as unknown as History;
 		channels.set([
 			{ name: "midtown", unread: 0, has_pr: false, ci_status: null, is_dm: false },
 			{ name: "dm-alice", unread: 3, has_pr: false, ci_status: null, is_dm: true },
 		]);
 		activeChannel.set("midtown");
-		messagesByChannel.set({ midtown: [], "dm-alice": [{ id: 1, content: "hey", channel: "dm-alice" }] });
+		messagesByChannel.set({
+			midtown: [],
+			"dm-alice": [{ id: "1", content: "hey", channel: "dm-alice" } as Message],
+		});
 	});
 
 	afterEach(() => {
@@ -580,7 +597,7 @@ describe("selectDm", () => {
 		await selectDm("alice");
 
 		const ch = get(channels).find((c) => c.name === "dm-alice");
-		expect(ch.unread).toBe(0);
+		expect(ch?.unread).toBe(0);
 	});
 
 	it("creates the DM channel if it does not exist, then switches to it", async () => {
@@ -607,7 +624,7 @@ describe("selectDm", () => {
 
 		expect(get(activeChannel)).toBe("dm-bob");
 		// Create endpoint should have been called with the right name
-		const createCall = globalThis.fetch.mock.calls[0];
+		const createCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
 		expect(createCall[0]).toContain("/channels/create");
 		expect(JSON.parse(createCall[1].body).name).toBe("dm-bob");
 	});
@@ -629,7 +646,7 @@ describe("selectDm", () => {
 		// The channel should be in the sidebar as a DM
 		const ch = get(channels).find((c) => c.name === "dm-carol");
 		expect(ch).toBeTruthy();
-		expect(ch.is_dm).toBe(true);
+		expect(ch?.is_dm).toBe(true);
 	});
 
 	it("still navigates to DM channel when fetchChannels fails after creation", async () => {
@@ -647,7 +664,7 @@ describe("selectDm", () => {
 		expect(get(activeChannel)).toBe("dm-dave");
 		const ch = get(channels).find((c) => c.name === "dm-dave");
 		expect(ch).toBeTruthy();
-		expect(ch.is_dm).toBe(true);
+		expect(ch?.is_dm).toBe(true);
 	});
 });
 
@@ -681,7 +698,7 @@ describe("fetchChannels — is_dm name-prefix fallback", () => {
 
 		const ch = get(channels).find((c) => c.name === "dm-eve");
 		expect(ch).toBeTruthy();
-		expect(ch.is_dm).toBe(true);
+		expect(ch?.is_dm).toBe(true);
 	});
 });
 
@@ -768,7 +785,7 @@ describe("pushNavState — URL construction", () => {
 
 	beforeEach(() => {
 		originalHistory = globalThis.history;
-		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() };
+		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() } as unknown as History;
 		activeProject.set("myproject");
 	});
 
@@ -779,7 +796,7 @@ describe("pushNavState — URL construction", () => {
 
 	it("includes channel param in URL when thread is on the default channel", () => {
 		pushNavState({ channel: "myproject", thread: "msg-123" });
-		const [, , url] = globalThis.history.pushState.mock.calls[0];
+		const [, , url] = (globalThis.history.pushState as ReturnType<typeof vi.fn>).mock.calls[0];
 		const parsed = new URL(url, "http://localhost");
 		expect(parsed.searchParams.get("channel")).toBe("myproject");
 		expect(parsed.searchParams.get("thread")).toBe("msg-123");
@@ -787,7 +804,7 @@ describe("pushNavState — URL construction", () => {
 
 	it("omits channel param when no thread and channel matches project", () => {
 		pushNavState({ channel: "myproject" });
-		const [, , url] = globalThis.history.pushState.mock.calls[0];
+		const [, , url] = (globalThis.history.pushState as ReturnType<typeof vi.fn>).mock.calls[0];
 		const parsed = new URL(url, "http://localhost");
 		expect(parsed.searchParams.get("channel")).toBeNull();
 		expect(parsed.pathname).toBe("/myproject");
@@ -795,7 +812,7 @@ describe("pushNavState — URL construction", () => {
 
 	it("includes channel param when channel differs from project", () => {
 		pushNavState({ channel: "other-channel" });
-		const [, , url] = globalThis.history.pushState.mock.calls[0];
+		const [, , url] = (globalThis.history.pushState as ReturnType<typeof vi.fn>).mock.calls[0];
 		const parsed = new URL(url, "http://localhost");
 		expect(parsed.searchParams.get("channel")).toBe("other-channel");
 	});
@@ -806,10 +823,15 @@ describe("closeThread — history push behavior", () => {
 
 	beforeEach(() => {
 		originalHistory = globalThis.history;
-		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() };
+		globalThis.history = { pushState: vi.fn(), replaceState: vi.fn() } as unknown as History;
 		activeProject.set("myproject");
 		activeChannel.set("myproject");
-		threadData.set({ parentMessage: { id: "msg-1" }, channelName: "myproject", messages: [], tasks: [] });
+		threadData.set({
+			parentMessage: { id: "msg-1" } as Message,
+			channelName: "myproject",
+			messages: [],
+			tasks: [],
+		});
 	});
 
 	afterEach(() => {
@@ -842,8 +864,8 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		userSenderName.set("user");
 		messagesByChannel.set({
 			web: [
-				{ id: parentId, from: "user", content: "my question about auth", channel: "web" },
-				{ id: "other-msg", from: "lead", content: "some announcement", channel: "web" },
+				{ id: parentId, from: "user", content: "my question about auth", channel: "web" } as Message,
+				{ id: "other-msg", from: "lead", content: "some announcement", channel: "web" } as Message,
 			],
 		});
 	});
@@ -974,7 +996,7 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 	it("auto-tracks when parent from matches userSenderName (custom display name)", () => {
 		userSenderName.set("ben");
 		messagesByChannel.set({
-			web: [{ id: "ben-msg", from: "ben", content: "custom name question", channel: "web" }],
+			web: [{ id: "ben-msg", from: "ben", content: "custom name question", channel: "web" } as Message],
 		});
 
 		handleUpdate({
@@ -1090,9 +1112,9 @@ describe("fetchChannelAgentsMd — AbortController cancellation", () => {
 	});
 
 	it("aborts a previous in-flight request when a new one starts for the same channel", async () => {
-		const abortSignals = [];
-		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
-			abortSignals.push(opts?.signal);
+		const abortSignals: AbortSignal[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((_url: string, opts?: RequestInit) => {
+			if (opts?.signal) abortSignals.push(opts.signal);
 			return new Promise((resolve) =>
 				setTimeout(() => resolve({ ok: true, json: async () => ({ content: "md", source: "channel-local" }) }), 100),
 			);
@@ -1111,12 +1133,12 @@ describe("fetchChannelAgentsMd — AbortController cancellation", () => {
 	});
 
 	it("does not abort requests for different channels", async () => {
-		const abortSignals = {};
-		globalThis.fetch = vi.fn().mockImplementation((url, opts) => {
+		const abortSignals: Record<string, AbortSignal> = {};
+		globalThis.fetch = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
 			// Extract channel from URL path like /channels/web/agents-md
 			const match = url.match(/channels\/([^/]+)\/agents-md/);
 			const ch = match ? match[1] : "unknown";
-			abortSignals[ch] = opts?.signal;
+			if (opts?.signal) abortSignals[ch] = opts.signal;
 			return Promise.resolve({ ok: true, json: async () => ({ content: "", source: "none" }) });
 		});
 
@@ -1146,9 +1168,9 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 
 		const result = await fetchChannelAgentsMd("web");
 
-		expect(result.content).toBe("# Instructions");
-		expect(result.source).toBe("channel-local");
-		expect(result.error).toBeNull();
+		expect(result?.content).toBe("# Instructions");
+		expect(result?.source).toBe("channel-local");
+		expect(result?.error).toBeNull();
 	});
 
 	it("returns error string on HTTP failure (non-200)", async () => {
@@ -1159,10 +1181,10 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 
 		const result = await fetchChannelAgentsMd("web");
 
-		expect(result.content).toBe("");
-		expect(result.source).toBe("none");
-		expect(result.error).toBeTruthy();
-		expect(typeof result.error).toBe("string");
+		expect(result?.content).toBe("");
+		expect(result?.source).toBe("none");
+		expect(result?.error).toBeTruthy();
+		expect(typeof result?.error).toBe("string");
 	});
 
 	it("returns error string on network failure", async () => {
@@ -1170,15 +1192,15 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 
 		const result = await fetchChannelAgentsMd("web");
 
-		expect(result.content).toBe("");
-		expect(result.source).toBe("none");
-		expect(result.error).toBeTruthy();
-		expect(typeof result.error).toBe("string");
+		expect(result?.content).toBe("");
+		expect(result?.source).toBe("none");
+		expect(result?.error).toBeTruthy();
+		expect(typeof result?.error).toBe("string");
 	});
 
 	it("returns null when fetch is aborted so caller can bail out", async () => {
 		let callCount = 0;
-		globalThis.fetch = vi.fn().mockImplementation((_url, opts) => {
+		globalThis.fetch = vi.fn().mockImplementation((_url: string, opts?: RequestInit) => {
 			callCount++;
 			if (callCount === 1) {
 				// First call: hang until aborted
@@ -1210,6 +1232,6 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 		expect(firstResult).toBeNull();
 		// Second request should succeed normally
 		expect(secondResult).not.toBeNull();
-		expect(secondResult.error).toBeNull();
+		expect(secondResult?.error).toBeNull();
 	});
 });

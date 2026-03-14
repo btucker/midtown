@@ -16,6 +16,7 @@ import {
 	hasInProgressToolBlocks,
 	resolveMessageTapAction,
 } from "./channelUtils.ts";
+import type { KanbanData, Message, ToolBlock, TrackedThread } from "./types.ts";
 
 describe("getChannelTaskCount", () => {
 	const mockKanban = {
@@ -31,7 +32,7 @@ describe("getChannelTaskCount", () => {
 		],
 		// PRs reference tasks via task_id — channel resolved via task lookup
 		review: [{ task_id: 101, task_name: "Add JWT" }],
-	};
+	} as unknown as KanbanData;
 
 	it("returns only midtown-owned tasks for midtown channel", () => {
 		// mockKanban has 3 inProgress: channel='auth-refactor', 'ui-improvements', null
@@ -59,7 +60,7 @@ describe("getChannelTaskCount", () => {
 				{ id: 1782, title: "Unassigned task", channel: null },
 			],
 			review: [],
-		};
+		} as unknown as KanbanData;
 		const counts = getChannelTaskCount("midtown", kanban);
 		// Only tasks with no channel (or channel==='midtown') should appear
 		expect(counts.inProgress).toBe(1);
@@ -91,7 +92,7 @@ describe("getChannelTaskCount", () => {
 			inProgress: [{ id: 50, title: "Implement feature", channel: "my-channel" }],
 			backlog: [],
 			review: [{ task_id: 50, task_name: "Implement feature" }],
-		};
+		} as unknown as KanbanData;
 		const counts = getChannelTaskCount("my-channel", kanban);
 		expect(counts.review).toBe(1);
 	});
@@ -103,7 +104,7 @@ describe("getChannelTaskCount", () => {
 			review: [
 				{ task_name: "Orphan PR" }, // no task_id
 			],
-		};
+		} as unknown as KanbanData;
 		const mainCounts = getChannelTaskCount("midtown", kanban);
 		const topicCounts = getChannelTaskCount("my-channel", kanban);
 		expect(mainCounts.review).toBe(1);
@@ -113,7 +114,7 @@ describe("getChannelTaskCount", () => {
 
 describe("getChannelCiStatus", () => {
 	it("returns null when no PRs match", () => {
-		const mockKanban = { inProgress: [], backlog: [], review: [] };
+		const mockKanban = { inProgress: [], backlog: [], review: [] } as unknown as KanbanData;
 		expect(getChannelCiStatus("auth", mockKanban)).toBe(null);
 	});
 
@@ -128,7 +129,7 @@ describe("getChannelCiStatus", () => {
 				{ task_id: 1, task_name: "Task 1", status: "ci_passed" },
 				{ task_id: 2, task_name: "Task 2", status: "ci_failed" },
 			],
-		};
+		} as unknown as KanbanData;
 		expect(getChannelCiStatus("auth", mockKanban)).toBe("failed");
 	});
 
@@ -143,7 +144,7 @@ describe("getChannelCiStatus", () => {
 				{ task_id: 1, task_name: "Task 1", status: "ci_passed" },
 				{ task_id: 2, task_name: "Task 2", status: "ci_pending" },
 			],
-		};
+		} as unknown as KanbanData;
 		expect(getChannelCiStatus("auth", mockKanban)).toBe("pending");
 	});
 
@@ -158,7 +159,7 @@ describe("getChannelCiStatus", () => {
 				{ task_id: 1, task_name: "Task 1", status: "ci_passed" },
 				{ task_id: 2, task_name: "Task 2", status: "approved" },
 			],
-		};
+		} as unknown as KanbanData;
 		expect(getChannelCiStatus("auth", mockKanban)).toBe("passed");
 	});
 
@@ -167,7 +168,7 @@ describe("getChannelCiStatus", () => {
 			inProgress: [],
 			backlog: [],
 			review: [{ task_id: 1, task_name: "Task 1", status: "ci_failed" }],
-		};
+		} as unknown as KanbanData;
 		expect(getChannelCiStatus("midtown", mockKanban)).toBe("failed");
 	});
 });
@@ -184,7 +185,7 @@ describe("getChannelPrs", () => {
 			{ task_id: 102, task_name: "Dark mode", number: 43 },
 			{ task_name: "Other PR", number: 44 }, // no task_id
 		],
-	};
+	} as unknown as KanbanData;
 
 	it("returns only midtown-owned PRs for midtown channel", () => {
 		// PR #44 has no task_id → goes to midtown
@@ -212,7 +213,7 @@ describe("getChannelPrs", () => {
 			inProgress: [{ id: 50, title: "Implement feature", channel: "special-channel" }],
 			backlog: [],
 			review: [{ task_id: 50, task_name: "Implement feature", number: 99 }],
-		};
+		} as unknown as KanbanData;
 		const prs = getChannelPrs("special-channel", kanban);
 		expect(prs).toHaveLength(1);
 		expect(prs[0].number).toBe(99);
@@ -220,11 +221,16 @@ describe("getChannelPrs", () => {
 });
 
 describe("getChannelThreads", () => {
-	const tracked = {
+	const tracked: Record<string, TrackedThread> = {
 		"thread-1": { channelName: "web", subject: "Thread 1", lastActivity: "2026-03-04T10:00:00Z", replyCount: 3 },
 		"thread-2": { channelName: "web", subject: "Thread 2", lastActivity: "2026-03-04T11:00:00Z", replyCount: 1 },
-		"thread-3": { channelName: "auth", subject: "Auth thread", lastActivity: "2026-03-04T09:00:00Z" },
-		"task-thread": { channelName: "web", subject: "Task-backed thread", lastActivity: "2026-03-04T12:00:00Z" },
+		"thread-3": { channelName: "auth", subject: "Auth thread", lastActivity: "2026-03-04T09:00:00Z", replyCount: 0 },
+		"task-thread": {
+			channelName: "web",
+			subject: "Task-backed thread",
+			lastActivity: "2026-03-04T12:00:00Z",
+			replyCount: 0,
+		},
 	};
 	const unreadCounts = { "thread-1": 2, "thread-2": 0, "task-thread": 5 };
 	const taskThreadIds = new Set(["task-thread"]);
@@ -241,8 +247,8 @@ describe("getChannelThreads", () => {
 		const result = getChannelThreads("web", tracked, unreadCounts, taskThreadIds);
 		const t1 = result.threads.find((t) => t.id === "thread-1");
 		const t2 = result.threads.find((t) => t.id === "thread-2");
-		expect(t1.unread).toBe(2);
-		expect(t2.unread).toBe(0);
+		expect(t1?.unread).toBe(2);
+		expect(t2?.unread).toBe(0);
 	});
 
 	it("excludes task-backed threads from the thread list", () => {
@@ -298,7 +304,7 @@ describe("computeExpandedAfterChannelNameClick", () => {
 		inProgress: [{ id: 1, title: "Build feature", channel: "web" }],
 		backlog: [],
 		review: [],
-	};
+	} as unknown as KanbanData;
 
 	it("auto-expands when switching to inactive channel with active tasks", () => {
 		const result = computeExpandedAfterChannelNameClick("web", new Set(), "midtown", mockKanban);
@@ -435,7 +441,7 @@ describe("findPr", () => {
 	const kanban = {
 		review: [{ number: 42, task_id: 7, repo: "main" }],
 		done: [{ number: 10, task_id: null }],
-	};
+	} as unknown as KanbanData;
 
 	it("finds a PR in the review column", () => {
 		expect(findPr(42, kanban)).toEqual({ number: 42, task_id: 7, repo: "main" });
@@ -462,7 +468,7 @@ describe("getPrUrl", () => {
 		const kanban = {
 			review: [{ number: 42, task_id: 7, repo: null }],
 			done: [],
-		};
+		} as unknown as KanbanData;
 		const url = getPrUrl(42, kanban, [], primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown/pull/42");
 	});
@@ -471,7 +477,7 @@ describe("getPrUrl", () => {
 		const kanban = {
 			review: [{ number: 10, task_id: null, repo: null }],
 			done: [],
-		};
+		} as unknown as KanbanData;
 		const url = getPrUrl(10, kanban, [], primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown/pull/10");
 	});
@@ -480,7 +486,7 @@ describe("getPrUrl", () => {
 		const kanban = {
 			review: [{ number: 5, task_id: 3, repo: "docs" }],
 			done: [],
-		};
+		} as unknown as KanbanData;
 		const repoStatuses = [{ label: "docs", fullName: "btucker/midtown-docs" }];
 		const url = getPrUrl(5, kanban, repoStatuses, primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown-docs/pull/5");
@@ -490,25 +496,25 @@ describe("getPrUrl", () => {
 		const kanban = {
 			review: [{ number: 5, task_id: null, repo: "unknown-label" }],
 			done: [],
-		};
+		} as unknown as KanbanData;
 		const url = getPrUrl(5, kanban, [], primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown/pull/5");
 	});
 
 	it("falls back to primary repo when PR is not in kanban", () => {
-		const kanban = { review: [], done: [] };
+		const kanban = { review: [], done: [] } as unknown as KanbanData;
 		const url = getPrUrl(99, kanban, [], primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown/pull/99");
 	});
 
 	it("returns null when no repo info is available", () => {
-		const kanban = { review: [], done: [] };
+		const kanban = { review: [], done: [] } as unknown as KanbanData;
 		const url = getPrUrl(99, kanban, [], null);
 		expect(url).toBeNull();
 	});
 
 	it("accepts string PR numbers", () => {
-		const kanban = { review: [], done: [] };
+		const kanban = { review: [], done: [] } as unknown as KanbanData;
 		const url = getPrUrl("42", kanban, [], primaryRepo);
 		expect(url).toBe("https://github.com/btucker/midtown/pull/42");
 	});
@@ -523,11 +529,11 @@ describe("getPrUrl", () => {
 //   - Do nothing (desktop, thread replies, interactive controls, external links)
 
 describe("resolveMessageTapAction", () => {
-	const topLevelMsg = { thread_parent_id: null };
-	const threadReply = { thread_parent_id: "parent-123" };
+	const topLevelMsg = { thread_parent_id: null } as unknown as Message;
+	const threadReply = { thread_parent_id: "parent-123" } as unknown as Message;
 
 	// Helper: build a link descriptor for an internal pseudo-link
-	function internalLink(dataset) {
+	function internalLink(dataset: Record<string, string>) {
 		return { isExternal: false, dataset };
 	}
 
@@ -648,7 +654,7 @@ describe("resolveMessageTapAction", () => {
 
 describe("collectToolBlocks", () => {
 	it("returns empty array for messages with no tool_data", () => {
-		const msgs = [{ content: "hello" }, { content: "world", tool_data: [] }];
+		const msgs = [{ content: "hello" }, { content: "world", tool_data: [] }] as unknown as Message[];
 		expect(collectToolBlocks(msgs)).toEqual([]);
 	});
 
@@ -660,7 +666,7 @@ describe("collectToolBlocks", () => {
 			{ content: "msg1", tool_data: [block1, block2] },
 			{ content: "msg2" },
 			{ content: "msg3", tool_data: [block3] },
-		];
+		] as unknown as Message[];
 		expect(collectToolBlocks(msgs)).toEqual([block1, block2, block3]);
 	});
 });
@@ -674,12 +680,12 @@ describe("hasInProgressToolBlocks", () => {
 		const blocks = [
 			{ call_id: "c1", tool_name: "Read", output: null },
 			{ call_id: "c1", output: "result" },
-		];
+		] as unknown as ToolBlock[];
 		expect(hasInProgressToolBlocks(blocks)).toBe(false);
 	});
 
 	it("returns true when a block has output === null with no matching completion", () => {
-		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }];
+		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }] as ToolBlock[];
 		expect(hasInProgressToolBlocks(blocks)).toBe(true);
 	});
 
@@ -688,12 +694,12 @@ describe("hasInProgressToolBlocks", () => {
 			{ call_id: "c1", tool_name: "Read", output: null },
 			{ call_id: "c1", output: "done" },
 			{ call_id: "c2", tool_name: "Edit", output: null },
-		];
+		] as unknown as ToolBlock[];
 		expect(hasInProgressToolBlocks(blocks)).toBe(true);
 	});
 
 	it("returns false when blocks lack call_id", () => {
-		const blocks = [{ output: null }];
+		const blocks = [{ output: null }] as unknown as ToolBlock[];
 		expect(hasInProgressToolBlocks(blocks)).toBe(false);
 	});
 });
@@ -704,7 +710,7 @@ describe("getMostRecentToolCall", () => {
 	});
 
 	it("returns the last tool_name block with InProgress status", () => {
-		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }];
+		const blocks = [{ call_id: "c1", tool_name: "Read", output: null }] as ToolBlock[];
 		const result = getMostRecentToolCall(blocks);
 		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "InProgress" });
 	});
@@ -713,7 +719,7 @@ describe("getMostRecentToolCall", () => {
 		const blocks = [
 			{ call_id: "c1", tool_name: "Read", output: null },
 			{ call_id: "c1", output: "result" },
-		];
+		] as unknown as ToolBlock[];
 		const result = getMostRecentToolCall(blocks);
 		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "ok" });
 	});
@@ -722,7 +728,7 @@ describe("getMostRecentToolCall", () => {
 		const blocks = [
 			{ call_id: "c1", tool_name: "Read", output: null },
 			{ call_id: "c1", output: "failed", error: true },
-		];
+		] as unknown as ToolBlock[];
 		const result = getMostRecentToolCall(blocks);
 		expect(result).toEqual({ toolName: "Read", callId: "c1", status: "error" });
 	});
@@ -732,19 +738,24 @@ describe("getMostRecentToolCall", () => {
 			{ call_id: "c1", tool_name: "Read", output: null },
 			{ call_id: "c1", output: "done" },
 			{ call_id: "c2", tool_name: "Edit", output: null },
-		];
+		] as unknown as ToolBlock[];
 		const result = getMostRecentToolCall(blocks);
 		expect(result).toEqual({ toolName: "Edit", callId: "c2", status: "InProgress" });
 	});
 });
 
 describe("getChannelThreads excludes completed threads", () => {
-	const tracked = {
-		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z" },
-		"completed-thread": { channelName: "web", subject: "Completed thread", lastActivity: "2026-03-04T11:00:00Z" },
+	const tracked: Record<string, TrackedThread> = {
+		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z", replyCount: 0 },
+		"completed-thread": {
+			channelName: "web",
+			subject: "Completed thread",
+			lastActivity: "2026-03-04T11:00:00Z",
+			replyCount: 0,
+		},
 	};
-	const unreadCounts = {};
-	const taskThreadIds = new Set();
+	const unreadCounts: Record<string, number> = {};
+	const taskThreadIds = new Set<string>();
 	const completedTaskThreadIds = new Set(["completed-thread"]);
 
 	it("filters out completed threads from per-channel list", () => {
@@ -760,8 +771,8 @@ describe("getChannelThreads excludes completed threads", () => {
 });
 
 describe("getAllCompletedThreads", () => {
-	const tracked = {
-		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z" },
+	const tracked: Record<string, TrackedThread> = {
+		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "2026-03-04T10:00:00Z", replyCount: 0 },
 		"completed-1": {
 			channelName: "web",
 			subject: "Done task A",
@@ -769,8 +780,18 @@ describe("getAllCompletedThreads", () => {
 			lastActivity: "2026-03-04T11:00:00Z",
 			replyCount: 5,
 		},
-		"completed-2": { channelName: "auth", subject: "Done task B", lastActivity: "2026-03-04T12:00:00Z" },
-		"task-thread": { channelName: "web", subject: "Active task thread", lastActivity: "2026-03-04T13:00:00Z" },
+		"completed-2": {
+			channelName: "auth",
+			subject: "Done task B",
+			lastActivity: "2026-03-04T12:00:00Z",
+			replyCount: 0,
+		},
+		"task-thread": {
+			channelName: "web",
+			subject: "Active task thread",
+			lastActivity: "2026-03-04T13:00:00Z",
+			replyCount: 0,
+		},
 	};
 	const unreadCounts = { "completed-1": 3 };
 	const taskThreadIds = new Set(["task-thread"]);
@@ -794,14 +815,14 @@ describe("getAllCompletedThreads", () => {
 		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
 		const c1 = result.find((t) => t.id === "completed-1");
 		const c2 = result.find((t) => t.id === "completed-2");
-		expect(c1.channelName).toBe("web");
-		expect(c2.channelName).toBe("auth");
+		expect(c1?.channelName).toBe("web");
+		expect(c2?.channelName).toBe("auth");
 	});
 
 	it("includes unread counts", () => {
 		const result = getAllCompletedThreads(tracked, unreadCounts, taskThreadIds, completedTaskThreadIds);
 		const c1 = result.find((t) => t.id === "completed-1");
-		expect(c1.unread).toBe(3);
+		expect(c1?.unread).toBe(3);
 	});
 
 	it("excludes active task-backed threads even if also in completedTaskThreadIds", () => {
@@ -820,12 +841,12 @@ describe("getAllCompletedThreads", () => {
 });
 
 describe("getChannelHasTrackedThreads with completedTaskThreadIds", () => {
-	const tracked = {
-		"thread-1": { channelName: "web", subject: "Active thread" },
-		"completed-thread": { channelName: "web", subject: "Completed thread" },
-		"other-thread": { channelName: "auth", subject: "Other thread" },
+	const tracked: Record<string, TrackedThread> = {
+		"thread-1": { channelName: "web", subject: "Active thread", lastActivity: "", replyCount: 0 },
+		"completed-thread": { channelName: "web", subject: "Completed thread", lastActivity: "", replyCount: 0 },
+		"other-thread": { channelName: "auth", subject: "Other thread", lastActivity: "", replyCount: 0 },
 	};
-	const taskThreadIds = new Set();
+	const taskThreadIds = new Set<string>();
 	const completedTaskThreadIds = new Set(["completed-thread"]);
 
 	it("returns true when channel has non-completed tracked threads", () => {
@@ -833,8 +854,8 @@ describe("getChannelHasTrackedThreads with completedTaskThreadIds", () => {
 	});
 
 	it("returns false when all channel threads are completed", () => {
-		const onlyCompleted = {
-			"completed-thread": { channelName: "web", subject: "Completed thread" },
+		const onlyCompleted: Record<string, TrackedThread> = {
+			"completed-thread": { channelName: "web", subject: "Completed thread", lastActivity: "", replyCount: 0 },
 		};
 		expect(getChannelHasTrackedThreads("web", onlyCompleted, taskThreadIds, completedTaskThreadIds)).toBe(false);
 	});

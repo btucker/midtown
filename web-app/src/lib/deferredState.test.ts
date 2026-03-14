@@ -31,7 +31,7 @@ describe("deferred state write pattern — version counter", () => {
 		});
 
 		// Drain microtask queue
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// Only the latest write should have taken effect
 		expect(value).toBe("second");
@@ -62,7 +62,7 @@ describe("deferred state write pattern — version counter", () => {
 			active = true;
 		});
 
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// Final state matches the last queued value
 		expect(active).toBe(true);
@@ -84,7 +84,7 @@ describe("deferred state write pattern — version counter", () => {
 		pending = true;
 
 		// Drain microtask queue — stale v1 microtask should be discarded
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// Synchronous write should survive
 		expect(pending).toBe(true);
@@ -108,7 +108,7 @@ describe("deferred state write pattern — version counter", () => {
 		const guardPasses = pendingIndex === 0;
 		expect(guardPasses).toBe(false);
 
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		expect(renderStartIndex).toBe(50);
 	});
@@ -127,10 +127,10 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 	 * so they schedule additional microtasks with higher len values.
 	 */
 	it("BUG: without synchronous guard, new messages bump the snapshot count", async () => {
-		const counts = {};
+		const counts: Record<string, number> = {};
 
 		// Simulate the broken pattern: guard checks `counts` which is updated async
-		function brokenEffectRun(ch, len) {
+		function brokenEffectRun(ch: string, len: number) {
 			if (!(ch in counts) && len > 0) {
 				queueMicrotask(() => {
 					counts[ch] = len;
@@ -147,17 +147,17 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		// Another new message
 		brokenEffectRun("web", 102);
 
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// BUG: count is 102, not 100. Messages 100-101 won't animate.
 		expect(counts.web).toBe(102);
 	});
 
 	it("FIXED: synchronous guard captures first snapshot, ignores subsequent runs", async () => {
-		const counts = {};
-		const pendingCounts = {}; // synchronous shadow — the fix
+		const counts: Record<string, number> = {};
+		const pendingCounts: Record<string, number> = {}; // synchronous shadow — the fix
 
-		function fixedEffectRun(ch, len) {
+		function fixedEffectRun(ch: string, len: number) {
 			if (!(ch in pendingCounts) && len > 0) {
 				pendingCounts[ch] = len; // synchronous guard
 				const snapshotLen = len;
@@ -176,17 +176,17 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		// Another new message
 		fixedEffectRun("web", 102);
 
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// FIXED: count is 100. Messages 100+ correctly animate.
 		expect(counts.web).toBe(100);
 	});
 
 	it("isNewMessage returns false during microtask window via Infinity fallback", async () => {
-		const counts = {}; // initialMessageCounts (async)
-		const pendingCounts = {}; // synchronous shadow
+		const counts: Record<string, number> = {}; // initialMessageCounts (async)
+		const pendingCounts: Record<string, number> = {}; // synchronous shadow
 
-		function fixedEffectRun(ch, len) {
+		function fixedEffectRun(ch: string, len: number) {
 			if (!(ch in pendingCounts) && len > 0) {
 				pendingCounts[ch] = len;
 				const snapshotLen = len;
@@ -197,7 +197,7 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		}
 
 		// Mirrors Channel.svelte's isNewMessage()
-		function isNewMessage(channelName, index) {
+		function isNewMessage(channelName: string, index: number) {
 			const threshold = counts[channelName] ?? Infinity;
 			return index >= threshold;
 		}
@@ -218,7 +218,7 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		fixedEffectRun("web", 101);
 
 		// After microtask drains: counts["web"] = 100
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		// Now messages at index >= 100 are "new" and should animate
 		expect(isNewMessage("web", 99)).toBe(false);
@@ -227,10 +227,10 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 	});
 
 	it("synchronous guard works correctly across channel switches", async () => {
-		const counts = {};
-		const pendingCounts = {};
+		const counts: Record<string, number> = {};
+		const pendingCounts: Record<string, number> = {};
 
-		function fixedEffectRun(ch, len) {
+		function fixedEffectRun(ch: string, len: number) {
 			if (!(ch in pendingCounts) && len > 0) {
 				pendingCounts[ch] = len;
 				const snapshotLen = len;
@@ -249,7 +249,7 @@ describe("initialMessageCounts — synchronous guard prevents race condition", (
 		// New message on B before microtask
 		fixedEffectRun("infra", 31);
 
-		await new Promise((r) => queueMicrotask(r));
+		await new Promise<void>((r) => queueMicrotask(r));
 
 		expect(counts.web).toBe(50);
 		expect(counts.infra).toBe(30);

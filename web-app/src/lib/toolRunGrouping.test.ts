@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { TimelineEntry } from "./toolRunGrouping.ts";
 import {
 	filterChannelPosts,
 	groupTimelineToolRuns,
@@ -6,42 +7,47 @@ import {
 	isChannelPostBlock,
 	isToolOnly,
 } from "./toolRunGrouping.ts";
+import type { Message, ToolBlock } from "./types.ts";
 
 describe("isToolOnly", () => {
 	it("returns true for empty content with tool_data", () => {
-		expect(isToolOnly({ content: "", tool_data: [{ tool_name: "Bash" }] })).toBe(true);
+		expect(isToolOnly({ content: "", tool_data: [{ tool_name: "Bash" }] } as Message)).toBe(true);
 	});
 
 	it("returns true for null content with tool_data", () => {
-		expect(isToolOnly({ content: null, tool_data: [{ tool_name: "Read" }] })).toBe(true);
+		expect(isToolOnly({ content: null as unknown as string, tool_data: [{ tool_name: "Read" }] } as Message)).toBe(
+			true,
+		);
 	});
 
 	it("returns true for undefined content with tool_data", () => {
-		expect(isToolOnly({ content: undefined, tool_data: [{ tool_name: "Read" }] })).toBe(true);
+		expect(isToolOnly({ content: undefined as unknown as string, tool_data: [{ tool_name: "Read" }] } as Message)).toBe(
+			true,
+		);
 	});
 
 	it("returns true for whitespace-only content with tool_data", () => {
-		expect(isToolOnly({ content: "   \n\t  ", tool_data: [{ tool_name: "Bash" }] })).toBe(true);
+		expect(isToolOnly({ content: "   \n\t  ", tool_data: [{ tool_name: "Bash" }] } as Message)).toBe(true);
 	});
 
 	it("returns false when content has text", () => {
-		expect(isToolOnly({ content: "Here are the results:", tool_data: [{ tool_name: "Bash" }] })).toBe(false);
+		expect(isToolOnly({ content: "Here are the results:", tool_data: [{ tool_name: "Bash" }] } as Message)).toBe(false);
 	});
 
 	it("returns false for empty tool_data array", () => {
-		expect(isToolOnly({ content: "", tool_data: [] })).toBe(false);
+		expect(isToolOnly({ content: "", tool_data: [] } as unknown as Message)).toBe(false);
 	});
 
 	it("returns false for null tool_data", () => {
-		expect(isToolOnly({ content: "", tool_data: null })).toBe(false);
+		expect(isToolOnly({ content: "", tool_data: null as unknown as ToolBlock[] } as Message)).toBe(false);
 	});
 
 	it("returns false for undefined tool_data", () => {
-		expect(isToolOnly({ content: "" })).toBe(false);
+		expect(isToolOnly({ content: "" } as Message)).toBe(false);
 	});
 
 	it("returns false for plain text message", () => {
-		expect(isToolOnly({ content: "Hello world" })).toBe(false);
+		expect(isToolOnly({ content: "Hello world" } as Message)).toBe(false);
 	});
 });
 
@@ -80,7 +86,7 @@ describe("isChannelPostBlock", () => {
 
 describe("filterChannelPosts", () => {
 	it("removes channel post blocks", () => {
-		const blocks = [
+		const blocks: ToolBlock[] = [
 			{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } },
 			{ tool_name: "Read", input: { file_path: "test.js" } },
 		];
@@ -88,12 +94,12 @@ describe("filterChannelPosts", () => {
 	});
 
 	it("returns empty array when all blocks are channel posts", () => {
-		const blocks = [{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } }];
+		const blocks: ToolBlock[] = [{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } }];
 		expect(filterChannelPosts(blocks)).toEqual([]);
 	});
 
 	it("returns all blocks when none are channel posts", () => {
-		const blocks = [
+		const blocks: ToolBlock[] = [
 			{ tool_name: "Bash", input: { command: "cargo test" } },
 			{ tool_name: "Read", input: { file_path: "test.js" } },
 		];
@@ -101,16 +107,16 @@ describe("filterChannelPosts", () => {
 	});
 
 	it("handles null/undefined input", () => {
-		expect(filterChannelPosts(null)).toEqual([]);
+		expect(filterChannelPosts(null as unknown as undefined)).toEqual([]);
 		expect(filterChannelPosts(undefined)).toEqual([]);
 	});
 });
 
-function msg(id, content, toolData = null) {
-	return { id, content, tool_data: toolData, timestamp: new Date().toISOString() };
+function msg(id: string, content: string, toolData: ToolBlock[] | null = null): Message {
+	return { id, content, tool_data: toolData ?? undefined, timestamp: new Date().toISOString(), from: "" } as Message;
 }
 
-function toolMsg(id, tools) {
+function toolMsg(id: string, tools: string[]): Message {
 	return msg(
 		id,
 		"",
@@ -137,7 +143,9 @@ describe("groupToolRuns", () => {
 		const groups = groupToolRuns(msgs);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].messages).toEqual(msgs);
+		if (groups[0].type === "tool-run") {
+			expect(groups[0].messages).toEqual(msgs);
+		}
 	});
 
 	it("creates a run from a single tool message", () => {
@@ -145,7 +153,9 @@ describe("groupToolRuns", () => {
 		const groups = groupToolRuns(msgs);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].messages).toEqual(msgs);
+		if (groups[0].type === "tool-run") {
+			expect(groups[0].messages).toEqual(msgs);
+		}
 	});
 
 	it("breaks runs on text messages", () => {
@@ -160,12 +170,23 @@ describe("groupToolRuns", () => {
 		expect(groups).toHaveLength(3);
 		expect(groups[0].type).toBe("tool-run");
 		expect(groups[1].type).toBe("message");
-		expect(groups[1].message.id).toBe("3");
+		if (groups[1].type === "message") {
+			expect(groups[1].message.id).toBe("3");
+		}
 		expect(groups[2].type).toBe("tool-run");
 	});
 
 	it("treats whitespace-only content as tool-only", () => {
-		const msgs = [msg("1", "  ", [{ tool_name: "Bash", input: {} }]), toolMsg("2", ["Read"])];
+		const msgs: Message[] = [
+			{
+				id: "1",
+				content: "  ",
+				tool_data: [{ tool_name: "Bash", input: {} }],
+				timestamp: new Date().toISOString(),
+				from: "",
+			} as Message,
+			toolMsg("2", ["Read"]),
+		];
 		const groups = groupToolRuns(msgs);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
@@ -177,17 +198,20 @@ describe("groupToolRuns", () => {
 			{ ...toolMsg("2", ["Read"]), timestamp: "2026-01-01T00:01:00Z" },
 		];
 		const groups = groupToolRuns(msgs);
-		expect(groups[0].lastTimestamp).toBe("2026-01-01T00:01:00Z");
+		if (groups[0].type === "tool-run") {
+			expect(groups[0].lastTimestamp).toBe("2026-01-01T00:01:00Z");
+		}
 	});
 });
 
 describe("filterChannelPosts — visible tool count", () => {
 	it("visible count excludes channel post blocks", () => {
 		// Simulates a tool run with 2 tools: 1 channel post + 1 Read
-		const messages = [
+		const messages: Message[] = [
 			{
 				id: "1",
 				content: "",
+				from: "",
 				tool_data: [
 					{ tool_name: "Bash", input: { command: 'midtown channel post "hello" --task 42' } },
 					{ tool_name: "Read", input: { file_path: "test.js" } },
@@ -205,7 +229,7 @@ describe("filterChannelPosts — visible tool count", () => {
 	});
 
 	it("visible count is 0 when all blocks are channel posts", () => {
-		const toolData = [
+		const toolData: ToolBlock[] = [
 			{ tool_name: "Bash", input: { command: 'midtown channel post "hi"' } },
 			{ tool_name: "Bash", input: { command: 'midtown channel post "bye"' } },
 		];
@@ -215,21 +239,22 @@ describe("filterChannelPosts — visible tool count", () => {
 });
 
 // Helpers for timeline entries
-function timelineMsg(id, content, toolData = null) {
+function timelineMsg(id: string, content: string, toolData: ToolBlock[] | null = null): TimelineEntry {
 	return {
 		type: "message",
 		data: {
 			id,
 			content,
-			tool_data: toolData,
+			tool_data: toolData ?? undefined,
 			timestamp: new Date().toISOString(),
-		},
+			from: "",
+		} as Message,
 		timestamp: new Date().toISOString(),
 		msgIndex: 0,
 	};
 }
 
-function timelineToolMsg(id, tools) {
+function timelineToolMsg(id: string, tools: string[]): TimelineEntry {
 	return timelineMsg(
 		id,
 		"",
@@ -237,7 +262,7 @@ function timelineToolMsg(id, tools) {
 	);
 }
 
-function timelineEdit(id) {
+function timelineEdit(id: string): TimelineEntry {
 	return {
 		type: "edit",
 		data: {
@@ -246,7 +271,7 @@ function timelineEdit(id) {
 			oldString: "a",
 			newString: "b",
 			timestamp: new Date().toISOString(),
-		},
+		} as unknown as Message,
 		timestamp: new Date().toISOString(),
 		msgIndex: -1,
 	};
@@ -262,7 +287,9 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].entries).toEqual(entries);
+		if ("entries" in groups[0]) {
+			expect(groups[0].entries).toEqual(entries);
+		}
 	});
 
 	it("groups a single tool-only entry into a run", () => {
@@ -270,7 +297,9 @@ describe("groupTimelineToolRuns", () => {
 		const groups = groupTimelineToolRuns(entries);
 		expect(groups).toHaveLength(1);
 		expect(groups[0].type).toBe("tool-run");
-		expect(groups[0].entries).toEqual(entries);
+		if ("entries" in groups[0]) {
+			expect(groups[0].entries).toEqual(entries);
+		}
 	});
 
 	it("edit entries break tool runs", () => {
@@ -294,7 +323,9 @@ describe("groupTimelineToolRuns", () => {
 		expect(groups).toHaveLength(3);
 		expect(groups[0].type).toBe("tool-run");
 		expect(groups[1].type).toBe("message");
-		expect(groups[1].data.id).toBe("3");
+		if ("data" in groups[1]) {
+			expect(groups[1].data.id).toBe("3");
+		}
 		expect(groups[2].type).toBe("tool-run");
 	});
 });

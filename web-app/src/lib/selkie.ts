@@ -17,8 +17,8 @@ export async function getSelkie(): Promise<SelkieModule> {
 			const { default: initWasm, initialize, render } = await import("selkie-rs");
 			await initWasm();
 			initialize({ startOnLoad: false });
-			selkie = { render };
-			return selkie;
+			selkie = { render: render as (...args: unknown[]) => string };
+			return selkie!;
 		})().catch((err) => {
 			initPromise = null;
 			throw err;

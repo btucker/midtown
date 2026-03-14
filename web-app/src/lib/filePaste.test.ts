@@ -9,8 +9,8 @@ describe("updatePreviewUrl", () => {
 		let counter = 0;
 		mockCreate = vi.fn(() => `blob:mock-${++counter}`);
 		mockRevoke = vi.fn();
-		globalThis.URL.createObjectURL = mockCreate;
-		globalThis.URL.revokeObjectURL = mockRevoke;
+		globalThis.URL.createObjectURL = mockCreate as unknown as typeof URL.createObjectURL;
+		globalThis.URL.revokeObjectURL = mockRevoke as unknown as typeof URL.revokeObjectURL;
 	});
 
 	test("creates blob URL for a file", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { getForkOwnerColor } from "./avenue-colors.ts";
 import { AVENUE_COLORS, dateChanged, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";
+import type { Message } from "./types.ts";
 
 describe("getSenderColor", () => {
 	it("returns gold for sender matching channel name (channel lead rule)", () => {
@@ -41,8 +42,8 @@ describe("getSenderColor", () => {
 });
 
 describe("dateChanged", () => {
-	function msg(timestamp) {
-		return { timestamp, from: "test", content: "hello" };
+	function msg(timestamp: string): Message {
+		return { timestamp, from: "test", content: "hello", id: "" } as Message;
 	}
 
 	it("returns null for the first message (index 0)", () => {
@@ -124,17 +125,17 @@ describe("getPermalinkUrl", () => {
 	});
 
 	it("returns empty string when projectName is missing", () => {
-		expect(getPermalinkUrl(null, "web", "msg-123")).toBe("");
+		expect(getPermalinkUrl(null as unknown as string, "web", "msg-123")).toBe("");
 		expect(getPermalinkUrl("", "web", "msg-123")).toBe("");
 	});
 
 	it("returns empty string when channelName is missing", () => {
-		expect(getPermalinkUrl("myproject", null, "msg-123")).toBe("");
+		expect(getPermalinkUrl("myproject", null as unknown as string, "msg-123")).toBe("");
 		expect(getPermalinkUrl("myproject", "", "msg-123")).toBe("");
 	});
 
 	it("returns empty string when msgId is missing", () => {
-		expect(getPermalinkUrl("myproject", "web", null)).toBe("");
+		expect(getPermalinkUrl("myproject", "web", null as unknown as string)).toBe("");
 		expect(getPermalinkUrl("myproject", "web", "")).toBe("");
 	});
 });

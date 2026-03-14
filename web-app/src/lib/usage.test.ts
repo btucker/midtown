@@ -2,6 +2,7 @@ import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchUsage } from "./api.ts";
 import { usageData } from "./store.ts";
+import type { UsageEntry } from "./types.ts";
 import { estimateTimeToFull, formatDurationEstimate } from "./usage-utils.ts";
 
 describe("fetchUsage", () => {
@@ -59,7 +60,7 @@ describe("fetchUsage", () => {
 				week_resets: "2026-02-14T00:00:00Z",
 				account_email: "test@example.com",
 			},
-		];
+		] as unknown as UsageEntry[];
 		usageData.set(previousData);
 
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error("Network error"));
@@ -80,7 +81,7 @@ describe("fetchUsage", () => {
 				week_resets: "2026-02-14T00:00:00Z",
 				account_email: "test@example.com",
 			},
-		];
+		] as unknown as UsageEntry[];
 		usageData.set(previousData);
 
 		globalThis.fetch = vi.fn().mockResolvedValue({
@@ -119,7 +120,7 @@ describe("fetchUsage", () => {
 				week_resets: "2026-02-14T00:00:00Z",
 				account_email: "test@example.com",
 			},
-		];
+		] as unknown as UsageEntry[];
 		usageData.set(previousData);
 
 		// 204 means credentials are gone — must clear the store, not retain stale data
