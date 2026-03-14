@@ -679,6 +679,11 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     // Check and install required plugins before starting daemon
     ensure_required_plugins();
 
+    // Install agent definitions (first-run: writes missing files, never overwrites)
+    if let Err(e) = crate::cli::agents_install::install_agent_definitions(false) {
+        eprintln!("Warning: Failed to install agent definitions: {}", e);
+    }
+
     // Build web-app if source is available and dist is stale
     build_web_app_if_needed();
 

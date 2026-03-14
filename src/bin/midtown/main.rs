@@ -264,6 +264,9 @@ enum Commands {
         /// Only check for updates, don't install
         #[arg(long)]
         check: bool,
+        /// Force overwrite agent definitions without prompting
+        #[arg(long)]
+        force: bool,
     },
     /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
@@ -699,8 +702,8 @@ fn main() {
     }
 
     // Update command (no daemon required - checks GitHub releases)
-    if let Commands::Update { check } = &command {
-        let result = cli::handle_update(*check);
+    if let Commands::Update { check, force } = &command {
+        let result = cli::handle_update(*check, *force);
         handle_result(format, result);
         return;
     }

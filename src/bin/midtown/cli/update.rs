@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use super::agents_install;
 use super::response::Response;
 
 const GITHUB_REPO: &str = "btucker/midtown";
@@ -10,7 +11,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Handle `midtown update` — download and install the latest release.
-pub fn handle_update(check_only: bool) -> Result<Response, String> {
+pub fn handle_update(check_only: bool, force: bool) -> Result<Response, String> {
     let latest = fetch_latest_version()?;
     let latest_bare = latest.strip_prefix('v').unwrap_or(&latest);
 
@@ -75,6 +76,31 @@ pub fn handle_update(check_only: bool) -> Result<Response, String> {
         let legacy_web_app = install_dir.join("web-app");
         if legacy_web_app.is_dir() {
             let _ = fs::remove_dir_all(&legacy_web_app);
+        }
+    }
+
+    // Update agent definitions
+    let outdated = agents_install::check_agent_definitions_outdated();
+    if !outdated.is_empty() {
+        if force {
+            agents_install::install_agent_definitions(true)?;
+            eprintln!("Updated agent definitions: {}", outdated.join(", "));
+        } else {
+            eprintln!("\nAgent definitions have changed:");
+            for f in &outdated {
+                eprintln!("  - {}", f);
+            }
+            eprint!("Overwrite with updated versions? [y/N] ");
+            let _ = std::io::stderr().flush();
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_ok()
+                && input.trim().eq_ignore_ascii_case("y")
+            {
+                agents_install::install_agent_definitions(true)?;
+                eprintln!("Updated agent definitions.");
+            } else {
+                eprintln!("Skipped agent definition update.");
+            }
         }
     }
 
