@@ -462,6 +462,7 @@ pub enum Effect {
         title: String,
         body: String,
         tag: String,
+        url: Option<String>,
     },
     /// Clean up stale local branches that match task/review naming patterns
     /// and are already merged into the default branch.
@@ -2042,8 +2043,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::SendPushNotification { title, body, tag } => {
-                state.send_push_notification(&title, &body, &tag);
+            Effect::SendPushNotification {
+                title,
+                body,
+                tag,
+                url,
+            } => {
+                state.send_push_notification(&title, &body, &tag, url.as_deref());
             }
             Effect::CleanStaleBranches => {
                 // Fire-and-forget: branch cleanup runs git operations that can

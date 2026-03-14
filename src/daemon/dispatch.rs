@@ -17,6 +17,29 @@ use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
+// Push notification deep-link URL helpers
+// ============================================================================
+
+/// Build a deep-link URL for push notifications.
+///
+/// Format: `/{project}?channel={channel}&msg={msg_id}[&thread={thread_id}]`
+fn build_push_deep_link(
+    project_name: &str,
+    channel: &str,
+    msg_id: Option<&str>,
+    thread_id: Option<&str>,
+) -> String {
+    let mut url = format!("/{}?channel={}", project_name, channel);
+    if let Some(msg) = msg_id {
+        url.push_str(&format!("&msg={}", msg));
+    }
+    if let Some(thread) = thread_id {
+        url.push_str(&format!("&thread={}", thread));
+    }
+    url
+}
+
+// ============================================================================
 // Lead-driven channel helpers
 // ============================================================================
 
@@ -202,6 +225,7 @@ fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> S
 // ============================================================================
 
 /// Build the standard effects for completing a task: CompleteTask + ClearBlockedBy + PostToChannel + SendPushNotification.
+#[allow(clippy::too_many_arguments)]
 fn task_completed_effects(
     task_id: &str,
     dir_key: &str,
@@ -210,6 +234,7 @@ fn task_completed_effects(
     channel: Option<String>,
     coworker: Option<String>,
     ctx: TaskEventContext,
+    push_url: Option<String>,
 ) -> Vec<Effect> {
     let mut effects = vec![
         Effect::CompleteTask {
@@ -229,6 +254,7 @@ fn task_completed_effects(
                 format!("Task !{}: {}", task_id, task_subject)
             },
             tag: format!("task_completed_{}", task_id),
+            url: push_url,
         },
     ];
     // Emit workflow event when the task's channel is known.
@@ -2117,6 +2143,7 @@ pub(super) fn build_task_completion_effects(
     pr_title: &str,
     pr_number: u64,
     dir_key: &str,
+    project_name: &str,
     channel: Option<String>,
     ctx: Option<TaskEventContext>,
 ) -> Vec<Effect> {
@@ -2125,6 +2152,16 @@ pub(super) fn build_task_completion_effects(
     };
 
     let mut ctx = ctx.unwrap_or_default();
+
+    // Build deep-link URL for the push notification
+    let push_url = channel.as_ref().map(|ch| {
+        build_push_deep_link(
+            project_name,
+            ch,
+            ctx.message_id.as_deref(),
+            ctx.thread_id.as_deref(),
+        )
+    });
 
     // Use the actual task subject when available; fall back to PR title.
     let task_subject = ctx.subject.take().unwrap_or_else(|| pr_title.to_string());
@@ -2140,6 +2177,7 @@ pub(super) fn build_task_completion_effects(
         channel.clone(),
         None,
         ctx,
+        push_url,
     );
 
     // Emit PrMerged alongside task completion when channel is known.
@@ -2182,10 +2220,17 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
 
         let task_channel = snap.task_channel.get(&task.id).cloned();
 
+        // Build deep-link URL from task channel + message metadata
+        let task_msg_id = snap.task_message_id_map.get(&task.id).map(|s| s.as_str());
+        let task_thread_id = snap.task_thread_id_map.get(&task.id).map(|s| s.as_str());
+
         if let Some(pr_number) = task.pr {
             // Path 1: Task has explicit PR association
             // This prevents false positives (e.g., task mentions "PR #940 fix insufficient" as context)
             if snap.pr.merged_pr_numbers.contains(&pr_number) {
+                let push_url = task_channel.as_ref().map(|ch| {
+                    build_push_deep_link(&snap.project_name, ch, task_msg_id, task_thread_id)
+                });
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.dir_key,
@@ -2202,6 +2247,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
                         message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
+                    push_url,
                 ));
             }
         } else {
@@ -2233,6 +2279,9 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                     .map(|n| format!("#{}", n))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let push_url = task_channel.as_ref().map(|ch| {
+                    build_push_deep_link(&snap.project_name, ch, task_msg_id, task_thread_id)
+                });
                 effects.extend(task_completed_effects(
                     &task.id,
                     &snap.dir_key,
@@ -2249,6 +2298,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         thread_id: snap.task_thread_id_map.get(&task.id).cloned(),
                         message_id: snap.task_message_id_map.get(&task.id).cloned(),
                     },
+                    push_url,
                 ));
             }
         }

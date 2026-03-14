@@ -1,5 +1,23 @@
 use super::*;
 
+#[test]
+fn test_build_push_deep_link_basic() {
+    let url = build_push_deep_link("myproject", "web", None, None);
+    assert_eq!(url, "/myproject?channel=web");
+}
+
+#[test]
+fn test_build_push_deep_link_with_msg() {
+    let url = build_push_deep_link("myproject", "web", Some("msg-123"), None);
+    assert_eq!(url, "/myproject?channel=web&msg=msg-123");
+}
+
+#[test]
+fn test_build_push_deep_link_with_msg_and_thread() {
+    let url = build_push_deep_link("myproject", "web", Some("msg-456"), Some("thread-789"));
+    assert_eq!(url, "/myproject?channel=web&msg=msg-456&thread=thread-789");
+}
+
 fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> crate::tasks::Task {
     crate::tasks::Task {
         id: task_id.to_string(),
@@ -215,6 +233,7 @@ fn test_build_task_completion_effects_with_task_id() {
         "feat: Add auth endpoint [Midtown #42]",
         123,
         "myrepo",
+        "myrepo",
         None,
         None,
     );
@@ -257,7 +276,9 @@ fn test_build_task_completion_effects_with_task_id() {
 
     // Verify SendPushNotification effect
     match &effects[3] {
-        Effect::SendPushNotification { title, body, tag } => {
+        Effect::SendPushNotification {
+            title, body, tag, ..
+        } => {
             assert!(title.contains("42"), "title should contain task id");
             assert!(body.contains("42"), "body should contain task id");
             assert_eq!(tag, "task_completed_42");
@@ -267,9 +288,85 @@ fn test_build_task_completion_effects_with_task_id() {
 }
 
 #[test]
+fn test_build_task_completion_effects_push_url_with_channel_and_context() {
+    let ctx = super::TaskEventContext {
+        subject: Some("Fix auth bug".to_string()),
+        description: None,
+        thread_id: Some("thread-abc".to_string()),
+        message_id: Some("msg-xyz".to_string()),
+    };
+    let effects = build_task_completion_effects(
+        "fix: Fix auth bug [Midtown #99]",
+        456,
+        "myrepo",
+        "myproject",
+        Some("web".to_string()),
+        Some(ctx),
+    );
+
+    // The SendPushNotification should have a deep-link URL
+    let push = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::SendPushNotification { url, .. } = e {
+                Some(url)
+            } else {
+                None
+            }
+        })
+        .expect("Should have a SendPushNotification effect");
+
+    let url = push
+        .as_ref()
+        .expect("Push URL should be Some when channel is provided");
+    assert!(
+        url.contains("/myproject?"),
+        "URL should start with project name"
+    );
+    assert!(url.contains("channel=web"), "URL should contain channel");
+    assert!(url.contains("msg=msg-xyz"), "URL should contain message ID");
+    assert!(
+        url.contains("thread=thread-abc"),
+        "URL should contain thread ID"
+    );
+}
+
+#[test]
+fn test_build_task_completion_effects_push_url_none_without_channel() {
+    let effects = build_task_completion_effects(
+        "fix: Fix auth bug [Midtown #99]",
+        456,
+        "myrepo",
+        "myproject",
+        None,
+        None,
+    );
+
+    // Without a channel, the push URL should be None
+    let push_url = effects.iter().find_map(|e| {
+        if let Effect::SendPushNotification { url, .. } = e {
+            Some(url.clone())
+        } else {
+            None
+        }
+    });
+    assert_eq!(
+        push_url,
+        Some(None),
+        "Push URL should be None without channel"
+    );
+}
+
+#[test]
 fn test_build_task_completion_effects_without_task_id() {
-    let effects =
-        build_task_completion_effects("feat: Add auth endpoint", 123, "myrepo", None, None);
+    let effects = build_task_completion_effects(
+        "feat: Add auth endpoint",
+        123,
+        "myrepo",
+        "myrepo",
+        None,
+        None,
+    );
 
     assert!(
         effects.is_empty(),
@@ -282,6 +379,7 @@ fn test_build_task_completion_effects_message_says_merged() {
     let effects = build_task_completion_effects(
         "feat: Add auth endpoint [Midtown #42]",
         123,
+        "myrepo",
         "myrepo",
         None,
         None,
@@ -4374,6 +4472,7 @@ fn test_build_task_completion_effects_emits_task_completed_workflow_event() {
         "feat: Add auth endpoint [Midtown #42]",
         123,
         "myrepo",
+        "myrepo",
         Some("proj-auth".to_string()),
         None,
     );
@@ -4433,6 +4532,7 @@ fn test_build_task_completion_effects_uses_task_subject_over_pr_title() {
         "feat: Add auth endpoint [Midtown #42]",
         123,
         "myrepo",
+        "myrepo",
         Some("proj-auth".to_string()),
         Some(ctx),
     );
@@ -4473,6 +4573,7 @@ fn test_build_task_completion_effects_falls_back_to_pr_title() {
         "feat: Add auth endpoint [Midtown #42]",
         123,
         "myrepo",
+        "myrepo",
         Some("proj-auth".to_string()),
         None,
     );
@@ -4501,6 +4602,7 @@ fn test_build_task_completion_effects_routes_to_task_channel() {
         "feat: Add auth endpoint [Midtown #42]",
         123,
         "myrepo",
+        "myrepo",
         Some("proj-auth".to_string()),
         None,
     );
@@ -4527,6 +4629,7 @@ fn test_build_task_completion_effects_no_workflow_event_without_channel() {
     let effects = build_task_completion_effects(
         "feat: Add auth endpoint [Midtown #42]",
         123,
+        "myrepo",
         "myrepo",
         None,
         None,

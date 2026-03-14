@@ -49,6 +49,7 @@ import {
 	activeChannelTab,
 	activeProject,
 	channels,
+	channelTargetMsgId,
 	connected,
 	coworkers,
 	deepLinkMsgId,
@@ -113,6 +114,38 @@ async function togglePush() {
 	}
 }
 
+// Navigate to a deep-link URL by parsing channel/thread/msg params and updating stores.
+// Shared between initial URL-based deep-linking and push notification navigation.
+function navigateToDeepLink(urlStr: string) {
+	const url = new URL(urlStr, window.location.origin);
+	const params = url.searchParams;
+	const channel = params.get("channel");
+	const thread = params.get("thread");
+	const msg = params.get("msg");
+
+	if (!channel) return;
+
+	activeChannel.set(channel);
+	channels.update((list) => list.map((ch) => (ch.name === channel ? { ...ch, unread: 0 } : ch)));
+	fetchHistory(channel);
+
+	if (thread) {
+		if (msg) {
+			deepLinkMsgId.set(msg);
+		}
+		openThread({ id: thread, from: "", content: "" }, channel, { pushState: false });
+	} else if (msg) {
+		channelTargetMsgId.set(msg);
+		setTimeout(() => {
+			if ($channelTargetMsgId === msg) {
+				channelTargetMsgId.set(null);
+			}
+		}, 5000);
+	}
+
+	replaceNavState({ channel, thread: thread || undefined, msg: msg || undefined });
+}
+
 onMount(async () => {
 	// Initialize push notification support check
 	checkPushSubscription();
@@ -133,30 +166,10 @@ onMount(async () => {
 	if (targetProject) {
 		switchProject(targetProject.name, targetProject.webhook_port);
 
-		// Deep-link: read channel/thread/msg from URL query params
-		const params = new URLSearchParams(window.location.search);
-		const urlChannel = params.get("channel");
-		const urlThread = params.get("thread");
-		const urlMsg = params.get("msg");
-
-		// Deep-link: restore channel and/or thread from URL.
-		// Use the URL channel if present, else default to the project's main channel.
-		const deepLinkChannel = urlChannel || targetProject.name;
-		if (urlChannel) {
-			activeChannel.set(urlChannel);
-			// Deep-linked channel may not be the main channel (e.g. DM channels,
-			// topic channels). switchProject's fetchHistory() only loads the main
-			// channel, so we must explicitly fetch the deep-linked channel's messages.
-			fetchHistory(urlChannel);
+		// Deep-link from URL query params (initial page load / openWindow from SW)
+		if (window.location.search) {
+			navigateToDeepLink(window.location.href);
 		}
-		if (urlThread) {
-			// If a specific message is targeted, store it so ThreadPanel can scroll to it
-			if (urlMsg) {
-				deepLinkMsgId.set(urlMsg);
-			}
-			openThread({ id: urlThread, from: "", content: "" }, deepLinkChannel, { pushState: false });
-		}
-		replaceNavState({ channel: deepLinkChannel, thread: urlThread || undefined, msg: urlMsg || undefined });
 	}
 	// Set up browser back/forward navigation
 	const cleanupHistory = setupHistoryNavigation();
@@ -189,11 +202,22 @@ onMount(async () => {
 
 	document.addEventListener("visibilitychange", handleVisibilityChange);
 
+	// Listen for navigation messages from the service worker (push notification deep-links).
+	// When a notification is clicked and the app window is already open, the SW sends
+	// a NAVIGATE message instead of using client.navigate() for cross-platform reliability.
+	function handleSwMessage(event: MessageEvent) {
+		if (event.data?.type === "NAVIGATE" && event.data.url) {
+			navigateToDeepLink(event.data.url);
+		}
+	}
+	navigator.serviceWorker?.addEventListener("message", handleSwMessage);
+
 	return () => {
 		cleanupHistory();
 		clearInterval(projectInterval);
 		window.removeEventListener("resize", updateViewportWidth);
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
+		navigator.serviceWorker?.removeEventListener("message", handleSwMessage);
 	};
 });
 

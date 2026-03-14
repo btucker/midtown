@@ -58,7 +58,7 @@ self.addEventListener("push", (event: PushEvent) => {
 	);
 });
 
-// Handle notification click - open or focus the PWA
+// Handle notification click - open or focus the PWA and navigate to the deep-link URL
 self.addEventListener("notificationclick", (event: NotificationEvent) => {
 	event.notification.close();
 
@@ -70,7 +70,15 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 			.then((windowClients: readonly WindowClient[]) => {
 				for (const client of windowClients) {
 					if (client.url.includes(self.location.origin) && "focus" in client) {
-						return client.focus();
+						// Use postMessage instead of client.navigate() for cross-platform
+						// reliability (Safari PWA support for navigate() is spotty).
+						// The app registers a listener that handles navigation using its
+						// own stores, avoiding a full page reload.
+						return client.focus().then((focusedClient) => {
+							if (targetUrl && targetUrl !== "/") {
+								focusedClient.postMessage({ type: "NAVIGATE", url: targetUrl });
+							}
+						});
 					}
 				}
 				return self.clients.openWindow(targetUrl);
