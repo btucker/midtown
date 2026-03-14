@@ -735,8 +735,18 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();
-        let agent_name = Some(self.role.agent_name().to_string());
-        let system_prompt = self.render_append_prompt(project_name);
+
+        // Codex doesn't support --agent, so it needs the full system prompt (all layers).
+        // Claude Code sessions use --agent for Layer 1 + --append-system-prompt for Layers 2+3.
+        let is_codex = matches!(self.auth_provider, crate::auth::AuthProvider::Codex);
+        let (agent_name, system_prompt) = if is_codex {
+            (None, self.render_system_prompt(project_name))
+        } else {
+            (
+                Some(self.role.agent_name().to_string()),
+                self.render_append_prompt(project_name),
+            )
+        };
 
         // Save the full system prompt (all layers) to disk for attach resumption.
         // The lead attach path uses this file as --system-prompt, so it needs all layers.
