@@ -10,6 +10,7 @@
 //! - `GET /api/projects/:name/status` - Proxy to per-project daemon status
 //! - `GET /api/projects/:name/channel` - Proxy to per-project channel data
 //! - `GET /api/projects/:name/assets/*path` - Serve per-project asset files (screenshots, videos)
+//! - `GET /api/projects/:name/screenshots/:filename` - Legacy: serve old screenshot images
 //! - `GET /api/projects/:name/channels/:channel_name/notes` - List channel notes (markdown files)
 //! - `GET /api/projects/:name/proxy/api/ws` - WebSocket proxy to per-project daemon
 //! - `ANY /api/projects/:name/proxy/*` - HTTP reverse proxy to per-project daemon
@@ -365,6 +366,46 @@ async fn project_asset(
         .unwrap())
 }
 
+/// Legacy endpoint: serve screenshot files from per-project screenshots directory.
+///
+/// Old channel messages contain `[Attached: .../screenshots/<file>]` references that the
+/// frontend rewrites to this endpoint. Keeps those images working after the screenshot CLI
+/// was replaced by the Playwright MCP + upload-image workflow.
+async fn project_screenshot(
+    Path((name, filename)): Path<(String, String)>,
+) -> Result<Response<Body>, StatusCode> {
+    if !is_valid_path_segment(&name) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let file_path = crate::paths::projects_dir_for_repo(&name)
+        .join("screenshots")
+        .join(&filename);
+
+    if !file_path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let content = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = mime_type_for_path(&file_path);
+    if !content_type.starts_with("image/") {
+        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, HeaderValue::from_static(content_type))
+        .body(Body::from(content))
+        .unwrap())
+}
+
 /// Return a best-effort MIME type for a file path based on its extension.
 pub(crate) fn mime_type_for_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
@@ -649,6 +690,12 @@ pub async fn run(config: WebserverConfig) -> std::result::Result<(), Box<dyn std
         .route("/projects/{name}/status", get(project_status))
         .route("/projects/{name}/channel", get(project_channel))
         .route("/projects/{name}/assets/{*path}", get(project_asset))
+        // Legacy: old channel messages reference /screenshots/<file>, frontend rewrites
+        // to this endpoint. Keep serving from the screenshots directory.
+        .route(
+            "/projects/{name}/screenshots/{filename}",
+            get(project_screenshot),
+        )
         .route(
             "/projects/{name}/channels/{channel_name}/notes",
             get(project_channel_notes),

@@ -139,6 +139,16 @@ pub fn handle_upload_image(path: &str, alt: &str) -> Result<Response, String> {
         .and_then(|e| e.to_str())
         .unwrap_or("png");
 
+    match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => {}
+        _ => {
+            return Err(format!(
+                "Unsupported image format: .{}. Supported: png, jpg, jpeg, gif, webp",
+                ext
+            ));
+        }
+    }
+
     let github_url = upload_to_github(image_path, ext)?;
     Ok(Response::message(format!("![{}]({})", alt, github_url)))
 }

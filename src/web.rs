@@ -450,6 +450,9 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         )
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
+        // Legacy route: old channel messages reference [Attached: .../screenshots/<file>]
+        // and the frontend rewrites those to /api/screenshots/<file>. Keep serving them.
+        .route("/api/screenshots/{filename}", get(api_get_screenshot))
         .route(
             "/api/channels/{channel}/agents-md",
             get(api_channel_agents_md).put(api_channel_agents_md_update),
@@ -2148,6 +2151,38 @@ async fn api_get_upload(
         Some("webp") => "image/webp",
         Some("pdf") => "application/pdf",
         _ => "application/octet-stream",
+    };
+
+    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
+}
+
+/// Legacy endpoint: serve screenshot files from the per-project screenshots directory.
+///
+/// Old channel messages contain `[Attached: .../screenshots/<file>]` references that the
+/// frontend rewrites to `/api/screenshots/<file>`. This route keeps those working even
+/// though new screenshots use the Playwright MCP + upload-image workflow.
+async fn api_get_screenshot(
+    State(state): State<Arc<WebState>>,
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let file_path = crate::paths::projects_dir_for_repo(&state.config.dir_key)
+        .join("screenshots")
+        .join(&filename);
+
+    let data = tokio::fs::read(&file_path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+
+    let content_type = match file_path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/png",
     };
 
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))

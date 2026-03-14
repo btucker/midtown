@@ -1056,8 +1056,6 @@ fn main() {
             *allow_tools,
         ),
         // These are handled before daemon connection, so unreachable.
-        // (Screenshot is also a bypass command but must be matched above
-        // the general Coworker { Some(cmd) } arm — see comment there.)
         Commands::Daemon { .. }
         | Commands::Start { .. }
         | Commands::Stop { .. }
