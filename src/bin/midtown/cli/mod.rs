@@ -210,24 +210,6 @@ pub fn prompt_provider_selection_all() -> Result<midtown::auth::AuthProvider, St
     auth::prompt_provider_selection_all()
 }
 
-/// Handle `midtown channel remind` subcommands
-pub fn handle_remind(
-    cmd: &crate::RemindCommand,
-    client: &DaemonClient,
-) -> Result<Response, String> {
-    channel::handle_remind(cmd, client)
-}
-
-/// Handle `midtown lead` (no subcommand) — boot a headed lead session.
-pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
-    agent::handle_lead_boot(channel)
-}
-
-/// Handle `midtown agent` (no subcommand) — boot a headed coworker session.
-pub fn handle_agent_boot(task_id: Option<&str>) -> Result<(), String> {
-    agent::handle_coworker_boot(task_id)
-}
-
 /// Handle `midtown agent upload-image` — upload a local image to GitHub.
 pub fn handle_agent_upload_image(path: &str, alt: &str) -> Result<Response, String> {
     agent::handle_upload_image(path, alt)

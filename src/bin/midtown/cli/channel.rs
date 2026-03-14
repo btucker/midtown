@@ -4,6 +4,22 @@ use super::Response;
 use crate::client::DaemonClient;
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum RemindCommand {
+    /// Set a reminder for when all tasks are done and all PRs are merged
+    AllWorkMerged {
+        /// Message to display when the reminder fires
+        message: String,
+    },
+    /// List active reminders
+    List,
+    /// Cancel a reminder by ID
+    Cancel {
+        /// Reminder ID to cancel
+        id: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum ChannelCommand {
     /// Post a message to the channel
     Post {
@@ -69,7 +85,7 @@ pub enum ChannelCommand {
     /// Manage reminders (condition-based notifications)
     Remind {
         #[command(subcommand)]
-        command: crate::RemindCommand,
+        command: RemindCommand,
     },
 }
 
@@ -131,15 +147,12 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
     }
 }
 
-pub fn handle_remind(
-    cmd: &crate::RemindCommand,
-    client: &DaemonClient,
-) -> Result<Response, String> {
+fn handle_remind(cmd: &RemindCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        crate::RemindCommand::AllWorkMerged { message } => {
+        RemindCommand::AllWorkMerged { message } => {
             client.reminder_create("all-work-merged", message)
         }
-        crate::RemindCommand::List => client.reminder_list(),
-        crate::RemindCommand::Cancel { id } => client.reminder_cancel(id),
+        RemindCommand::List => client.reminder_list(),
+        RemindCommand::Cancel { id } => client.reminder_cancel(id),
     }
 }

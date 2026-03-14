@@ -128,9 +128,6 @@ enum Commands {
     },
     /// Agent management commands (spawn, stop, show, attach, etc.)
     Agent {
-        /// Task ID to boot a headed agent session for
-        #[arg(long)]
-        task: Option<String>,
         #[command(subcommand)]
         command: Option<AgentCommand>,
     },
@@ -156,15 +153,6 @@ enum Commands {
     Pr {
         #[command(subcommand)]
         command: PrCommand,
-    },
-    /// Lead-specific commands
-    #[command(hide = true)]
-    Lead {
-        /// Channel to lead (defaults to main project channel)
-        #[arg(long)]
-        channel: Option<String>,
-        #[command(subcommand)]
-        command: Option<LeadCommand>,
     },
     /// Open IRC-style chat TUI
     #[command(hide = true)]
@@ -319,34 +307,6 @@ enum WebserverCommand {
     Stop,
     /// Restart the webserver
     Restart,
-}
-
-#[derive(Subcommand, Clone)]
-enum LeadCommand {
-    /// Register this session for task sharing with coworkers
-    #[command(hide = true)]
-    RegisterSession,
-    /// Manage reminders (condition-based notifications)
-    Remind {
-        #[command(subcommand)]
-        command: RemindCommand,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-enum RemindCommand {
-    /// Set a reminder for when all tasks are done and all PRs are merged
-    AllWorkMerged {
-        /// Message to display when the reminder fires
-        message: String,
-    },
-    /// List active reminders
-    List,
-    /// Cancel a reminder by ID
-    Cancel {
-        /// Reminder ID to cancel
-        id: String,
-    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -580,54 +540,6 @@ fn main() {
         let result = cli::handle_config(command);
         handle_result(format, result);
         return;
-    }
-
-    // Lead commands
-    if let Commands::Lead { channel, command } = &command {
-        if let Some(cmd) = command {
-            let result = match cmd {
-                LeadCommand::RegisterSession => cli::handle_register_session(),
-                LeadCommand::Remind {
-                    command: remind_cmd,
-                } => match DaemonClient::connect() {
-                    Ok(client) => cli::handle_remind(remind_cmd, &client),
-                    Err(e) => Err(format!(
-                        "Failed to connect to daemon: {}. Is it running?",
-                        e
-                    )),
-                },
-            };
-            handle_result(format, result);
-        } else {
-            // No subcommand — boot a headed lead session
-            if let Err(e) = cli::handle_lead_boot(channel.as_deref()) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    // Agent boot — headed session (no subcommand, uses exec)
-    if let Commands::Agent {
-        task,
-        command: None,
-    } = &command
-    {
-        if let Err(e) = cli::handle_agent_boot(task.as_deref()) {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // Warn if --task is given alongside a subcommand (it would be silently ignored)
-    if let Commands::Agent {
-        task: Some(_),
-        command: Some(_),
-    } = &command
-    {
-        eprintln!("Warning: --task is ignored when a subcommand is provided");
     }
 
     // Agent upload-image — runs locally (HTTP upload to GitHub, no daemon RPC needed)
@@ -1025,11 +937,10 @@ fn main() {
         // in the catch-all below because Agent { Some(cmd) } would match first)
         Commands::Agent {
             command: Some(cli::AgentCommand::UploadImage { .. }),
-            ..
         } => unreachable!("UploadImage is handled before daemon connection"),
-        Commands::Agent {
-            command: Some(cmd), ..
-        } => cli::handle_agent(cmd, &client),
+        Commands::Agent { command: Some(cmd) } => cli::handle_agent(cmd, &client),
+        // Bare `midtown agent` → list all agents
+        Commands::Agent { command: None } => cli::handle_agent(&cli::AgentCommand::Ls, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Workflow { command } => cli::handle_workflow(command, &client),
         Commands::Status => cli::handle_status(&client),
@@ -1057,13 +968,11 @@ fn main() {
         | Commands::Stop { .. }
         | Commands::Restart { .. }
         | Commands::View { .. }
-        | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Config { .. }
         | Commands::Chat
         | Commands::E2e { .. }
         | Commands::Auth { .. }
-        | Commands::Agent { command: None, .. }
         | Commands::Claude { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }

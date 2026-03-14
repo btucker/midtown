@@ -624,6 +624,7 @@ impl DaemonClient {
     }
 
     /// List all attachable headless sessions.
+    #[allow(dead_code)]
     pub fn session_list(&self) -> Result<Response, String> {
         self.send("session.list", None)
     }

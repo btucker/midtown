@@ -33,7 +33,6 @@ impl From<ProviderArg> for midtown::auth::AuthProvider {
 #[derive(Subcommand, Debug, Clone)]
 pub enum AgentCommand {
     /// Spawn a new coworker
-    #[command(alias = "call-in")]
     Spawn {
         /// Resume the previous Claude session (passes --continue to claude)
         #[arg(long)]
@@ -58,13 +57,11 @@ pub enum AgentCommand {
         task: Option<String>,
     },
     /// Stop a coworker (send on break)
-    #[command(alias = "break")]
     Stop {
         /// Name of the coworker to stop
         name: String,
     },
     /// Show an agent's current output with rich rendering
-    #[command(alias = "view")]
     Show {
         /// Agent target (coworker name, task/<id>, pr/<number>, claude, etc.)
         target: String,
@@ -123,7 +120,6 @@ pub enum AgentCommand {
         alt: String,
     },
     /// List agents / attachable sessions
-    #[command(alias = "list")]
     Ls,
     /// Register this session for task sharing with coworkers
     #[command(hide = true)]
@@ -182,7 +178,7 @@ pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, Str
             // Handled before daemon connection in main.rs
             unreachable!("UploadImage is handled locally without daemon connection")
         }
-        AgentCommand::Ls => client.session_list(),
+        AgentCommand::Ls => client.coworker_list(),
         AgentCommand::RegisterSession => super::handle_register_session(),
     }
 }
@@ -1201,270 +1197,6 @@ fn get_github_repo_name() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-}
-
-// ── Coworker boot (headed session) ──────────────────────────────────
-
-/// Boot a headed (interactive terminal) coworker session for a task.
-pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
-
-    let repo_name = midtown::paths::detect_repo_name()
-        .ok_or("Not in a git repository. Run from a git repo.")?;
-
-    let task = if let Some(id) = task_id {
-        midtown::tasks::read_task(id).ok_or_else(|| format!("Task !{} not found", id))?
-    } else {
-        select_task()?
-    };
-
-    eprintln!("Booting coworker for task !{}: {}", task.id, task.subject);
-
-    let worktree_id = midtown::worktree_registry::branch_slug_for_task(&task.id, &task.subject);
-    let wt_manager = midtown::worktree::WorktreeManager::from_current_dir()
-        .map_err(|e| format!("Failed to initialize worktree manager: {}", e))?;
-    let worktree_path = wt_manager
-        .create_task_worktree(&worktree_id)
-        .map_err(|e| format!("Failed to create worktree: {}", e))?;
-
-    let mut config = midtown::launch::LaunchConfig::coworker(
-        &worktree_id,
-        &repo_name,
-        midtown::launch::SessionMode::Resume,
-        None,
-        Some(task.id.clone()),
-    );
-    config.working_dir = Some(worktree_path.clone());
-
-    let profile_dir = midtown::auth::active_profile_dir_for_project_with_provider(
-        &repo_name,
-        config.auth_provider,
-    );
-    config.auth_profile_dir = Some(profile_dir);
-
-    let system_prompt = midtown::agents::coworker_system_prompt(&worktree_id, &repo_name, None);
-    let prompt_file =
-        std::env::temp_dir().join(format!("midtown-coworker-prompt-{}.md", std::process::id()));
-    std::fs::write(&prompt_file, &system_prompt)
-        .map_err(|e| format!("Failed to write system prompt: {}", e))?;
-
-    let settings_file = midtown::settings::write_coworker_settings_file()
-        .map_err(|e| format!("Failed to write settings: {}", e))?;
-
-    let initial_prompt = midtown::agents::coworker_task_prompt(&task.id, &task.subject, "");
-    let initial_prompt_file = std::env::temp_dir().join(format!(
-        "midtown-coworker-initial-{}.md",
-        std::process::id()
-    ));
-    std::fs::write(&initial_prompt_file, &initial_prompt)
-        .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
-
-    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(
-        config.auth_provider,
-        config.auth_profile_dir.as_deref(),
-    ) {
-        eprintln!(
-            "Warning: Platform pre-launch hook failed (continuing): {}",
-            e
-        );
-    }
-
-    let launch = config.to_shell_command(
-        &settings_file,
-        &prompt_file,
-        Some(&initial_prompt_file),
-        &worktree_path,
-        &repo_name,
-    );
-
-    let err = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(&launch.shell_command)
-        .current_dir(&worktree_path)
-        .exec();
-    Err(format!("Failed to exec: {}", err))
-}
-
-/// Interactive task picker for bare `midtown agent` (no --task flag).
-fn select_task() -> Result<midtown::tasks::Task, String> {
-    let mut tasks: Vec<midtown::tasks::Task> = midtown::tasks::read_tasks()
-        .into_iter()
-        .filter(|t| t.status != midtown::tasks::TaskStatus::Completed)
-        .collect();
-
-    if tasks.is_empty() {
-        return Err("No unresolved tasks. Create tasks first, then run `midtown agent`.".into());
-    }
-
-    tasks.sort_by(|a, b| {
-        a.id.parse::<u64>()
-            .unwrap_or(0)
-            .cmp(&b.id.parse::<u64>().unwrap_or(0))
-    });
-
-    if tasks.len() == 1 {
-        eprintln!("Auto-selecting task !{}: {}", tasks[0].id, tasks[0].subject);
-        return Ok(tasks[0].clone());
-    }
-
-    eprintln!("Select a task:");
-    for (idx, task) in tasks.iter().enumerate() {
-        let status = match task.status {
-            midtown::tasks::TaskStatus::Pending => "pending",
-            midtown::tasks::TaskStatus::InProgress => "in_progress",
-            midtown::tasks::TaskStatus::Completed => "completed",
-        };
-        let owner_suffix = task
-            .owner
-            .as_deref()
-            .filter(|o| !o.is_empty())
-            .map(|o| format!(" ({})", o))
-            .unwrap_or_default();
-        eprintln!(
-            "  {}. !{} [{}] {}{}",
-            idx + 1,
-            task.id,
-            status,
-            task.subject,
-            owner_suffix
-        );
-    }
-
-    loop {
-        use std::io::Write;
-        eprint!("Choice [1-{}]: ", tasks.len());
-        std::io::stderr()
-            .flush()
-            .map_err(|e| format!("Failed to flush: {}", e))?;
-
-        let mut input = String::new();
-        let bytes_read = std::io::stdin()
-            .read_line(&mut input)
-            .map_err(|e| format!("Failed to read input: {}", e))?;
-
-        if bytes_read == 0 {
-            return Err("No input (EOF). Run with --task <id> to specify a task.".into());
-        }
-
-        let trimmed = input.trim();
-        if let Ok(index) = trimmed.parse::<usize>()
-            && (1..=tasks.len()).contains(&index)
-        {
-            return Ok(tasks[index - 1].clone());
-        }
-        eprintln!("Enter a number between 1 and {}.", tasks.len());
-    }
-}
-
-// ── Lead boot ────────────────────────────────────────────────────────
-
-/// Boot a headed (interactive terminal) lead session.
-pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
-
-    let dir_key = midtown::paths::detect_repo_name()
-        .ok_or("Not in a git repository. Run from a git repo.")?;
-    let project_name = midtown::paths::project_name_for_dir_key(&dir_key);
-
-    // Warn if the daemon is already running a headless lead session
-    if let Ok(client) = crate::client::DaemonClient::connect()
-        && let Ok(super::Response::Message { message }) = client.status()
-        && message.contains("Lead:")
-        && !message.contains("Lead: not running")
-    {
-        eprintln!(
-            "Warning: A daemon-managed lead session is already running.\n\
-             This headed session will be independent. Use `midtown agent attach lead`\n\
-             to attach to the daemon session instead, or proceed to start a separate one."
-        );
-    }
-
-    let mut config = midtown::launch::LaunchConfig::lead(&dir_key, channel);
-    config.session_mode = midtown::launch::SessionMode::Resume;
-
-    // Load channel notes into domain_context for channel leads
-    if let Some(channel_name) = channel {
-        let base_dir = midtown::paths::projects_dir_for_repo(&dir_key);
-        let notes = midtown::load_channel_notes(&base_dir, channel_name);
-        if !notes.is_empty()
-            && let midtown::launch::CoworkerRole::ChannelLead {
-                ref mut domain_context,
-                ..
-            } = config.role
-        {
-            *domain_context = notes;
-        }
-    }
-
-    let profile_dir =
-        midtown::auth::active_profile_dir_for_project_with_provider(&dir_key, config.auth_provider);
-    config.auth_profile_dir = Some(profile_dir);
-
-    let system_prompt = match &config.role {
-        midtown::launch::CoworkerRole::Lead => {
-            midtown::agents::main_lead_system_prompt(&project_name)
-        }
-        midtown::launch::CoworkerRole::ChannelLead {
-            channel_name,
-            domain_context,
-            agents_md,
-        } => midtown::agents::channel_lead_system_prompt(
-            channel_name,
-            domain_context,
-            &project_name,
-            agents_md.as_deref(),
-        ),
-        _ => unreachable!("LaunchConfig::lead() always produces Lead or ChannelLead role"),
-    };
-
-    let prompt_file =
-        std::env::temp_dir().join(format!("midtown-lead-prompt-{}.md", std::process::id()));
-    std::fs::write(&prompt_file, &system_prompt)
-        .map_err(|e| format!("Failed to write system prompt: {}", e))?;
-
-    let settings_file = if matches!(config.role, midtown::launch::CoworkerRole::Lead) {
-        midtown::settings::write_lead_settings_file()
-    } else {
-        midtown::settings::write_coworker_settings_file()
-    }
-    .map_err(|e| format!("Failed to write settings: {}", e))?;
-
-    let cwd =
-        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
-
-    let initial_prompt_file = if let Some(ref prompt_text) = config.initial_prompt {
-        let path =
-            std::env::temp_dir().join(format!("midtown-lead-initial-{}.md", std::process::id()));
-        std::fs::write(&path, prompt_text)
-            .map_err(|e| format!("Failed to write initial prompt: {}", e))?;
-        Some(path)
-    } else {
-        None
-    };
-
-    if let Err(e) = midtown::platform_launch::run_platform_prelaunch_hook(
-        config.auth_provider,
-        config.auth_profile_dir.as_deref(),
-    ) {
-        eprintln!(
-            "Warning: Platform pre-launch hook failed (continuing): {}",
-            e
-        );
-    }
-
-    let launch = config.to_shell_command(
-        &settings_file,
-        &prompt_file,
-        initial_prompt_file.as_deref(),
-        &cwd,
-        &dir_key,
-    );
-
-    let err = std::process::Command::new("sh")
-        .arg("-lc")
-        .arg(&launch.shell_command)
-        .exec();
-    Err(format!("Failed to exec: {}", err))
 }
 
 #[path = "agent_tests.rs"]
