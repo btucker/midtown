@@ -102,7 +102,7 @@ When your PR includes visual changes, use the **Playwright MCP tools** to captur
 **Workflow:**
 
 1. **Navigate and interact** — use MCP tools to browse to the right page and click into the desired UI state
-2. **Upload for GitHub** — use `midtown coworker upload-image` to get a GitHub-embeddable URL
+2. **Upload for GitHub** — use `midtown agent upload-image` to get a GitHub-embeddable URL
 3. **Embed in PR description** — include the returned markdown in your PR body
 
 ## Requesting PR Reviews
