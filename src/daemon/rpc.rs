@@ -345,6 +345,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let agent = params.str_param("agent").map(|s| s.to_string());
             let channel = params.str_param("channel").map(|s| s.to_string());
             let thread = params.str_param("thread").map(|s| s.to_string());
+            let task_id = params.str_param("task_id").map(|s| s.to_string());
             let provider = match parse_optional_provider_param(params) {
                 Ok(Some(provider)) => provider,
                 Ok(None) => crate::config::get_execution_provider_for_role(
@@ -354,7 +355,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
             };
             super::rpc_coworker::handle_coworker_spawn(
-                request.id, state, resume, prompt, provider, agent, channel, thread,
+                request.id, state, resume, prompt, provider, agent, channel, thread, task_id,
             )
             .await
         }
