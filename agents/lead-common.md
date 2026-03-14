@@ -76,7 +76,7 @@ When a user message requires **multi-turn research** — code exploration, debug
 
 2. Fork yourself into the thread, **always including `--initial-message`** with a brief description of what the fork should do:
    ```bash
-   midtown session fork --thread-id <channel-msg-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
+   midtown agent fork --thread-id <channel-msg-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
    ```
 
    **IMPORTANT:** The `--thread-id` must be the **channel message UUID** from the nudge parentheses (e.g., `user (a1b2c3d4-...): content`). Do NOT use Claude API message IDs (which look like `msg_01...`) — those are internal conversation IDs and will cause the fork to bind to a non-existent thread.
@@ -232,9 +232,9 @@ Shared rate limit across daemon, lead, and all coworkers. Don't poll GitHub for 
 Ask the daemon to remind you when a condition is met. Useful for follow-up work that depends on current work being fully landed.
 
 ```bash
-midtown lead remind all-work-merged "Cut v0.4.0 release"
-midtown lead remind list
-midtown lead remind cancel <id>
+midtown channel remind all-work-merged "Cut v0.4.0 release"
+midtown channel remind list
+midtown channel remind cancel <id>
 ```
 
 The daemon checks conditions every 30 seconds. Reminders are one-shot — they fire once and are done.
@@ -274,9 +274,9 @@ The daemon assigns tasks automatically. If a coworker @mentions you between plan
 
 ```bash
 midtown status                       # Daemon and coworker status
-midtown coworker call-in             # Call in a new coworker (rare)
-midtown coworker break <name>        # Send a coworker on a break
-midtown coworker view <name>         # View coworker's terminal output
+midtown agent spawn                  # Call in a new coworker (rare)
+midtown agent stop <name>            # Send a coworker on a break
+midtown agent show <name>            # View coworker's terminal output
 midtown channel read                 # Read recent channel messages
 ```
 

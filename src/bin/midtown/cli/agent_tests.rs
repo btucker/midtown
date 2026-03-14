@@ -1,4 +1,4 @@
-//! Tests for session commands (attach, detach, target parsing, CLI arg construction).
+//! Tests for agent commands (attach, detach, target parsing, CLI arg construction).
 
 use super::*;
 
@@ -174,41 +174,28 @@ fn test_to_cli_args_resume_includes_all_flags() {
 
     let (args, session_id) = config.to_cli_args(&settings, &prompt, None);
 
-    // Should have at least 7 args
     assert!(
         args.len() >= 7,
         "Should have at least 7 arguments, got: {:?}",
         args
     );
-
-    // First arg should be 'claude'
     assert_eq!(args[0], "claude");
-
-    // Should include --continue (resume mode)
     assert!(
         args.contains(&"--continue".to_string()),
         "Should include --continue flag"
     );
-
-    // Should include --dangerously-skip-permissions
     assert!(
         args.contains(&"--dangerously-skip-permissions".to_string()),
         "Should include --dangerously-skip-permissions flag"
     );
-
-    // Should include --settings
     assert!(
         args.contains(&"--settings".to_string()),
         "Should include --settings flag"
     );
-
-    // Should include --append-system-prompt
     assert!(
         args.contains(&"--append-system-prompt".to_string()),
         "Should include --append-system-prompt flag"
     );
-
-    // Resume mode → no session ID
     assert!(session_id.is_none());
 }
 
@@ -239,7 +226,6 @@ fn test_to_cli_args_fresh_generates_session_id() {
 
     let (args, session_id) = config.to_cli_args(&settings, &prompt, None);
 
-    // Fresh mode → should have session-id
     assert!(
         args.contains(&"--session-id".to_string()),
         "Fresh mode should include --session-id"
@@ -248,8 +234,6 @@ fn test_to_cli_args_fresh_generates_session_id() {
         session_id.is_some(),
         "Fresh mode should return a session ID"
     );
-
-    // Coworker should have --setting-sources
     assert!(
         args.contains(&"--setting-sources".to_string()),
         "Coworker should include --setting-sources"
@@ -283,7 +267,6 @@ fn test_to_cli_args_coworker_restricts_settings() {
 
     let (args, _) = config.to_cli_args(&settings, &prompt, None);
 
-    // Coworker should have --setting-sources
     assert!(args.contains(&"--setting-sources".to_string()));
     assert!(args.contains(&"project,local".to_string()));
 }
@@ -342,14 +325,11 @@ fn test_lead_attach_includes_system_prompt() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // Should include --append-system-prompt flag
     assert!(
         command.contains("--append-system-prompt"),
         "Lead attach command should include --append-system-prompt flag, got: {}",
         command
     );
-
-    // Should reference a temp file with $(cat ...)
     assert!(
         command.contains("$(cat") && command.contains("midtown-attach-"),
         "Should use temp file pattern $(cat .../midtown-attach-...), got: {}",
@@ -370,14 +350,11 @@ fn test_coworker_attach_includes_system_prompt() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // Should include --append-system-prompt flag
     assert!(
         command.contains("--append-system-prompt"),
         "Coworker attach command should include --append-system-prompt flag, got: {}",
         command
     );
-
-    // Should reference a temp file with $(cat ...)
     assert!(
         command.contains("$(cat") && command.contains("midtown-attach-"),
         "Should use temp file pattern $(cat .../midtown-attach-...), got: {}",
@@ -414,13 +391,11 @@ fn test_to_cli_args_includes_model_flag() {
 
     let (args, _) = config.to_cli_args(&settings, &prompt, None);
 
-    // Should pass --model flag so all launch paths set the model explicitly
     assert!(
         args.contains(&"--model".to_string()),
         "to_cli_args should include --model flag, got: {:?}",
         args
     );
-    // Should use the configured model
     assert!(
         args.contains(&"opus".to_string()),
         "to_cli_args should pass the configured model value, got: {:?}",
@@ -481,7 +456,6 @@ fn test_reviewer_attach_gets_reviewer_system_prompt() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // Reviewer attach should include --setting-sources (coworker behavior)
     assert!(
         command.contains("--setting-sources"),
         "Reviewer attach should restrict setting sources, got: {}",
@@ -502,7 +476,6 @@ fn test_lead_attach_gets_opus_model() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // Lead should always get opus model
     assert!(
         command.contains("--model") && command.contains("opus"),
         "Lead attach should use opus model, got: {}",
@@ -525,23 +498,18 @@ fn test_channel_lead_attach_gets_channel_lead_role() {
 
     let command = result.expect("build_attach_shell_command should succeed for channel lead");
 
-    // Channel leads use the channel_lead_system_prompt, which should include
-    // --append-system-prompt flag like all other roles.
     assert!(
         command.contains("--append-system-prompt"),
         "Channel lead attach should include --append-system-prompt flag, got: {}",
         command
     );
 
-    // ops channel lead uses haiku by default (smaller model for ops work).
     assert!(
         command.contains("--model") && command.contains("haiku"),
         "ops channel lead attach should use haiku model, got: {}",
         command
     );
 
-    // Extract the temp file path from the $(cat ...) pattern after --append-system-prompt
-    // and verify the channel name "ops" is present in the system prompt content.
     let cat_start = command
         .find("$(cat ")
         .expect("Command should contain $(cat pattern");
@@ -649,23 +617,15 @@ fn test_attach_uses_explicit_profile_when_provided() {
 
 #[test]
 fn test_shell_quote_does_not_double_escape_dollar_command() {
-    // The $(cat ...) pattern is used for passing large prompts to Claude.
-    // It should NOT be double-escaped.
     let raw_arg = "$(cat /tmp/file.txt)";
     let quoted = shell_quote(raw_arg);
 
-    // When the shell interprets the quoted string, it should see $(cat ...)
-    // as command substitution, not as a literal string.
-    // Test by having the shell echo it back.
     let output = std::process::Command::new("sh")
         .args(["-lc", &format!("echo {}", quoted)])
         .output()
         .expect("shell should parse");
 
     let _stdout = String::from_utf8_lossy(&output.stdout);
-    // The output should contain the literal text since /tmp/file.txt doesn't exist
-    // (shell would fail the cat and produce empty or error)
-    // What matters is that the $ is interpreted as command substitution
     assert!(
         !quoted.contains("\"$"),
         "Quoted arg should not have escaped $ with backslash, got: {}",
@@ -685,20 +645,11 @@ fn test_build_attach_command_uses_shell_command_substitution() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // The $(cat ...) pattern should appear and be properly quoted for shell interpretation.
-    // The correct pattern is: '"$(cat /path/to/file)"' which breaks down as:
-    //   ' - end single quote
-    //   "$(cat /path/to/file)" - double-quoted command substitution (shell interprets this)
-    //   ' - start single quote
-    // This allows the shell to actually execute the cat command.
-
     assert!(
         command.contains("$(cat "),
         "Command should contain $(cat pattern for file reading"
     );
 
-    // The pattern should be: '"$(cat ...)"' (single quote, double quote, $(cat, double quote, single quote)
-    // This allows shell interpretation of the command substitution
     let correct_pattern = "'\"$(cat ";
     assert!(
         command.contains(correct_pattern),
@@ -707,7 +658,6 @@ fn test_build_attach_command_uses_shell_command_substitution() {
         command
     );
 
-    // Verify the closing pattern too: ...)"'
     assert!(
         command.contains(")\"'"),
         "Command should have closing quote pattern ')\"\\'', got: {}",
@@ -717,16 +667,12 @@ fn test_build_attach_command_uses_shell_command_substitution() {
 
 #[test]
 fn test_shell_quote_handles_single_quotes() {
-    // Single quotes inside the string should be properly escaped
     let quoted = shell_quote("it's a test");
-    // The quoted result should be valid when parsed by a shell
-    // It should wrap in single quotes and escape internal quotes
     assert!(
         quoted.contains("'"),
         "Quoted string should contain quotes: {}",
         quoted
     );
-    // Verify it round-trips correctly via shell
     let output = std::process::Command::new("sh")
         .args(["-lc", &format!("printf '%s' {}", quoted)])
         .output()
@@ -742,7 +688,6 @@ fn test_shell_quote_handles_single_quotes() {
 fn test_shell_quote_handles_paths_with_spaces() {
     let path = "/var/folders/My Documents/test file.txt";
     let quoted = shell_quote(path);
-    // Verify it round-trips correctly via shell
     let output = std::process::Command::new("sh")
         .args(["-lc", &format!("printf '%s' {}", quoted)])
         .output()
@@ -756,8 +701,6 @@ fn test_shell_quote_handles_paths_with_spaces() {
 
 #[test]
 fn test_build_attach_command_no_double_quoting() {
-    // Use a temp directory with spaces in the name to exercise quoting logic.
-    // Must be a real git repo so detect_repo_name_from_dir succeeds.
     let temp = tempfile::TempDir::new().unwrap();
     let spaced_dir = temp.path().join("my test dir with spaces");
     std::fs::create_dir_all(&spaced_dir).unwrap();
@@ -777,28 +720,19 @@ fn test_build_attach_command_no_double_quoting() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // The command should NOT have double-escaped quotes like ''"'"'...'"'"'
-    // This pattern indicates double-quoting which breaks shell parsing
     assert!(
         !command.contains("''\"'\"'"),
         "Command should not contain double-escaped quotes (old pattern): {}",
         command
     );
-
-    // The command should also not have the '\''\\'''\'' pattern from double-escaping
-    // with the new shell_escape crate
     assert!(
         !command.contains("'\\''\\''"),
         "Command should not contain double-escaped quotes (new pattern): {}",
         command
     );
 
-    // Most importantly, the inner sh -lc command should be parseable
-    // Extract the sh -lc argument and verify it's valid
     if let Some(sh_lc_start) = command.find("sh -lc ") {
         let after_sh_lc = &command[sh_lc_start + 7..];
-        // The argument to sh -lc should be a properly quoted string
-        // It should start with a quote character
         assert!(
             after_sh_lc.starts_with("'") || after_sh_lc.starts_with("\""),
             "sh -lc argument should be quoted, got: {}",
@@ -819,10 +753,8 @@ fn test_build_attach_command_shell_parseable() {
 
     let command = result.expect("build_attach_shell_command should succeed");
 
-    // The entire command should be parseable by a shell
-    // If quoting is broken, this will fail
     let parse_result = std::process::Command::new("sh")
-        .args(["-n", "-c", &command]) // -n = parse but don't execute
+        .args(["-n", "-c", &command])
         .status();
 
     assert!(
@@ -835,44 +767,37 @@ fn test_build_attach_command_shell_parseable() {
 // ── include_detach flag (fix for dual-lead bug #1428) ────────────────
 
 #[test]
-fn test_view_attach_command_omits_session_detach() {
-    // midtown view passes include_detach=false so the split pane's shell command
-    // does NOT call `session detach` when claude exits — preventing the dual-lead
-    // bug where the pane's claude process exits before the chat UI exits, causing
-    // the headless lead to be re-spawned while the headed session is still active.
+fn test_view_attach_command_omits_agent_detach() {
     let cwd = find_project_root();
     let result = build_attach_shell_command(
         &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        attach_options(None, None, None, false), // midtown view manages detach explicitly on exit
+        attach_options(None, None, None, false),
     );
     let command = result.expect("build_attach_shell_command should succeed");
     assert!(
-        !command.contains("session detach"),
-        "midtown view shell command must NOT contain `session detach` (dual-lead bug #1428), got: {}",
+        !command.contains("agent detach"),
+        "midtown view shell command must NOT contain `agent detach` (dual-lead bug #1428), got: {}",
         command
     );
 }
 
 #[test]
-fn test_standalone_attach_command_includes_session_detach() {
-    // midtown session attach passes include_detach=true so the pane's shell
-    // command calls `session detach` when the interactive session ends, resuming
-    // the headless lead automatically.
+fn test_standalone_attach_command_includes_agent_detach() {
     let cwd = find_project_root();
     let result = build_attach_shell_command(
         &cwd,
         "lead",
         midtown::auth::AuthProvider::Claude,
         "session-123",
-        attach_options(None, None, None, true), // standalone attach needs auto-detach
+        attach_options(None, None, None, true),
     );
     let command = result.expect("build_attach_shell_command should succeed");
     assert!(
-        command.contains("session detach"),
-        "standalone attach shell command must contain `session detach`, got: {}",
+        command.contains("agent detach"),
+        "standalone attach shell command must contain `agent detach`, got: {}",
         command
     );
 }
@@ -887,7 +812,6 @@ fn ensure_attach_worktree_lead_updates_to_head() {
     let temp = TempDir::new().unwrap();
     let repo = temp.path();
 
-    // Create a git repo with an initial commit
     TestCmd::new("git")
         .args(["init"])
         .current_dir(repo)
@@ -912,12 +836,10 @@ fn ensure_attach_worktree_lead_updates_to_head() {
     let manager =
         midtown::worktree::WorktreeManager::new(repo.to_path_buf()).expect("create manager");
 
-    // Create lead worktree at initial commit
     let wt = manager.create_lead_worktree().expect("create lead wt");
     let initial_head = git_head(repo);
     assert_eq!(git_head(&wt), initial_head);
 
-    // Advance HEAD
     TestCmd::new("git")
         .args(["commit", "--allow-empty", "-m", "second"])
         .current_dir(repo)
@@ -926,7 +848,6 @@ fn ensure_attach_worktree_lead_updates_to_head() {
     let new_head = git_head(repo);
     assert_ne!(initial_head, new_head);
 
-    // ensure_attach_worktree for "lead" should update worktree
     let result = ensure_attach_worktree("lead", &wt.to_string_lossy(), true);
     assert!(result.is_ok());
     assert_eq!(
@@ -938,28 +859,26 @@ fn ensure_attach_worktree_lead_updates_to_head() {
 
 #[test]
 fn ensure_attach_worktree_coworker_falls_back_to_daemon_cwd() {
-    // When repo detection fails (no git repo), should return daemon_cwd
     let result = ensure_attach_worktree("park", "/tmp/some-cwd", false);
     assert!(result.is_ok());
-    // Should not error — gracefully falls back
     assert_eq!(result.unwrap(), "/tmp/some-cwd");
 }
 
-// ── SessionCommand::Fork CLI parsing ────────────────────────────────
+// ── AgentCommand::Fork CLI parsing ────────────────────────────────
 
-/// Minimal wrapper to parse `session <subcommand>` via clap.
+/// Minimal wrapper to parse `agent <subcommand>` via clap.
 #[derive(clap::Parser)]
-struct TestSessionCli {
+struct TestAgentCli {
     #[command(subcommand)]
-    command: SessionCommand,
+    command: AgentCommand,
 }
 
 #[test]
 fn fork_parses_thread_id_flag() {
     use clap::Parser;
-    let cli = TestSessionCli::try_parse_from(["test", "fork", "--thread-id", "msg-123"]).unwrap();
+    let cli = TestAgentCli::try_parse_from(["test", "fork", "--thread-id", "msg-123"]).unwrap();
     match cli.command {
-        SessionCommand::Fork {
+        AgentCommand::Fork {
             thread_id,
             session_id,
             name,
@@ -977,8 +896,7 @@ fn fork_parses_thread_id_flag() {
 #[test]
 fn fork_rejects_positional_thread_id() {
     use clap::Parser;
-    // Old positional usage should fail — "msg-123" without --thread-id is not accepted.
-    let result = TestSessionCli::try_parse_from(["test", "fork", "msg-123"]);
+    let result = TestAgentCli::try_parse_from(["test", "fork", "msg-123"]);
     assert!(
         result.is_err(),
         "Positional thread ID should be rejected after rename to --thread-id flag"
@@ -988,7 +906,7 @@ fn fork_rejects_positional_thread_id() {
 #[test]
 fn fork_parses_all_flags() {
     use clap::Parser;
-    let cli = TestSessionCli::try_parse_from([
+    let cli = TestAgentCli::try_parse_from([
         "test",
         "fork",
         "--thread-id",
@@ -1000,7 +918,7 @@ fn fork_parses_all_flags() {
     ])
     .unwrap();
     match cli.command {
-        SessionCommand::Fork {
+        AgentCommand::Fork {
             thread_id,
             session_id,
             name,
@@ -1018,7 +936,7 @@ fn fork_parses_all_flags() {
 #[test]
 fn fork_parses_initial_message_flag() {
     use clap::Parser;
-    let cli = TestSessionCli::try_parse_from([
+    let cli = TestAgentCli::try_parse_from([
         "test",
         "fork",
         "--thread-id",
@@ -1028,7 +946,7 @@ fn fork_parses_initial_message_flag() {
     ])
     .unwrap();
     match cli.command {
-        SessionCommand::Fork {
+        AgentCommand::Fork {
             thread_id,
             initial_message,
             ..
@@ -1046,10 +964,54 @@ fn fork_parses_initial_message_flag() {
 #[test]
 fn fork_requires_thread_id_flag() {
     use clap::Parser;
-    // fork with no arguments should fail — --thread-id is required.
-    let result = TestSessionCli::try_parse_from(["test", "fork"]);
+    let result = TestAgentCli::try_parse_from(["test", "fork"]);
     assert!(
         result.is_err(),
         "Fork without --thread-id should fail (required arg)"
     );
+}
+
+// ── List / ls alias ───────────────────────────────────────────────────
+
+#[test]
+fn parse_agent_list() {
+    use clap::Parser;
+    let cli = TestAgentCli::try_parse_from(["test", "list"]).unwrap();
+    assert!(matches!(cli.command, AgentCommand::List));
+}
+
+#[test]
+fn parse_agent_ls_alias() {
+    use clap::Parser;
+    let cli = TestAgentCli::try_parse_from(["test", "ls"]).unwrap();
+    assert!(matches!(cli.command, AgentCommand::List));
+}
+
+// ── Upload image tests ────────────────────────────────────────────────
+
+#[test]
+fn upload_image_fails_for_missing_file() {
+    let result = handle_upload_image("/tmp/nonexistent-midtown-test-image.png", "screenshot");
+    assert!(result.is_err(), "Should fail for missing file");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("File not found"),
+        "Error should mention file not found, got: {}",
+        err
+    );
+}
+
+#[test]
+fn upload_to_github_fails_gracefully_in_test_env() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(tmp.path(), b"fake image data").unwrap();
+
+    let result = upload_to_github(tmp.path(), "png");
+    assert!(
+        result.is_err(),
+        "upload_to_github should fail gracefully in test environment"
+    );
+
+    let err = result.unwrap_err();
+    assert!(!err.is_empty(), "Error message should be non-empty");
 }

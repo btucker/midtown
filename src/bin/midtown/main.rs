@@ -1,7 +1,7 @@
 //! Midtown CLI - command-line interface for the midtown daemon.
 //!
 //! This binary provides user-facing commands for interacting with the daemon,
-//! managing channels, coworkers, tasks, and pull requests.
+//! managing channels, agents, tasks, and pull requests.
 
 use clap::{Parser, Subcommand};
 
@@ -9,9 +9,8 @@ mod cli;
 mod client;
 
 use cli::{
-    AuthCommand, ChannelCommand, ConfigCommand, CoworkerCommand, DiagramCommand, E2eCommand,
-    HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, SessionCommand, TaskCommand,
-    WorkflowCommand,
+    AgentCommand, AuthCommand, ChannelCommand, ConfigCommand, DiagramCommand, E2eCommand,
+    HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, TaskCommand, WorkflowCommand,
 };
 use client::DaemonClient;
 
@@ -127,19 +126,10 @@ enum Commands {
         #[command(subcommand)]
         command: ChannelCommand,
     },
-    /// Coworker management commands
-    Coworker {
-        /// Task ID to boot a headed coworker session for
-        #[arg(long)]
-        task: Option<String>,
+    /// Agent management commands (spawn, stop, show, attach, etc.)
+    Agent {
         #[command(subcommand)]
-        command: Option<CoworkerCommand>,
-    },
-    /// Attach/detach headless coworker sessions
-    #[command(alias = "sessions")]
-    Session {
-        #[command(subcommand)]
-        command: SessionCommand,
+        command: Option<AgentCommand>,
     },
     /// Task management commands
     Task {
@@ -163,15 +153,6 @@ enum Commands {
     Pr {
         #[command(subcommand)]
         command: PrCommand,
-    },
-    /// Lead-specific commands
-    #[command(hide = true)]
-    Lead {
-        /// Channel to lead (defaults to main project channel)
-        #[arg(long)]
-        channel: Option<String>,
-        #[command(subcommand)]
-        command: Option<LeadCommand>,
     },
     /// Open IRC-style chat TUI
     #[command(hide = true)]
@@ -326,34 +307,6 @@ enum WebserverCommand {
     Stop,
     /// Restart the webserver
     Restart,
-}
-
-#[derive(Subcommand, Clone)]
-enum LeadCommand {
-    /// Register this session for task sharing with coworkers
-    #[command(hide = true)]
-    RegisterSession,
-    /// Manage reminders (condition-based notifications)
-    Remind {
-        #[command(subcommand)]
-        command: RemindCommand,
-    },
-}
-
-#[derive(Subcommand, Clone)]
-enum RemindCommand {
-    /// Set a reminder for when all tasks are done and all PRs are merged
-    AllWorkMerged {
-        /// Message to display when the reminder fires
-        message: String,
-    },
-    /// List active reminders
-    List,
-    /// Cancel a reminder by ID
-    Cancel {
-        /// Reminder ID to cancel
-        id: String,
-    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -589,61 +542,13 @@ fn main() {
         return;
     }
 
-    // Lead commands
-    if let Commands::Lead { channel, command } = &command {
-        if let Some(cmd) = command {
-            let result = match cmd {
-                LeadCommand::RegisterSession => cli::handle_register_session(),
-                LeadCommand::Remind {
-                    command: remind_cmd,
-                } => match DaemonClient::connect() {
-                    Ok(client) => cli::handle_remind(remind_cmd, &client),
-                    Err(e) => Err(format!(
-                        "Failed to connect to daemon: {}. Is it running?",
-                        e
-                    )),
-                },
-            };
-            handle_result(format, result);
-        } else {
-            // No subcommand — boot a headed lead session
-            if let Err(e) = cli::handle_lead_boot(channel.as_deref()) {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
-
-    // Coworker boot — headed session (no subcommand, uses exec)
-    if let Commands::Coworker {
-        task,
-        command: None,
-    } = &command
-    {
-        if let Err(e) = cli::handle_coworker_boot(task.as_deref()) {
-            eprintln!("Error: {}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // Warn if --task is given alongside a subcommand (it would be silently ignored)
-    if let Commands::Coworker {
-        task: Some(_),
-        command: Some(_),
-    } = &command
-    {
-        eprintln!("Warning: --task is ignored when a subcommand is provided");
-    }
-
-    // Coworker upload-image — runs locally (HTTP upload to GitHub, no daemon RPC needed)
-    if let Commands::Coworker {
-        command: Some(CoworkerCommand::UploadImage { path, alt }),
+    // Agent upload-image — runs locally (HTTP upload to GitHub, no daemon RPC needed)
+    if let Commands::Agent {
+        command: Some(AgentCommand::UploadImage { path, alt }),
         ..
     } = &command
     {
-        let result = cli::handle_coworker_upload_image(path, alt);
+        let result = cli::handle_agent_upload_image(path, alt);
         handle_result(format, result);
         return;
     }
@@ -1029,15 +934,13 @@ fn main() {
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
         // UploadImage is handled before daemon connection (listed here rather than
-        // in the catch-all below because Coworker { Some(cmd) } would match first)
-        Commands::Coworker {
-            command: Some(cli::CoworkerCommand::UploadImage { .. }),
-            ..
+        // in the catch-all below because Agent { Some(cmd) } would match first)
+        Commands::Agent {
+            command: Some(cli::AgentCommand::UploadImage { .. }),
         } => unreachable!("UploadImage is handled before daemon connection"),
-        Commands::Coworker {
-            command: Some(cmd), ..
-        } => cli::handle_coworker(cmd, &client),
-        Commands::Session { command } => cli::handle_session(command, &client),
+        Commands::Agent { command: Some(cmd) } => cli::handle_agent(cmd, &client),
+        // Bare `midtown agent` → list all agents
+        Commands::Agent { command: None } => cli::handle_agent(&cli::AgentCommand::List, &client),
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Workflow { command } => cli::handle_workflow(command, &client),
         Commands::Status => cli::handle_status(&client),
@@ -1065,13 +968,11 @@ fn main() {
         | Commands::Stop { .. }
         | Commands::Restart { .. }
         | Commands::View { .. }
-        | Commands::Lead { .. }
         | Commands::Project { .. }
         | Commands::Config { .. }
         | Commands::Chat
         | Commands::E2e { .. }
         | Commands::Auth { .. }
-        | Commands::Coworker { command: None, .. }
         | Commands::Claude { .. }
         | Commands::State { .. }
         | Commands::Hook { .. }

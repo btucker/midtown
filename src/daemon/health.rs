@@ -1359,7 +1359,7 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
 /// Detect attached sessions that have exceeded `ATTACH_TIMEOUT` without receiving a detach.
 ///
-/// If an interactive session ends without `midtown session detach` (terminal crash,
+/// If an interactive session ends without `midtown agent detach` (terminal crash,
 /// SSH disconnect, wrapper bug), the entry persists in `attached_coworkers` forever.
 /// `ensure_lead_alive()` sees the lead as "attached" and skips respawn, leaving
 /// the lead permanently stuck.

@@ -596,7 +596,7 @@ pub(crate) struct DaemonState {
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
     /// Coworkers currently in "attached" state (interactive session).
     ///
-    /// When the Lead attaches to a headless coworker via `midtown session attach`,
+    /// When the Lead attaches to a headless coworker via `midtown agent attach`,
     /// the headless process is paused and replaced with an interactive session.
     /// During this period, the coworker must be exempt from stuck detection and
     /// orphan recovery. Entries are added on attach, removed on detach or via
@@ -1645,7 +1645,7 @@ impl DaemonState {
         {
             headless_config.session_id = session_id.clone();
         }
-        // Inject MIDTOWN_SESSION_ID so coworkers can call `midtown session fork`
+        // Inject MIDTOWN_SESSION_ID so coworkers can call `midtown agent fork`
         // without passing --session-id explicitly.
         //
         // Only inject for stable session IDs: Claude sessions adopt the pre-generated

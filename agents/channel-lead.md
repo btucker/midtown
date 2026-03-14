@@ -72,7 +72,7 @@ The daemon now **automatically forks** your session when a new top-level user me
 
 **When you receive a nudge for a new user message:**
 
-1. Write your response directly — no `midtown session fork` needed, no `--thread` flag needed.
+1. Write your response directly — no `midtown agent fork` needed, no `--thread` flag needed.
    The daemon has already created the fork and bound it to the message thread.
 
 2. If for any reason the fork did not happen (e.g., no channel lead was running at the time),
@@ -83,14 +83,14 @@ The daemon now **automatically forks** your session when a new top-level user me
    midtown channel post "<brief ack>" --thread <channel-msg-id> --channel {channel_name}
 
    # Step 2: Fork into a thread-scoped session with context
-   midtown session fork --thread-id <channel-msg-id> --initial-message "Brief description of what to investigate"
+   midtown agent fork --thread-id <channel-msg-id> --initial-message "Brief description of what to investigate"
    ```
 
    **IMPORTANT:** Use the **channel message UUID** from the nudge parentheses (e.g., `a1b2c3d4-e5f6-...`), NOT a Claude API message ID (like `msg_01...`).
 
    Always include `--initial-message` when forking manually — it gives the fork precise instructions. Without it, the daemon falls back to the parent message content, but an explicit message is better because you can add context and direction the parent message lacks.
 
-   `session fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
+   `agent fork` is idempotent — calling it when a fork already exists returns `{already_exists: true, session_id: ...}`. During the daemon's auto-fork spawn window (~30s), it may return `{pending: true}` instead — this means the daemon is already creating the fork. Retry once after a brief wait.
 
 **After forking, STOP.** Do not continue researching, investigating, or answering the question yourself. The fork session handles the work autonomously — it inherits your full context and its output is automatically posted to the thread. You (the root session) return to monitoring #{channel_name} and stay available for new messages, nudges, and other channel duties. This is the most common mistake: forking correctly but then doing the work inline anyway. The fork exists precisely so you stay responsive.
 
@@ -107,7 +107,7 @@ The daemon now **automatically forks** your session when a new top-level user me
 - Quick one-word acks or status updates that are already covered by daemon notifications
 - CI/PR event notifications that need no response (just read and update your context)
 
-**Nudge format:** Nudges include the channel message UUID in the format `sender (channel-msg-id: <uuid>): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the channel message UUID (from the parentheses, NOT a Claude API message ID like `msg_01...`) with `midtown session fork --thread-id <uuid>`.
+**Nudge format:** Nudges include the channel message UUID in the format `sender (channel-msg-id: <uuid>): content`. In normal operation (auto-fork), you are already the fork session, so just respond. In the fallback path, use the channel message UUID (from the parentheses, NOT a Claude API message ID like `msg_01...`) with `midtown agent fork --thread-id <uuid>`.
 
 **Embedded thread instructions in nudges:** Some nudges include explicit thread reply instructions appended by the daemon, e.g.:
 

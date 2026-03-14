@@ -1,19 +1,17 @@
+mod agent;
 pub mod agents_install;
 mod auth;
 mod channel;
 mod chat;
 mod config;
-mod coworker;
 mod daemon;
 mod diagram;
 pub mod e2e;
 mod headed_wrapper;
 mod hooks;
-mod lead;
 mod notes;
 mod pr;
 mod response;
-mod session;
 mod session_render;
 mod task;
 pub mod update;
@@ -50,10 +48,10 @@ pub(crate) fn ratatui_to_crossterm_color(color: ratatui::style::Color) -> crosst
     }
 }
 
+pub use agent::AgentCommand;
 pub use auth::AuthCommand;
 pub use channel::ChannelCommand;
 pub use config::ConfigCommand;
-pub use coworker::CoworkerCommand;
 pub use diagram::DiagramCommand;
 pub use e2e::E2eCommand;
 pub use headed_wrapper::HeadedWrapperCommand;
@@ -62,7 +60,6 @@ pub use hooks::HookCommand;
 pub use notes::NotesCommand;
 pub use pr::PrCommand;
 pub use response::Response;
-pub use session::SessionCommand;
 pub use task::TaskCommand;
 pub use workflow::WorkflowCommand;
 
@@ -72,12 +69,8 @@ pub fn handle_channel(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Res
     channel::handle(cmd, client)
 }
 
-pub fn handle_coworker(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, String> {
-    coworker::handle(cmd, client)
-}
-
-pub fn handle_session(cmd: &SessionCommand, client: &DaemonClient) -> Result<Response, String> {
-    session::handle(cmd, client)
+pub fn handle_agent(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, String> {
+    agent::handle(cmd, client)
 }
 
 pub fn handle_task(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -217,27 +210,9 @@ pub fn prompt_provider_selection_all() -> Result<midtown::auth::AuthProvider, St
     auth::prompt_provider_selection_all()
 }
 
-/// Handle `midtown lead remind` subcommands
-pub fn handle_remind(
-    cmd: &crate::RemindCommand,
-    client: &DaemonClient,
-) -> Result<Response, String> {
-    lead::handle_remind(cmd, client)
-}
-
-/// Handle `midtown lead` (no subcommand) — boot a headed lead session.
-pub fn handle_lead_boot(channel: Option<&str>) -> Result<(), String> {
-    lead::handle_lead_boot(channel)
-}
-
-/// Handle `midtown coworker` (no subcommand) — boot a headed coworker session.
-pub fn handle_coworker_boot(task_id: Option<&str>) -> Result<(), String> {
-    coworker::handle_coworker_boot(task_id)
-}
-
-/// Handle `midtown coworker upload-image` — upload a local image to GitHub.
-pub fn handle_coworker_upload_image(path: &str, alt: &str) -> Result<Response, String> {
-    coworker::handle_upload_image(path, alt)
+/// Handle `midtown agent upload-image` — upload a local image to GitHub.
+pub fn handle_agent_upload_image(path: &str, alt: &str) -> Result<Response, String> {
+    agent::handle_upload_image(path, alt)
 }
 
 /// Handle `midtown config` subcommands (get/set/list) — no daemon required.

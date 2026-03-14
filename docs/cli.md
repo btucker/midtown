@@ -20,30 +20,26 @@
 | `midtown channel post <message>` | Post a message to the channel |
 | `midtown channel read [--all]` | Read recent channel messages |
 
-## Coworker Management
+## Agent Management
 
 | Command | Description |
 |---------|-------------|
-| `midtown coworker call-in [--resume] [--prompt <msg>]` | Call in a new coworker |
-| `midtown coworker break <name>` | Send a coworker on a break |
-| `midtown coworker list` | List all coworkers |
-| `midtown coworker view <name>` | View a coworker's terminal output (headless sessions) |
+| `midtown agent spawn [--resume] [--prompt <msg>]` | Call in a new coworker |
+| `midtown agent stop <name>` | Send a coworker on a break |
+| `midtown agent list` | List all coworkers |
+| `midtown agent show <name>` | View a coworker's terminal output (headless sessions) |
+| `midtown agent attach name/<coworker>` | Attach to a coworker by name |
+| `midtown agent attach task/<id>` | Attach to the coworker working on a task |
+| `midtown agent attach pr/<number>` | Attach to the coworker working on a PR |
+| `midtown agent attach claude/<session_id>` | Attach by Claude platform session ID |
+| `midtown agent attach codex/<session_id>` | Attach by Codex platform session ID |
+| `midtown agent detach <name>` | Detach and resume headless execution |
+| `midtown agent clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
+| `midtown agent fork --thread-id <id>` | Fork the calling session into a thread-bound session |
+| `midtown agent register-session` | Register Lead's Claude session for task sharing |
+| `midtown agent upload-image <path>` | Upload a local image to GitHub and return embeddable `![alt](url)` markdown |
 
-## Session Management (Attach/Detach)
-
-Attach to a headless coworker's session in an interactive terminal pane for debugging or guidance, then detach to resume headless execution.
-
-| Command | Description |
-|---------|-------------|
-| `midtown session attach name/<coworker>` | Attach to a coworker by name |
-| `midtown session attach task/<id>` | Attach to the coworker working on a task |
-| `midtown session attach pr/<number>` | Attach to the coworker working on a PR |
-| `midtown session attach claude/<session_id>` | Attach by Claude platform session ID |
-| `midtown session attach codex/<session_id>` | Attach by Codex platform session ID |
-| `midtown session detach <name>` | Detach and resume headless execution |
-| `midtown session list` | List headless sessions with status |
-
-**How it works:** Attach stops the headless process (the Claude session persists on disk), then opens an interactive terminal pane with `claude --resume`. When you detach, the daemon re-spawns the headless session, picking up where it left off.
+**How it works (attach/detach):** Attach stops the headless process (the Claude session persists on disk), then opens an interactive terminal pane with `claude --resume`. When you detach, the daemon re-spawns the headless session, picking up where it left off.
 
 ## Task Management
 
@@ -104,13 +100,13 @@ midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 
 See [Authentication Profiles](authentication.md) for details.
 
-## Lead Commands
+## Channel Commands (Reminders)
 
 | Command | Description |
 |---------|-------------|
-| `midtown lead remind all-work-merged <message>` | Set a reminder for when all work is merged |
-| `midtown lead remind list` | List active reminders |
-| `midtown lead remind cancel <id>` | Cancel a reminder |
+| `midtown channel remind all-work-merged <message>` | Set a reminder for when all work is merged |
+| `midtown channel remind list` | List active reminders |
+| `midtown channel remind cancel <id>` | Cancel a reminder |
 
 ## Webserver
 
@@ -148,11 +144,10 @@ The commands below are used by the lead agent, coworkers, and daemon internally.
 | Command | Description |
 |---------|-------------|
 | `midtown daemon` | Run the daemon server (hidden; spawned by `start`) |
-| `midtown lead register-session` | Register Lead's Claude session for task sharing |
 | `midtown task claim <id>` | Claim a task (used by coworkers) |
 | `midtown task done <id>` | Mark a task as completed (used by coworkers) |
 | `midtown task request <description>` | Request new work (posts to channel for lead) |
-| `midtown coworker nudge <name> [--message <msg>]` | Nudge a coworker to check in (daemon-internal) |
+| `midtown agent nudge <name> [--message <msg>]` | Nudge a coworker to check in (daemon-internal) |
 | `midtown state <phase> [--task <id>]` | Report coworker workflow phase |
 | `midtown hook insight\|idle\|lead-stop\|task\|ask` | Claude Code hook handlers |
 | `midtown diagram validate` | Diagram validation (chat TUI internal) |

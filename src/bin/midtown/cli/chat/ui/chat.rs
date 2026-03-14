@@ -193,7 +193,7 @@ fn pending_questions_height(questions: &[PendingQuestion]) -> u16 {
 ///
 /// Each question is shown as:
 ///   [coworker_name asks]: question text
-///   (answer with: midtown coworker nudge --to <name> --message "your answer")
+///   (answer with: midtown agent nudge --to <name> --message "your answer")
 fn draw_pending_questions(
     f: &mut Frame,
     questions: &[PendingQuestion],
@@ -216,7 +216,7 @@ fn draw_pending_questions(
         // Hint line: muted answer instruction
         lines.push(Line::from(vec![Span::styled(
             format!(
-                "  (answer: midtown coworker nudge --to {} --message \"...\")",
+                "  (answer: midtown agent nudge --to {} --message \"...\")",
                 q.coworker_name
             ),
             Style::default().fg(palette.muted),

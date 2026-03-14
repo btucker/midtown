@@ -58,7 +58,7 @@ Each concern has a primary owner. The non-owner path only acts as reconciliation
 
 **Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See prompt writing in `launch.rs`.
 
-**Hybrid process model**: The Project Lead can run headless (daemon-managed) or interactively (`midtown session attach`) with direct provider exec in the current terminal; coworkers run as headless sessions by default. Interactive attach no longer uses PTY wrapping.
+**Hybrid process model**: The Project Lead can run headless (daemon-managed) or interactively (`midtown agent attach`) with direct provider exec in the current terminal; coworkers run as headless sessions by default. Interactive attach no longer uses PTY wrapping.
 
 **Centralized path resolution**: All `~/.midtown/` paths derive from `midtown_base_dir()` and its helpers in `src/paths.rs`. In tests, `let _guard = set_test_midtown_base_dir(tmp)` redirects resolution to a temp directory — the guard must be held for the override to remain active.
 
@@ -113,14 +113,9 @@ Each coworker runs as:
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
-### Direct CLI Boot (Headed Sessions)
+### Headed Sessions (via `midtown start`)
 
-In addition to daemon-managed headless sessions, users can launch **headed (interactive terminal) sessions** directly from the CLI:
-
-- `midtown lead [--channel <name>]` — boots a headed lead session via `exec()`, replacing the CLI process with the provider's interactive TUI. Uses `LaunchConfig::lead()` to resolve model/provider/auth, writes prompt files as needed, then calls `to_shell_command()` to build the full provider-aware `sh -lc` invocation.
-- `midtown coworker [--task <id>]` — boots a headed coworker session in a task worktree. If no `--task` is specified, presents a TUI picker for unresolved tasks. Creates/reuses worktrees via `WorktreeManager::create_task_worktree()`.
-
-Both use `SessionMode::Resume`, but the concrete CLI shape is provider-specific (`claude --continue` for Claude/z.ai, `codex resume` for Codex). The `exec()` pattern means the Midtown process is fully replaced, so no parent process lingers.
+Headed (interactive terminal) sessions are launched via `midtown start`, not `midtown agent`. The `midtown agent` namespace is exclusively for headless daemon-managed sessions. See `midtown start --help` for details.
 
 **Attach/view profile fidelity:** `session.attach` now returns the persisted auth profile from the `SessionRecord`, and all headed attach/view/chat entry points reuse that profile when rebuilding the interactive shell command. This keeps attach flows on the same credentials and `CODEX_HOME`/`CLAUDE_CONFIG_DIR` that the headless session was launched with instead of whatever profile happens to be active locally. Codex prelaunch skill sync also targets that explicit profile directory.
 
@@ -128,7 +123,7 @@ Both use `SessionMode::Resume`, but the concrete CLI shape is provider-specific 
 
 Some CLI subcommands bypass the daemon RPC entirely, communicating directly with the webhook HTTP API or performing local-only work:
 
-- `midtown coworker upload-image <path>` — uploads a local image file to GitHub's CDN via the `uploads.github.com` endpoint and outputs `![alt](URL)` markdown using the returned `user-images.githubusercontent.com` URL. This bridges Playwright MCP screenshot output (local files) to GitHub-embeddable URLs for PR descriptions. No daemon RPC connection is needed. Coworkers use the Playwright MCP tools (`browser_navigate`, `browser_screenshot`, etc.) to capture screenshots interactively, then `upload-image` to get a PR-ready URL.
+- `midtown agent upload-image <path>` — uploads a local image file to GitHub's CDN via the `uploads.github.com` endpoint and outputs `![alt](URL)` markdown using the returned `user-images.githubusercontent.com` URL. This bridges Playwright MCP screenshot output (local files) to GitHub-embeddable URLs for PR descriptions. No daemon RPC connection is needed. Coworkers use the Playwright MCP tools (`browser_navigate`, `browser_screenshot`, etc.) to capture screenshots interactively, then `upload-image` to get a PR-ready URL.
 
 Legacy screenshot-serving endpoints (`GET /api/screenshots/<filename>` on the per-project daemon, `GET /api/projects/<repo>/screenshots/<filename>` on the shared gateway) are preserved for backward compatibility — old channel messages reference `[Attached: .../screenshots/<file>]` which the frontend rewrites to these endpoints.
 
@@ -186,7 +181,7 @@ On daemon startup, the `NamePool` is restored from persisted session records: na
 
 ### Agent Definitions (`src/agent_definition.rs`)
 
-The `coworker call-in` command supports `--agent <name>` to load agent definitions from markdown files with YAML frontmatter, following Claude Code's agent definition format:
+The `agent spawn` command supports `--agent <name>` to load agent definitions from markdown files with YAML frontmatter, following Claude Code's agent definition format:
 
 - **Search paths** (in order): `.claude/agents/{name}.md` (project-level), `~/.claude/agents/{name}.md` (user-level)
 - **Frontmatter fields**: `name`, `description`, `model` (all optional — `name` falls back to filename)
@@ -266,7 +261,7 @@ Review source strategy is controlled separately by `execution.review_mode`:
 
 This means `lead_provider` acts as a shared fallback for both the Project Lead and Channel Leads. Setting `project_lead_provider` overrides only the Project Lead's provider without affecting channel leads, and vice versa for `channel_lead_provider`. The resolved provider is stored in `LaunchConfig.auth_provider` and is also used to derive the default model via `default_model_for_provider_role()`.
 
-**Agent definition model overrides:** When `coworker call-in --agent <name>` specifies an agent definition with a `model` field, the call-in handler (`rpc_coworker.rs`) resolves the auth_provider from the model alias via `provider_for_model_alias()` before building the `LaunchConfig`. This ensures the model and provider are consistent — without it, `spawn_coworker()` would silently normalize the model to match the caller's provider via `normalize_model_for_provider_role()`, defeating the agent definition's model intent.
+**Agent definition model overrides:** When `agent spawn --agent <name>` specifies an agent definition with a `model` field, the call-in handler (`rpc_coworker.rs`) resolves the auth_provider from the model alias via `provider_for_model_alias()` before building the `LaunchConfig`. This ensures the model and provider are consistent — without it, `spawn_coworker()` would silently normalize the model to match the caller's provider via `normalize_model_for_provider_role()`, defeating the agent definition's model intent.
 
 **Agent definitions** (`src/agent_definition.rs`): Markdown files with YAML frontmatter (name, description, model) and a system prompt body. Searched in `.claude/agents/{name}.md` (project-level) then `~/.claude/agents/{name}.md` (user-level). The parsed `AgentDefinition.model` feeds into provider resolution, and the body becomes the coworker's system prompt.
 
@@ -310,7 +305,7 @@ Note: `route_mentions()` is enabled for non-user, non-system senders in topic ch
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown session fork --thread-id <id>`). A forked session gets an independent session ID bound to a specific thread. Claude/z.ai forks launch as fresh sessions (headless sessions don't persist JSONL files, so `--fork-session` has nothing to fork from); Codex uses `thread/fork`. Fork context is injected via the initial nudge message rather than inherited from the parent session.
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown agent fork --thread-id <id>`). A forked session gets an independent session ID bound to a specific thread. Claude/z.ai forks launch as fresh sessions (headless sessions don't persist JSONL files, so `--fork-session` has nothing to fork from); Codex uses `thread/fork`. Fork context is injected via the initial nudge message rather than inherited from the parent session.
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 
@@ -320,7 +315,7 @@ Channel leads can fork themselves into thread-specific sessions via the `session
 
 **Initial nudge on fork:** Both the CLI and web-UI fork paths send a `NudgeSession` to fresh forks so they have an initial message to act on (without a nudge, forks sit idle forever). The CLI path (`handle_session_fork`) follows a 3-priority fallback chain: (1) an explicit `initial_message` parameter is always used when provided; (2) otherwise, the daemon looks up the parent message by `thread_parent_id` from the channel history and includes its content — for channel leads this is combined with `fork_initial_framing`, for non-channel-lead callers (e.g. the project lead) the message is wrapped as investigative context; (3) if no parent message is found, channel leads get bare `fork_initial_framing` while non-channel-lead callers get no nudge (the framing text assumes a channel-lead role which would be misleading).
 
-**Lead self-fork for deep work:** The project lead (main channel) uses `midtown session fork --thread-id <id>` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. The project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead-common.md`), not daemon automation.
+**Lead self-fork for deep work:** The project lead (main channel) uses `midtown agent fork --thread-id <id>` to handle multi-turn research (code exploration, debugging investigation, task scoping) without blocking the main channel. The project lead decides when to fork based on message complexity. The lead does NOT fork for: quick one-turn answers, simple task creation, status checks, or forwarding user suggestions to coworkers. Only multi-turn work that would block the root session for more than ~30 seconds triggers a fork. This is a behavioral pattern guided by agent instructions (`lead-common.md`), not daemon automation.
 
 **Thread routing priority:** When a message arrives with `thread_parent_id` set, `handle_channel_post` checks `topic_sessions[thread_parent_id]` first. "pending" entries are filtered out (a concurrent fork is in progress but not yet ready) — the reply falls back to `NudgeChannelLead` rather than producing a nudge with an invalid session ID. Once the fork completes, subsequent replies route to the real fork session. New top-level messages always go to the channel lead. **Important:** routing a reply to the fork does **not** automatically notify other thread participants — if the fork wants a coworker or reviewer to see a thread reply, it **must @mention them** explicitly.
 
@@ -911,13 +906,13 @@ messages through a poll+ack contract.
 
 **DaemonState fields for intercom support:**
 - `headed_sessions: Mutex<HashMap<String, HeadedSessionState>>` — Per-session queue + lease.
-- `attached_coworkers: Mutex<HashMap<String, DateTime<Utc>>>` — Tracks interactive attach/detach state for headless coworkers. Keys are coworker names; values are the attach timestamp. Entries are added on `midtown session attach`, removed on `midtown session detach` or via `Effect::AutoDetachCoworker` (auto-detach after `ATTACH_TIMEOUT` = 10 min, to recover from crash/disconnect without detach).
+- `attached_coworkers: Mutex<HashMap<String, DateTime<Utc>>>` — Tracks interactive attach/detach state for headless coworkers. Keys are coworker names; values are the attach timestamp. Entries are added on `midtown agent attach`, removed on `midtown agent detach` or via `Effect::AutoDetachCoworker` (auto-detach after `ATTACH_TIMEOUT` = 10 min, to recover from crash/disconnect without detach).
 
 ## Coworker Questions (AskUserQuestion)
 
 Coworkers can ask the Lead questions via the Claude Code `AskUserQuestion` tool. The flow:
 
-1. Coworker calls `AskUserQuestion` → Claude Code CLI runs `midtown coworker asking` → daemon RPC `coworker.asking`
+1. Coworker calls `AskUserQuestion` → Claude Code CLI runs `midtown agent asking` → daemon RPC `coworker.asking`
 2. Daemon stores the question in `DaemonState.pending_questions` (ephemeral, one active question per coworker), posts to channel, nudges the Lead
 3. Daemon broadcasts `WebUpdate::CoworkerQuestion` to WebSocket clients (Web UI, TUI)
 4. TUI polls `coworker.questions` RPC on each kanban refresh; Web UI hydrates from `/api/questions` on connect
@@ -1030,13 +1025,13 @@ The Lead can set reminders that trigger on specific conditions:
 
 ```bash
 # Remind me when all tasks are done and PRs merged
-midtown lead remind all-work-merged "Time to deploy!"
+midtown channel remind all-work-merged "Time to deploy!"
 
 # List active reminders
-midtown lead remind list
+midtown channel remind list
 
 # Cancel a reminder
-midtown lead remind cancel <id>
+midtown channel remind cancel <id>
 ```
 
 Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.

@@ -60,7 +60,7 @@ fn test_coworker_system_prompt_contains_required_sections() {
 fn test_lead_prompt_contains_commands() {
     let prompt = main_lead_system_prompt("midtown");
     assert!(prompt.contains("midtown status"));
-    assert!(prompt.contains("midtown coworker call-in"));
+    assert!(prompt.contains("midtown agent spawn"));
     assert!(prompt.contains("midtown channel"));
 }
 
