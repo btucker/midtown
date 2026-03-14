@@ -1406,9 +1406,14 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let tasks_with_running_sessions: HashSet<String> = session_task_map
         .iter()
         .filter(|(_, session_id)| {
-            sessions
+            // Check both is_running flag AND active_session_ids, mirroring
+            // the logic in dispatch_via_sessions (line ~746). A session can
+            // be alive but have is_running=false when spawn_coworker uses
+            // or_insert_with for existing session records.
+            let is_running = sessions
                 .get(session_id.as_str())
-                .is_some_and(|s| s.is_running)
+                .is_some_and(|s| s.is_running);
+            is_running || active_session_ids.contains(session_id.as_str())
         })
         .map(|(task_id, _)| task_id.clone())
         .collect();
