@@ -148,6 +148,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         env: _env,
         fork_session,
         disallowed_tools,
+        agent_name,
     } = config;
 
     let is_resume = resume_session_id.is_some();
@@ -187,6 +188,14 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     } else {
         // Fresh mode: -p with system prompt
         args.push("-p".to_string());
+
+        // Agent definition: when agent_name is set, Layer 1 comes from the agent
+        // definition file via --agent, and system_prompt carries only Layers 2+3.
+        if let Some(name) = agent_name {
+            args.push("--agent".to_string());
+            args.push(name.clone());
+        }
+
         args.push("--append-system-prompt".to_string());
         args.push(system_prompt.clone());
 

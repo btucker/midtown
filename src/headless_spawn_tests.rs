@@ -31,6 +31,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -82,6 +83,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -123,6 +125,7 @@ fn test_resume_session_should_omit_settings_flag() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -165,6 +168,7 @@ fn test_fresh_session_without_settings_path() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -205,6 +209,7 @@ fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -245,6 +250,7 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -279,6 +285,7 @@ fn test_resume_session_does_not_use_session_id_flag() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -329,6 +336,7 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -379,6 +387,7 @@ fn test_fork_session_with_preassigned_session_id() {
         env: std::collections::BTreeMap::new(),
         fork_session: true,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -401,5 +410,117 @@ fn test_fork_session_with_preassigned_session_id() {
         args.get(sid_pos.unwrap() + 1).map(|s| s.as_str()),
         Some("fork-uuid-1234"),
         "--session-id should be followed by the pre-assigned UUID"
+    );
+}
+
+#[test]
+fn test_fresh_session_with_agent_name_emits_agent_flag() {
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "layers 2+3 only".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+        disallowed_tools: vec![],
+        agent_name: Some("midtown-code-author".to_string()),
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Should have --agent midtown-code-author
+    let agent_pos = args.iter().position(|a| a == "--agent");
+    assert!(
+        agent_pos.is_some(),
+        "Fresh session with agent_name should include --agent flag"
+    );
+    assert_eq!(
+        args.get(agent_pos.unwrap() + 1).map(|s| s.as_str()),
+        Some("midtown-code-author"),
+        "--agent should be followed by the agent name"
+    );
+
+    // Should still have --append-system-prompt for layers 2+3
+    assert!(
+        args.iter().any(|a| a == "--append-system-prompt"),
+        "Should still use --append-system-prompt for layers 2+3"
+    );
+}
+
+#[test]
+fn test_fresh_session_without_agent_name_omits_agent_flag() {
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "full prompt".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+        disallowed_tools: vec![],
+        agent_name: None,
+    };
+
+    let args = extract_spawn_args(&config);
+
+    assert!(
+        !args.iter().any(|a| a == "--agent"),
+        "Session without agent_name should NOT include --agent flag"
+    );
+    // Should still use --append-system-prompt for the full prompt
+    assert!(
+        args.iter().any(|a| a == "--append-system-prompt"),
+        "Session without agent_name should use --append-system-prompt"
+    );
+}
+
+#[test]
+fn test_resume_session_ignores_agent_name() {
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("session-456".to_string()),
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+        disallowed_tools: vec![],
+        agent_name: Some("midtown-code-author".to_string()),
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Resume sessions don't pass agent or system prompt
+    assert!(
+        !args.iter().any(|a| a == "--agent"),
+        "Resume session should NOT include --agent flag"
     );
 }

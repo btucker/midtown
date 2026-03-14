@@ -899,6 +899,7 @@ async fn handle_oneshot_execute(
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     };
 
     super::rpc_headless::handle_headless_execute(id, prompt, &config).await

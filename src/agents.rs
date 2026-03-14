@@ -409,6 +409,15 @@ pub fn reviewer_launch_prompt(
     }
 }
 
+/// Load the reviewer overlay prompt template (Layer 1 fragment for reviewers).
+///
+/// Returns the raw reviewer.md content with template variables still present.
+/// Used by `render_append_prompt()` to include reviewer-specific instructions
+/// in the Layers 2+3 prompt when `--agent` handles the base Layer 1.
+pub fn reviewer_overlay_prompt() -> String {
+    load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string())
+}
+
 /// Build the reviewer launch prompt for a given PR number (legacy function).
 ///
 /// Loads `agents/reviewer.md` (or the embedded default) and replaces

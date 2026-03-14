@@ -42,6 +42,19 @@ pub enum CoworkerRole {
 }
 
 impl CoworkerRole {
+    /// The agent definition name for `--agent <name>`.
+    ///
+    /// Maps each role to the corresponding agent definition file installed
+    /// in `.claude/agents/` (e.g., `midtown-code-author.md`).
+    pub fn agent_name(&self) -> &'static str {
+        match self {
+            CoworkerRole::Coworker => "midtown-code-author",
+            CoworkerRole::Reviewer => "midtown-code-reviewer",
+            CoworkerRole::Lead => "midtown-project-lead",
+            CoworkerRole::ChannelLead { .. } => "midtown-channel-lead",
+        }
+    }
+
     /// Map to the corresponding config `ExecutionRole` for model/provider lookups.
     pub fn execution_role(&self) -> crate::config::ExecutionRole {
         match self {
@@ -303,6 +316,77 @@ fn shell_quote(input: &str) -> String {
 }
 
 impl LaunchConfig {
+    /// Build the `RuntimeContext` for Layer 3 template substitution.
+    fn runtime_context<'a>(&'a self, project_name: &'a str) -> crate::agents::RuntimeContext<'a> {
+        match &self.role {
+            CoworkerRole::Coworker => crate::agents::RuntimeContext {
+                name: &self.name,
+                project_name,
+                channel_lead: self.channel.as_deref(),
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::Reviewer => crate::agents::RuntimeContext {
+                name: &self.name,
+                project_name,
+                channel_lead: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
+                escalation_target: self.escalation_target.as_deref(),
+                platform: Some(self.auth_provider),
+                pr_number: self.pr_number,
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::Lead => crate::agents::RuntimeContext {
+                name: project_name,
+                project_name,
+                channel_lead: Some(project_name),
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+                agents_md,
+            } => crate::agents::RuntimeContext {
+                name: channel_name,
+                project_name,
+                channel_lead: Some(channel_name.as_str()),
+                channel_name: Some(channel_name.as_str()),
+                domain_context: Some(domain_context.as_str()),
+                agents_md: agents_md.as_deref(),
+                ..crate::agents::RuntimeContext::default()
+            },
+        }
+    }
+
+    /// Map `CoworkerRole` to `AgentRole`.
+    fn agent_role(&self) -> crate::agents::AgentRole {
+        match &self.role {
+            CoworkerRole::Coworker => crate::agents::AgentRole::Coworker,
+            CoworkerRole::Reviewer => crate::agents::AgentRole::Reviewer,
+            CoworkerRole::Lead => crate::agents::AgentRole::ProjectLead,
+            CoworkerRole::ChannelLead { .. } => crate::agents::AgentRole::ChannelLead,
+        }
+    }
+
+    /// Render only Layers 2+3 of the system prompt (shared prompt + runtime context).
+    ///
+    /// Used when `--agent <name>` provides Layer 1 (agent definition). The returned
+    /// content goes to `--append-system-prompt` so it merges with the agent's base prompt.
+    fn render_append_prompt(&self, project_name: &str) -> String {
+        // Layer 2: Shared prompt (common.md, lead-common.md)
+        let layer2 = crate::agents::shared_prompt_for_role(self.agent_role());
+
+        // Reviewer appends reviewer.md after Layer 2 (preserving original ordering)
+        let base = if matches!(self.role, CoworkerRole::Reviewer) {
+            let reviewer = crate::agents::reviewer_overlay_prompt();
+            format!("{layer2}\n\n## Reviewer Instructions\n\n{reviewer}")
+        } else {
+            layer2
+        };
+
+        // Layer 3: Runtime context (template vars, ops extras, AGENTS.md)
+        let ctx = self.runtime_context(project_name);
+        crate::agents::build_runtime_context(&base, &ctx)
+    }
+
     fn render_system_prompt(&self, project_name: &str) -> String {
         match &self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
@@ -651,15 +735,18 @@ impl LaunchConfig {
     /// so it can be re-applied when attaching to the headless session.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();
-        let system_prompt = self.render_system_prompt(project_name);
+        let agent_name = Some(self.role.agent_name().to_string());
+        let system_prompt = self.render_append_prompt(project_name);
 
-        // Save the lead system prompt to disk for attach resumption
+        // Save the full system prompt (all layers) to disk for attach resumption.
+        // The lead attach path uses this file as --system-prompt, so it needs all layers.
         if matches!(self.role, CoworkerRole::Lead) {
+            let full_prompt = self.render_system_prompt(project_name);
             let prompt_file = crate::paths::lead_system_prompt_file(paths.dir_key());
             if let Some(parent) = prompt_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&prompt_file, &system_prompt);
+            let _ = std::fs::write(&prompt_file, &full_prompt);
         }
 
         let (persist_session, resume_session_id) = match &self.session_mode {
@@ -720,6 +807,7 @@ impl LaunchConfig {
             env,
             fork_session: false,
             disallowed_tools,
+            agent_name,
         }
     }
 
@@ -1157,6 +1245,144 @@ mod tests {
         assert!(
             !headless.env.contains_key("MIDTOWN_TASK_ID"),
             "MIDTOWN_TASK_ID should not be set when task_id is None"
+        );
+    }
+
+    // --- CoworkerRole::agent_name() tests ---
+
+    #[test]
+    fn test_coworker_role_agent_name_coworker() {
+        assert_eq!(CoworkerRole::Coworker.agent_name(), "midtown-code-author");
+    }
+
+    #[test]
+    fn test_coworker_role_agent_name_reviewer() {
+        assert_eq!(CoworkerRole::Reviewer.agent_name(), "midtown-code-reviewer");
+    }
+
+    #[test]
+    fn test_coworker_role_agent_name_lead() {
+        assert_eq!(CoworkerRole::Lead.agent_name(), "midtown-project-lead");
+    }
+
+    #[test]
+    fn test_coworker_role_agent_name_channel_lead() {
+        let role = CoworkerRole::ChannelLead {
+            channel_name: "ops".to_string(),
+            domain_context: "".to_string(),
+            agents_md: None,
+        };
+        assert_eq!(role.agent_name(), "midtown-channel-lead");
+    }
+
+    // --- render_append_prompt() tests ---
+
+    #[test]
+    fn test_render_append_prompt_does_not_contain_layer1() {
+        // render_append_prompt() should return only Layers 2+3 (shared prompt + runtime context),
+        // NOT Layer 1 (agent definition content).
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let append_prompt = config.render_append_prompt("midtown");
+
+        // Layer 1 content comes from coworker.md — it should NOT be in append_prompt.
+        // The agent definition for code-author is loaded by load_agent_definition_for_role(),
+        // which render_append_prompt() must NOT include.
+        let layer1 =
+            crate::agents::load_agent_definition_for_role(crate::agents::AgentRole::Coworker);
+
+        // Take first substantial line from Layer 1 as a signature to check absence
+        let layer1_signature = layer1
+            .lines()
+            .find(|l| l.len() > 20 && !l.starts_with('#'))
+            .expect("Layer 1 should have substantial content");
+        assert!(
+            !append_prompt.contains(layer1_signature),
+            "render_append_prompt() should NOT contain Layer 1 content"
+        );
+    }
+
+    #[test]
+    fn test_render_append_prompt_contains_layer2_content() {
+        // render_append_prompt() should contain Layer 2 (shared prompt from common.md).
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let append_prompt = config.render_append_prompt("midtown");
+
+        let layer2 = crate::agents::shared_prompt_for_role(crate::agents::AgentRole::Coworker);
+        // Layer 2 content (common.md) should be present
+        let layer2_signature = layer2
+            .lines()
+            .find(|l| l.len() > 20 && !l.starts_with('#'))
+            .expect("Layer 2 should have substantial content");
+        assert!(
+            append_prompt.contains(layer2_signature),
+            "render_append_prompt() should contain Layer 2 content"
+        );
+    }
+
+    #[test]
+    fn test_render_append_prompt_contains_runtime_substitutions() {
+        // Layer 3: runtime context substitutions should be applied
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let append_prompt = config.render_append_prompt("midtown");
+
+        // {name} should be replaced with "park" and {project_name} with "midtown"
+        assert!(
+            !append_prompt.contains("{name}"),
+            "render_append_prompt() should have {{name}} substituted"
+        );
+        assert!(
+            !append_prompt.contains("{project_name}"),
+            "render_append_prompt() should have {{project_name}} substituted"
+        );
+    }
+
+    // --- to_headless_config agent_name wiring ---
+
+    #[test]
+    fn test_to_headless_config_sets_agent_name() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let headless = config.to_headless_config(&test_paths());
+
+        assert_eq!(
+            headless.agent_name,
+            Some("midtown-code-author".to_string()),
+            "HeadlessConfig should have agent_name set from CoworkerRole"
+        );
+    }
+
+    #[test]
+    fn test_to_headless_config_reviewer_agent_name() {
+        let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
+        let headless = config.to_headless_config(&test_paths());
+
+        assert_eq!(
+            headless.agent_name,
+            Some("midtown-code-reviewer".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_to_headless_config_lead_agent_name() {
+        let config = LaunchConfig::lead("myrepo", None);
+        let headless = config.to_headless_config(&test_paths());
+
+        assert_eq!(
+            headless.agent_name,
+            Some("midtown-project-lead".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_to_headless_config_agent_name_prompt_is_append_only() {
+        // When agent_name is set, the system_prompt in HeadlessConfig should be
+        // the append-only content (Layers 2+3), not the full prompt (Layers 1+2+3).
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
+        let headless = config.to_headless_config(&test_paths());
+        let append_prompt = config.render_append_prompt("midtown");
+
+        assert_eq!(
+            headless.system_prompt, append_prompt,
+            "When agent_name is set, system_prompt should be the append-only content"
         );
     }
 
