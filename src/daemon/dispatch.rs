@@ -301,10 +301,12 @@ fn find_session_for_task<'a>(
 /// the integration test helper `should_recover_task_test_helper`.
 ///
 /// Checks (in order):
-/// 1. Task is already completed
-/// 2. Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
-/// 3. Task has an explicit `task.pr` pointing to a merged PR
-/// 4. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
+/// 1. Task is already completed → always protected
+/// 2. Task owner has no active session → never protected (allows dispatch of
+///    pending tasks or tasks whose owner went away, even with open PRs)
+/// 3. Task has an open PR via `tasks_with_open_prs` (unless that PR is merged)
+/// 4. Task has an explicit `task.pr` pointing to a merged PR
+/// 5. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`)
 pub(crate) fn is_task_pr_protected(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
