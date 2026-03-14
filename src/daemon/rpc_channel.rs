@@ -608,7 +608,18 @@ pub(super) async fn handle_channel_post(
         info!("Bell notification: @user mentioned by {}", from);
         let display = state.user_display_name.as_deref().unwrap_or("user");
         let summary = truncate_str(&content, 100);
-        state.send_push_notification(&format!("@{} from {}", display, from), &summary, "mention");
+        let push_url = super::dispatch::build_push_deep_link(
+            &state.project_name,
+            channel_name,
+            Some(&msg.id),
+            thread_parent_id,
+        );
+        state.send_push_notification(
+            &format!("@{} from {}", display, from),
+            &summary,
+            "mention",
+            Some(&push_url),
+        );
     }
 
     Response::success(

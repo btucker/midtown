@@ -458,10 +458,14 @@ pub enum Effect {
     /// Send a push notification to the mobile PWA.
     ///
     /// Fire-and-forget: the push manager runs in a background task.
+    /// `url` is a deep-link path (e.g. `/{project}?channel=web&msg=123`)
+    /// that the PWA uses to navigate on notification click. `None` means
+    /// no navigation — the app is focused without changing view.
     SendPushNotification {
         title: String,
         body: String,
         tag: String,
+        url: Option<String>,
     },
     /// Clean up stale local branches that match task/review naming patterns
     /// and are already merged into the default branch.
@@ -2042,8 +2046,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::SendPushNotification { title, body, tag } => {
-                state.send_push_notification(&title, &body, &tag);
+            Effect::SendPushNotification {
+                title,
+                body,
+                tag,
+                url,
+            } => {
+                state.send_push_notification(&title, &body, &tag, url.as_deref());
             }
             Effect::CleanStaleBranches => {
                 // Fire-and-forget: branch cleanup runs git operations that can

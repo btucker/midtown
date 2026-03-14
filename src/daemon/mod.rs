@@ -2461,13 +2461,13 @@ impl DaemonState {
     /// Send a web push notification to all subscribed PWA clients.
     ///
     /// This is fire-and-forget: push sending runs in a background task.
-    fn send_push_notification(&self, title: &str, body: &str, tag: &str) {
+    fn send_push_notification(&self, title: &str, body: &str, tag: &str, url: Option<&str>) {
         if let Some(ref pm) = self.push_manager {
             let payload = crate::push::PushPayload {
                 title: title.to_string(),
                 body: body.to_string(),
                 tag: Some(tag.to_string()),
-                url: None,
+                url: url.map(|u| u.to_string()),
             };
             let subs = pm.load_subscriptions();
             if subs.is_empty() {
@@ -3687,6 +3687,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             &pr_merged_info.title,
                             pr_merged_info.pr_number,
                             state.paths.dir_key(),
+                            &state.project_name,
                             task_channel,
                             task_event_ctx,
                         );
@@ -3704,10 +3705,17 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             "PR #{} merged into {}",
                             pr_number, state.default_branch
                         );
+                        let push_url = dispatch::build_push_deep_link(
+                            &state.project_name,
+                            &state.project_name,
+                            None,
+                            None,
+                        );
                         state.send_push_notification(
                             &format!("PR #{} merged", pr_number),
                             &push_body,
                             &format!("pr_merged_{}", pr_number),
+                            Some(&push_url),
                         );
                     }
                 }
