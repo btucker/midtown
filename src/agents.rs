@@ -39,6 +39,25 @@ const DEFAULT_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/channel-lead.m
 /// Appended to the generic channel lead prompt when the channel is "ops".
 const DEFAULT_OPS_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/ops-channel-lead.md");
 
+// --- Agent definition files (Claude Code agent format with YAML frontmatter) ---
+
+/// Code author agent definition — role identity for coworkers that implement features.
+#[allow(dead_code)]
+const AGENT_DEF_CODE_AUTHOR: &str = include_str!("../agents/definitions/midtown-code-author.md");
+
+/// Code reviewer agent definition — role identity for PR reviewers.
+#[allow(dead_code)]
+const AGENT_DEF_CODE_REVIEWER: &str =
+    include_str!("../agents/definitions/midtown-code-reviewer.md");
+
+/// Project lead agent definition — role identity for the human-facing lead.
+#[allow(dead_code)]
+const AGENT_DEF_PROJECT_LEAD: &str = include_str!("../agents/definitions/midtown-project-lead.md");
+
+/// Channel lead agent definition — role identity for domain-specific channel leads.
+#[allow(dead_code)]
+const AGENT_DEF_CHANNEL_LEAD: &str = include_str!("../agents/definitions/midtown-channel-lead.md");
+
 /// Find the git repository root directory.
 fn git_repo_root() -> Option<PathBuf> {
     let output = std::process::Command::new("git")
@@ -387,3 +406,7 @@ pub fn channel_lead_system_prompt(
 #[path = "agents_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+#[path = "agents_definition_tests.rs"]
+#[cfg(test)]
+mod definition_tests;
