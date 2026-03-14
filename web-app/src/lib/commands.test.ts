@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { getCommandNames, parseCommand } from "./commands.ts";
 
-// Mock api.js and store.js
-vi.mock("./api.js", () => ({
+// Mock api and store modules
+vi.mock("./api.ts", () => ({
 	archiveChannel: vi.fn(),
 	unarchiveChannel: vi.fn(),
 	fetchChannels: vi.fn(),
 }));
 
-vi.mock("./store.js", () => ({
+vi.mock("./store.ts", () => ({
 	activeChannel: {
 		subscribe: vi.fn((fn) => {
 			fn("test-channel");

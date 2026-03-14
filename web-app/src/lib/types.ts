@@ -222,4 +222,6 @@ export interface DaemonStatus {
 		release_time?: string | null;
 	};
 	repo_statuses?: MultiRepoStatus[];
+	lead_working?: boolean;
+	channel_leads_working?: Record<string, boolean>;
 }
