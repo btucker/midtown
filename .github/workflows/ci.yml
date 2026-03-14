@@ -155,7 +155,9 @@ jobs:
           cache-dependency-path: web-app/package-lock.json
 
       - name: Install dependencies
-        run: cd web-app && npm ci
+        # npm occasionally drops platform-specific optional packages from lockfiles
+        # generated on a different OS; fall back to npm install on CI runners.
+        run: cd web-app && npm ci || (rm -rf node_modules && npm install)
 
       - name: Lint
         run: cd web-app && npx biome check .
