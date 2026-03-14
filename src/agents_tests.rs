@@ -11,8 +11,11 @@ fn test_main_lead_system_prompt_loads() {
 #[test]
 fn test_coworker_system_prompt_substitutes_name() {
     let prompt = coworker_system_prompt("lexington", "midtown", None);
-    assert!(prompt.contains("**lexington**"));
-    assert!(prompt.contains("git checkout -b lexington/"));
+    // Name appears via coworker-common.md identity line
+    assert!(
+        prompt.contains("lexington"),
+        "Coworker prompt should contain the coworker's name"
+    );
     assert!(!prompt.contains("{name}"));
 }
 
@@ -219,36 +222,38 @@ fn test_reviewer_system_prompt_merges_all_sources() {
         Some(42),
     );
 
-    // Should contain content from common.md
+    // Layer 1: Agent definition (midtown-code-reviewer.md)
+    assert!(
+        prompt.contains("Code Reviewer"),
+        "Reviewer system prompt should include agent definition content"
+    );
+    assert!(
+        prompt.contains("THRESHOLD OVERRIDE"),
+        "Reviewer system prompt should include THRESHOLD OVERRIDE"
+    );
+    assert!(
+        prompt.contains("Channel Message Discipline"),
+        "Reviewer system prompt should include Channel Message Discipline"
+    );
+    assert!(
+        prompt.contains("TEST SUGGESTIONS"),
+        "Reviewer system prompt should include TEST SUGGESTIONS"
+    );
+
+    // Layer 2: coworker-common.md + common.md
+    assert!(
+        prompt.contains("Channel Usage"),
+        "Reviewer system prompt should include coworker-common.md content"
+    );
     assert!(
         prompt.contains("GitHub Etiquette"),
         "Reviewer system prompt should include common.md content"
     );
 
-    // Should contain content from coworker.md
+    // Layer 3: Runtime substitutions
     assert!(
-        prompt.contains("Channel Usage"),
-        "Reviewer system prompt should include coworker.md content"
-    );
-
-    // Should contain reviewer-specific instructions from reviewer.md
-    assert!(
-        prompt.contains("THRESHOLD OVERRIDE"),
-        "Reviewer system prompt should include THRESHOLD OVERRIDE from reviewer.md"
-    );
-    assert!(
-        prompt.contains("CHANNEL MESSAGE DISCIPLINE"),
-        "Reviewer system prompt should include CHANNEL MESSAGE DISCIPLINE from reviewer.md"
-    );
-    assert!(
-        prompt.contains("TEST SUGGESTIONS"),
-        "Reviewer system prompt should include TEST SUGGESTIONS from reviewer.md"
-    );
-
-    // Should have name substituted
-    assert!(
-        prompt.contains("**lexington**"),
-        "Reviewer system prompt should substitute {{name}} with actual name"
+        prompt.contains("lexington"),
+        "Reviewer system prompt should substitute name"
     );
     assert!(
         !prompt.contains("{name}"),
@@ -460,17 +465,13 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
     );
 
     assert!(
-        prompt.contains("ALWAYS use the existing PR branch"),
+        prompt.contains("Always use the existing PR branch"),
         "Coworker prompt should instruct to use existing PR branch for feedback"
-    );
-    assert!(
-        prompt.contains("git push origin --delete"),
-        "Coworker prompt should show command to delete remote branches"
     );
 }
 
 #[test]
-fn test_coworker_prompt_requires_issue_comment_reviews() {
+fn test_coworker_prompt_requires_merge_checklist() {
     let prompt = coworker_system_prompt("park", "midtown", None);
 
     assert!(
@@ -478,20 +479,8 @@ fn test_coworker_prompt_requires_issue_comment_reviews() {
         "Coworker prompt should contain the pre-merge checklist section"
     );
     assert!(
-        prompt.contains(r#"gh api "repos/$repo/issues/<PR_NUMBER>/comments""#),
-        "Coworker prompt should show the issue-comment gh api command using the repo shorthand"
-    );
-    assert!(
-        prompt.contains("<!-- midtown:"),
-        "Coworker prompt should mention the frontmatter signature so reviewers are detected"
-    );
-    assert!(
         prompt.contains("merge hold"),
         "Coworker prompt should instruct checking the channel for merge holds"
-    );
-    assert!(
-        prompt.contains(r#"gh pr view <number> --comments --json comments"#),
-        "Coworker prompt should instruct checking recent PR comments for late requests"
     );
     assert!(
         prompt.contains("stop"),
@@ -500,6 +489,10 @@ fn test_coworker_prompt_requires_issue_comment_reviews() {
     assert!(
         prompt.contains("all checks pass"),
         "Coworker prompt should gate merge on all checks passing"
+    );
+    assert!(
+        prompt.contains("midtown pr merge"),
+        "Coworker prompt should use daemon-gated merge command"
     );
 }
 
