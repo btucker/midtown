@@ -1,3 +1,4 @@
+pub mod agents_install;
 mod auth;
 mod channel;
 mod chat;
@@ -250,8 +251,8 @@ pub fn handle_notes(cmd: &NotesCommand) -> Result<Response, String> {
 }
 
 /// Handle `midtown update` — check for and install the latest release.
-pub fn handle_update(check_only: bool) -> Result<Response, String> {
-    update::handle_update(check_only)
+pub fn handle_update(check_only: bool, force: bool) -> Result<Response, String> {
+    update::handle_update(check_only, force)
 }
 
 /// Handle `midtown webserver stop` command

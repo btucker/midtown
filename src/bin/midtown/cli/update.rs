@@ -10,7 +10,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CHECK_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
 
 /// Handle `midtown update` — download and install the latest release.
-pub fn handle_update(check_only: bool) -> Result<Response, String> {
+pub fn handle_update(check_only: bool, force: bool) -> Result<Response, String> {
     let latest = fetch_latest_version()?;
     let latest_bare = latest.strip_prefix('v').unwrap_or(&latest);
 
@@ -77,6 +77,9 @@ pub fn handle_update(check_only: bool) -> Result<Response, String> {
             let _ = fs::remove_dir_all(&legacy_web_app);
         }
     }
+
+    // Update agent definitions in ~/.claude/agents/
+    update_agent_definitions(force)?;
 
     Ok(Response::Message {
         message: format!("Updated midtown v{CURRENT_VERSION} → v{latest_bare}"),
@@ -376,6 +379,50 @@ fn write_last_check_timestamp() -> Result<(), String> {
         fs::File::create(&path).map_err(|e| format!("Failed to write last-check file: {e}"))?;
     // Write current timestamp as content (not strictly needed, file mtime is what matters)
     let _ = writeln!(f, "{}", chrono::Utc::now().to_rfc3339());
+    Ok(())
+}
+
+/// Update agent definitions after binary replacement.
+///
+/// With `force`: overwrites all definitions without prompting.
+/// Without `force`: checks for outdated definitions and prompts the user.
+fn update_agent_definitions(force: bool) -> Result<(), String> {
+    let agents_dir = super::agents_install::claude_agents_dir();
+    let outdated = super::agents_install::check_agent_definitions_outdated(&agents_dir);
+
+    if outdated.is_empty() {
+        return Ok(());
+    }
+
+    if force {
+        super::agents_install::install_agent_definitions(&agents_dir, true)?;
+        let names: Vec<&str> = outdated.iter().map(|d| d.filename).collect();
+        eprintln!("Updated agent definitions: {}", names.join(", "));
+        return Ok(());
+    }
+
+    // Print summary and prompt
+    eprintln!("\nAgent definitions have changed:");
+    for def in &outdated {
+        let path = agents_dir.join(def.filename);
+        if path.exists() {
+            eprintln!("  {} (modified)", def.filename);
+        } else {
+            eprintln!("  {} (new)", def.filename);
+        }
+    }
+
+    eprint!("Overwrite with updated definitions? [y/N] ");
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y") {
+        super::agents_install::install_agent_definitions(&agents_dir, true)?;
+        eprintln!("Updated agent definitions");
+    } else {
+        eprintln!("Skipped agent definition update (use --force to overwrite)");
+    }
+
     Ok(())
 }
 
