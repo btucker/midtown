@@ -122,6 +122,16 @@ pub struct HeadlessConfig {
     /// modification tools (Edit, Write, Bash, NotebookEdit).
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
+    /// Agent definition name for `--agent <name>` flag.
+    ///
+    /// When set, the CLI arg builder emits `--agent <name>` alongside
+    /// `--append-system-prompt` (which carries Layers 2+3). The agent definition
+    /// file provides Layer 1 (role identity).
+    ///
+    /// When `None`, current behavior: `system_prompt` carries all layers via
+    /// `--append-system-prompt`.
+    #[serde(default)]
+    pub agent_name: Option<String>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1190,6 +1200,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         env: _env,
         fork_session,
         disallowed_tools,
+        agent_name: _agent_name,
     } = config;
 
     let mut unsupported = Vec::new();

@@ -177,7 +177,14 @@ pub fn build_runtime_context(base_prompt: &str, ctx: &RuntimeContext) -> String 
         prompt = prompt.replace("{channel_name}", channel_name);
     }
     if let Some(domain_context) = ctx.domain_context {
-        prompt = prompt.replace("{domain_context}", domain_context);
+        if prompt.contains("{domain_context}") {
+            // Layer 1 has the placeholder (old monolithic path) — replace inline
+            prompt = prompt.replace("{domain_context}", domain_context);
+        } else if !domain_context.is_empty() {
+            // --agent path: Layer 1 is loaded by CLI, so append domain context
+            // as a section in Layers 2+3 (the append prompt)
+            prompt = format!("{prompt}\n\n## Domain Context\n\n{domain_context}");
+        }
     }
     if let Some(escalation_target) = ctx.escalation_target {
         prompt = prompt.replace("{escalation_target}", escalation_target);
@@ -407,6 +414,15 @@ pub fn reviewer_launch_prompt(
              {escalation_line}",
         )
     }
+}
+
+/// Load the reviewer overlay prompt template (Layer 1 fragment for reviewers).
+///
+/// Returns the raw reviewer.md content with template variables still present.
+/// Used by `render_append_prompt()` to include reviewer-specific instructions
+/// in the Layers 2+3 prompt when `--agent` handles the base Layer 1.
+pub fn reviewer_overlay_prompt() -> String {
+    load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string())
 }
 
 /// Build the reviewer launch prompt for a given PR number (legacy function).

@@ -20,6 +20,7 @@ fn test_config() -> HeadlessConfig {
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        agent_name: None,
     }
 }
 

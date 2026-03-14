@@ -42,6 +42,19 @@ pub enum CoworkerRole {
 }
 
 impl CoworkerRole {
+    /// The agent definition name for `--agent <name>`.
+    ///
+    /// Maps each role to the corresponding agent definition file installed
+    /// in `.claude/agents/` (e.g., `midtown-code-author.md`).
+    pub fn agent_name(&self) -> &'static str {
+        match self {
+            CoworkerRole::Coworker => "midtown-code-author",
+            CoworkerRole::Reviewer => "midtown-code-reviewer",
+            CoworkerRole::Lead => "midtown-project-lead",
+            CoworkerRole::ChannelLead { .. } => "midtown-channel-lead",
+        }
+    }
+
     /// Map to the corresponding config `ExecutionRole` for model/provider lookups.
     pub fn execution_role(&self) -> crate::config::ExecutionRole {
         match self {
@@ -303,6 +316,77 @@ fn shell_quote(input: &str) -> String {
 }
 
 impl LaunchConfig {
+    /// Build the `RuntimeContext` for Layer 3 template substitution.
+    fn runtime_context<'a>(&'a self, project_name: &'a str) -> crate::agents::RuntimeContext<'a> {
+        match &self.role {
+            CoworkerRole::Coworker => crate::agents::RuntimeContext {
+                name: &self.name,
+                project_name,
+                channel_lead: self.channel.as_deref(),
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::Reviewer => crate::agents::RuntimeContext {
+                name: &self.name,
+                project_name,
+                channel_lead: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
+                escalation_target: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
+                platform: Some(self.auth_provider),
+                pr_number: self.pr_number,
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::Lead => crate::agents::RuntimeContext {
+                name: project_name,
+                project_name,
+                channel_lead: Some(project_name),
+                ..crate::agents::RuntimeContext::default()
+            },
+            CoworkerRole::ChannelLead {
+                channel_name,
+                domain_context,
+                agents_md,
+            } => crate::agents::RuntimeContext {
+                name: channel_name,
+                project_name,
+                channel_lead: Some(channel_name.as_str()),
+                channel_name: Some(channel_name.as_str()),
+                domain_context: Some(domain_context.as_str()),
+                agents_md: agents_md.as_deref(),
+                ..crate::agents::RuntimeContext::default()
+            },
+        }
+    }
+
+    /// Map `CoworkerRole` to `AgentRole`.
+    fn agent_role(&self) -> crate::agents::AgentRole {
+        match &self.role {
+            CoworkerRole::Coworker => crate::agents::AgentRole::Coworker,
+            CoworkerRole::Reviewer => crate::agents::AgentRole::Reviewer,
+            CoworkerRole::Lead => crate::agents::AgentRole::ProjectLead,
+            CoworkerRole::ChannelLead { .. } => crate::agents::AgentRole::ChannelLead,
+        }
+    }
+
+    /// Render only Layers 2+3 of the system prompt (shared prompt + runtime context).
+    ///
+    /// Used when `--agent <name>` provides Layer 1 (agent definition). The returned
+    /// content goes to `--append-system-prompt` so it merges with the agent's base prompt.
+    fn render_append_prompt(&self, project_name: &str) -> String {
+        // Layer 2: Shared prompt (common.md, lead-common.md)
+        let layer2 = crate::agents::shared_prompt_for_role(self.agent_role());
+
+        // Reviewer appends reviewer.md after Layer 2 (preserving original ordering)
+        let base = if matches!(self.role, CoworkerRole::Reviewer) {
+            let reviewer = crate::agents::reviewer_overlay_prompt();
+            format!("{layer2}\n\n## Reviewer Instructions\n\n{reviewer}")
+        } else {
+            layer2
+        };
+
+        // Layer 3: Runtime context (template vars, ops extras, AGENTS.md)
+        let ctx = self.runtime_context(project_name);
+        crate::agents::build_runtime_context(&base, &ctx)
+    }
+
     fn render_system_prompt(&self, project_name: &str) -> String {
         match &self.role {
             CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
@@ -647,19 +731,37 @@ impl LaunchConfig {
     ///
     /// `paths` carries both `dir_key` (for config/filesystem) and `project_name` (for identity).
     ///
-    /// For Lead role: saves the system prompt to `~/.midtown/projects/<dir_key>/lead-system-prompt.txt`
-    /// so it can be re-applied when attaching to the headless session.
+    /// For Claude Code sessions: sets `agent_name` so the CLI uses `--agent <name>` (Layer 1),
+    /// and `system_prompt` contains only Layers 2+3 (via `--append-system-prompt`).
+    /// For Codex sessions: `agent_name` is `None` and `system_prompt` is the full prompt (all layers).
+    ///
+    /// For Lead role: saves the *full* system prompt (all layers) to
+    /// `~/.midtown/projects/<dir_key>/lead-system-prompt.txt` for attach resumption,
+    /// even though `HeadlessConfig.system_prompt` only contains Layers 2+3.
     pub fn to_headless_config(&self, paths: &crate::paths::ProjectPaths) -> HeadlessConfig {
         let project_name = paths.project_name();
-        let system_prompt = self.render_system_prompt(project_name);
 
-        // Save the lead system prompt to disk for attach resumption
+        // Codex doesn't support --agent, so it needs the full system prompt (all layers).
+        // Claude Code sessions use --agent for Layer 1 + --append-system-prompt for Layers 2+3.
+        let is_codex = matches!(self.auth_provider, crate::auth::AuthProvider::Codex);
+        let (agent_name, system_prompt) = if is_codex {
+            (None, self.render_system_prompt(project_name))
+        } else {
+            (
+                Some(self.role.agent_name().to_string()),
+                self.render_append_prompt(project_name),
+            )
+        };
+
+        // Save the full system prompt (all layers) to disk for attach resumption.
+        // The lead attach path uses this file as --system-prompt, so it needs all layers.
         if matches!(self.role, CoworkerRole::Lead) {
+            let full_prompt = self.render_system_prompt(project_name);
             let prompt_file = crate::paths::lead_system_prompt_file(paths.dir_key());
             if let Some(parent) = prompt_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::write(&prompt_file, &system_prompt);
+            let _ = std::fs::write(&prompt_file, &full_prompt);
         }
 
         let (persist_session, resume_session_id) = match &self.session_mode {
@@ -720,6 +822,7 @@ impl LaunchConfig {
             env,
             fork_session: false,
             disallowed_tools,
+            agent_name,
         }
     }
 

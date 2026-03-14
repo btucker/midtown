@@ -1233,6 +1233,7 @@ pub(super) fn build_fork_config(
         } else {
             vec![]
         },
+        agent_name: None, // Fork sessions use full system_prompt (no --agent)
     };
 
     (fork_name, headless_config)
