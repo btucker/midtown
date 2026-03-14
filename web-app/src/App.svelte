@@ -116,7 +116,8 @@ async function togglePush() {
 
 // Navigate to a deep-link URL by parsing channel/thread/msg params and updating stores.
 // Shared between initial URL-based deep-linking and push notification navigation.
-function navigateToDeepLink(urlStr: string) {
+// Handles cross-project deep links by switching projects when the URL path differs.
+async function navigateToDeepLink(urlStr: string) {
 	const url = new URL(urlStr, window.location.origin);
 	const params = url.searchParams;
 	const channel = params.get("channel");
@@ -124,6 +125,17 @@ function navigateToDeepLink(urlStr: string) {
 	const msg = params.get("msg");
 
 	if (!channel) return;
+
+	// Check if the deep link targets a different project
+	const pathProject = url.pathname.split("/").filter(Boolean)[0];
+	const decodedProject = pathProject ? decodeURIComponent(pathProject) : null;
+	if (decodedProject && decodedProject !== $activeProject) {
+		const projectList = await fetchProjects();
+		const target = projectList.find((p) => p.name === decodedProject && p.status === "running" && p.webhook_port);
+		if (target) {
+			switchProject(target.name, target.webhook_port);
+		}
+	}
 
 	activeChannel.set(channel);
 	channels.update((list) => list.map((ch) => (ch.name === channel ? { ...ch, unread: 0 } : ch)));
@@ -169,6 +181,10 @@ onMount(async () => {
 		// Deep-link from URL query params (initial page load / openWindow from SW)
 		if (window.location.search) {
 			navigateToDeepLink(window.location.href);
+		} else {
+			// Ensure the initial history entry has state so back/forward navigation
+			// works correctly (popstate handler skips entries with null state).
+			replaceNavState({ channel: targetProject.name });
 		}
 	}
 	// Set up browser back/forward navigation
