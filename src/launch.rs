@@ -329,7 +329,7 @@ impl LaunchConfig {
                 name: &self.name,
                 project_name,
                 channel_lead: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
-                escalation_target: self.escalation_target.as_deref(),
+                escalation_target: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
                 platform: Some(self.auth_provider),
                 pr_number: self.pr_number,
                 ..crate::agents::RuntimeContext::default()

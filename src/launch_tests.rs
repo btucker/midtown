@@ -56,13 +56,23 @@ fn test_lead_system_prompt_saved_on_spawn() {
         prompt_file.display()
     );
 
-    // Verify the file contains the system prompt
+    // Verify the file contains the full system prompt (all layers) for attach resumption
     let saved_prompt = fs::read_to_string(&prompt_file).unwrap();
-    assert_eq!(saved_prompt, headless.system_prompt);
-    // Lead system prompt should contain lead-specific content
     assert!(
         saved_prompt.contains("# Project Lead"),
-        "Expected Project Lead system prompt content"
+        "Saved prompt should contain Layer 1 lead-specific content"
+    );
+
+    // The headless config's system_prompt is the append prompt (Layers 2+3 only),
+    // while the saved file has the full prompt (all layers) for attach resumption.
+    // These should differ — the saved prompt includes Layer 1 content.
+    assert_ne!(
+        saved_prompt, headless.system_prompt,
+        "Saved full prompt should differ from append-only system_prompt"
+    );
+    assert!(
+        !headless.system_prompt.contains("# Project Lead"),
+        "Append prompt (Layers 2+3) should not contain Layer 1 content"
     );
 }
 
