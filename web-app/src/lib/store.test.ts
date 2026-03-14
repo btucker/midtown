@@ -21,11 +21,15 @@ const origAddEventListener = globalThis.window.addEventListener;
 (globalThis.window as any).addEventListener = (event: string, handler: EventListenerOrEventListenerObject) => {
 	if (event === "beforeunload") beforeUnloadHandlers.push(handler as (event: BeforeUnloadEvent) => void);
 	if (origAddEventListener)
-		(origAddEventListener as (...args: never) => unknown).call(globalThis.window, event, handler);
+		(origAddEventListener as (...args: [string, EventListenerOrEventListenerObject]) => void).call(
+			globalThis.window,
+			event,
+			handler,
+		);
 };
 
 // Import after mocks are in place
-const { debouncedSaveToLocalStorage, flushDebouncedSaves } = await import("./store.js");
+const { debouncedSaveToLocalStorage, flushDebouncedSaves } = await import("./store.ts");
 
 describe("debouncedSaveToLocalStorage", () => {
 	beforeEach(() => {

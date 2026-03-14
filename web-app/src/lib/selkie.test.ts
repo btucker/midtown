@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 async function loadFreshModule() {
 	// Reset module registry so each test gets fresh selkie/initPromise state
 	vi.resetModules();
-	return import("./selkie.js");
+	return import("./selkie.ts");
 }
 
 describe("getSelkie", () => {
