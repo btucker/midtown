@@ -113,14 +113,9 @@ Each coworker runs as:
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
 
-### Direct CLI Boot (Headed Sessions)
+### Headed Sessions (via `midtown start`)
 
-In addition to daemon-managed headless sessions, users can launch **headed (interactive terminal) sessions** directly from the CLI:
-
-- `midtown agent [--channel <name>]` — boots a headed lead session via `exec()`, replacing the CLI process with the provider's interactive TUI. Uses `LaunchConfig::lead()` to resolve model/provider/auth, writes prompt files as needed, then calls `to_shell_command()` to build the full provider-aware `sh -lc` invocation.
-- `midtown agent [--task <id>]` — boots a headed coworker session in a task worktree. If no `--task` is specified, presents a TUI picker for unresolved tasks. Creates/reuses worktrees via `WorktreeManager::create_task_worktree()`.
-
-Both use `SessionMode::Resume`, but the concrete CLI shape is provider-specific (`claude --continue` for Claude/z.ai, `codex resume` for Codex). The `exec()` pattern means the Midtown process is fully replaced, so no parent process lingers.
+Headed (interactive terminal) sessions are launched via `midtown start`, not `midtown agent`. The `midtown agent` namespace is exclusively for headless daemon-managed sessions. See `midtown start --help` for details.
 
 **Attach/view profile fidelity:** `session.attach` now returns the persisted auth profile from the `SessionRecord`, and all headed attach/view/chat entry points reuse that profile when rebuilding the interactive shell command. This keeps attach flows on the same credentials and `CODEX_HOME`/`CLAUDE_CONFIG_DIR` that the headless session was launched with instead of whatever profile happens to be active locally. Codex prelaunch skill sync also targets that explicit profile directory.
 

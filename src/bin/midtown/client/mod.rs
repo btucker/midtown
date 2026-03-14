@@ -623,8 +623,7 @@ impl DaemonClient {
         self.send("session.detach", Some(serde_json::json!({ "name": name })))
     }
 
-    /// List all attachable headless sessions.
-    #[allow(dead_code)]
+    /// List all agents and attachable sessions.
     pub fn session_list(&self) -> Result<Response, String> {
         self.send("session.list", None)
     }

@@ -119,7 +119,7 @@ pub enum AgentCommand {
         #[arg(long, default_value = "screenshot")]
         alt: String,
     },
-    /// List agents / attachable sessions
+    /// List all agents and attachable sessions
     #[command(alias = "ls")]
     List,
     /// Register this session for task sharing with coworkers
@@ -179,7 +179,7 @@ pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, Str
             // Handled before daemon connection in main.rs
             unreachable!("UploadImage is handled locally without daemon connection")
         }
-        AgentCommand::List => client.coworker_list(),
+        AgentCommand::List => client.session_list(),
         AgentCommand::RegisterSession => super::handle_register_session(),
     }
 }

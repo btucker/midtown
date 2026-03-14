@@ -98,10 +98,8 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown channel unarchive <name>` | Restore an archived channel |
 | `midtown channel rename <old> <new>` | Rename a channel |
 | `midtown channel archive <name>` | Archive a channel |
-| `midtown agent [--channel <name>]` | Boot a headed (interactive) lead session |
-| `midtown agent [--task <id>]` | Boot a headed coworker session (picks task interactively if no `--task`) |
 | `midtown agent spawn [--agent <name>] [--channel <name>] [--thread <id>] [--task <id>]` | Call in a new headless coworker via the daemon |
-| `midtown agent list` | List all coworkers |
+| `midtown agent list` | List all agents and attachable sessions |
 | `midtown agent upload-image <path>` | Upload a local image to GitHub and return embeddable `![alt](url)` markdown |
 | `midtown agent show <target>` | View a session's recent output with rich ANSI rendering |
 | `midtown agent show <target> --watch` | Tail a headless session's output as new events arrive |
