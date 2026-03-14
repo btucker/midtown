@@ -119,7 +119,9 @@ pub(super) async fn handle_coworker_spawn(
             );
         }
 
-        // Resolve worktree: check registry for existing, generate slug if not
+        // Resolve worktree: check registry for existing, generate slug if not.
+        // If an existing worktree is already bound to an active coworker, reject
+        // the spawn to prevent two sessions operating in the same checkout.
         let (worktree_id, needs_registration) = {
             let ps = state.persistent_state.lock().await;
             if let Some(existing) = ps
@@ -128,6 +130,25 @@ pub(super) async fn handle_coworker_spawn(
                 .iter()
                 .find(|(_, a)| a.task_id.as_deref() == Some(&task_id))
             {
+                // Check if the worktree is bound to an active coworker
+                if existing
+                    .1
+                    .current_coworker
+                    .as_ref()
+                    .is_some_and(|cw| state.coworkers.get(cw).is_some())
+                {
+                    let bound = existing.1.current_coworker.as_ref().unwrap();
+                    return Response::error(
+                        id,
+                        RpcError::new(
+                            -32602,
+                            format!(
+                                "Task !{} is already assigned to active coworker {}",
+                                task_id, bound
+                            ),
+                        ),
+                    );
+                }
                 (existing.1.worktree_id.clone(), false)
             } else {
                 (

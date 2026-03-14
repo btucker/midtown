@@ -345,7 +345,21 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let agent = params.str_param("agent").map(|s| s.to_string());
             let channel = params.str_param("channel").map(|s| s.to_string());
             let thread = params.str_param("thread").map(|s| s.to_string());
-            let task = params.u64_param("task").map(|v| v as u32);
+            let task = match params.u64_param("task") {
+                Some(v) => match u32::try_from(v) {
+                    Ok(id) => Some(id),
+                    Err(_) => {
+                        return Response::error(
+                            request.id,
+                            RpcError::new(
+                                -32602,
+                                format!("Task ID {} exceeds valid range (max {})", v, u32::MAX),
+                            ),
+                        );
+                    }
+                },
+                None => None,
+            };
             let provider = match parse_optional_provider_param(params) {
                 Ok(Some(provider)) => provider,
                 Ok(None) => crate::config::get_execution_provider_for_role(
