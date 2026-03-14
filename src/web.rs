@@ -450,7 +450,6 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         )
         .route("/api/upload", post(api_upload))
         .route("/api/uploads/{filename}", get(api_get_upload))
-        .route("/api/screenshots/{filename}", get(api_get_screenshot))
         .route(
             "/api/channels/{channel}/agents-md",
             get(api_channel_agents_md).put(api_channel_agents_md_update),
@@ -2152,51 +2151,6 @@ async fn api_get_upload(
     };
 
     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], data))
-}
-
-/// Serve a screenshot file by filename.
-///
-/// Files are served from `~/.midtown/projects/<repo>/screenshots/<filename>`.
-/// Only image content types are served. Includes path traversal protection:
-/// the resolved file path must remain within the screenshots directory
-/// (validated via `canonicalize` containment, matching `project_asset`).
-async fn api_get_screenshot(
-    State(state): State<Arc<WebState>>,
-    Path(filename): Path<String>,
-) -> Result<impl IntoResponse, StatusCode> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let screenshots_dir = crate::paths::screenshots_dir_for_repo(&state.config.dir_key);
-    let file_path = screenshots_dir.join(&filename);
-
-    // Canonicalize containment check (defense-in-depth, matching project_asset)
-    let canonical_dir = match std::fs::canonicalize(&screenshots_dir) {
-        Ok(p) => p,
-        Err(_) => return Err(StatusCode::NOT_FOUND),
-    };
-
-    if !file_path.exists() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let canonical_file = std::fs::canonicalize(&file_path).map_err(|_| StatusCode::NOT_FOUND)?;
-
-    if !canonical_file.starts_with(&canonical_dir) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let content = tokio::fs::read(&canonical_file)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-
-    let content_type = crate::webserver::mime_type_for_path(&canonical_file);
-    if !content_type.starts_with("image/") {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    Ok(([(axum::http::header::CONTENT_TYPE, content_type)], content))
 }
 
 /// Query parameters for the workflow endpoint.

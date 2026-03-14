@@ -633,28 +633,13 @@ fn main() {
         eprintln!("Warning: --task is ignored when a subcommand is provided");
     }
 
-    // Coworker screenshot — runs locally (Playwright + HTTP upload, no daemon RPC needed)
+    // Coworker upload-image — runs locally (HTTP upload to GitHub, no daemon RPC needed)
     if let Commands::Coworker {
-        command:
-            Some(CoworkerCommand::Screenshot {
-                url,
-                output,
-                before,
-                after,
-                github,
-                wait_for_selector,
-            }),
+        command: Some(CoworkerCommand::UploadImage { path, alt }),
         ..
     } = &command
     {
-        let result = cli::handle_coworker_screenshot(
-            url,
-            output.as_deref(),
-            *before,
-            *after,
-            *github,
-            wait_for_selector.as_deref(),
-        );
+        let result = cli::handle_coworker_upload_image(path, alt);
         handle_result(format, result);
         return;
     }
@@ -1039,12 +1024,12 @@ fn main() {
 
     let result = match &command {
         Commands::Channel { command } => cli::handle_channel(command, &client),
-        // Screenshot is handled before daemon connection (listed here rather than
+        // UploadImage is handled before daemon connection (listed here rather than
         // in the catch-all below because Coworker { Some(cmd) } would match first)
         Commands::Coworker {
-            command: Some(cli::CoworkerCommand::Screenshot { .. }),
+            command: Some(cli::CoworkerCommand::UploadImage { .. }),
             ..
-        } => unreachable!("Screenshot is handled before daemon connection"),
+        } => unreachable!("UploadImage is handled before daemon connection"),
         Commands::Coworker {
             command: Some(cmd), ..
         } => cli::handle_coworker(cmd, &client),
