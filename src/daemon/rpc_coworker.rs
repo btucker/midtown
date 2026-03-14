@@ -290,6 +290,24 @@ pub(super) async fn handle_coworker_spawn(
                     },
                 ];
                 effects::execute_effects(assignment_effects, state).await;
+
+                // Update the task file on disk with owner and in_progress status,
+                // matching what SpawnCoworker does in effects.rs for normal dispatch.
+                if let Err(e) = crate::tasks::update_task_owner(task_id, &config.name) {
+                    warn!(
+                        "Failed to set task !{} owner to {} after call-in: {}",
+                        task_id, config.name, e
+                    );
+                }
+                if let Err(e) =
+                    crate::tasks::set_task_in_progress_for_repo(task_id, state.paths.dir_key())
+                {
+                    warn!(
+                        "Failed to set task !{} to in_progress after call-in: {}",
+                        task_id, e
+                    );
+                }
+
                 info!(
                     "Assigned task !{} to coworker {} via call-in --task",
                     task_id, config.name
