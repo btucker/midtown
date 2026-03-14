@@ -83,7 +83,7 @@ pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(90);
 
 /// How long an attached session can persist without a detach before being auto-detached (10 min).
 ///
-/// If the interactive session ends without a proper `midtown session detach` (terminal crash,
+/// If the interactive session ends without a proper `midtown agent detach` (terminal crash,
 /// SSH disconnect, wrapper bug), the entry stays in `attached_coworkers` forever and the
 /// lead can never respawn. Auto-detach clears stale entries so `ensure_lead_alive()` can
 /// respawn the lead on the next tick.

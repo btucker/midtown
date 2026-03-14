@@ -160,7 +160,7 @@ pub struct SnapshotCoworkerState {
     /// Entries are added (with current time) on attach, removed on detach.
     /// Must be excluded from stuck detection and orphan recovery.
     /// The timestamp enables auto-detach of stale entries when the interactive
-    /// session ends without a proper `midtown session detach`.
+    /// session ends without a proper `midtown agent detach`.
     pub attached_coworkers: HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 

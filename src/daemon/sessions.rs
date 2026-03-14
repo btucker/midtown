@@ -252,7 +252,7 @@ pub struct CoworkerSession {
     /// prompt after daemon restarts.
     pub initial_prompt: Option<String>,
     /// File handle for writing stream events to JSONL log.
-    /// Used for debugging and `midtown coworker view`.
+    /// Used for debugging and `midtown agent show`.
     output_log: Option<std::fs::File>,
     /// Path to the output log file.
     output_log_path: PathBuf,
@@ -1573,7 +1573,7 @@ impl SessionManager {
     ///
     /// Returns None if the session doesn't exist or the log file can't be read.
     ///
-    /// This enables `midtown coworker view` to work with headless coworkers.
+    /// This enables `midtown agent show` to work with headless coworkers.
     pub async fn get_output(&self, name: &str) -> Option<String> {
         self.get_output_with_path(name)
             .await

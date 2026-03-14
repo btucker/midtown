@@ -1,7 +1,7 @@
 //! Test that breaking a reviewer clears their PR assignment.
 //!
 //! Regression test for: When a reviewer coworker is manually broken
-//! (`midtown coworker break`), the daemon didn't clear the review assignment
+//! (`midtown agent stop`), the daemon didn't clear the review assignment
 //! from GitHubState. It then detected the PR still needs review, sees no
 //! active reviewer, and respawned one — creating a loop.
 

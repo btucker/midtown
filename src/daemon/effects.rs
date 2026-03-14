@@ -619,7 +619,7 @@ pub enum Effect {
     ClearProfileLimit { profile_email: String },
 
     /// Remove a coworker from the attached set when their interactive session
-    /// appears to have ended without a proper `midtown session detach`.
+    /// appears to have ended without a proper `midtown agent detach`.
     ///
     /// The entry is cleared so `ensure_lead_alive()` sees the lead as detached
     /// and respawns the headless session on the next tick. The coworker stop

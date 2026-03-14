@@ -683,7 +683,7 @@ pub(crate) fn legacy_coworkers_dir_for_repo(repo: &str) -> PathBuf {
 /// Returns `~/.midtown/projects/<repo>/sessions/headless-<name>.jsonl`.
 ///
 /// This file stores all StreamEvents from a headless coworker session,
-/// enabling `midtown coworker view` to read recent output and providing
+/// enabling `midtown agent show` to read recent output and providing
 /// persistent debug logs.
 pub fn headless_output_file(repo: &str, coworker_name: &str) -> PathBuf {
     auto_migrate(repo);

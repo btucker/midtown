@@ -274,7 +274,7 @@ async fn resolve_attach_target(
         0 => Err(format!("No sessions for target '{}'", target)),
         1 => Ok(names.remove(0)),
         _ => Err(format!(
-            "Multiple sessions match '{}': {}. Choose one via `midtown session {} name/<coworker>`.",
+            "Multiple sessions match '{}': {}. Choose one via `midtown agent {} name/<coworker>`.",
             target,
             names.join(", "),
             verb,
@@ -925,7 +925,7 @@ pub(super) async fn handle_session_clear(
                     -32602,
                     format!(
                         "Coworker '{}' is currently attached interactively. \
-                         Detach first with `midtown session detach {}`.",
+                         Detach first with `midtown agent detach {}`.",
                         name, name
                     ),
                 ),
@@ -1241,7 +1241,7 @@ pub(super) fn build_fork_config(
 /// Create a fork session bound to a thread, or return an existing one.
 ///
 /// This is the shared implementation used by `handle_session_fork` (explicit fork via
-/// `midtown session fork`), `handle_session_fork_thread` (web-UI-triggered fork), and
+/// `midtown agent fork`), `handle_session_fork_thread` (web-UI-triggered fork), and
 /// potentially other fork paths.
 ///
 /// Uses a two-phase check-and-reserve on `topic_sessions` to prevent duplicate forks:
