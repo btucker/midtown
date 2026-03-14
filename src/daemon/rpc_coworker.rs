@@ -32,6 +32,7 @@ pub(super) async fn handle_coworker_spawn(
     agent: Option<String>,
     channel: Option<String>,
     thread: Option<String>,
+    task: Option<u32>,
 ) -> Response {
     // Check dev coworkers limit (reserve slots for reviewers)
     let channel_lead_names = {
@@ -96,14 +97,106 @@ pub(super) async fn handle_coworker_spawn(
         None
     };
 
-    // Build initial prompt: prepend agent system prompt if present
-    let effective_prompt = match (&agent_def, &prompt) {
+    // ── Task validation and setup ──────────────────────────────────────
+    // If --task was provided, validate the task and prepare worktree + prompt.
+    let task_info = if let Some(task_num) = task {
+        let task_id = task_num.to_string();
+        let task_data = match crate::tasks::read_task_for_repo(&task_id, state.paths.dir_key()) {
+            Some(t) => t,
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(-32602, format!("Task !{} not found", task_id)),
+                );
+            }
+        };
+
+        // Validate task is actionable (pending or in_progress)
+        if task_data.status == crate::tasks::TaskStatus::Completed {
+            return Response::error(
+                id,
+                RpcError::new(-32602, format!("Task !{} is already completed", task_id)),
+            );
+        }
+
+        // Resolve worktree: check registry for existing, generate slug if not
+        let (worktree_id, needs_registration) = {
+            let ps = state.persistent_state.lock().await;
+            if let Some(existing) = ps
+                .worktree_registry
+                .all_assignments()
+                .iter()
+                .find(|(_, a)| a.task_id.as_deref() == Some(&task_id))
+            {
+                (existing.1.worktree_id.clone(), false)
+            } else {
+                (
+                    crate::worktree_registry::branch_slug_for_task(&task_id, &task_data.subject),
+                    true,
+                )
+            }
+        };
+
+        let worktree_path =
+            crate::paths::worktrees_dir_for_repo(state.paths.dir_key()).join(&worktree_id);
+
+        // Execute pre-spawn worktree effects
+        let mut pre_spawn_effects = vec![effects::Effect::EnsureWorktree {
+            worktree_id: worktree_id.clone(),
+            path: worktree_path.clone(),
+        }];
+        if needs_registration {
+            pre_spawn_effects.push(effects::Effect::RegisterWorktreeAssignment {
+                assignment: crate::worktree_registry::WorktreeAssignment {
+                    worktree_id: worktree_id.clone(),
+                    branch_name: worktree_id.clone(),
+                    task_id: Some(task_id.clone()),
+                    current_coworker: None,
+                    pr_number: None,
+                    created_at: chrono::Utc::now(),
+                    completed_at: None,
+                },
+            });
+        }
+        effects::execute_effects(pre_spawn_effects, state).await;
+
+        // Resolve the task's channel if not explicitly provided
+        let task_channel = task_data.channel.clone();
+
+        // Build task initial prompt
+        let task_prompt = crate::agents::coworker_task_prompt(&task_id, &task_data.subject, "");
+
+        Some((
+            task_id,
+            task_data.subject,
+            worktree_id,
+            worktree_path,
+            task_channel,
+            task_prompt,
+        ))
+    } else {
+        None
+    };
+
+    // Build initial prompt: prepend agent system prompt if present,
+    // and append task prompt if --task was provided.
+    let base_prompt = match (&agent_def, &prompt) {
         (Some(def), Some(p)) => Some(format!(
             "## Agent Instructions\n\n{}\n\n---\n\n{}",
             def.system_prompt, p
         )),
         (Some(def), None) => Some(format!("## Agent Instructions\n\n{}", def.system_prompt)),
         (None, p) => p.clone(),
+    };
+
+    let effective_prompt = if let Some((_, _, _, _, _, ref task_prompt)) = task_info {
+        // Task prompt takes priority; if user also provided --prompt, prepend it
+        match base_prompt {
+            Some(bp) => Some(format!("{}\n\n{}", bp, task_prompt)),
+            None => Some(task_prompt.clone()),
+        }
+    } else {
+        base_prompt
     };
 
     // Resolve auth_provider: if the agent definition specifies a model,
@@ -117,6 +210,13 @@ pub(super) async fn handle_coworker_spawn(
         .and_then(super::helpers::provider_for_model_alias)
         .unwrap_or(provider);
 
+    // Resolve channel: explicit --channel > task channel > None
+    let effective_channel = channel.clone().or_else(|| {
+        task_info
+            .as_ref()
+            .and_then(|(_, _, _, _, tc, _)| tc.clone())
+    });
+
     // Build headless launch config
     let config = crate::launch::LaunchConfig {
         name,
@@ -129,7 +229,7 @@ pub(super) async fn handle_coworker_spawn(
         initial_prompt: effective_prompt,
         additional_dirs: vec![],
         pr_number: None,
-        working_dir: None,
+        working_dir: task_info.as_ref().map(|(_, _, _, path, _, _)| path.clone()),
         model: agent_def
             .as_ref()
             .and_then(|d| d.model.clone())
@@ -140,11 +240,11 @@ pub(super) async fn handle_coworker_spawn(
                     &crate::launch::CoworkerRole::Coworker,
                 )
             }),
-        channel: channel.clone(),
+        channel: effective_channel,
         auth_profile_dir: None,
         auth_provider: effective_provider,
         escalation_target: None,
-        task_id: None,
+        task_id: task_info.as_ref().map(|(tid, _, _, _, _, _)| tid.clone()),
         persisted_initial_prompt: None,
         cwd_subdir: None,
     };
@@ -155,12 +255,36 @@ pub(super) async fn handle_coworker_spawn(
             info!("Spawned coworker: {}", config.name);
             state.broadcast_coworker_update(&config.name, "running", None);
 
+            // If --task was provided, execute post-spawn assignment effects
+            // (same as dispatch's spawn_success_effects)
+            if let Some((ref task_id, _, ref worktree_id, _, _, _)) = task_info {
+                let assignment_effects = vec![
+                    effects::Effect::RecordTaskAssignment {
+                        coworker: config.name.clone(),
+                        task_id: task_id.clone(),
+                    },
+                    effects::Effect::BindCoworkerToWorktree {
+                        worktree_id: worktree_id.clone(),
+                        coworker: config.name.clone(),
+                    },
+                ];
+                effects::execute_effects(assignment_effects, state).await;
+                info!(
+                    "Assigned task !{} to coworker {} via call-in --task",
+                    task_id, config.name
+                );
+            }
+
             // Register thread binding so the coworker's channel posts
             // are automatically routed to the specified thread.
             // Note: DM channels skip fork_bound_threads (see rpc_channel.rs and effects.rs),
             // so thread binding is silently ignored for dm-* channels.
             if let Some(ref tid) = thread {
-                if channel.as_deref().is_some_and(|c| c.starts_with("dm-")) {
+                if config
+                    .channel
+                    .as_deref()
+                    .is_some_and(|c| c.starts_with("dm-"))
+                {
                     warn!(
                         "Thread binding for {} ignored: DM channels do not use fork_bound_threads",
                         config.name
@@ -191,6 +315,10 @@ pub(super) async fn handle_coworker_spawn(
                 }
             }
 
+            let task_display = task_info
+                .as_ref()
+                .map(|(tid, subj, _, _, _, _)| format!("!{} {}", tid, subj));
+
             Response::success(
                 id,
                 serde_json::json!({
@@ -199,7 +327,7 @@ pub(super) async fn handle_coworker_spawn(
                     "coworkers": [{
                         "name": config.name,
                         "status": "running",
-                        "current_task": null,
+                        "current_task": task_display,
                         "started_at": chrono::Utc::now().to_rfc3339(),
                     }]
                 }),

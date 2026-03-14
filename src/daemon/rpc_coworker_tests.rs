@@ -1561,6 +1561,97 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
     }
 }
 
+// ============================================================================
+// handle_coworker_spawn — --task flag validation
+// ============================================================================
+
+/// Tests that handle_coworker_spawn rejects a non-existent task with an error.
+///
+/// We can call handle_coworker_spawn with a non-existent task ID — it should
+/// return an error before attempting to spawn.
+#[tokio::test]
+async fn test_spawn_with_nonexistent_task_returns_error() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let response = handle_coworker_spawn(
+        RequestId::Number(1),
+        &state,
+        false,
+        None,
+        crate::auth::AuthProvider::Claude,
+        None,
+        None,
+        None,
+        Some(99999), // non-existent task
+    )
+    .await;
+
+    assert!(response.is_error(), "should error for non-existent task");
+    let error_msg = response
+        .error
+        .as_ref()
+        .map(|e| e.message.as_str())
+        .unwrap_or("");
+    assert!(
+        error_msg.contains("not found"),
+        "error should mention task not found, got: {}",
+        error_msg
+    );
+}
+
+/// Tests that handle_coworker_spawn rejects a completed task.
+#[tokio::test]
+async fn test_spawn_with_completed_task_returns_error() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a completed task on disk
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9990";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Already done",
+            "status": "completed",
+            "owner": "park"
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    let response = handle_coworker_spawn(
+        RequestId::Number(1),
+        &state,
+        false,
+        None,
+        crate::auth::AuthProvider::Claude,
+        None,
+        None,
+        None,
+        Some(9990),
+    )
+    .await;
+
+    assert!(response.is_error(), "should error for completed task");
+    let error_msg = response
+        .error
+        .as_ref()
+        .map(|e| e.message.as_str())
+        .unwrap_or("");
+    assert!(
+        error_msg.contains("already completed"),
+        "error should mention task is completed, got: {}",
+        error_msg
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&task_file);
+}
+
 /// Tests that when no SessionRecord matches the coworker name, the thread
 /// binding still populates fork_bound_threads (for immediate routing) even
 /// though the persistence path silently fails to find a record.

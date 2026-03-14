@@ -386,6 +386,7 @@ impl DaemonClient {
 
     // Coworker commands
 
+    #[allow(clippy::too_many_arguments)]
     pub fn coworker_spawn(
         &self,
         resume: bool,
@@ -394,6 +395,7 @@ impl DaemonClient {
         agent: Option<&str>,
         channel: Option<&str>,
         thread: Option<&str>,
+        task: Option<u32>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "resume": resume });
         if let Some(p) = prompt {
@@ -408,6 +410,9 @@ impl DaemonClient {
         }
         if let Some(t) = thread {
             params["thread"] = serde_json::json!(t);
+        }
+        if let Some(task_id) = task {
+            params["task"] = serde_json::json!(task_id);
         }
         self.send("coworker.spawn", Some(params))
     }

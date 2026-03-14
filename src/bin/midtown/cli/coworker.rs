@@ -43,6 +43,9 @@ pub enum CoworkerCommand {
         /// Route coworker messages to a specific thread
         #[arg(long)]
         thread: Option<String>,
+        /// Assign the coworker to a task immediately (skips daemon dispatch)
+        #[arg(long)]
+        task: Option<u32>,
     },
     /// Send a coworker on a break
     Break {
@@ -83,6 +86,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
             agent,
             channel,
             thread,
+            task,
         } => {
             let resolved_provider = provider.map(Into::into).unwrap_or_else(|| {
                 let project_name = midtown::paths::detect_repo_name().unwrap_or_default();
@@ -98,6 +102,7 @@ pub fn handle(cmd: &CoworkerCommand, client: &DaemonClient) -> Result<Response, 
                 agent.as_deref(),
                 channel.as_deref(),
                 thread.as_deref(),
+                *task,
             )
         }
         CoworkerCommand::Break { name } => client.coworker_break(name),

@@ -377,7 +377,7 @@ fn create_attach_target(client: &DaemonClient, target: &str) -> Result<String, S
         provider.as_str()
     );
 
-    let spawn_response = client.coworker_spawn(false, None, provider, None, None, None)?;
+    let spawn_response = client.coworker_spawn(false, None, provider, None, None, None, None)?;
     let spawned_name = extract_spawned_name(&spawn_response)?;
 
     // Wait for the new headless session to persist a resumable session ID.
