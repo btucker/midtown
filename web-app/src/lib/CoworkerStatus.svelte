@@ -88,7 +88,7 @@ function getPrUrl(prNumber) {
 }
 
 function openTaskDetail(taskId) {
-	const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog];
+	const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog, ...($kanbanData.completedTasks || [])];
 	const task = allTasks.find((t) => String(t.id) === String(taskId));
 	if (task) {
 		openTaskThread(task, task.channel || "midtown");
