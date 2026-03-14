@@ -2,17 +2,22 @@
 //!
 //! Prompts are assembled from three distinct layers:
 //!
-//! 1. **Agent definition (Layer 1)** — Role identity loaded from agent definition files
-//!    (`~/.claude/agents/midtown-*.md`) with compiled-in fallback. Static, no template vars.
+//! 1. **Agent definition (Layer 1)** — Role identity and behavioral instructions.
+//!    Currently loaded from `agents/*.md` (e.g., `coworker.md`, `project-lead.md`)
+//!    with compiled-in fallback. A parallel set of new-format agent definitions
+//!    (`agents/definitions/midtown-*.md`) exists and is accessible via
+//!    `load_agent_definition_for_role()`, but the public assembly functions still
+//!    use the old-format files during this transition.
 //!
 //! 2. **Shared prompt (Layer 2)** — Operational rules shared across roles. `common.md` for
 //!    all agents, plus `lead-common.md` for leads. Loaded from `agents/` dir or compiled-in.
 //!
 //! 3. **Runtime context (Layer 3)** — Template variable replacement (`{name}`, `{project_name}`,
-//!    etc.) and runtime-only content injection (AGENTS.md, ops extras).
+//!    `{channel_lead}`, `{escalation_target}`, `{channel_name}`, `{domain_context}`,
+//!    `{code_review_invocation}`) and runtime-only content injection (ops extras, AGENTS.md).
 //!
-//! The existing public functions (`coworker_system_prompt`, `main_lead_system_prompt`, etc.)
-//! assemble all three layers.
+//! The public functions (`coworker_system_prompt`, `main_lead_system_prompt`, etc.)
+//! use `shared_prompt_for_role()` for Layer 2 and `build_runtime_context()` for Layer 3.
 
 use std::path::PathBuf;
 
@@ -100,8 +105,10 @@ pub struct RuntimeContext<'a> {
 
 /// Layer 1: Load the agent definition for a role.
 ///
-/// Tries to load from `~/.claude/agents/midtown-*.md` (via `agent_definition` module),
-/// falls back to compiled-in agent definition content.
+/// Search order (via the `agent_definition` module):
+/// 1. `.claude/agents/midtown-*.md` (project-level, CWD-relative)
+/// 2. `~/.claude/agents/midtown-*.md` (user-level)
+/// 3. Compiled-in fallback from `agents/definitions/midtown-*.md`
 ///
 /// Returns the system prompt body (stripped of YAML frontmatter).
 pub fn load_agent_definition_for_role(role: AgentRole) -> String {
@@ -117,26 +124,11 @@ pub fn load_agent_definition_for_role(role: AgentRole) -> String {
         return def.system_prompt;
     }
 
-    // Fall back to compiled-in content, stripping YAML frontmatter
-    strip_frontmatter(fallback)
-}
-
-/// Strip YAML frontmatter from a markdown string.
-///
-/// If the content starts with `---`, strips everything up to and including
-/// the closing `---` line. Returns the body after the frontmatter.
-fn strip_frontmatter(content: &str) -> String {
-    let trimmed = content.trim_start();
-    if !trimmed.starts_with("---") {
-        return content.to_string();
-    }
-
-    let after_first = trimmed[3..].trim_start_matches(['\r', '\n']);
-    if let Some(closing_pos) = after_first.find("\n---") {
-        let body = &after_first[closing_pos + 4..];
-        body.trim_start_matches(['\r', '\n']).to_string()
-    } else {
-        content.to_string()
+    // Fall back to compiled-in content, using agent_definition parser to strip frontmatter
+    let dummy_path = std::path::Path::new("compiled-in");
+    match crate::agent_definition::parse_agent_content(fallback, dummy_path) {
+        Ok(def) => def.system_prompt,
+        Err(_) => fallback.to_string(),
     }
 }
 
@@ -158,9 +150,11 @@ pub fn shared_prompt_for_role(role: AgentRole) -> String {
 
 /// Layer 3: Apply runtime context to an assembled prompt.
 ///
-/// Performs template variable replacement on the base prompt, then appends
-/// runtime-only content (ops extras, AGENTS.md) that should NOT have template
-/// vars replaced (to preserve literal `{name}` in injected content).
+/// 1. Appends ops-specific instructions (if `channel_name == "ops"`)
+/// 2. Performs template variable replacement (`{name}`, `{project_name}`, etc.)
+///    on the combined prompt — including ops extras, so `{name}` IS replaced there
+/// 3. Appends AGENTS.md content AFTER substitution — so literal `{name}`
+///    in AGENTS.md is preserved verbatim
 pub fn build_runtime_context(base_prompt: &str, ctx: &RuntimeContext) -> String {
     let channel_lead = ctx.channel_lead.unwrap_or(ctx.project_name);
 
@@ -348,15 +342,16 @@ pub fn reviewer_system_prompt(
     platform: crate::auth::AuthProvider,
     pr_number: Option<u64>,
 ) -> String {
-    // Layer 1: Old-style coworker.md + reviewer.md (transition)
+    // Layer 1: Old-style coworker.md (transition — will move to agent definition)
     let coworker_template =
         load_prompt_file("coworker.md").unwrap_or_else(|| DEFAULT_COWORKER_PROMPT.to_string());
+    // Layer 2: Shared prompt (common.md — operational rules)
+    let layer2 = shared_prompt_for_role(AgentRole::Reviewer);
+    // Reviewer-specific instructions come AFTER common operational rules
+    // (preserves original ordering: coworker.md → common.md → reviewer.md)
     let reviewer =
         load_prompt_file("reviewer.md").unwrap_or_else(|| DEFAULT_REVIEWER_PROMPT.to_string());
-    let layer1 = format!("{coworker_template}\n\n## Reviewer Instructions\n\n{reviewer}");
-    // Layer 2: Shared prompt
-    let layer2 = shared_prompt_for_role(AgentRole::Reviewer);
-    let prompt = format!("{layer1}\n{layer2}");
+    let prompt = format!("{coworker_template}\n{layer2}\n\n## Reviewer Instructions\n\n{reviewer}");
     // Layer 3: Runtime context
     build_runtime_context(
         &prompt,

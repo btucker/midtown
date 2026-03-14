@@ -298,10 +298,71 @@ fn test_layer3_appends_ops_extra_for_ops_channel() {
             ..RuntimeContext::default()
         },
     );
-    // ops-channel-lead.md content should be appended
+    // ops-channel-lead.md contains specific operational instructions
     assert!(
-        result.contains("ops") || result.len() > input.len(),
-        "Ops channel should get extra content"
+        result.contains("PR lifecycle"),
+        "Ops channel should get ops-channel-lead.md content with 'PR lifecycle' section"
+    );
+}
+
+#[test]
+fn test_layer3_ops_extras_have_template_vars_replaced() {
+    let input = "Base prompt with {name}";
+    let result = build_runtime_context(
+        input,
+        &RuntimeContext {
+            name: "ops",
+            project_name: "midtown",
+            channel_name: Some("ops"),
+            ..RuntimeContext::default()
+        },
+    );
+    // Template vars in ops extras should be replaced (unlike AGENTS.md)
+    assert!(
+        !result.contains("{name}"),
+        "Ops extras should have {{name}} replaced, but AGENTS.md should not"
+    );
+}
+
+#[test]
+fn test_layer3_no_ops_extra_for_non_ops_channel() {
+    let input = "Base prompt";
+    let result = build_runtime_context(
+        input,
+        &RuntimeContext {
+            name: "web",
+            project_name: "midtown",
+            channel_name: Some("web"),
+            ..RuntimeContext::default()
+        },
+    );
+    assert!(
+        !result.contains("PR lifecycle"),
+        "Non-ops channel should NOT get ops-channel-lead.md content"
+    );
+}
+
+// ── Section ordering tests ───────────────────────────────────────
+
+#[test]
+fn test_reviewer_prompt_common_md_before_reviewer_instructions() {
+    let prompt = reviewer_system_prompt(
+        "york",
+        "midtown",
+        "midtown",
+        crate::auth::AuthProvider::Claude,
+        Some(42),
+    );
+    let common_pos = prompt
+        .find("GitHub Etiquette")
+        .expect("common.md content should be present");
+    let reviewer_pos = prompt
+        .find("## Reviewer Instructions")
+        .expect("Reviewer Instructions section should be present");
+    assert!(
+        common_pos < reviewer_pos,
+        "common.md content must appear BEFORE '## Reviewer Instructions' \
+         (common at {common_pos}, reviewer at {reviewer_pos})"
     );
 }
 
