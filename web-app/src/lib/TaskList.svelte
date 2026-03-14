@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import { openTaskThread } from "./api.ts";
 import { coworkers, kanbanData } from "./store.ts";

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { onMount } from "svelte";
 import { closeThread } from "$lib/api.ts";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";

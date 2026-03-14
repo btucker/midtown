@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
 import { filterChannelPosts } from "./toolRunGrouping.ts";

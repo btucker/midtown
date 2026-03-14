@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { tick } from "svelte";
 import { fetchHistory, openThread } from "./api.ts";
 import { formatTime, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";

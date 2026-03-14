@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ToolBlockGeneric — fallback renderer for tool calls without a specific component.
  *

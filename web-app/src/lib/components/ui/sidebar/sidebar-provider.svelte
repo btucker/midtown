@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import * as Tooltip from "$lib/components/ui/tooltip/index.ts";
 import { cn } from "$lib/utils.ts";
 import { SIDEBAR_COOKIE_MAX_AGE, SIDEBAR_COOKIE_NAME, SIDEBAR_WIDTH_ICON } from "./constants.ts";

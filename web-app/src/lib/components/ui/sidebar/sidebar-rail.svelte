@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { cn } from "$lib/utils.ts";
 import { useSidebar } from "./context.svelte.ts";
 

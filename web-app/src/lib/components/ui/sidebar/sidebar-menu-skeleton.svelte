@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { Skeleton } from "$lib/components/ui/skeleton/index.ts";
 import { cn } from "$lib/utils.ts";
 

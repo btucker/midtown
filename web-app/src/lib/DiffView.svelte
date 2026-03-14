@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * DiffView — renders an edit_file diff with syntax highlighting.
  *

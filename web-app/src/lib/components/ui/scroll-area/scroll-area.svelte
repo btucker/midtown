@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { ScrollArea as ScrollAreaPrimitive } from "bits-ui";
 import { cn } from "$lib/utils.ts";
 import { Scrollbar } from "./index.ts";

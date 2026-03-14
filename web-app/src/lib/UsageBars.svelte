@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { usageData } from "./store.ts";
 import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 

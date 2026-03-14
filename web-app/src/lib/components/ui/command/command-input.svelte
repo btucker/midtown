@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import SearchIcon from "@lucide/svelte/icons/search";
 import { Command as CommandPrimitive } from "bits-ui";
 import { cn } from "$lib/utils.ts";

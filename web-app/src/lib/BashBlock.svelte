@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * BashBlock — renders a Bash tool call with command + collapsible output.
  *

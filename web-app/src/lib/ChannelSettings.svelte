@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { fetchChannelAgentsMd, fetchChannelDirectory, saveChannelAgentsMd, saveChannelDirectory } from "./api.ts";
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.ts";

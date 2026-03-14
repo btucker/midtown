@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ReadBlock — renders a Read tool call with syntax-highlighted file content.
  *

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { onMount } from "svelte";
 import { fetchAllAuthProfiles, switchAuthProfile } from "./api.ts";
 import { authProfilesByProvider, authSwitching, selectedAuthProvider } from "./store.ts";

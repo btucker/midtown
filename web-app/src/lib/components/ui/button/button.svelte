@@ -1,4 +1,4 @@
-<script module>
+<script module lang="ts">
 import { tv } from "tailwind-variants";
 import { cn } from "$lib/utils.ts";
 
@@ -31,7 +31,7 @@ export const buttonVariants = tv({
 });
 </script>
 
-<script>
+<script lang="ts">
 	let {
 		class: className,
 		variant = "default",

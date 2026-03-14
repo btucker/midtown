@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import GitFork from "@lucide/svelte/icons/git-fork";
 import { getApiBase, selectDm } from "./api.ts";
 import { renderContent } from "./markdown.ts";

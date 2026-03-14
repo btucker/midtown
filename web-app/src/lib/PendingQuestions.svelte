@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { selectDm, sendAnswer } from "./api.ts";
 import { pendingQuestions } from "./store.ts";
 

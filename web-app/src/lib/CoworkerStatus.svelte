@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { onDestroy, onMount, untrack } from "svelte";
 import { SvelteMap } from "svelte/reactivity";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
@@ -16,7 +16,7 @@ const OFFLINE_GRACE_MS = 10 * 60 * 1000;
 // rather than waiting up to 30s for the `now` tick.
 let lastSeenActive = new SvelteMap();
 let now = $state(Date.now());
-let interval;
+let interval: ReturnType<typeof setInterval> | undefined;
 
 onMount(() => {
 	interval = setInterval(() => {

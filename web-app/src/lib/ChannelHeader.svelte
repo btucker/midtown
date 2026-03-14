@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { onDestroy } from "svelte";
 import { fade } from "svelte/transition";
 import { activeChannel, channels, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";

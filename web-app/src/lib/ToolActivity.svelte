@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ToolActivity — shows the most recent tool call/result items for one agent.
  *

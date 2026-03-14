@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { repoStatus, repoStatuses } from "./store.ts";
 
 let isMultiRepo = $derived($repoStatuses.length > 1);

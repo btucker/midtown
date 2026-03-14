@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * TodoBlock — renders a TodoWrite tool call as a checkbox list.
  *

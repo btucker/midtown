@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { onDestroy } from "svelte";
 import { AVENUE_COLORS } from "./avenue-colors.ts";
 import { daemonStatus, kanbanData } from "./store.ts";

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import Bell from "@lucide/svelte/icons/bell";
 import BellOff from "@lucide/svelte/icons/bell-off";
 import ChevronDown from "@lucide/svelte/icons/chevron-down";

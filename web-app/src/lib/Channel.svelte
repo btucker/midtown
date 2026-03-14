@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import ReplyIcon from "@lucide/svelte/icons/reply";
 import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
 import { onMount, tick, untrack } from "svelte";

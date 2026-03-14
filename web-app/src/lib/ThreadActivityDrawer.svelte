@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ThreadActivityDrawer — slide-up drawer above the thread reply input showing tool call activity.
  *

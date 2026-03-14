@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import CircleCheck from "@lucide/svelte/icons/circle-check";
 import CircleX from "@lucide/svelte/icons/circle-x";
 import Feather from "@lucide/svelte/icons/feather";

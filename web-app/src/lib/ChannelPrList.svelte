@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { getChannelPrs } from "./channelUtils.ts";
 import { activeChannel, kanbanData, repoStatus, repoStatuses } from "./store.ts";
 import { formatRelativeTime } from "./utils.ts";

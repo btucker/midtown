@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { calculateFitToWidthScale, getBiggerPicture } from "./biggerPicture.ts";
 import { getSelkie } from "./selkie.ts";
 import { theme } from "./theme.ts";

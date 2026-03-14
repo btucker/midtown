@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { Separator } from "$lib/components/ui/separator/index.ts";
 import { cn } from "$lib/utils.ts";
 

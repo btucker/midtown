@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import ArchiveIcon from "@lucide/svelte/icons/archive";
 import Check from "@lucide/svelte/icons/check";
 import X from "@lucide/svelte/icons/x";

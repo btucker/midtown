@@ -1,4 +1,4 @@
-<script module>
+<script module lang="ts">
 // Module-level draft storage persists across mount/unmount cycles.
 // ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
 // state would be lost when the thread panel closes and reopens.
@@ -6,7 +6,7 @@ const threadDrafts = new Map();
 let prevThreadId = null;
 </script>
 
-<script>
+<script lang="ts">
   import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.ts'
   import { sendMessage, closeThread, forkThread, unforkThread, clearErrorCallback, openTaskThread, selectDm } from './api.ts'
   import { handleCodePaste } from './codePaste.ts'

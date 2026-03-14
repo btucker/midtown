@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * ToolDataBlocks — dispatches an array of ToolBlock objects to the right component.
  *

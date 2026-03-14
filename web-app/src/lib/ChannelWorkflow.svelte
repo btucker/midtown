@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { getApiBase } from "./api.ts";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import { activeChannel, activeProject } from "./store.ts";

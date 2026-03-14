@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import { renderContent } from "./markdown.ts";
 import { activeChannel, activeProject } from "./store.ts";
 

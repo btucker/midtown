@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 import AtSignIcon from "@lucide/svelte/icons/at-sign";
 import HashIcon from "@lucide/svelte/icons/hash";
 import {
