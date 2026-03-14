@@ -228,16 +228,16 @@ When your PR includes visual changes, use the **Playwright MCP tools** to captur
    - `browser_click`, `browser_type`, etc. to reach the specific state you want to capture
    - `browser_screenshot` to save to a local file
 
-2. **Upload for GitHub** — use `midtown coworker upload-image` to get a GitHub-embeddable URL:
+2. **Upload for GitHub** — use `midtown agent upload-image` to get a GitHub-embeddable URL:
    ```bash
-   SCREENSHOT=$(midtown coworker upload-image /path/to/screenshot.png --alt "description")
+   SCREENSHOT=$(midtown agent upload-image /path/to/screenshot.png --alt "description")
    ```
    This returns `![description](https://user-images.githubusercontent.com/...)` markdown.
 
 3. **Embed in PR description** — include the returned markdown in your PR body:
    ```bash
-   BEFORE=$(midtown coworker upload-image /tmp/before.png --alt before)
-   AFTER=$(midtown coworker upload-image /tmp/after.png --alt after)
+   BEFORE=$(midtown agent upload-image /tmp/before.png --alt before)
+   AFTER=$(midtown agent upload-image /tmp/after.png --alt after)
 
    gh pr create --title "feat: Add auth endpoint [Midtown !42]" --body "$(cat <<EOF
    <!-- midtown: {name} -->

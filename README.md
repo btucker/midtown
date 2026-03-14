@@ -98,17 +98,17 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown channel unarchive <name>` | Restore an archived channel |
 | `midtown channel rename <old> <new>` | Rename a channel |
 | `midtown channel archive <name>` | Archive a channel |
-| `midtown lead [--channel <name>]` | Boot a headed (interactive) lead session |
-| `midtown coworker [--task <id>]` | Boot a headed coworker session (picks task interactively if no `--task`) |
-| `midtown coworker call-in [--agent <name>] [--channel <name>] [--thread <id>] [--task <id>]` | Call in a new headless coworker via the daemon |
-| `midtown coworker list` | List all coworkers |
-| `midtown coworker upload-image <path>` | Upload a local image to GitHub and return embeddable `![alt](url)` markdown |
-| `midtown session view <target>` | View a session's recent output with rich ANSI rendering |
-| `midtown session view <target> --watch` | Tail a headless session's output as new events arrive |
-| `midtown session attach name/<n>` | Attach to a headless session |
-| `midtown session detach <name>` | Resume headless execution |
-| `midtown session clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
-| `midtown session fork --thread-id <id>` | Fork the calling session into a thread-bound session |
+| `midtown agent [--channel <name>]` | Boot a headed (interactive) lead session |
+| `midtown agent [--task <id>]` | Boot a headed coworker session (picks task interactively if no `--task`) |
+| `midtown agent spawn [--agent <name>] [--channel <name>] [--thread <id>] [--task <id>]` | Call in a new headless coworker via the daemon |
+| `midtown agent list` | List all coworkers |
+| `midtown agent upload-image <path>` | Upload a local image to GitHub and return embeddable `![alt](url)` markdown |
+| `midtown agent show <target>` | View a session's recent output with rich ANSI rendering |
+| `midtown agent show <target> --watch` | Tail a headless session's output as new events arrive |
+| `midtown agent attach name/<n>` | Attach to a headless session |
+| `midtown agent detach <name>` | Resume headless execution |
+| `midtown agent clear <lookup>` | Stop and restart a session fresh (preserves original task prompt) |
+| `midtown agent fork --thread-id <id>` | Fork the calling session into a thread-bound session |
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
@@ -170,9 +170,9 @@ midtown oneshot "Fix the bug" --allow-tools --max-budget-usd 0.50
 
 | Command | Description |
 |---------|-------------|
-| `midtown lead remind all-work-merged <message>` | Set a reminder for when all work is merged |
-| `midtown lead remind list` | List active reminders |
-| `midtown lead remind cancel <id>` | Cancel a reminder |
+| `midtown channel remind all-work-merged <message>` | Set a reminder for when all work is merged |
+| `midtown channel remind list` | List active reminders |
+| `midtown channel remind cancel <id>` | Cancel a reminder |
 
 #### Webserver
 
@@ -565,7 +565,7 @@ Each topic channel can have a **channel lead** — a headless Claude Code sessio
 
 **What channel leads don't do:** Channel leads don't write code, open PRs, or create tasks. When implementation work is needed, they escalate to @lead.
 
-**Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown session fork --thread-id <id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID. For messages requiring investigation, the channel lead posts a brief acknowledgment first (so the user sees immediate feedback), then forks — the fork handles the rest of the conversation. The project lead also self-forks for multi-turn research (code exploration, debugging, task scoping) to stay responsive to other messages on the main channel.
+**Forked sessions:** Channel leads can fork themselves into thread-specific sessions via `midtown agent fork --thread-id <id>`. A forked session inherits the parent's conversation context but gets an independent session ID bound to a specific thread. Thread replies are automatically routed to the fork, and the fork's channel posts are auto-tagged with the bound thread ID. For messages requiring investigation, the channel lead posts a brief acknowledgment first (so the user sees immediate feedback), then forks — the fork handles the rest of the conversation. The project lead also self-forks for multi-turn research (code exploration, debugging, task scoping) to stay responsive to other messages on the main channel.
 
 When a forked session creates a task, it can pass `--thread-id <message-id>` to `midtown task create` (the CLI automatically uses `$MIDTOWN_BOUND_THREAD_ID` inside forked sessions). The daemon stores that binding with the task so the coworker spawned for it posts updates back into the originating thread, even across restarts or session resumes.
 
@@ -680,13 +680,13 @@ The Lead can set reminders that trigger on specific conditions:
 
 ```bash
 # Remind me when all tasks are done and PRs merged
-midtown lead remind all-work-merged "Time to deploy!"
+midtown channel remind all-work-merged "Time to deploy!"
 
 # List active reminders
-midtown lead remind list
+midtown channel remind list
 
 # Cancel a reminder
-midtown lead remind cancel <id>
+midtown channel remind cancel <id>
 ```
 
 Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.

@@ -133,7 +133,7 @@ midtown task create "Subject" --description "Details..."
 midtown task create "Fix daemon crash" --description "..." --channel daemon
 
 # Manual call-in (rare — only if daemon requests or urgent):
-midtown coworker call-in
+midtown agent spawn
 ```
 
 **Always use `--channel`** when the task belongs to a topic channel. This ensures:

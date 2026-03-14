@@ -70,10 +70,10 @@ In the TUI, use `/thread` to pick a message and open the thread panel.
 ## Useful Commands
 
 ```bash
-midtown coworker view <name>  # View a coworker's current terminal output
+midtown agent show <name>  # View a coworker's current terminal output
 ```
 
-Use `midtown coworker view` to check on what a coworker is doing. This captures and prints the coworker's recent terminal output.
+Use `midtown agent show` to check on what a coworker is doing. This captures and prints the coworker's recent terminal output.
 
 ## GitHub Etiquette
 
