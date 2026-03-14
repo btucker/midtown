@@ -3118,7 +3118,11 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
 }
 
 #[test]
-fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
+fn test_unowned_pending_task_with_open_pr_is_dispatched() {
+    // Previously this test asserted that pending tasks with open PRs were SKIPPED.
+    // After the PR-protection dispatch fix, pending tasks without owners should
+    // always be dispatched — the PR-protection only applies to in_progress tasks
+    // (orphan recovery) where a coworker is actively working on the PR.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -3141,7 +3145,6 @@ fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
             tasks_with_open_prs,
             ..Default::default()
         },
-        // Task is PR-protected (has open PR, detected during snapshot collection)
         pr_protected_tasks: ["2050".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
@@ -3160,14 +3163,17 @@ fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
         )
     });
     assert!(
-        !has_spawn,
-        "Task !2050 should be skipped because it has an open PR in tasks_with_open_prs, got effects: {:?}",
+        has_spawn,
+        "Pending task !2050 with open PR but no session should be dispatched, got effects: {:?}",
         effects
     );
 }
 
 #[test]
-fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
+fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
+    // Previously this test asserted that pending tasks with GitHub title-matched
+    // open PRs were SKIPPED. After the fix, pending tasks without owners should
+    // always be dispatched regardless of PR status.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -3190,7 +3196,6 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
             github_open_pr_task_ids,
             ..Default::default()
         },
-        // Task is PR-protected (GitHub title-match detected during snapshot collection)
         pr_protected_tasks: ["2051".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
@@ -3209,8 +3214,65 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
         )
     });
     assert!(
-        !has_spawn,
-        "Task !2051 should be skipped because it has an open PR via title-match map, got effects: {:?}",
+        has_spawn,
+        "Pending task !2051 with open PR via title-match should be dispatched, got effects: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_pending_task_with_open_pr_and_no_session_is_dispatched() {
+    // Bug: When a task is created for an existing PR (e.g., "rebase and land PR #940"
+    // with --pr 940), the PR-protection logic blocks dispatch because the PR exists.
+    // This creates a catch-22: the task can't be assigned because the PR exists,
+    // but the PR needs work that only assignment can provide.
+    //
+    // Fix: Pending tasks without owners should NOT be blocked by PR-protection.
+    // The protection only makes sense for in_progress tasks where a coworker is
+    // actively working on the PR.
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let mut tasks_with_open_prs = HashMap::new();
+    tasks_with_open_prs.insert("2060".to_string(), 940u64);
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "2060".to_string(),
+            subject: "Rebase and land PR #940".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: Some(940),
+            created_at: Some(SystemTime::now()),
+        }],
+        pr: snapshot::SnapshotPrState {
+            tasks_with_open_prs,
+            ..Default::default()
+        },
+        // Task IS in pr_protected_tasks (pre-computed during snapshot collection)
+        pr_protected_tasks: ["2060".to_string()].into_iter().collect(),
+        is_at_dev_limit: false,
+        is_at_coworker_limit: false,
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::AssignAndSpawn { .. }
+                | Effect::SpawnCoworkerWithCallbacks { .. }
+                | Effect::SpawnSession { .. }
+        )
+    });
+    assert!(
+        has_spawn,
+        "Pending task !2060 with open PR but no active session should be dispatched, got effects: {:?}",
         effects
     );
 }

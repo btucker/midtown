@@ -1759,14 +1759,12 @@ fn dispatch_unowned_pending_tasks(
             continue;
         }
 
-        // Skip tasks that are PR-protected (pre-computed in snapshot).
-        if snap.pr_protected_tasks.contains(&task.id) {
-            debug!(
-                "Skipping dispatch for pending task !{} — PR-protected",
-                task.id
-            );
-            continue;
-        }
+        // NOTE: We intentionally do NOT check pr_protected_tasks here.
+        // Pending tasks without owners should be assignable even if they have
+        // an open PR — the whole point of creating such a task (e.g., "rebase
+        // and land PR #940" with --pr 940) is to get someone to work on it.
+        // PR-protection only applies to in_progress tasks (orphan recovery)
+        // where a coworker is actively working on the PR.
 
         // Skip tasks in lead-driven channels — the lead manages dispatch manually.
         if task
