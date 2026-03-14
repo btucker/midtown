@@ -169,14 +169,29 @@ fn prepare_task_worktree(
 
 /// Build plan content to append to a coworker's initial prompt.
 ///
-/// Build plan and execution skill prompt sections for a task.
-///
 /// Checks `task_plan_map` for plan content and `task_execution_skill_map` for an
 /// explicit skill instruction. Returns empty string if neither is associated.
 fn build_plan_prompt_section(task_id: &str, snap: &snapshot::WorldSnapshot) -> String {
-    let plan_path = snap.task_plan_map.get(task_id);
-    let execution_skill = snap.task_execution_skill_map.get(task_id);
+    build_plan_prompt_section_from_parts(
+        task_id,
+        snap.task_plan_map.get(task_id).map(|s| s.as_str()),
+        snap.task_execution_skill_map
+            .get(task_id)
+            .map(|s| s.as_str()),
+    )
+}
 
+/// Build plan and execution skill prompt sections from raw values.
+///
+/// Standalone version of `build_plan_prompt_section` that doesn't require a
+/// `WorldSnapshot`. Used by the `coworker.spawn` RPC handler (which reads
+/// plan/skill data directly from persistent state) and by the snapshot-based
+/// dispatch path (which delegates here via `build_plan_prompt_section`).
+pub(super) fn build_plan_prompt_section_from_parts(
+    task_id: &str,
+    plan_path: Option<&str>,
+    execution_skill: Option<&str>,
+) -> String {
     if plan_path.is_none() && execution_skill.is_none() {
         return String::new();
     }

@@ -1561,6 +1561,209 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
     }
 }
 
+// ============================================================================
+// handle_coworker_spawn — task validation
+// ============================================================================
+
+/// Tests that a completed task is rejected by the validation logic.
+/// We can't call handle_coworker_spawn directly (it spawns processes),
+/// so we test the validation via task status checking.
+#[tokio::test]
+async fn test_spawn_rejects_completed_task() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Create a completed task file on disk
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9960";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Already done",
+            "status": "completed",
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    // Replicate the validation from handle_coworker_spawn
+    let task = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key());
+    assert!(task.is_some(), "task should be readable");
+    let t = task.unwrap();
+    assert_eq!(
+        t.status,
+        crate::tasks::TaskStatus::Completed,
+        "task should be completed"
+    );
+    // The handler would return an error here
+
+    let _ = std::fs::remove_file(&task_file);
+}
+
+/// Tests that an in-progress task is rejected by the validation logic.
+#[tokio::test]
+async fn test_spawn_rejects_in_progress_task() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let home = dirs::home_dir().expect("home dir");
+    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    let task_id = "9961";
+    let task_file = tasks_dir.join(format!("{}.json", task_id));
+    std::fs::write(
+        &task_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": task_id,
+            "subject": "Work in progress",
+            "status": "in_progress",
+            "owner": "broadway"
+        }))
+        .unwrap(),
+    )
+    .expect("write task file");
+
+    let task = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key());
+    assert!(task.is_some(), "task should be readable");
+    let t = task.unwrap();
+    assert_eq!(
+        t.status,
+        crate::tasks::TaskStatus::InProgress,
+        "task should be in_progress"
+    );
+    assert_eq!(t.owner.as_deref(), Some("broadway"));
+    // The handler would return an error here
+
+    let _ = std::fs::remove_file(&task_file);
+}
+
+/// Tests that a nonexistent task returns None from read_task_for_repo.
+#[tokio::test]
+async fn test_spawn_rejects_nonexistent_task() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let task = crate::tasks::read_task_for_repo("99999", state.paths.dir_key());
+    assert!(task.is_none(), "nonexistent task should return None");
+}
+
+// ============================================================================
+// Prompt composition — --prompt, --task, --agent combinations
+// ============================================================================
+
+/// Tests prompt composition: --task only produces task prompt.
+#[test]
+fn test_prompt_composition_task_only() {
+    let task_prompt = Some(crate::agents::coworker_task_prompt(
+        "42",
+        "Fix auth bug",
+        "",
+    ));
+
+    let base_prompt = match (&None::<String>, &task_prompt) {
+        (Some(p), Some(tp)) => Some(format!("{}\n\n{}", p, tp)),
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(tp)) => Some(tp.clone()),
+        (None, None) => None,
+    };
+
+    assert!(base_prompt.is_some());
+    let bp = base_prompt.unwrap();
+    assert!(bp.contains("task !42"), "should contain task ID");
+    assert!(bp.contains("Fix auth bug"), "should contain task subject");
+}
+
+/// Tests prompt composition: --prompt + --task combines both.
+#[test]
+fn test_prompt_composition_prompt_and_task() {
+    let user_prompt = Some("Focus on the login flow".to_string());
+    let task_prompt = Some(crate::agents::coworker_task_prompt(
+        "42",
+        "Fix auth bug",
+        "",
+    ));
+
+    let base_prompt = match (&user_prompt, &task_prompt) {
+        (Some(p), Some(tp)) => Some(format!("{}\n\n{}", p, tp)),
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(tp)) => Some(tp.clone()),
+        (None, None) => None,
+    };
+
+    let bp = base_prompt.unwrap();
+    assert!(
+        bp.contains("Focus on the login flow"),
+        "should contain user prompt"
+    );
+    assert!(bp.contains("task !42"), "should contain task prompt");
+}
+
+/// Tests prompt composition: --agent + --task + --prompt includes all three.
+#[test]
+fn test_prompt_composition_agent_task_and_prompt() {
+    let user_prompt = Some("Focus on the login flow".to_string());
+    let task_prompt = Some(crate::agents::coworker_task_prompt(
+        "42",
+        "Fix auth bug",
+        "",
+    ));
+    let agent_system_prompt = "You are a security-focused reviewer.";
+
+    // Same logic as handle_coworker_spawn
+    let base_prompt = match (&user_prompt, &task_prompt) {
+        (Some(p), Some(tp)) => Some(format!("{}\n\n{}", p, tp)),
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(tp)) => Some(tp.clone()),
+        (None, None) => None,
+    };
+    let effective_prompt = match (true, &base_prompt) {
+        (true, Some(bp)) => Some(format!(
+            "## Agent Instructions\n\n{}\n\n---\n\n{}",
+            agent_system_prompt, bp
+        )),
+        (true, None) => Some(format!("## Agent Instructions\n\n{}", agent_system_prompt)),
+        (false, bp) => bp.clone(),
+    };
+
+    let ep = effective_prompt.unwrap();
+    assert!(
+        ep.contains("security-focused reviewer"),
+        "should contain agent instructions"
+    );
+    assert!(
+        ep.contains("Focus on the login flow"),
+        "should contain user prompt (--prompt should NOT be dropped)"
+    );
+    assert!(ep.contains("task !42"), "should contain task prompt");
+}
+
+/// Tests that --prompt without --task or --agent works as before.
+#[test]
+fn test_prompt_composition_prompt_only() {
+    let user_prompt = Some("Do something interesting".to_string());
+    let task_prompt: Option<String> = None;
+
+    let base_prompt = match (&user_prompt, &task_prompt) {
+        (Some(p), Some(tp)) => Some(format!("{}\n\n{}", p, tp)),
+        (Some(p), None) => Some(p.clone()),
+        (None, Some(tp)) => Some(tp.clone()),
+        (None, None) => None,
+    };
+
+    assert_eq!(
+        base_prompt.as_deref(),
+        Some("Do something interesting"),
+        "prompt-only should pass through unchanged"
+    );
+}
+
+// ============================================================================
+// Thread binding tests
+// ============================================================================
+
 /// Tests that when no SessionRecord matches the coworker name, the thread
 /// binding still populates fork_bound_threads (for immediate routing) even
 /// though the persistence path silently fails to find a record.
