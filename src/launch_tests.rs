@@ -529,3 +529,30 @@ fn test_render_append_prompt_contains_common_md() {
         "Append prompt should contain project name from template substitution"
     );
 }
+
+#[test]
+fn test_channel_lead_append_prompt_includes_domain_context() {
+    // When using --agent (non-Codex), domain_context must appear in the append prompt
+    // (Layers 2+3), not just in the Layer 1 agent definition file.
+    let config = LaunchConfig::channel_lead(
+        "auth",
+        "myrepo",
+        SessionMode::Fresh,
+        "Auth module handles JWT tokens and session management",
+        None,
+    );
+    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
+
+    // For non-Codex, agent_name is set and system_prompt is the append-only content
+    assert!(
+        headless.agent_name.is_some(),
+        "Should use --agent for non-Codex"
+    );
+    assert!(
+        headless
+            .system_prompt
+            .contains("Auth module handles JWT tokens"),
+        "Append prompt must include domain_context for --agent path. Got: {}",
+        &headless.system_prompt[..headless.system_prompt.len().min(500)]
+    );
+}
