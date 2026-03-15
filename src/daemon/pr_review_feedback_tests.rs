@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::{PrAction, decide_pr_comment_action_with_handoff};
+    use crate::rules::{PrAction, PrActionContext, decide_pr_action};
 
     /// Test that when the correct task owner is passed to the decision function,
     /// it correctly nudges them when they're active and idle.
@@ -31,13 +31,15 @@ mod tests {
         let at_dev_limit = false;
         let message = "Review feedback";
 
-        let action = decide_pr_comment_action_with_handoff(
+        let action = decide_pr_action(
             task_owner,
-            reviewer,
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
             message,
+            PrActionContext::PrComment {
+                actor: reviewer.to_string(),
+            },
         );
 
         // Should nudge york (the task owner who is active and idle)
@@ -60,13 +62,15 @@ mod tests {
         let at_dev_limit = false;
         let message = "Review feedback";
 
-        let action = decide_pr_comment_action_with_handoff(
+        let action = decide_pr_action(
             task_owner,
-            reviewer,
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
             message,
+            PrActionContext::PrComment {
+                actor: reviewer.to_string(),
+            },
         );
 
         // Should still nudge york even though busy
@@ -114,13 +118,15 @@ mod tests {
         let at_dev_limit = false;
         let message = "Review feedback";
 
-        let action = decide_pr_comment_action_with_handoff(
+        let action = decide_pr_action(
             task_owner,
-            reviewer,
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
             message,
+            PrActionContext::PrComment {
+                actor: reviewer.to_string(),
+            },
         );
 
         // Should spawn york since they're inactive

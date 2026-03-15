@@ -19,7 +19,7 @@ use midtown::daemon::helpers::{
 };
 
 // Decision functions
-use midtown::rules::{PrAction, decide_pr_issue_action_with_handoff};
+use midtown::rules::{PrAction, PrActionContext, decide_pr_action};
 
 /// Helper to build a branch_owners map for test PRs.
 fn branch_owners(entries: &[(&str, &str)]) -> HashMap<String, String> {
@@ -349,12 +349,13 @@ fn pr_comment_nudges_owner() {
 
     // Test the decision function: owner is active and idle → nudge
     let active_coworkers = vec!["amsterdam".to_string(), "york".to_string()];
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         &owner,
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
         "PR #60 - changes requested: please address feedback",
+        PrActionContext::PrIssue,
     );
 
     assert!(
@@ -385,12 +386,13 @@ fn pr_issue_spawns_inactive_owner() {
 
     // lexington is NOT in active coworkers
     let active_coworkers = vec!["amsterdam".to_string()];
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         &owner,
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
         "PR #61 - changes requested: please address feedback",
+        PrActionContext::PrIssue,
     );
 
     assert!(
@@ -407,12 +409,13 @@ fn pr_issue_respects_dev_limit() {
     let active_coworkers = vec!["amsterdam".to_string()]; // broadway not active
 
     // at_dev_limit = true
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         owner,
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         true,              // at dev limit
         "PR #62 - CI failed: please investigate",
+        PrActionContext::PrIssue,
     );
 
     assert!(

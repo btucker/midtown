@@ -727,83 +727,66 @@ fn resolve_pr_handoff(
     }
 }
 
-/// Decide what action to take for a PR issue detected by polling.
-///
-/// Only nudges the owner if they are both active and idle; spawns if inactive.
-pub fn decide_pr_issue_action_with_handoff(
-    owner: &str,
-    active_coworkers: &[String],
-    idle_coworkers: &[String],
-    at_dev_limit: bool,
-    message: &str,
-) -> PrAction {
-    resolve_pr_handoff(
-        owner,
-        active_coworkers,
-        idle_coworkers,
-        at_dev_limit,
-        message,
-        "PR issue",
-        PrAction::PostToChannel {
-            message: message.to_string(),
-        },
-    )
+/// Context for PR action decisions — determines fallback behavior and guards.
+#[derive(Debug, Clone)]
+pub enum PrActionContext {
+    /// Polling-detected PR issue (merge conflict, CI fail, etc.)
+    PrIssue,
+    /// Webhook-driven PR comment. `actor` is checked for self-comment skip.
+    PrComment { actor: String },
+    /// Review is complete — notify the PR author.
+    ReviewComplete,
 }
 
-/// Decide what action to take for a PR comment nudge (webhook-driven).
-///
-/// Only nudges the owner if they are both active and idle; spawns if inactive.
-pub fn decide_pr_comment_action_with_handoff(
+/// Unified decision function for PR actions.
+pub fn decide_pr_action(
     owner: &str,
-    actor: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
     at_dev_limit: bool,
     message: &str,
+    context: PrActionContext,
 ) -> PrAction {
-    if owner == actor {
+    // Self-comment guard (only for PrComment)
+    if let PrActionContext::PrComment { ref actor } = context
+        && owner == actor
+    {
         return PrAction::Skip {
             reason: format!("PR comment is from owner {}, skipping self-nudge", owner),
         };
     }
 
-    resolve_pr_handoff(
-        owner,
-        active_coworkers,
-        idle_coworkers,
-        at_dev_limit,
-        message,
-        "PR comment",
-        PrAction::SpawnOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        },
-    )
-}
+    let (reason_label, empty_owner_fallback) = match &context {
+        PrActionContext::PrIssue => (
+            "PR issue",
+            PrAction::PostToChannel {
+                message: message.to_string(),
+            },
+        ),
+        PrActionContext::PrComment { .. } => (
+            "PR comment",
+            PrAction::SpawnOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            },
+        ),
+        PrActionContext::ReviewComplete => (
+            "review complete",
+            PrAction::SpawnOwner {
+                owner: owner.to_string(),
+                message: message.to_string(),
+            },
+        ),
+    };
 
-/// Decide what action to take when a PR has a completed review and the
-/// author needs to address feedback.
-///
-/// Nudge if active (idle or busy), spawn if inactive,
-/// skip if inactive and at dev limit.
-pub fn decide_review_complete_action(
-    owner: &str,
-    active_coworkers: &[String],
-    idle_coworkers: &[String],
-    at_dev_limit: bool,
-    message: &str,
-) -> PrAction {
     resolve_pr_handoff(
         owner,
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
         message,
-        "review complete",
-        PrAction::SpawnOwner {
-            owner: owner.to_string(),
-            message: message.to_string(),
-        },
+        reason_label,
+        empty_owner_fallback,
     )
 }
 

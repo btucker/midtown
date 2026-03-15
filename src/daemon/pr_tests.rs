@@ -1356,7 +1356,6 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
     PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1368,7 +1367,6 @@ fn make_pr_context_empty() -> PrContext {
     PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1403,9 +1401,9 @@ fn action_to_effects_spawn_owner_with_task_produces_task_prompt() {
     );
 }
 
-/// Task-less SpawnOwner spawns/resumes the coworker session directly.
+/// Task-less SpawnOwner posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1421,12 +1419,17 @@ fn action_to_effects_spawn_owner_without_task_produces_spawn_coworker() {
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner without task should post to ops channel for manual review. Effects: {:#?}",
         effects
     );
 }
@@ -1466,9 +1469,9 @@ fn action_to_effects_comment_spawn_owner_with_task_produces_task_prompt() {
     }
 }
 
-/// Task-less SpawnOwner for ReviewComment spawns/resumes the coworker session.
+/// Task-less SpawnOwner for ReviewComment posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_comment_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1484,12 +1487,17 @@ fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() 
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner (comment) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner (comment) without task should post to ops channel for manual review. Effects: {:#?}",
         effects
     );
 }
@@ -1530,9 +1538,9 @@ fn action_to_effects_review_complete_spawn_owner_with_task_produces_task_prompt(
     }
 }
 
-/// Task-less SpawnOwner for ReviewComplete spawns/resumes the coworker session.
+/// Task-less SpawnOwner for ReviewComplete posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_review_complete_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_review_complete_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1548,12 +1556,17 @@ fn action_to_effects_review_complete_spawn_owner_without_task_produces_spawn_cow
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner (review_complete) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner (review_complete) without task should post to ops channel for manual review. Effects: {:#?}",
         effects
     );
 }
@@ -1610,7 +1623,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     let ctx = PrContext {
         pr_task_associations,
         task_channel: HashMap::new(),
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3109,7 +3121,6 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
     PrContext {
         pr_task_associations,
         task_channel,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4705,7 +4716,6 @@ fn log_pr_decision_writes_valid_jsonl() {
     let ctx = PrContext {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4775,7 +4785,6 @@ fn log_pr_decision_appends_multiple_entries() {
     let ctx = PrContext {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
