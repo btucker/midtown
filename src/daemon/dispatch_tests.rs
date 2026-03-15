@@ -2117,10 +2117,10 @@ fn test_reset_orphaned_tasks_with_pr_no_effect() {
 #[test]
 fn test_reset_orphaned_tasks_github_open_pr_task_ids_protects() {
     // Regression test for bug: reset_orphaned_tasks only checked tasks_with_open_prs
-    // (from pr_author_sessions) but NOT github_open_pr_task_ids (from GitHub API).
+    // (from SessionRecord) but NOT github_open_pr_task_ids (from GitHub API).
     //
-    // After a daemon restart, pr_author_sessions is empty, so tasks_with_open_prs is
-    // empty. Tasks with open PRs (detected via GitHub PR titles) were incorrectly
+    // After a daemon restart, SessionRecord data may be stale, so tasks_with_open_prs
+    // can be empty. Tasks with open PRs (detected via GitHub PR titles) were incorrectly
     // reset to pending, triggering a new coworker spawn for an already-PR'd task.
     //
     // Scenario matches snapshot-pr-opened-then-task-unassigned-reassigned-20260217-190136.json:

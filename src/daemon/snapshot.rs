@@ -184,19 +184,19 @@ pub struct SnapshotPrState {
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
-    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
-    /// by catching cases where pr_author_sessions is stale after a daemon restart but the
+    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from SessionRecord)
+    /// by catching cases where SessionRecord is stale after a daemon restart but the
     /// PR title contains `[Midtown !{task_id}]`. Used by:
     /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
     /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
     ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
     #[serde(default)]
     pub github_open_pr_task_ids: HashMap<String, u64>,
-    /// Task IDs that have associated open PRs (from PrAuthorSession).
+    /// Task IDs that have associated open PRs (from SessionRecord).
     /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
     /// tasks whose PR is open but whose owner is no longer active.
     pub tasks_with_open_prs: HashMap<String, u64>,
-    /// PR numbers with associated task IDs (from PrAuthorSession).
+    /// PR numbers with associated task IDs (from SessionRecord).
     /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
     /// when PRs are closed without merging.
     #[serde(deserialize_with = "u64_key_map::deserialize")]
@@ -905,7 +905,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // Derive task→PR mapping from open_prs_data PR titles for orphan recovery.
-    // This catches tasks with open PRs even when pr_author_sessions is stale after restart.
+    // This catches tasks with open PRs even when SessionRecord data is stale after restart.
     let github_open_pr_task_ids: HashMap<String, u64> = open_prs_data
         .iter()
         .filter_map(|pr| {
@@ -923,19 +923,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(_, _, owner)| owner.to_lowercase())
         .collect();
 
-    // ── PR author sessions (task → PR mapping) ────────────────────────
-    // Primary: derive from SessionRecord fields (task-centric model).
-    // Fallback: fill gaps from legacy pr_author_sessions in GitHubState.
+    // ── PR↔task mapping (from SessionRecord) ──────────────────────────
     let (tasks_with_open_prs, pr_task_associations) = {
         let ps = state.persistent_state.lock().await;
-        let mut tasks_with_open_prs = super::state::task_to_pr_map_from_sessions(&ps.sessions);
-        let mut pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
-        for (task, pr) in ps.github.task_to_pr_map() {
-            tasks_with_open_prs.entry(task).or_insert(pr);
-        }
-        for (pr, task) in ps.github.pr_to_task_map() {
-            pr_task_associations.entry(pr).or_insert(task);
-        }
+        let tasks_with_open_prs = super::state::task_to_pr_map_from_sessions(&ps.sessions);
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         (tasks_with_open_prs, pr_task_associations)
     };
 

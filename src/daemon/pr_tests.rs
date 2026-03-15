@@ -2127,15 +2127,19 @@ async fn test_poll_prs_session_based_owner_resolution() {
         .lock()
         .unwrap()
         .insert("madison".to_string(), "sess-abc".to_string());
-    // Populate persistent_state with pr_author_session so PrContext gets the task association
+    // Populate persistent_state with session record so PrContext gets the task association
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            42,
-            "sess-abc",
-            "lexington/fix-auth",
-            "madison",
-            "Fix authentication bug [Midtown !123]",
+        ps.sessions.insert(
+            "sess-abc".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-abc".to_string(),
+                task_id: Some("123".to_string()),
+                pr_number: Some(42),
+                branch: Some("lexington/fix-auth".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
+            },
         );
     }
 
@@ -3445,7 +3449,7 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
     let (state, _tmp, _guard) = make_test_state("test-repo");
     {
         let mut ps = state.persistent_state.lock().await;
-        // No pr_author_sessions, no session records, no task associations
+        // No session records, no task associations
         // Only the PR body frontmatter identifies the owner
         ps.github.mark_reviewed_pr(pr_number);
         ps.github.add_review_comment_id(pr_number, 1);
@@ -4074,12 +4078,16 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
     // Set up PR → task → channel routing and install workflow script
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "session-1",
-            "lexington/some-feature",
-            "lexington",
-            &format!("feat: some feature [Midtown !{task_id}]"),
+        ps.sessions.insert(
+            "session-1".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "session-1".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lexington/some-feature".to_string()),
+                preferred_name: Some("lexington".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
@@ -4151,12 +4159,16 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
     // Set up PR → task → channel routing but NO workflow script
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "session-1",
-            "lexington/some-feature",
-            "lexington",
-            &format!("feat: some feature [Midtown !{task_id}]"),
+        ps.sessions.insert(
+            "session-1".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "session-1".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lexington/some-feature".to_string()),
+                preferred_name: Some("lexington".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
@@ -4202,7 +4214,7 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
 
 /// Reviewers should inherit the topic channel of the PR's associated task.
 ///
-/// When a PR has an associated task (via pr_author_sessions → task_id) and that
+/// When a PR has an associated task (via SessionRecord → task_id) and that
 /// task has a channel mapping (task_channel), the reviewer's LaunchConfig.channel
 /// must be set to that channel so MIDTOWN_CHANNEL routes their posts correctly.
 #[tokio::test]
@@ -4236,12 +4248,16 @@ async fn test_reviewer_spawn_inherits_task_channel() {
     // Set up the PR → task → channel chain in persistent state
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "test-session-id",
-            "madison/auth-feature",
-            "madison",
-            &format!("feat: Add auth endpoint [Midtown !{}]", task_id),
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("madison/auth-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel_name.to_string());
@@ -4478,7 +4494,6 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_polling_defers_to_workflow_script_with_longer_delay() {
-    use crate::github_state::PrAuthorSession;
     use crate::worktree_registry::WorktreeRegistry;
     use chrono::Utc;
 
@@ -4520,14 +4535,15 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
     // Set up task association: PR #100 → task "42" → channel "proj-test"
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.pr_author_sessions.insert(
-            100,
-            PrAuthorSession {
+        ps.sessions.insert(
+            "sess-1".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "sess-1".to_string(),
-                branch: "madison/task-42-feature".to_string(),
-                original_author: "madison".to_string(),
-                stored_at: Utc::now(),
                 task_id: Some("42".to_string()),
+                pr_number: Some(100),
+                branch: Some("madison/task-42-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
             },
         );
         ps.task_channel
@@ -4581,9 +4597,7 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_polling_uses_normal_delay_without_workflow_script() {
-    use crate::github_state::PrAuthorSession;
     use crate::worktree_registry::WorktreeRegistry;
-    use chrono::Utc;
 
     let _path_guard = PATH_LOCK.lock().unwrap();
 
@@ -4619,14 +4633,15 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
     // Set up task association: PR #101 → task "43" → channel "proj-test"
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.pr_author_sessions.insert(
-            101,
-            PrAuthorSession {
+        ps.sessions.insert(
+            "sess-2".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "sess-2".to_string(),
-                branch: "madison/task-43-feature".to_string(),
-                original_author: "madison".to_string(),
-                stored_at: Utc::now(),
                 task_id: Some("43".to_string()),
+                pr_number: Some(101),
+                branch: Some("madison/task-43-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
             },
         );
         ps.task_channel
@@ -4635,7 +4650,7 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
     }
 
     // PR created 60 seconds ago — passes normal 45s delay.
-    let created_at = (Utc::now() - chrono::Duration::seconds(60))
+    let created_at = (chrono::Utc::now() - chrono::Duration::seconds(60))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let pr = json!({
         "number": 101,
@@ -4822,16 +4837,20 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.github.mark_reviewed_pr(pr_number);
-        // Store a PR author session that resolves the owner to "columbus".
+        // Store a session record that resolves the owner to "columbus".
         // This simulates the scenario where task metadata links the PR to
         // a coworker, causing the owner resolution chain to find "columbus"
         // even though it's a lead/* (user-authored) branch.
-        ps.github.store_pr_author_session(
-            pr_number,
-            "sess-1834",
-            "lead/essay",
-            "columbus",
-            "feat: Add essay [Midtown !1834]",
+        ps.sessions.insert(
+            "sess-1834".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-1834".to_string(),
+                task_id: Some("1834".to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lead/essay".to_string()),
+                preferred_name: Some("columbus".to_string()),
+                ..Default::default()
+            },
         );
     }
 

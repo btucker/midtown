@@ -429,11 +429,10 @@ pub enum Effect {
         repo_full_name: String,
         new_body: String,
     },
-    /// Store a PR author's session ID for potential handoff.
+    /// Link a PR to its session record and worktree.
     ///
-    /// When a coworker opens a PR, we store their session ID so any other
-    /// coworker can later resume work on that PR with full context preserved.
-    /// Also extracts and stores the task ID from the PR title.
+    /// When a coworker opens a PR, backfill `pr_number` and `branch` on the
+    /// SessionRecord and link the PR to the worktree by branch name.
     StorePrAuthorSession {
         pr_number: u64,
         session_id: String,
@@ -581,7 +580,7 @@ pub enum Effect {
     /// Clear a task's owner without changing its status.
     ///
     /// Used when a coworker opens a PR and goes idle — the task stays in_progress
-    /// (linked to the PR via PrAuthorSession) but the coworker name is freed.
+    /// (linked to the PR via SessionRecord) but the coworker name is freed.
     UnassignTask { task_id: String, dir_key: String },
     /// Reset an abandoned task back to pending.
     ///
@@ -1990,8 +1989,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 // Backfill pr_number on the SessionRecord (if it exists).
-                // This makes the PR→session link derivable from sessions,
-                // reducing reliance on pr_author_sessions for task-linked PRs.
                 if let Some(record) = ps.sessions.get_mut(&session_id)
                     && record.pr_number.is_none()
                 {
@@ -2023,10 +2020,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to persist PR author session: {}", e);
+                    warn!("Failed to persist PR→session link: {}", e);
                 } else {
                     info!(
-                        "Stored author session for PR #{}: session={}, author={}",
+                        "Linked PR #{} to session {} (author={})",
                         pr_number, session_id, author
                     );
                 }

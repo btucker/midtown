@@ -979,8 +979,7 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 /// Returns true if the task has an associated open PR, checking two sources:
 ///
 /// 1. **`SessionRecord.pr_number` (primary — task-centric model)**: Checks if
-///    any session for this task has a `pr_number` set. Also falls back to
-///    `pr_author_sessions` for legacy compatibility.
+///    any session for this task has a `pr_number` set.
 ///
 /// 2. **`task.pr` field on disk + GitHub API verification**: The task file may
 ///    have an explicit PR number set via `--pr` or auto-detected. This survives
@@ -994,19 +993,11 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 /// - Tasks WITHOUT open PRs are completed directly to avoid the respawn loop (!1879).
 async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
     // Source 1: SessionRecord (primary — task-centric model)
-    // Source 1b: Legacy fallback (pr_author_sessions)
     let in_memory = {
         let ps = state.persistent_state.lock().await;
-        let has_pr_in_session = ps
-            .sessions
+        ps.sessions
             .values()
-            .any(|s| s.task_id.as_deref() == Some(task_id) && s.pr_number.is_some());
-        let has_pr_legacy = ps
-            .github
-            .pr_author_sessions
-            .values()
-            .any(|session| session.task_id.as_deref() == Some(task_id));
-        has_pr_in_session || has_pr_legacy
+            .any(|s| s.task_id.as_deref() == Some(task_id) && s.pr_number.is_some())
     };
     if in_memory {
         return true;

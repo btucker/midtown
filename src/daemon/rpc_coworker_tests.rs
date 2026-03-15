@@ -744,7 +744,7 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
     // Set up in-memory task assignment
     state.set_test_task_assignment("riverside", task_id).await;
 
-    // NOTE: pr_author_sessions is empty — simulates daemon restart.
+    // NOTE: sessions is empty — simulates daemon restart.
     // The task has pr=99 on disk but no in-memory PR tracking.
     // In test env, gh pr view won't find this PR, so is_pr_open returns false.
 
@@ -804,17 +804,18 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
     // Set up task assignment via session record
     state.set_test_task_assignment("park", task_id).await;
 
-    // Simulate an open PR for this task via pr_author_sessions
+    // Simulate an open PR for this task via session record
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.pr_author_sessions.insert(
-            42,
-            crate::github_state::PrAuthorSession {
+        ps.sessions.insert(
+            "session-42".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "session-42".to_string(),
-                branch: "park/add-new-feature".to_string(),
-                original_author: "park".to_string(),
-                stored_at: chrono::Utc::now(),
                 task_id: Some(task_id.to_string()),
+                pr_number: Some(42),
+                branch: Some("park/add-new-feature".to_string()),
+                preferred_name: Some("park".to_string()),
+                ..Default::default()
             },
         );
     }

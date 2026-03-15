@@ -94,7 +94,7 @@ impl PrContext {
     /// channel routing data (shared across all PRs) and session context
     /// (specific to `pr_number`) in a single pass.
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
         // Session-centric resume: PR → task → session
         let task_session_id = pr_task_associations.get(&pr_number).and_then(|task_id| {
@@ -131,7 +131,7 @@ impl PrContext {
     /// finished. Do NOT use this for `PrIssueType::Approved` code paths.
     fn routing_only(ps: &super::state::DaemonPersistentState) -> Self {
         Self {
-            pr_task_associations: ps.github.pr_to_task_map(),
+            pr_task_associations: super::state::pr_to_task_map_from_sessions(&ps.sessions),
             task_channel: ps.task_channel.clone(),
             task_session_id: None,
             has_active_reviewer: false,
@@ -530,7 +530,7 @@ async fn resolve_pr_owner_from_state(
 
     let owner = {
         let ps = state.persistent_state.lock().await;
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
         let session_task_map: HashMap<String, String> = ps
             .sessions
@@ -1828,7 +1828,7 @@ async fn collect_stuck_condition_effects(
             .collect();
         let channel_lead_names = ps.channel_lead_names();
         let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
         let lead_driven_channels = ps.lead_driven_channels.clone();
@@ -2690,7 +2690,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     let (pr_ctx, all_tasks, pr_task_associations, session_task_map, sessions, is_at_dev_limit) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let session_task_map: HashMap<String, String> = ps
             .sessions
             .iter()
@@ -3529,10 +3529,9 @@ pub(super) async fn handle_pr_comment_nudge(
     // Check if this PR is linked to a task, and handle based on task status.
     if let Some((task_id, channel_lead_names)) = {
         let ps = state.persistent_state.lock().await;
-        ps.github
-            .pr_author_sessions
+        let pr_task_map = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        pr_task_map
             .get(&pr_number)
-            .and_then(|session| session.task_id.as_ref())
             .cloned()
             .map(|tid| (tid, ps.channel_lead_names()))
     } && let Some(task) = crate::tasks::read_task(&task_id)
@@ -3656,7 +3655,9 @@ pub(super) async fn handle_pr_comment_nudge(
         let (reviewer_info, task_id) = {
             let ps = state.persistent_state.lock().await;
             let reviewer = ps.github.pr_reviewers.get(&pr_number).cloned();
-            let tid = ps.github.pr_to_task_map().get(&pr_number).cloned();
+            let tid = super::state::pr_to_task_map_from_sessions(&ps.sessions)
+                .get(&pr_number)
+                .cloned();
             (reviewer, tid)
         };
 

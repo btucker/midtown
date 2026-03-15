@@ -2,8 +2,7 @@
 //!
 //! These tests verify that DaemonPersistentState correctly preserves:
 //! 1. Reviewer assignments (github.pr_reviewers)
-//! 2. PR author sessions (github.pr_author_sessions)
-//! 3. Session records (sessions)
+//! 2. Session records (sessions)
 //!
 //! The tests use actual daemon types to verify that state correctly round-trips
 //! through JSON serialization/deserialization, including serde attributes like
@@ -14,7 +13,7 @@
 
 use chrono::Utc;
 use midtown::daemon::{DaemonPersistentState, SessionRecord};
-use midtown::github_state::{AssignmentSource, GitHubState, PrAuthorSession, PrReviewerAssignment};
+use midtown::github_state::{AssignmentSource, GitHubState, PrReviewerAssignment};
 use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
@@ -181,75 +180,6 @@ fn test_sessions_preserved_after_restart() {
 
     // Verify serde default attributes work correctly
     // (resume_on_startup defaults to true, so if it were missing from JSON it should still be true)
-}
-
-/// Test that PR author sessions are preserved across daemon restarts.
-///
-/// PR author sessions are stored in daemon-state.json (github.pr_author_sessions)
-/// and must survive daemon restarts so that other coworkers can resume work on
-/// a PR with full context from the original author's session.
-#[test]
-fn test_pr_author_sessions_preserved_after_restart() {
-    // Create temporary test environment
-    let temp_dir = TempDir::new().unwrap();
-    let state_dir = temp_dir.path();
-    fs::create_dir_all(state_dir).unwrap();
-
-    // Create DaemonPersistentState with PR author sessions using actual types
-    let now = Utc::now();
-    let mut github_state = GitHubState::default();
-    github_state.pr_author_sessions.insert(
-        42,
-        PrAuthorSession {
-            session_id: "session-amsterdam-123".to_string(),
-            branch: "amsterdam/add-auth-endpoint".to_string(),
-            original_author: "amsterdam".to_string(),
-            stored_at: now,
-            task_id: Some("1385".to_string()),
-        },
-    );
-    github_state.pr_author_sessions.insert(
-        43,
-        PrAuthorSession {
-            session_id: "session-columbus-456".to_string(),
-            branch: "columbus/fix-bug".to_string(),
-            original_author: "columbus".to_string(),
-            stored_at: now,
-            task_id: Some("1388".to_string()),
-        },
-    );
-
-    let state = DaemonPersistentState {
-        github: github_state,
-        ..Default::default()
-    };
-
-    // Save state to disk
-    let state_file = state_dir.join("daemon-state.json");
-    fs::write(&state_file, serde_json::to_string_pretty(&state).unwrap()).unwrap();
-
-    // Simulate restart: load state from disk using actual types
-    let loaded_state_json = fs::read_to_string(&state_file).unwrap();
-    let loaded_state: DaemonPersistentState = serde_json::from_str(&loaded_state_json).unwrap();
-
-    // Verify PR author sessions are preserved with type-safe access
-    assert_eq!(
-        loaded_state.github.pr_author_sessions.len(),
-        2,
-        "Should preserve 2 PR author sessions"
-    );
-
-    let pr42_session = loaded_state.github.pr_author_sessions.get(&42).unwrap();
-    assert_eq!(pr42_session.session_id, "session-amsterdam-123");
-    assert_eq!(pr42_session.branch, "amsterdam/add-auth-endpoint");
-    assert_eq!(pr42_session.original_author, "amsterdam");
-    assert_eq!(pr42_session.task_id, Some("1385".to_string()));
-
-    let pr43_session = loaded_state.github.pr_author_sessions.get(&43).unwrap();
-    assert_eq!(pr43_session.session_id, "session-columbus-456");
-    assert_eq!(pr43_session.branch, "columbus/fix-bug");
-    assert_eq!(pr43_session.original_author, "columbus");
-    assert_eq!(pr43_session.task_id, Some("1388".to_string()));
 }
 
 /// Test that persistent state correctly deserializes and can be used to prevent duplicate spawns.
