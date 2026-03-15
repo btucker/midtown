@@ -108,13 +108,20 @@ impl PrContext {
 
         // Build session_context: prefer SessionRecord for task-linked PRs,
         // fall back to pr_author_sessions for non-task PRs (legacy).
+        let pr_author_session = ps.github.get_pr_author_session(pr_number);
         let session_context = if let Some(ref sid) = task_session_id {
-            // Task-linked: derive PrSessionContext from SessionRecord
+            // Task-linked: derive PrSessionContext from SessionRecord.
+            // Fall back to pr_author_sessions for branch (SessionRecord.branch
+            // is often None because it's not backfilled during spawn).
             ps.sessions
                 .get(sid)
                 .map(|s| crate::rules::PrSessionContext {
                     session_id: s.session_id.clone(),
-                    branch: s.branch.clone().unwrap_or_default(),
+                    branch: s
+                        .branch
+                        .clone()
+                        .or_else(|| pr_author_session.as_ref().map(|a| a.branch.clone()))
+                        .unwrap_or_default(),
                     original_author: s
                         .preferred_name
                         .clone()
@@ -124,14 +131,12 @@ impl PrContext {
                 })
         } else {
             // Non-task: fall back to pr_author_sessions (legacy)
-            ps.github
-                .get_pr_author_session(pr_number)
-                .map(|s| crate::rules::PrSessionContext {
-                    session_id: s.session_id.clone(),
-                    branch: s.branch.clone(),
-                    original_author: s.original_author.clone(),
-                    pr_number,
-                })
+            pr_author_session.map(|s| crate::rules::PrSessionContext {
+                session_id: s.session_id.clone(),
+                branch: s.branch.clone(),
+                original_author: s.original_author.clone(),
+                pr_number,
+            })
         };
 
         // Gate check: reviewer assigned in github-state (raw presence, no timeout).
