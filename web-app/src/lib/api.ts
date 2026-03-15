@@ -70,11 +70,12 @@ function trackThread(
 	channelName: string,
 	content: string | null | undefined,
 	replyCount?: number,
+	replyContent?: string | null,
 ): void {
 	const dismissed = get(dismissedThreads);
 	if (dismissed.has(threadParentId)) return;
 	const newSubject = extractThreadSubject(content);
-	const newFullText = extractPlainText(content);
+	const newFullText = replyContent ? extractPlainText(replyContent) : extractPlainText(content);
 	trackedThreads.update((tracked) => {
 		const existing = tracked[threadParentId];
 		// Keep existing subject/fullText if the new one is just the fallback "Thread"
@@ -710,7 +711,7 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					const parentMsg = channelMsgs?.find((m: Message) => m.id === threadParentId);
 					const uName = get(userSenderName);
 					if (parentMsg && (parentMsg.from === "user" || parentMsg.from === uName)) {
-						trackThread(threadParentId, channelName, parentMsg.content);
+						trackThread(threadParentId, channelName, parentMsg.content, undefined, msg.content);
 					}
 
 					const tracked = get(trackedThreads);
@@ -724,12 +725,14 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					}
 					// Update lastActivity/replyCount on the tracked entry
 					if (tracked[threadParentId]) {
+						const replyFullText = extractPlainText(msg.content);
 						trackedThreads.update((t) => ({
 							...t,
 							[threadParentId]: {
 								...t[threadParentId],
 								lastActivity: new Date().toISOString(),
 								replyCount: (t[threadParentId]?.replyCount || 0) + 1,
+								...(replyFullText ? { fullText: replyFullText } : {}),
 							},
 						}));
 					}

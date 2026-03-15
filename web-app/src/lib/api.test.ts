@@ -1012,6 +1012,58 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		expect(tracked[parentId]).toBeUndefined();
 	});
 
+	it("sets fullText from the reply content, not the parent message", () => {
+		handleUpdate({
+			type: "channel_message",
+			data: {
+				id: "reply-ft-1",
+				from: "coworker",
+				content: "here is the detailed answer to your question",
+				channel: "web",
+				thread_parent_id: parentId,
+				timestamp: "2026-01-01T00:00:00Z",
+			},
+		});
+
+		const tracked = get(trackedThreads);
+		expect(tracked[parentId]).toBeTruthy();
+		// subject comes from parent (thread topic)
+		expect(tracked[parentId].subject).toContain("my question about auth");
+		// fullText should be the reply content, not the parent
+		expect(tracked[parentId].fullText).toBe("here is the detailed answer to your question");
+	});
+
+	it("updates fullText when a new reply arrives on an already-tracked thread", () => {
+		// First reply auto-tracks
+		handleUpdate({
+			type: "channel_message",
+			data: {
+				id: "reply-ft-2a",
+				from: "coworker",
+				content: "first answer",
+				channel: "web",
+				thread_parent_id: parentId,
+				timestamp: "2026-01-01T00:00:00Z",
+			},
+		});
+
+		// Second reply should update fullText
+		handleUpdate({
+			type: "channel_message",
+			data: {
+				id: "reply-ft-2b",
+				from: "coworker",
+				content: "actually, here is a better answer",
+				channel: "web",
+				thread_parent_id: parentId,
+				timestamp: "2026-01-01T00:00:01Z",
+			},
+		});
+
+		const tracked = get(trackedThreads);
+		expect(tracked[parentId].fullText).toBe("actually, here is a better answer");
+	});
+
 	it("auto-tracks when parent from matches userSenderName (custom display name)", () => {
 		userSenderName.set("ben");
 		messagesByChannel.set({
