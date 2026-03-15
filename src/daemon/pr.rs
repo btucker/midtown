@@ -2820,7 +2820,17 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         .cloned()
         .collect();
 
-    let (pr_ctx, all_tasks, pr_task_associations, session_task_map, sessions, is_at_dev_limit) = {
+    let (
+        pr_ctx,
+        all_tasks,
+        pr_task_associations,
+        session_task_map,
+        sessions,
+        is_at_dev_limit,
+        task_channel,
+        channel_workflow_channels,
+        pr_last_webhook_event,
+    ) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
@@ -2838,6 +2848,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         let pr_ctx = PrContext::routing_only(&ps);
         let channel_lead_names = ps.channel_lead_names();
         let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+        let task_channel = ps.task_channel.clone();
+        let channel_workflow_channels: std::collections::HashSet<String> =
+            ps.channel_workflows.keys().cloned().collect();
+        let pr_last_webhook_event = ps.github.pr_last_webhook_event.clone();
 
         (
             pr_ctx,
@@ -2846,6 +2860,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             session_task_map,
             sessions,
             is_at_dev_limit,
+            task_channel,
+            channel_workflow_channels,
+            pr_last_webhook_event,
         )
     };
 
@@ -2880,13 +2897,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // so polling should only act as a safety net for missed webhooks — not
         // race with the workflow.
         let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
-            let has_workflow = {
-                let ps = state.persistent_state.lock().await;
-                pr_task_associations
-                    .get(&pr_number)
-                    .and_then(|task_id| ps.task_channel.get(task_id).cloned())
-                    .is_some_and(|channel| ps.channel_workflows.contains_key(&channel))
-            };
+            let has_workflow = pr_task_associations
+                .get(&pr_number)
+                .and_then(|task_id| task_channel.get(task_id))
+                .is_some_and(|channel| channel_workflow_channels.contains(channel));
 
             if has_workflow {
                 PR_REVIEW_DELAY_SCRIPT_SECS
@@ -2911,11 +2925,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // This prevents polling from spawning a duplicate reviewer when the
         // webhook already triggered reviewer spawning via the workflow script.
         if source == crate::github_state::AssignmentSource::PollingFallback {
-            let ps = state.persistent_state.lock().await;
-            if ps
-                .github
-                .webhook_recently_handled(pr_number, review_delay as i64 * 2)
-            {
+            let window_secs = review_delay as i64 * 2;
+            let webhook_recently_handled =
+                pr_last_webhook_event.get(&pr_number).is_some_and(|ts| {
+                    let elapsed = chrono::Utc::now().signed_duration_since(*ts);
+                    elapsed < chrono::Duration::seconds(window_secs)
+                });
+            if webhook_recently_handled {
                 debug!(
                     "PR #{} was recently handled by webhook, polling defers",
                     pr_number
