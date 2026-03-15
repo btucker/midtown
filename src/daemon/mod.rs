@@ -495,11 +495,6 @@ pub(crate) struct DaemonState {
     last_pr_poll_hash: Mutex<u64>,
     /// Unified cache for PR-to-coworker mappings (open + merged + CI status).
     pr_coworker_cache: std::sync::RwLock<PrCoworkerCache>,
-    /// Saved session IDs for coworkers on PR break, keyed by coworker name.
-    /// When a coworker is shut down for PR break (CI passing, idle), we save their
-    /// session ID here so they can be resumed with `--resume <id>` when PR activity
-    /// (review comments, CI failure, etc.) requires them back.
-    pr_break_sessions: std::sync::RwLock<HashMap<String, String>>,
     /// Coworker stop times keyed by lowercase name.
     /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
     /// features that need to know the last activity time of inactive coworkers.
@@ -1467,7 +1462,6 @@ impl DaemonState {
             usage_limit_nudge_at: Mutex::new(None),
             last_pr_poll_hash: Mutex::new(0),
             pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::default()),
-            pr_break_sessions: std::sync::RwLock::new(HashMap::new()),
             coworker_stop_times: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             ci_notification_buffer: Mutex::new(trackers::CiNotificationBuffer::new()),

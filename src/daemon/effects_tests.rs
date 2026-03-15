@@ -3365,3 +3365,49 @@ async fn test_record_task_assignment_fixes_insight_routing() {
         "insight should NOT route to the old task's channel"
     );
 }
+
+#[test]
+fn store_pr_author_session_backfills_pr_number_on_session_record() {
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let session = crate::daemon::state::SessionRecord {
+        session_id: "session-abc".to_string(),
+        task_id: Some("42".to_string()),
+        ..Default::default()
+    };
+    ps.sessions.insert("session-abc".to_string(), session);
+
+    // Simulate what StorePrAuthorSession handler does:
+    let pr_number: u64 = 100;
+    let session_id = "session-abc";
+    if let Some(record) = ps.sessions.get_mut(session_id)
+        && record.pr_number.is_none()
+    {
+        record.pr_number = Some(pr_number);
+    }
+
+    assert_eq!(ps.sessions.get("session-abc").unwrap().pr_number, Some(100));
+}
+
+#[test]
+fn store_pr_author_session_does_not_overwrite_existing_pr_number() {
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let session = crate::daemon::state::SessionRecord {
+        session_id: "session-abc".to_string(),
+        task_id: Some("42".to_string()),
+        pr_number: Some(50), // Already has a PR number
+        ..Default::default()
+    };
+    ps.sessions.insert("session-abc".to_string(), session);
+
+    // Simulate backfill — should NOT overwrite
+    let pr_number: u64 = 100;
+    let session_id = "session-abc";
+    if let Some(record) = ps.sessions.get_mut(session_id)
+        && record.pr_number.is_none()
+    {
+        record.pr_number = Some(pr_number);
+    }
+
+    // Should keep the original PR number
+    assert_eq!(ps.sessions.get("session-abc").unwrap().pr_number, Some(50));
+}

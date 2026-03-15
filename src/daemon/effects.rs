@@ -377,8 +377,6 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
-    /// Clear a saved PR break session after successful resume.
-    ClearPrBreakSession { name: String },
     /// Assign a reviewer to a PR in github_state and persist.
     AssignReviewer {
         pr_number: u64,
@@ -1854,11 +1852,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::ClearPrBreakSession { name } => {
-                let mut sessions = state.pr_break_sessions.write().unwrap();
-                sessions.remove(&name);
-                info!("Cleared PR break session for {}", name);
-            }
             Effect::AssignReviewer {
                 pr_number,
                 reviewer_name,
@@ -1984,6 +1977,20 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 title,
             } => {
                 let mut ps = state.persistent_state.lock().await;
+                // Backfill pr_number on the SessionRecord (if it exists).
+                // This makes the PR→session link derivable from sessions,
+                // reducing reliance on pr_author_sessions for task-linked PRs.
+                if let Some(record) = ps.sessions.get_mut(&session_id)
+                    && record.pr_number.is_none()
+                {
+                    record.pr_number = Some(pr_number);
+                    debug!(
+                        "Backfilled pr_number={} on SessionRecord {} (task={:?})",
+                        pr_number, session_id, record.task_id
+                    );
+                }
+                // Still write to pr_author_sessions for backward compatibility
+                // (non-task PRs and legacy code paths still read from it).
                 ps.github
                     .store_pr_author_session(pr_number, &session_id, &branch, &author, &title);
                 // Link the PR to the worktree by matching branch name.

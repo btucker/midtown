@@ -74,6 +74,8 @@ struct PrContext {
     task_channel: HashMap<String, String>,
     /// Session context for the target PR (if the PR has a stored author session)
     session_context: Option<crate::rules::PrSessionContext>,
+    /// Task-linked session ID for resume (PR → task → session lookup)
+    task_session_id: Option<String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
     /// Used to suppress both `PrApproved` workflow events AND inline nudge effects
     /// while a reviewer is still working, so the contract remains:
@@ -96,15 +98,46 @@ impl PrContext {
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
         let pr_task_associations = ps.github.pr_to_task_map();
 
-        let session_context =
-            ps.github
-                .get_pr_author_session(pr_number)
+        // Session-centric resume: PR → task → session
+        let task_session_id = pr_task_associations.get(&pr_number).and_then(|task_id| {
+            ps.sessions
+                .values()
+                .find(|s| s.task_id.as_deref() == Some(task_id))
+                .map(|s| s.session_id.clone())
+        });
+
+        // Build session_context: prefer SessionRecord for task-linked PRs,
+        // fall back to pr_author_sessions for non-task PRs (legacy).
+        let pr_author_session = ps.github.get_pr_author_session(pr_number);
+        let session_context = if let Some(ref sid) = task_session_id {
+            // Task-linked: derive PrSessionContext from SessionRecord.
+            // Fall back to pr_author_sessions for branch (SessionRecord.branch
+            // is often None because it's not backfilled during spawn).
+            ps.sessions
+                .get(sid)
                 .map(|s| crate::rules::PrSessionContext {
                     session_id: s.session_id.clone(),
-                    branch: s.branch.clone(),
-                    original_author: s.original_author.clone(),
+                    branch: s
+                        .branch
+                        .clone()
+                        .or_else(|| pr_author_session.as_ref().map(|a| a.branch.clone()))
+                        .unwrap_or_default(),
+                    original_author: s
+                        .preferred_name
+                        .clone()
+                        .or_else(|| s.current_name.clone())
+                        .unwrap_or_default(),
                     pr_number,
-                });
+                })
+        } else {
+            // Non-task: fall back to pr_author_sessions (legacy)
+            pr_author_session.map(|s| crate::rules::PrSessionContext {
+                session_id: s.session_id.clone(),
+                branch: s.branch.clone(),
+                original_author: s.original_author.clone(),
+                pr_number,
+            })
+        };
 
         // Gate check: reviewer assigned in github-state (raw presence, no timeout).
         // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event
@@ -120,6 +153,7 @@ impl PrContext {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
+            task_session_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -136,6 +170,7 @@ impl PrContext {
             pr_task_associations: ps.github.pr_to_task_map(),
             task_channel: ps.task_channel.clone(),
             session_context: None,
+            task_session_id: None,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -756,28 +791,6 @@ async fn update_pr_caches(
         let mut cache = state.pr_coworker_cache.write().unwrap();
         cache.ci_passed_pr_owners = ci_passed;
         cache.pr_poll_initialized = true;
-    }
-
-    // Cleanup saved PR break sessions for coworkers whose PRs are no longer open
-    {
-        let active_pr_coworkers: HashSet<String> = prs
-            .iter()
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
-            })
-            .collect();
-        let mut sessions = state.pr_break_sessions.write().unwrap();
-        let before = sessions.len();
-        sessions.retain(|name, _| active_pr_coworkers.contains(name));
-        let removed = before - sessions.len();
-        if removed > 0 {
-            info!(
-                "Cleaned up {} stale PR break session(s) (PR closed/merged)",
-                removed
-            );
-        }
     }
 
     // Detect abandoned PRs (closed without merge) and reset associated tasks.
@@ -1668,23 +1681,78 @@ fn action_to_effects(
             )]
         }
         PrAction::SpawnOwner { owner, message } => {
+            let session_mode = match &ctx.task_session_id {
+                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.clone()),
+                None => crate::launch::SessionMode::Resume,
+            };
             let config = crate::launch::LaunchConfig::coworker(
                 owner.clone(),
                 state.paths.dir_key().to_string(),
-                crate::launch::SessionMode::Resume,
+                session_mode,
                 Some(message),
-                None,
+                ctx.pr_task_associations.get(&pr_number).cloned(),
             );
+
+            let mut on_success = vec![
+                Effect::BroadcastCoworkerUpdate {
+                    name: owner.clone(),
+                    status: "running".to_string(),
+                    current_task: Some(format!("working on PR #{}", pr_number)),
+                },
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: daemon_messages::called_in_pr_issue(
+                        &owner,
+                        &issue_type.to_string(),
+                        pr_number,
+                    ),
+                    channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
+                    tool_data: None,
+                    provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+            ];
+
+            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
+
+            let on_failure = vec![
+                Effect::PostToChannel {
+                    sender: "midtown".to_string(),
+                    message: format!(
+                        "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
+                        pr_number,
+                        truncate_str(title, 40),
+                        owner,
+                        issue_type,
+                        get_issue_action(issue_type)
+                    ),
+                    channel: Some(OPS_CHANNEL.to_string()),
+                    auto_output: false,
+                    message_type: None,
+                    nudge_type: None,
+                    tool_data: None,
+                    provider: None,
+                    tool_use_id: None,
+                    parent_tool_use_id: None,
+                },
+                Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                },
+            ];
+
             vec![Effect::SpawnCoworkerWithCallbacks {
                 config,
-                on_success: vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-                on_failure: vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
+                on_success,
+                on_failure,
             }]
         }
         // HandoffToCoworker: keep existing behavior (Phase 5 will eliminate via task handoff).
@@ -4955,7 +5023,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
         Effect::RecordPermanentPrNudge { .. } => "RecordPermanentPrNudge",
         Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
-        Effect::ClearPrBreakSession { .. } => "ClearPrBreakSession",
         Effect::AssignReviewer { .. } => "AssignReviewer",
         Effect::RemoveReviewerAssignment { .. } => "RemoveReviewerAssignment",
         Effect::RecordReviewerEscalation { .. } => "RecordReviewerEscalation",

@@ -1357,7 +1357,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1370,7 +1370,7 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1690,6 +1690,7 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1729,7 +1730,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3249,7 +3250,7 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
         pr_task_associations,
         task_channel,
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4993,7 +4994,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5065,7 +5066,7 @@ fn log_pr_decision_appends_multiple_entries() {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5708,4 +5709,105 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
          chosen names must be accumulated across loop iterations",
         reviewer_names
     );
+}
+
+#[test]
+fn pr_context_session_context_from_session_record() {
+    let mut ps = super::super::state::DaemonPersistentState::default();
+
+    // Store a session record with task_id and pr_number
+    let session = super::super::state::SessionRecord {
+        session_id: "session-from-record".to_string(),
+        task_id: Some("42".to_string()),
+        pr_number: Some(100),
+        branch: Some("task-42-feature".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        ..Default::default()
+    };
+    ps.sessions
+        .insert("session-from-record".to_string(), session);
+
+    // Also store a pr_author_session with DIFFERENT data (to verify we prefer SessionRecord).
+    // Use a title with [Midtown !42] so that pr_to_task_map() picks up the association.
+    ps.github.store_pr_author_session(
+        100,
+        "session-from-author",
+        "old-branch",
+        "oldauthor",
+        "Feature [Midtown !42]",
+    );
+
+    let ctx = super::PrContext::from_persistent_state(&ps, 100);
+
+    // session_context should come from SessionRecord, not pr_author_sessions
+    let sc = ctx
+        .session_context
+        .as_ref()
+        .expect("should have session_context");
+    assert_eq!(sc.session_id, "session-from-record");
+    assert_eq!(sc.branch, "task-42-feature");
+    assert_eq!(sc.original_author, "lexington");
+    // task_session_id should also be set
+    assert_eq!(ctx.task_session_id, Some("session-from-record".to_string()));
+}
+
+#[test]
+fn pr_context_session_context_branch_fallback_to_author_session() {
+    // When SessionRecord.branch is None (common — it's never backfilled in prod),
+    // fall back to pr_author_sessions for the branch to avoid empty checkout commands.
+    let mut ps = super::super::state::DaemonPersistentState::default();
+
+    let session = super::super::state::SessionRecord {
+        session_id: "session-no-branch".to_string(),
+        task_id: Some("42".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        branch: None, // Not set — common in prod
+        ..Default::default()
+    };
+    ps.sessions.insert("session-no-branch".to_string(), session);
+
+    // pr_author_sessions has the real branch
+    ps.github.store_pr_author_session(
+        100,
+        "session-no-branch",
+        "lexington/task-42-feature",
+        "lexington",
+        "Feature [Midtown !42]",
+    );
+
+    let ctx = super::PrContext::from_persistent_state(&ps, 100);
+    let sc = ctx
+        .session_context
+        .as_ref()
+        .expect("should have session_context");
+
+    // session_id and author from SessionRecord, branch from pr_author_sessions
+    assert_eq!(sc.session_id, "session-no-branch");
+    assert_eq!(sc.branch, "lexington/task-42-feature");
+    assert_eq!(sc.original_author, "lexington");
+}
+
+#[test]
+fn pr_context_session_context_fallback_to_author_session() {
+    let mut ps = super::super::state::DaemonPersistentState::default();
+    ps.github.store_pr_author_session(
+        200,
+        "session-from-author",
+        "feature-branch",
+        "park",
+        "Manual PR",
+    );
+
+    let ctx = super::PrContext::from_persistent_state(&ps, 200);
+
+    // session_context should come from pr_author_sessions (fallback)
+    let sc = ctx
+        .session_context
+        .as_ref()
+        .expect("should have session_context");
+    assert_eq!(sc.session_id, "session-from-author");
+    assert_eq!(sc.branch, "feature-branch");
+    assert_eq!(sc.original_author, "park");
+    // No task_session_id (no task association)
+    assert!(ctx.task_session_id.is_none());
 }
