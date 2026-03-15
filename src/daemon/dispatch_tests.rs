@@ -5648,3 +5648,76 @@ fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
         effects
     );
 }
+
+/// Reviewer tasks must not be grouped with the implementation coworker even when
+/// they share the same PR number. Without this guard, resolve_grouped_name would
+/// route the reviewer task to the author's running session, dispatching it as a
+/// generic TaskClaimed nudge instead of a fresh reviewer spawn.
+#[test]
+fn test_reviewer_task_not_grouped_with_implementation_coworker() {
+    use crate::tasks::{Task, TaskStatus};
+
+    // Implementation task: already in progress, owned by "park"
+    let impl_task = Task {
+        id: "600".to_string(),
+        subject: "Implement feature for PR #55".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("park".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(55),
+        created_at: None,
+    };
+
+    // Reviewer task: pending, same PR number, should NOT group with park
+    let review_task = Task {
+        id: "601".to_string(),
+        subject: "Review PR #55".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #55.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(55),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.all_tasks = vec![impl_task.clone(), review_task.clone()];
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("601".to_string(), "midtown-code-reviewer".to_string());
+    // Mark park as active so grouping would normally route to them
+    snap.coworkers.active_names.insert("park".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // The reviewer task should spawn a fresh coworker, not nudge park
+    let spawned_as_fresh = effects.iter().any(|e| {
+        matches!(e, Effect::AssignAndSpawn { task_id, owner, .. }
+            if task_id == "601" && owner != "park")
+    });
+
+    assert!(
+        spawned_as_fresh,
+        "Reviewer task should spawn as fresh coworker, not group with implementation owner 'park'. Effects: {:#?}",
+        effects
+    );
+
+    // Double-check: no nudge to park for this task
+    let nudged_park = effects.iter().any(|e| {
+        matches!(e, Effect::NudgeSessionWithCallbacks { reason, .. }
+            if matches!(reason, crate::daemon::wake_reason::WakeReason::TaskClaimed { task_id, .. } if task_id == "601"))
+    });
+
+    assert!(
+        !nudged_park,
+        "Reviewer task should NOT be nudged to existing coworker. Effects: {:#?}",
+        effects
+    );
+}
