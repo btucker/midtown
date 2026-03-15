@@ -2954,23 +2954,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review (legacy) or has a review task.
-        {
-            let ps = state.persistent_state.lock().await;
-            // Legacy: check pr_reviewers for backward compatibility during transition
-            if ps.github.is_assigned(pr_number) {
-                if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    debug!(
-                        "PR #{} already assigned to active reviewer {}",
-                        pr_number, reviewer_name
-                    );
-                } else {
-                    debug!("PR #{} has assignment but no reviewer name", pr_number);
-                }
-                continue;
-            }
-        }
-
         // Check if a review task already exists for this PR (task-based dedup).
         {
             let has_review_task = all_tasks.iter().any(|t| {
