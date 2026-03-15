@@ -717,7 +717,7 @@ fn resolve_pr_handoff(
     active_coworkers: &[String],
     idle_coworkers: &[String],
     at_dev_limit: bool,
-    session_context: Option<&PrSessionContext>,
+    #[allow(unused_variables)] session_context: Option<&PrSessionContext>,
     message: &str,
     reason_label: &str,
     empty_owner_fallback: PrAction,
@@ -737,10 +737,10 @@ fn resolve_pr_handoff(
         };
     }
 
-    // Owner is either active-but-busy or inactive. Try handoff first;
-    // fallback depends on whether the owner is active:
+    // Owner is either active-but-busy or inactive.
+    // Fallback depends on whether the owner is active:
     // - Active but busy → nudge (spawning an active coworker fails)
-    // - Inactive → spawn (they need a new session)
+    // - Inactive → spawn (TaskPrompt handles resume-if-stopped for task-linked PRs)
     if !is_active && at_dev_limit {
         return PrAction::Skip {
             reason: format!(
@@ -748,24 +748,6 @@ fn resolve_pr_handoff(
                 owner, reason_label
             ),
         };
-    }
-
-    if let Some(ctx) = session_context {
-        let assignee = idle_coworkers
-            .iter()
-            .find(|c| !c.eq_ignore_ascii_case(owner))
-            .cloned();
-
-        if let Some(assignee) = assignee {
-            return PrAction::HandoffToCoworker {
-                assignee,
-                original_author: ctx.original_author.clone(),
-                pr_number: ctx.pr_number,
-                branch: ctx.branch.clone(),
-                session_id: ctx.session_id.clone(),
-                message: message.to_string(),
-            };
-        }
     }
 
     if is_active {
