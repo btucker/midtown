@@ -3,7 +3,7 @@ use super::*;
 use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
 #[test]
-fn test_dm_mirror_agent_names_excludes_root_leads() {
+fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
     let name_to_session = std::collections::HashMap::from([
         ("midtown".to_string(), "sess-lead".to_string()),
         ("auth".to_string(), "sess-auth".to_string()),
@@ -13,8 +13,17 @@ fn test_dm_mirror_agent_names_excludes_root_leads() {
     ]);
     let channel_lead_sessions =
         std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
+    let fork_bound_threads = std::collections::HashMap::from([(
+        "auth-discuss-a1b2".to_string(),
+        "msg-thread-123".to_string(),
+    )]);
 
-    let dm_names = dm_mirror_agent_names(&name_to_session, &channel_lead_sessions, "midtown");
+    let dm_names = dm_mirror_agent_names(
+        &name_to_session,
+        &channel_lead_sessions,
+        &fork_bound_threads,
+        "midtown",
+    );
 
     assert!(
         !dm_names.contains("midtown"),
@@ -25,16 +34,16 @@ fn test_dm_mirror_agent_names_excludes_root_leads() {
         "root channel leads already own their topic channel and should not get a DM mirror"
     );
     assert!(
+        !dm_names.contains("auth-discuss-a1b2"),
+        "fork sessions stream to their bound thread and should not get a DM mirror"
+    );
+    assert!(
         dm_names.contains("park"),
         "regular coworkers still need DMs"
     );
     assert!(
         dm_names.contains("reviewer-42"),
         "reviewers still need DMs for streamed output"
-    );
-    assert!(
-        dm_names.contains("auth-discuss-a1b2"),
-        "thread-bound forks keep DMs until their thread UX is revisited"
     );
 }
 

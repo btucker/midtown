@@ -13,7 +13,7 @@ import {
 	senderChanged,
 	timeChanged,
 } from "./messageUtils.ts";
-import { activeProject, channels, coworkers } from "./store.ts";
+import { activeProject, channels, coworkers, threadForkOwners } from "./store.ts";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
 import { isToolOnly } from "./toolRunGrouping.ts";
 
@@ -65,11 +65,12 @@ let displayColor = $derived(getSenderColor(displayName, senderOverrides, channel
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
 let clickName = $derived(msg.from);
 
+const forkNames = $derived(new Set(Object.values($threadForkOwners)));
 const agentNames = $derived(
 	new Set([
-		// Agents with existing displayable DM channels (covers coworkers, forks,
-		// and historical DMs that don't shadow a real channel lead home).
-		...getDisplayableDmChannels($channels).map((ch) => ch.name.slice(3)),
+		// Agents with existing displayable DM channels (covers coworkers and
+		// historical DMs that don't shadow a real channel lead or fork home).
+		...getDisplayableDmChannels($channels, forkNames).map((ch) => ch.name.slice(3)),
 		// Active coworkers (selectDm creates channel on demand)
 		...$coworkers.map((cw) => cw.name),
 	]),

@@ -38,6 +38,7 @@ import {
 	messagesByChannel,
 	showArchivedChannels,
 	threadData,
+	threadForkOwners,
 	threadUnreadCounts,
 	trackedThreads,
 } from "./store.ts";
@@ -65,7 +66,8 @@ $: {
 }
 
 $: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith("dm-"));
-$: dmChannels = getDisplayableDmChannels($channels);
+$: forkNames = new Set(Object.values($threadForkOwners));
+$: dmChannels = getDisplayableDmChannels($channels, forkNames);
 
 // Track which channels have their task lists expanded (default: collapsed)
 // Using SvelteSet for reactivity — plain Set mutations don't trigger re-renders in Svelte 5

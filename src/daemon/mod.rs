@@ -106,11 +106,16 @@ use crate::worktree::WorktreeManager;
 fn dm_mirror_agent_names(
     name_to_session: &HashMap<String, String>,
     channel_lead_sessions: &HashMap<String, String>,
+    fork_bound_threads: &HashMap<String, String>,
     project_name: &str,
 ) -> HashSet<String> {
     name_to_session
         .keys()
-        .filter(|name| name.as_str() != project_name && !channel_lead_sessions.contains_key(*name))
+        .filter(|name| {
+            name.as_str() != project_name
+                && !channel_lead_sessions.contains_key(*name)
+                && !fork_bound_threads.contains_key(*name)
+        })
         .cloned()
         .collect()
 }
@@ -3993,12 +3998,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
 
                     // Only agents without a native home channel get DM mirrors.
-                    // Root leads already stream to their real channel, so a dm-*
-                    // copy is duplicate noise in the UI.
+                    // Root leads and fork sessions already stream to their real
+                    // channel / bound thread, so a dm-* copy is duplicate noise.
                     let name_to_session = state.name_to_session.lock().unwrap();
+                    let fork_bound_threads =
+                        state.fork_bound_threads.lock().unwrap();
                     let dm_agent_names = dm_mirror_agent_names(
                         &name_to_session,
                         &ps.channel_lead_sessions,
+                        &fork_bound_threads,
                         &state.project_name,
                     );
                     let coworker_effects =
