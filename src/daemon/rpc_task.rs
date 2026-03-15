@@ -391,7 +391,12 @@ pub(super) async fn handle_task_create(
             changed = true;
         }
         if let Some(p) = parent {
-            ps.task_parent.insert(task_id.clone(), p.to_string());
+            let normalized = p
+                .strip_prefix('!')
+                .or_else(|| p.strip_prefix('#'))
+                .unwrap_or(p);
+            ps.task_parent
+                .insert(task_id.clone(), normalized.to_string());
             changed = true;
         }
         if changed && let Err(e) = ps.save_for_repo(&dir_key) {

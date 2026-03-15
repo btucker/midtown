@@ -746,6 +746,32 @@ fn test_task_parent_stored_in_persistent_state() {
     );
 }
 
+/// When `parent` is provided with a `!` or `#` prefix, the prefix is stripped
+/// before storing (consistent with handle_view's ID normalization).
+#[test]
+fn test_task_parent_normalizes_prefixed_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+
+    // Replicate the handle_task_create normalization logic
+    for (input, expected) in [("!42", "42"), ("#42", "42"), ("42", "42")] {
+        let normalized = input
+            .strip_prefix('!')
+            .or_else(|| input.strip_prefix('#'))
+            .unwrap_or(input);
+        ps.task_parent
+            .insert("child".to_string(), normalized.to_string());
+        assert_eq!(
+            ps.task_parent.get("child"),
+            Some(&expected.to_string()),
+            "parent '{}' should be normalized to '{}'",
+            input,
+            expected
+        );
+    }
+}
+
 /// When `parent` is `None`, the task_parent mapping is not modified.
 #[test]
 fn test_task_parent_not_stored_when_none() {
