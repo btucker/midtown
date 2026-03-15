@@ -111,17 +111,12 @@ impl PrContext {
         let pr_author_session = ps.github.get_pr_author_session(pr_number);
         let session_context = if let Some(ref sid) = task_session_id {
             // Task-linked: derive PrSessionContext from SessionRecord.
-            // Fall back to pr_author_sessions for branch (SessionRecord.branch
-            // is often None because it's not backfilled during spawn).
+            // SessionRecord.branch is backfilled at PR-open time, so no fallback needed.
             ps.sessions
                 .get(sid)
                 .map(|s| crate::rules::PrSessionContext {
                     session_id: s.session_id.clone(),
-                    branch: s
-                        .branch
-                        .clone()
-                        .or_else(|| pr_author_session.as_ref().map(|a| a.branch.clone()))
-                        .unwrap_or_default(),
+                    branch: s.branch.clone().unwrap_or_default(),
                     original_author: s
                         .preferred_name
                         .clone()

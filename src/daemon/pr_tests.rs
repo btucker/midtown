@@ -5699,25 +5699,26 @@ fn pr_context_session_context_from_session_record() {
 }
 
 #[test]
-fn pr_context_session_context_branch_fallback_to_author_session() {
-    // When SessionRecord.branch is None (common — it's never backfilled in prod),
-    // fall back to pr_author_sessions for the branch to avoid empty checkout commands.
+fn pr_context_session_context_branch_from_session_record() {
+    // SessionRecord.branch is backfilled at PR-open time, so task-linked PRs
+    // read branch directly from SessionRecord without pr_author_sessions fallback.
     let mut ps = super::super::state::DaemonPersistentState::default();
 
     let session = super::super::state::SessionRecord {
-        session_id: "session-no-branch".to_string(),
+        session_id: "session-with-branch".to_string(),
         task_id: Some("42".to_string()),
         preferred_name: Some("lexington".to_string()),
-        branch: None, // Not set — common in prod
+        branch: Some("lexington/task-42-feature".to_string()),
         ..Default::default()
     };
-    ps.sessions.insert("session-no-branch".to_string(), session);
+    ps.sessions
+        .insert("session-with-branch".to_string(), session);
 
-    // pr_author_sessions has the real branch
+    // pr_author_sessions present but should NOT be used for branch
     ps.github.store_pr_author_session(
         100,
-        "session-no-branch",
-        "lexington/task-42-feature",
+        "session-with-branch",
+        "some-other-branch",
         "lexington",
         "Feature [Midtown !42]",
     );
@@ -5728,8 +5729,8 @@ fn pr_context_session_context_branch_fallback_to_author_session() {
         .as_ref()
         .expect("should have session_context");
 
-    // session_id and author from SessionRecord, branch from pr_author_sessions
-    assert_eq!(sc.session_id, "session-no-branch");
+    // branch comes from SessionRecord, not pr_author_sessions
+    assert_eq!(sc.session_id, "session-with-branch");
     assert_eq!(sc.branch, "lexington/task-42-feature");
     assert_eq!(sc.original_author, "lexington");
 }
