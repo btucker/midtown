@@ -26,8 +26,6 @@ pub enum PrIssueType {
     ChangesRequested,
     /// PR is approved and ready to merge
     Approved,
-    /// PR needs code review (no Claude review comment yet)
-    NeedsReview,
     /// PR has review comments from non-owners
     ReviewComment,
     /// PR review is complete (Claude review posted), author should act
@@ -43,7 +41,6 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::CiFailed => write!(f, "CI failed"),
             PrIssueType::ChangesRequested => write!(f, "changes requested"),
             PrIssueType::Approved => write!(f, "approved"),
-            PrIssueType::NeedsReview => write!(f, "needs review"),
             PrIssueType::ReviewComment => write!(f, "review comment"),
             PrIssueType::ReviewComplete => write!(f, "review complete"),
             PrIssueType::GreenWithFeedback => write!(f, "CI green with feedback"),

@@ -1482,7 +1482,7 @@ async fn collect_green_with_feedback_effects(
 /// Build the workflow event for a PR issue type (if task-linked with a channel).
 ///
 /// Returns the appropriate `WorkflowEvent` variant for the issue type, or `None`
-/// for issue types without workflow event counterparts (ReviewComment, NeedsReview).
+/// for issue types without workflow event counterparts (ReviewComment).
 /// `ReviewComplete` maps to `ReviewerComplete` when called from review-complete context.
 fn build_workflow_event(
     issue_type: PrIssueType,
@@ -1528,7 +1528,7 @@ fn build_workflow_event(
             pr_number,
         }),
         // These issue types don't have workflow event counterparts.
-        PrIssueType::ReviewComment | PrIssueType::NeedsReview => None,
+        PrIssueType::ReviewComment => None,
     }
 }
 
@@ -4638,7 +4638,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ClearOrphanedReviewerAssignments { .. } => "ClearOrphanedReviewerAssignments",
         Effect::RerunWorkflow { .. } => "RerunWorkflow",
         Effect::UpdatePrComment { .. } => "UpdatePrComment",
-        Effect::StorePrAuthorSession { .. } => "StorePrAuthorSession",
+        Effect::LinkPrToSession { .. } => "LinkPrToSession",
         Effect::CompleteTask { .. } => "CompleteTask",
         Effect::ClearBlockedBy { .. } => "ClearBlockedBy",
         Effect::SetTaskPr { .. } => "SetTaskPr",

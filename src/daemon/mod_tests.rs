@@ -319,7 +319,6 @@ fn test_pr_issue_type_display() {
         "changes requested"
     );
     assert_eq!(PrIssueType::Approved.to_string(), "approved");
-    assert_eq!(PrIssueType::NeedsReview.to_string(), "needs review");
     assert_eq!(PrIssueType::ReviewComment.to_string(), "review comment");
     assert_eq!(PrIssueType::ReviewComplete.to_string(), "review complete");
     assert_eq!(
@@ -523,10 +522,6 @@ fn test_get_issue_action() {
     assert_eq!(
         get_issue_action(PrIssueType::Approved),
         "approved with CI green — please merge (use --auto if checks pending)"
-    );
-    assert_eq!(
-        get_issue_action(PrIssueType::NeedsReview),
-        "calling in reviewer"
     );
     assert_eq!(
         get_issue_action(PrIssueType::ReviewComment),
