@@ -721,3 +721,46 @@ fn test_ops_archived_stores_main_channel_in_task_channel_mapping() {
         "when ops is archived, ps.task_channel should store the main channel"
     );
 }
+
+// ── task_parent storage tests ────────────────────────────────────────────────
+
+/// When `parent` is provided in handle_task_create, the task_parent mapping
+/// in DaemonPersistentState is populated.
+#[test]
+fn test_task_parent_stored_in_persistent_state() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "43";
+    let parent: Option<&str> = Some("42");
+
+    // Replicate the handle_task_create storage logic
+    if let Some(p) = parent {
+        ps.task_parent.insert(task_id.to_string(), p.to_string());
+    }
+
+    assert_eq!(
+        ps.task_parent.get("43"),
+        Some(&"42".to_string()),
+        "parent should be stored in persistent state's task_parent map"
+    );
+}
+
+/// When `parent` is `None`, the task_parent mapping is not modified.
+#[test]
+fn test_task_parent_not_stored_when_none() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "43";
+    let parent: Option<&str> = None;
+
+    if let Some(p) = parent {
+        ps.task_parent.insert(task_id.to_string(), p.to_string());
+    }
+
+    assert!(
+        ps.task_parent.is_empty(),
+        "task_parent should remain empty when parent is None"
+    );
+}

@@ -289,6 +289,7 @@ pub(super) async fn handle_task_create(
     plan: Option<&str>,
     execution_skill: Option<&str>,
     thread_id: Option<&str>,
+    parent: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let dir_key = state.paths.dir_key().to_string();
@@ -389,9 +390,13 @@ pub(super) async fn handle_task_create(
             ps.task_thread_id.insert(task_id.clone(), tid.to_string());
             changed = true;
         }
+        if let Some(p) = parent {
+            ps.task_parent.insert(task_id.clone(), p.to_string());
+            changed = true;
+        }
         if changed && let Err(e) = ps.save_for_repo(&dir_key) {
             warn!(
-                "Failed to save task plan/execution_skill/thread_id mapping: {}",
+                "Failed to save task plan/execution_skill/thread_id/parent mapping: {}",
                 e
             );
         }
@@ -653,6 +658,7 @@ pub(super) async fn handle_task_metadata(
     let execution_skill = ps.task_execution_skill.get(task_id).cloned();
     let message_id = ps.task_message_id.get(task_id).cloned();
     let thread_id = ps.task_thread_id.get(task_id).cloned();
+    let parent = ps.task_parent.get(task_id).cloned();
 
     Response::success(
         id,
@@ -663,6 +669,7 @@ pub(super) async fn handle_task_metadata(
             "execution_skill": execution_skill,
             "message_id": message_id,
             "thread_id": thread_id,
+            "parent": parent,
         }),
     )
 }
