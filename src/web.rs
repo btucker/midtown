@@ -1075,6 +1075,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             };
             let message_id = persistent_state.task_message_id.get(&task.id).cloned();
             let thread_id = persistent_state.task_thread_id.get(&task.id).cloned();
+            let parent = persistent_state.task_parent.get(&task.id).cloned();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
@@ -1085,6 +1086,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "blocked_by": task.blocked_by,
                 "message_id": message_id,
                 "thread_id": thread_id,
+                "parent": parent,
             })
         })
         .collect();

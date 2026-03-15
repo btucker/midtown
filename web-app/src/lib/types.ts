@@ -63,6 +63,8 @@ export interface Task {
 	channel?: string;
 	thread_id?: string;
 	message_id?: string;
+	parent?: string;
+	blocked_by?: string[];
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────────

@@ -11,7 +11,15 @@ import { renderContent } from "./markdown.ts";
 import { getSenderColor } from "./messageUtils.ts";
 import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
 
-let { task, cw = null, reviewer = null, reviewPosted = false, onclick = null, variant = "row" } = $props();
+let {
+	task,
+	cw = null,
+	isChild = false,
+	reviewer = null,
+	reviewPosted = false,
+	onclick = null,
+	variant = "row",
+} = $props();
 
 const isCard = $derived(variant === "card");
 const isActive = $derived(task.status === "in_progress");
@@ -75,7 +83,7 @@ function handleDescriptionClick(e) {
 </script>
 
 <button
-  class="task-row w-full overflow-visible flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
+  class="task-row w-full overflow-visible flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''} {isChild && !isCard ? 'pl-3' : ''}"
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >

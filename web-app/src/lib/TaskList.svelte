@@ -28,13 +28,54 @@ function filterTasksByChannel(tasks, channel) {
 	return tasks.filter((task) => task.channel === channel);
 }
 
-// Derived: tasks for this channel
+/**
+ * Group tasks so children appear immediately after their parent, indented.
+ * Tasks without a parent (or whose parent isn't in the list) appear at the top level.
+ * Returns { task, isChild }[] for rendering.
+ */
+function groupByParent(tasks) {
+	const childrenOf = new Map(); // parent id → child tasks[]
+	const topLevel = [];
+	const taskIds = new Set(tasks.map((t) => String(t.id)));
+
+	for (const task of tasks) {
+		if (task.parent && taskIds.has(String(task.parent))) {
+			const key = String(task.parent);
+			if (!childrenOf.has(key)) childrenOf.set(key, []);
+			childrenOf.get(key).push(task);
+		} else {
+			topLevel.push(task);
+		}
+	}
+
+	// Promote children whose parent is also a child (circular refs) to top level
+	const topLevelIds = new Set(topLevel.map((t) => String(t.id)));
+	for (const [parentId, children] of childrenOf) {
+		if (!topLevelIds.has(parentId)) {
+			topLevel.push(...children);
+		}
+	}
+
+	const result = [];
+	for (const task of topLevel) {
+		result.push({ task, isChild: false });
+		const children = childrenOf.get(String(task.id));
+		if (children) {
+			for (const child of children) {
+				result.push({ task: child, isChild: true });
+			}
+		}
+	}
+	return result;
+}
+
+// Derived: tasks for this channel, grouped by parent-child relationship
 const channelTasks = $derived.by(() => {
 	const allTasks = [
 		...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" })),
 		...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" })),
 	];
-	return filterTasksByChannel(allTasks, channelName);
+	return groupByParent(filterTasksByChannel(allTasks, channelName));
 });
 
 // Map coworker name → coworker object for progress/phase lookup
@@ -58,12 +99,13 @@ function handleTaskClick(task) {
 </script>
 
 <div class="flex flex-col gap-0.5 py-1 pb-1.5">
-  {#each channelTasks as task}
+  {#each channelTasks as { task, isChild }}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const reviewInfo = taskReviewerMap.get(String(task.id))}
     <TaskRow
       {task}
       {cw}
+      {isChild}
       reviewer={reviewInfo?.reviewer}
       reviewPosted={reviewInfo?.reviewPosted ?? false}
       onclick={() => handleTaskClick(task)}
