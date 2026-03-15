@@ -1424,9 +1424,9 @@ fn action_to_effects_spawn_owner_with_task_produces_task_prompt() {
     );
 }
 
-/// Task-less SpawnOwner falls through to PostToChannel.
+/// Task-less SpawnOwner spawns/resumes the coworker session directly.
 #[test]
-fn action_to_effects_spawn_owner_without_task_produces_post_to_channel() {
+fn action_to_effects_spawn_owner_without_task_produces_spawn_coworker() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1442,12 +1442,12 @@ fn action_to_effects_spawn_owner_without_task_produces_post_to_channel() {
         &ctx,
     );
 
-    let has_post = effects
+    let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::PostToChannel { .. }));
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
     assert!(
-        has_post,
-        "SpawnOwner without task should produce PostToChannel. Effects: {:#?}",
+        has_spawn,
+        "SpawnOwner without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
         effects
     );
 }
@@ -1487,9 +1487,9 @@ fn action_to_effects_comment_spawn_owner_with_task_produces_task_prompt() {
     }
 }
 
-/// Task-less SpawnOwner for ReviewComment falls through to PostToChannel.
+/// Task-less SpawnOwner for ReviewComment spawns/resumes the coworker session.
 #[test]
-fn action_to_effects_comment_spawn_owner_without_task_produces_post_to_channel() {
+fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1505,12 +1505,12 @@ fn action_to_effects_comment_spawn_owner_without_task_produces_post_to_channel()
         &ctx,
     );
 
-    let has_post = effects
+    let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::PostToChannel { .. }));
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
     assert!(
-        has_post,
-        "SpawnOwner (comment) without task should produce PostToChannel. Effects: {:#?}",
+        has_spawn,
+        "SpawnOwner (comment) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
         effects
     );
 }
@@ -1609,9 +1609,9 @@ fn action_to_effects_review_complete_spawn_owner_with_task_produces_task_prompt(
     }
 }
 
-/// Task-less SpawnOwner for ReviewComplete falls through to PostToChannel.
+/// Task-less SpawnOwner for ReviewComplete spawns/resumes the coworker session.
 #[test]
-fn action_to_effects_review_complete_spawn_owner_without_task_produces_post_to_channel() {
+fn action_to_effects_review_complete_spawn_owner_without_task_produces_spawn_coworker() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1627,12 +1627,12 @@ fn action_to_effects_review_complete_spawn_owner_without_task_produces_post_to_c
         &ctx,
     );
 
-    let has_post = effects
+    let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::PostToChannel { .. }));
+        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
     assert!(
-        has_post,
-        "SpawnOwner (review_complete) without task should produce PostToChannel. Effects: {:#?}",
+        has_spawn,
+        "SpawnOwner (review_complete) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
         effects
     );
 }
