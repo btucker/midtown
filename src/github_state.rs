@@ -17,6 +17,13 @@ use tracing::{debug, warn};
 /// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
 pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
 
+/// Grace period (in seconds) for the optimistic assignment window. Assignments
+/// younger than this are never pruned, even if the reviewer isn't running yet,
+/// because the spawn may still be in progress. After this window, assignments
+/// where the session never started (no `reviewer_session_id`) and the reviewer
+/// is not running are considered orphaned and removed.
+pub const OPTIMISTIC_ASSIGNMENT_GRACE_SECS: u64 = 60;
+
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitHubState {
@@ -382,10 +389,18 @@ impl GitHubState {
     /// of a reviewer just because the review is taking longer than the timeout.
     /// Running coworkers' assignments are preserved regardless of timeout.
     ///
-    /// **Optimistic assignment safety**: Assignments younger than `timeout` (600s)
-    /// are never pruned, even if the reviewer doesn't appear in `running_coworkers`.
-    /// This protects against the window between optimistic assignment (before spawn)
-    /// and worktree creation (after spawn completes).
+    /// **Optimistic assignment safety**: Assignments younger than
+    /// `OPTIMISTIC_ASSIGNMENT_GRACE_SECS` (60s) are never pruned, even if the
+    /// reviewer doesn't appear in `running_coworkers`. This protects against
+    /// the window between optimistic assignment (before spawn) and worktree
+    /// creation (after spawn completes).
+    ///
+    /// **Orphaned assignment cleanup**: Assignments older than the grace period
+    /// but younger than `timeout` (600s) are removed if the reviewer is not
+    /// running AND the session never started (`reviewer_session_id` is `None`).
+    /// This handles the case where a coworker was repurposed before the review
+    /// session started — without this, the stale assignment blocks re-spawning
+    /// for the full 600-second timeout.
     ///
     /// When `running_session_ids` is provided, assignments with a known
     /// `reviewer_session_id` are matched by session ID instead of name. This
@@ -398,6 +413,7 @@ impl GitHubState {
     ) {
         let now = Utc::now();
         let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
+        let grace = chrono::Duration::seconds(OPTIMISTIC_ASSIGNMENT_GRACE_SECS as i64);
 
         let is_reviewer_running = |a: &PrReviewerAssignment| -> bool {
             // If we have session IDs and the assignment has one, prefer session-based matching
@@ -412,17 +428,30 @@ impl GitHubState {
             .pr_reviewers
             .iter()
             .filter(|(_, a)| {
-                now.signed_duration_since(a.assigned_at) > timeout && !is_reviewer_running(a)
+                let elapsed = now.signed_duration_since(a.assigned_at);
+                if is_reviewer_running(a) {
+                    return false;
+                }
+                // Case 1: Assignment expired by timeout (original behavior)
+                if elapsed > timeout {
+                    return true;
+                }
+                // Case 2: Assignment past grace period, session never started
+                // (coworker was repurposed before the review session began)
+                if elapsed > grace && a.reviewer_session_id.is_none() {
+                    return true;
+                }
+                false
             })
             .map(|(pr, _)| *pr)
             .collect();
 
-        for pr in to_remove {
+        for pr in &to_remove {
             debug!(
-                "Cleaning up expired reviewer assignment for PR #{} (timed out, coworker not running)",
+                "Cleaning up stale reviewer assignment for PR #{} (coworker not running)",
                 pr
             );
-            self.pr_reviewers.remove(&pr);
+            self.pr_reviewers.remove(pr);
         }
 
         // Refresh timestamps for running coworkers whose assignments would have expired

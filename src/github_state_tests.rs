@@ -657,6 +657,103 @@ fn test_expired_assignment_removed_when_reviewer_not_running_enables_respawn() {
     );
 }
 
+/// Regression test for !2303: When a reviewer assignment exists but the session
+/// never started (e.g., the coworker was repurposed as a developer), the
+/// assignment blocks re-spawning for the full 600-second timeout. The fix:
+/// `cleanup_expired_preserving` should remove assignments where the reviewer
+/// is not running AND the session never started (no `reviewer_session_id`),
+/// after a grace period for the optimistic assignment window.
+#[test]
+fn test_stale_assignment_removed_when_session_never_started() {
+    let mut state = GitHubState::default();
+    state.assign_reviewer(2001, "lexington", AssignmentSource::PollingFallback);
+
+    // Backdate assignment past the grace period (120s) but within the 600s timeout.
+    // This simulates a coworker that was assigned ~2 minutes ago but never started
+    // a review session (e.g., was repurposed as a developer).
+    if let Some(a) = state.pr_reviewers.get_mut(&2001) {
+        a.assigned_at = Utc::now() - chrono::Duration::seconds(120);
+    }
+
+    // Precondition: `is_assigned()` still returns true (within 600s timeout).
+    assert!(
+        state.is_assigned(2001),
+        "assignment should still be within timeout window"
+    );
+
+    // Precondition: no reviewer_session_id (session never started).
+    assert!(
+        state
+            .pr_reviewers
+            .get(&2001)
+            .unwrap()
+            .reviewer_session_id
+            .is_none(),
+        "session was never started, so reviewer_session_id should be None"
+    );
+
+    // Lexington is NOT in running coworkers (was repurposed).
+    let running: std::collections::HashSet<String> = std::collections::HashSet::new();
+    state.cleanup_expired_preserving(&running, None);
+
+    // The assignment should be removed because the reviewer is not running
+    // and the session never started, even though it's within the 600s timeout.
+    assert!(
+        !state.pr_reviewers.contains_key(&2001),
+        "stale assignment for repurposed reviewer (no session started) must be \
+         removed by cleanup_expired_preserving to unblock re-spawning"
+    );
+}
+
+/// Verify that fresh assignments within the grace period are NOT removed,
+/// even if the reviewer isn't running yet (optimistic assignment window).
+#[test]
+fn test_fresh_optimistic_assignment_preserved_during_grace_period() {
+    let mut state = GitHubState::default();
+    state.assign_reviewer(2002, "park", AssignmentSource::PollingFallback);
+
+    // Assignment is only 30 seconds old — within the grace period for spawn.
+    if let Some(a) = state.pr_reviewers.get_mut(&2002) {
+        a.assigned_at = Utc::now() - chrono::Duration::seconds(30);
+    }
+
+    // Park is NOT running yet (spawn in progress).
+    let running: std::collections::HashSet<String> = std::collections::HashSet::new();
+    state.cleanup_expired_preserving(&running, None);
+
+    // The assignment should be preserved — it's within the grace period.
+    assert!(
+        state.pr_reviewers.contains_key(&2002),
+        "fresh optimistic assignment should be preserved during grace period"
+    );
+}
+
+/// Verify that assignments with a backfilled session_id are preserved even
+/// past the grace period, as long as the session might still be running.
+#[test]
+fn test_assignment_with_session_id_preserved_when_session_running() {
+    let mut state = GitHubState::default();
+    state.assign_reviewer(2003, "broadway", AssignmentSource::PollingFallback);
+
+    // Assignment is 120s old with a backfilled session_id (session did start).
+    if let Some(a) = state.pr_reviewers.get_mut(&2003) {
+        a.assigned_at = Utc::now() - chrono::Duration::seconds(120);
+        a.reviewer_session_id = Some("sess-abc".to_string());
+    }
+
+    // Broadway IS running.
+    let running: std::collections::HashSet<String> = ["broadway".to_string()].into_iter().collect();
+    let sessions: std::collections::HashSet<String> =
+        ["sess-abc".to_string()].into_iter().collect();
+    state.cleanup_expired_preserving(&running, Some(&sessions));
+
+    // Should be preserved — session is actively running.
+    assert!(
+        state.pr_reviewers.contains_key(&2003),
+        "assignment with active session should be preserved"
+    );
+}
+
 #[test]
 fn test_add_review_comment_id() {
     let mut state = GitHubState::default();
