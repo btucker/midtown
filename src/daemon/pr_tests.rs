@@ -5763,3 +5763,120 @@ fn reviewer_resume_config_override_sets_role_provider_and_model() {
         "Model should match reviewer default (opus) after override"
     );
 }
+
+/// Bug !2302: When multiple PRs need reviewers in the same tick,
+/// `collect_reviewer_effects_with_source` calls `next_available_name_excluding`
+/// per PR but never accumulates names already chosen for earlier PRs in the
+/// same loop iteration. Since effects aren't executed yet, the same name is
+/// returned for every PR.
+///
+/// Fix: Track chosen reviewer names across loop iterations and include them
+/// in `excluded_names` for subsequent calls.
+#[tokio::test]
+async fn test_multiple_prs_get_distinct_reviewer_names() {
+    // Two PRs by different authors, both needing review
+    let pr1 = json!({
+        "number": 7001,
+        "headRefName": "lexington/feature-a",
+        "title": "feat: Feature A [Midtown !200]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+    let pr2 = json!({
+        "number": 7002,
+        "headRefName": "park/feature-b",
+        "title": "feat: Feature B [Midtown !201]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("midtown");
+
+    // Strategy: Put all avenue names in `active_names` so they're excluded
+    // from name selection via `reserved_names`. Register only the overflow
+    // names (minus one) as coworkers so they're excluded via `used_names`.
+    // This leaves exactly ONE overflow name available while staying under
+    // the coworker limit (6 registered < max_coworkers + REVIEW_HEADROOM = 10).
+    //
+    // Without the fix, both PRs see the same single overflow name and both
+    // get assigned it. With the fix, the first PR claims it and the
+    // accumulator prevents the second PR from reusing it.
+    let overflow = crate::coworker::OVERFLOW_NAMES;
+
+    // Register the two PR authors (needed for orphan detection) plus all
+    // overflow names except the last one.
+    for (i, name) in ["lexington", "park"]
+        .iter()
+        .chain(overflow[..overflow.len() - 1].iter())
+        .enumerate()
+    {
+        state
+            .coworkers
+            .register(
+                &format!("slot-{i}"),
+                name,
+                "/tmp".to_string(),
+                None,
+                "claude-sonnet".to_string(),
+                crate::auth::AuthProvider::Claude,
+                "default".to_string(),
+            )
+            .unwrap();
+    }
+
+    let branch_owners: std::collections::HashMap<String, String> = [
+        ("lexington/feature-a".to_string(), "lexington".to_string()),
+        ("park/feature-b".to_string(), "park".to_string()),
+    ]
+    .into_iter()
+    .collect();
+
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    // All avenue names are "active" — this excludes them from reviewer name
+    // selection and ensures the two author PRs aren't marked orphaned.
+    let active_names: std::collections::HashSet<String> = crate::coworker::AVENUE_NAMES
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    let effects = collect_reviewer_effects_with_source(
+        &branch_owners,
+        &registry,
+        &active_names,
+        &state,
+        &[pr1, pr2],
+        crate::github_state::AssignmentSource::PollingFallback,
+        &std::collections::HashMap::new(),
+    )
+    .await;
+
+    // Extract all reviewer names from AssignReviewer effects
+    let reviewer_names: Vec<String> = effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::AssignReviewer { reviewer_name, .. } = e {
+                Some(reviewer_name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // With the bug: both PRs see the same single overflow name available
+    // and both get assigned the same reviewer name → 2 identical assignments.
+    // With the fix: the first PR claims the only overflow name, the second
+    // PR finds no available name and is skipped → only 1 assignment.
+    //
+    // We verify no duplicate names appear. The buggy behavior produces
+    // 2 assignments with the same name; the fixed behavior produces 1.
+    let unique_names: std::collections::HashSet<&String> = reviewer_names.iter().collect();
+    assert_eq!(
+        unique_names.len(),
+        reviewer_names.len(),
+        "Bug !2302: Duplicate reviewer names assigned: {:?} — \
+         chosen names must be accumulated across loop iterations",
+        reviewer_names
+    );
+}

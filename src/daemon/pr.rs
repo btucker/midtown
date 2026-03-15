@@ -3030,6 +3030,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         )
     };
 
+    // Accumulate reviewer names chosen in this batch so subsequent PRs
+    // exclude names already assigned to earlier PRs in the same call.
+    // Without this, every PR sees the same available pool and gets the
+    // same name (effects aren't executed until the function returns).
+    let mut chosen_reviewer_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
     for pr in prs {
         let pf = PrFields::from_json(pr);
         let pr_number = pf.number;
@@ -3449,6 +3456,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             excluded_names.insert(name.clone());
         }
 
+        // Also exclude names already chosen for earlier PRs in this batch.
+        for name in &chosen_reviewer_names {
+            excluded_names.insert(name.clone());
+        }
+
         let reviewer_name = match state
             .coworkers
             .next_available_name_excluding(&excluded_names)
@@ -3459,6 +3471,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 continue;
             }
         };
+
+        // Record chosen name so subsequent PRs won't reuse it.
+        chosen_reviewer_names.insert(reviewer_name.clone());
 
         // Compute worktree details for reviewer worktree
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
