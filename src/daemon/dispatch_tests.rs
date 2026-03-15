@@ -3199,7 +3199,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
 }
 
 #[test]
-fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
+fn test_unowned_pending_task_with_open_pr_is_dispatched() {
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -3222,7 +3222,9 @@ fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
             tasks_with_open_prs,
             ..Default::default()
         },
-        // Task is PR-protected (has open PR, detected during snapshot collection)
+        // PR-protection should NOT block unowned pending tasks — only in_progress
+        // tasks during orphan recovery. Pending tasks with open PRs (e.g., "rebase
+        // and land PR #X") must still be dispatchable.
         pr_protected_tasks: ["2050".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
@@ -3241,14 +3243,14 @@ fn test_unowned_pending_task_with_open_pr_is_skipped_by_dispatch_guard() {
         )
     });
     assert!(
-        !has_spawn,
-        "Task !2050 should be skipped because it has an open PR in tasks_with_open_prs, got effects: {:?}",
+        has_spawn,
+        "Task !2050 should be dispatched — PR-protection only applies to in_progress tasks (orphan recovery), not unowned pending tasks. Got effects: {:?}",
         effects
     );
 }
 
 #[test]
-fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
+fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -3271,7 +3273,8 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
             github_open_pr_task_ids,
             ..Default::default()
         },
-        // Task is PR-protected (GitHub title-match detected during snapshot collection)
+        // PR-protection should NOT block unowned pending tasks — only in_progress
+        // tasks during orphan recovery.
         pr_protected_tasks: ["2051".to_string()].into_iter().collect(),
         is_at_dev_limit: false,
         is_at_coworker_limit: false,
@@ -3290,8 +3293,8 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_skipped() {
         )
     });
     assert!(
-        !has_spawn,
-        "Task !2051 should be skipped because it has an open PR via title-match map, got effects: {:?}",
+        has_spawn,
+        "Task !2051 should be dispatched — PR-protection only applies to in_progress tasks (orphan recovery), not unowned pending tasks. Got effects: {:?}",
         effects
     );
 }
