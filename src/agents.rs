@@ -3,11 +3,10 @@
 //! Prompts are assembled from three distinct layers:
 //!
 //! 1. **Agent definition (Layer 1)** — Role identity and behavioral instructions.
-//!    Currently loaded from `agents/*.md` (e.g., `coworker.md`, `project-lead.md`)
-//!    with compiled-in fallback. A parallel set of new-format agent definitions
-//!    (`.claude/agents/midtown-*.md`) exists and is accessible via
-//!    `load_agent_definition_for_role()`, but the public assembly functions still
-//!    use the old-format files during this transition.
+//!    Loaded from `.claude/agents/midtown-*.md` (Claude Code agent format with YAML
+//!    frontmatter). Search order: project-level `.claude/agents/`, user-level
+//!    `~/.claude/agents/`, then compiled-in fallback. For Claude Code sessions,
+//!    Layer 1 is delivered via `--agent <name>`; for Codex, bundled into `--system-prompt`.
 //!
 //! 2. **Shared prompt (Layer 2)** — Operational rules shared across roles. `common.md` for
 //!    all agents, plus `lead-common.md` for leads. Always uses compiled-in content.
