@@ -1798,6 +1798,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
 /// The fixture serves as documentation of the exact production scenario that triggered
 /// the bug.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     use super::super::snapshot::WorldSnapshot;
 
@@ -1838,6 +1839,36 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         "reviewDecision": "",
     });
 
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
+    // Without this mock, the test makes a real API call and fails once PR #1246
+    // has a Claude review posted (is_pr_reviewed returns true → continue → no effects).
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
     let (state, _tmp, _guard) = make_test_state("midtown");
 
     // Populate branch_owners so coworker_from_branch resolves "park" from the branch.
@@ -1859,6 +1890,12 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         &std::collections::HashMap::new(),
     )
     .await;
+
+    // Restore PATH and release lock
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
 
     // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
     // Expected: Should spawn a reviewer (park is active and can address feedback)
