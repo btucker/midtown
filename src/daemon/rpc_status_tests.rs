@@ -330,7 +330,8 @@ fn test_map_tasks_includes_thread_id_and_message_id() {
         .collect();
 
     let plan_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map);
+    let parent_map = std::collections::HashMap::new();
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0]["id"], "42");
@@ -353,7 +354,8 @@ fn test_map_tasks_thread_id_null_when_absent() {
     let thread_ids = std::collections::HashMap::new();
 
     let plan_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map);
+    let parent_map = std::collections::HashMap::new();
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0]["message_id"], "msg-only");
@@ -374,10 +376,39 @@ fn test_map_tasks_both_ids_null_when_absent() {
     let thread_ids = std::collections::HashMap::new();
 
     let plan_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map);
+    let parent_map = std::collections::HashMap::new();
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0]["status"], "completed");
     assert!(result[0]["message_id"].is_null());
     assert!(result[0]["thread_id"].is_null());
+}
+
+#[test]
+fn test_map_tasks_includes_parent_when_set() {
+    let tasks = vec![
+        make_task(
+            "10",
+            "Implement feature",
+            crate::tasks::TaskStatus::InProgress,
+        ),
+        make_task("11", "Review PR #42", crate::tasks::TaskStatus::InProgress),
+    ];
+    let msg_ids = std::collections::HashMap::new();
+    let thread_ids = std::collections::HashMap::new();
+    let plan_map = std::collections::HashMap::new();
+    let parent_map = [("11".to_string(), "10".to_string())].into_iter().collect();
+
+    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
+
+    assert_eq!(result.len(), 2);
+    assert!(
+        result[0]["parent"].is_null(),
+        "parent task should have no parent"
+    );
+    assert_eq!(
+        result[1]["parent"], "10",
+        "child task should reference parent"
+    );
 }
