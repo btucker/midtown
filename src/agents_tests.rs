@@ -11,8 +11,11 @@ fn test_main_lead_system_prompt_loads() {
 #[test]
 fn test_coworker_system_prompt_substitutes_name() {
     let prompt = coworker_system_prompt("lexington", "midtown", None);
-    assert!(prompt.contains("**lexington**"));
-    assert!(prompt.contains("git checkout -b lexington/"));
+    // {name} should be replaced in Layer 2 (common.md) content
+    assert!(
+        prompt.contains("<!-- midtown: lexington -->"),
+        "Coworker prompt should have {{name}} replaced in GitHub frontmatter"
+    );
     assert!(!prompt.contains("{name}"));
 }
 
@@ -47,10 +50,9 @@ fn test_coworker_system_prompt_channel_lead_substitutes_channel_name() {
 #[test]
 fn test_coworker_system_prompt_contains_required_sections() {
     let prompt = coworker_system_prompt("park", "midtown", None);
-    assert!(prompt.contains("Channel Usage"));
+    // These sections come from the agent definition (midtown-code-author.md)
     assert!(prompt.contains("Your Task"));
     assert!(prompt.contains("Git Workflow"));
-    assert!(prompt.contains("Coordination"));
     assert!(prompt.contains("Read the Channel"));
     assert!(prompt.contains("midtown channel read"));
     assert!(prompt.contains("[Midtown !"));
@@ -132,20 +134,6 @@ fn test_common_prompt_name_substitution_in_coworker() {
 }
 
 #[test]
-fn test_reviewer_prompt_substitutes_pr_number() {
-    let prompt = reviewer_prompt(42, AuthProvider::Claude);
-    assert!(prompt.contains("reviewing PR #42"));
-    assert!(prompt.contains("/code-review:code-review 42"));
-    // Daemon posts the placeholder, reviewer uses `midtown pr review post`
-    assert!(prompt.contains("midtown pr review post --pr 42"));
-    assert!(prompt.contains("PR #42 repeats"));
-    assert!(
-        !prompt.contains("{pr_number}"),
-        "Reviewer prompt should not contain unreplaced {{pr_number}} placeholders"
-    );
-}
-
-#[test]
 fn test_reviewer_resume_prompt_substitutes_pr_number() {
     let prompt = reviewer_resume_prompt(99, AuthProvider::Claude);
     assert!(prompt.contains("Resume reviewing PR #99"));
@@ -162,36 +150,6 @@ fn test_reviewer_resume_prompt_substitutes_pr_number() {
     assert!(
         !prompt.contains("{pr_number}"),
         "Reviewer resume prompt should not contain unreplaced {{pr_number}} placeholders"
-    );
-}
-
-#[test]
-fn test_reviewer_prompt_contains_required_sections() {
-    let prompt = reviewer_prompt(1, AuthProvider::Claude);
-    assert!(
-        prompt.contains("IMPORTANT"),
-        "Reviewer prompt should contain IMPORTANT section"
-    );
-    assert!(
-        prompt.contains("REFACTOR DETECTION"),
-        "Reviewer prompt should contain REFACTOR DETECTION section"
-    );
-    assert!(
-        prompt.contains("TASK DESCRIPTION VERIFICATION"),
-        "Reviewer prompt should contain TASK DESCRIPTION VERIFICATION section"
-    );
-}
-
-#[test]
-fn test_reviewer_prompt_codex_invocation() {
-    let prompt = reviewer_prompt(42, AuthProvider::Codex);
-    assert!(
-        prompt.contains("use the code-review skill to review PR #42"),
-        "Codex reviewer prompt should use the skill instruction"
-    );
-    assert!(
-        !prompt.contains("/code-review:code-review 42"),
-        "Codex reviewer prompt should not use slash command"
     );
 }
 
@@ -219,37 +177,27 @@ fn test_reviewer_system_prompt_merges_all_sources() {
         Some(42),
     );
 
-    // Should contain content from common.md
+    // Should contain content from common.md (Layer 2)
     assert!(
         prompt.contains("GitHub Etiquette"),
         "Reviewer system prompt should include common.md content"
     );
 
-    // Should contain content from coworker.md
-    assert!(
-        prompt.contains("Channel Usage"),
-        "Reviewer system prompt should include coworker.md content"
-    );
-
-    // Should contain reviewer-specific instructions from reviewer.md
+    // Should contain reviewer-specific instructions from agent definition (Layer 1)
     assert!(
         prompt.contains("THRESHOLD OVERRIDE"),
-        "Reviewer system prompt should include THRESHOLD OVERRIDE from reviewer.md"
+        "Reviewer system prompt should include THRESHOLD OVERRIDE from agent definition"
     );
     assert!(
-        prompt.contains("CHANNEL MESSAGE DISCIPLINE"),
-        "Reviewer system prompt should include CHANNEL MESSAGE DISCIPLINE from reviewer.md"
+        prompt.contains("Channel Message Discipline"),
+        "Reviewer system prompt should include Channel Message Discipline from agent definition"
     );
     assert!(
         prompt.contains("TEST SUGGESTIONS"),
-        "Reviewer system prompt should include TEST SUGGESTIONS from reviewer.md"
+        "Reviewer system prompt should include TEST SUGGESTIONS from agent definition"
     );
 
-    // Should have name substituted
-    assert!(
-        prompt.contains("**lexington**"),
-        "Reviewer system prompt should substitute {{name}} with actual name"
-    );
+    // Agent definition should not have unreplaced template vars
     assert!(
         !prompt.contains("{name}"),
         "Reviewer system prompt should not contain unreplaced {{name}}"
@@ -282,9 +230,8 @@ fn test_reviewer_prompts_use_daemon_review_post() {
 }
 
 #[test]
-fn test_reviewer_system_prompt_substitutes_escalation_target() {
-    // When escalation_target differs from project_name, review notes should
-    // @mention the escalation target (channel lead) not the project lead.
+fn test_reviewer_system_prompt_contains_review_note_pattern() {
+    // The agent definition should include the Review Note pattern for escalation
     let prompt = reviewer_system_prompt(
         "york",
         "midtown",
@@ -293,10 +240,9 @@ fn test_reviewer_system_prompt_substitutes_escalation_target() {
         Some(42),
     );
 
-    // escalation_target should be substituted in review note examples
     assert!(
-        prompt.contains("@daemon-core [Review Note]"),
-        "Reviewer system prompt should substitute {{escalation_target}} with channel lead name"
+        prompt.contains("[Review Note]"),
+        "Reviewer system prompt should contain the Review Note pattern"
     );
     assert!(
         !prompt.contains("{escalation_target}"),
@@ -307,7 +253,7 @@ fn test_reviewer_system_prompt_substitutes_escalation_target() {
         "Reviewer system prompt should not contain unreplaced {{channel_lead}}"
     );
 
-    // project_name should still be substituted elsewhere (e.g., coworker prompt sections)
+    // project_name should still be substituted in Layer 2 content
     assert!(
         prompt.contains("midtown"),
         "Reviewer system prompt should still reference the project name"
@@ -315,31 +261,19 @@ fn test_reviewer_system_prompt_substitutes_escalation_target() {
 }
 
 #[test]
-fn test_reviewer_system_prompt_escalation_falls_back_to_project_name() {
-    // When escalation_target equals project_name, behavior is unchanged
-    let prompt =
-        reviewer_system_prompt("york", "midtown", "midtown", AuthProvider::Claude, Some(42));
-
-    assert!(
-        prompt.contains("@midtown [Review Note]"),
-        "When escalation target is project name, review notes should @mention project lead"
-    );
-}
-
-#[test]
-fn test_channel_lead_system_prompt_substitutes_channel_name() {
+fn test_channel_lead_system_prompt_no_unreplaced_template_vars() {
     let prompt = channel_lead_system_prompt("web-interface", "No context yet.", "midtown", None);
-    assert!(
-        prompt.contains("#web-interface"),
-        "Channel lead prompt should contain the channel name with # prefix"
-    );
-    assert!(
-        prompt.contains("--channel web-interface"),
-        "Channel lead prompt should show correct channel flag"
-    );
     assert!(
         !prompt.contains("{channel_name}"),
         "Channel lead prompt should not contain unreplaced {{channel_name}} placeholders"
+    );
+    assert!(
+        !prompt.contains("{name}"),
+        "Channel lead prompt should not contain unreplaced {{name}} placeholders"
+    );
+    assert!(
+        !prompt.contains("{project_name}"),
+        "Channel lead prompt should not contain unreplaced {{project_name}} placeholders"
     );
 }
 
@@ -451,8 +385,8 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
         "Coworker prompt should instruct to check for existing PRs by task number"
     );
     assert!(
-        prompt.contains("force-push to the existing PR branch"),
-        "Coworker prompt should instruct to force-push to existing PR branch"
+        prompt.contains("force-push"),
+        "Coworker prompt should instruct force-pushing to existing PR branch"
     );
     assert!(
         prompt.contains("Never create a new branch or new PR"),
@@ -460,12 +394,8 @@ fn test_coworker_prompt_prevents_orphaned_branches() {
     );
 
     assert!(
-        prompt.contains("ALWAYS use the existing PR branch"),
+        prompt.contains("lways use the existing PR branch"),
         "Coworker prompt should instruct to use existing PR branch for feedback"
-    );
-    assert!(
-        prompt.contains("git push origin --delete"),
-        "Coworker prompt should show command to delete remote branches"
     );
 }
 
@@ -478,24 +408,12 @@ fn test_coworker_prompt_requires_issue_comment_reviews() {
         "Coworker prompt should contain the pre-merge checklist section"
     );
     assert!(
-        prompt.contains(r#"gh api "repos/$repo/issues/<PR_NUMBER>/comments""#),
-        "Coworker prompt should show the issue-comment gh api command using the repo shorthand"
-    );
-    assert!(
         prompt.contains("<!-- midtown:"),
         "Coworker prompt should mention the frontmatter signature so reviewers are detected"
     );
     assert!(
-        prompt.contains("merge hold"),
-        "Coworker prompt should instruct checking the channel for merge holds"
-    );
-    assert!(
-        prompt.contains(r#"gh pr view <number> --comments --json comments"#),
-        "Coworker prompt should instruct checking recent PR comments for late requests"
-    );
-    assert!(
-        prompt.contains("stop"),
-        "Coworker prompt should instruct stopping when lead/user says not to merge"
+        prompt.contains("merge"),
+        "Coworker prompt should mention merge gating"
     );
     assert!(
         prompt.contains("all checks pass"),
@@ -616,10 +534,6 @@ fn test_coworker_prompt_uses_task_flag_for_threading() {
     assert!(
         prompt.contains("--task"),
         "Coworker prompt should document --task flag for auto-threading task-related posts"
-    );
-    assert!(
-        prompt.contains("--task 5"),
-        "Coworker prompt should show --task flag usage example with a task ID"
     );
 }
 

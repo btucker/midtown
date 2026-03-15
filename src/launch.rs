@@ -22,14 +22,14 @@ pub enum SessionMode {
 /// The role of a coworker, which determines their system prompt.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum CoworkerRole {
-    /// Standard coworker — uses coworker.md + common.md
+    /// Standard coworker — uses midtown-code-author agent definition + common.md
     #[default]
     Coworker,
-    /// PR reviewer — uses coworker.md + common.md + reviewer.md
+    /// PR reviewer — uses midtown-code-reviewer agent definition + common.md
     Reviewer,
-    /// Lead — uses lead-common.md + common.md, unrestricted settings
+    /// Lead — uses midtown-project-lead agent definition + lead-common.md + common.md
     Lead,
-    /// Channel lead — uses channel-lead.md with channel name injected.
+    /// Channel lead — uses midtown-channel-lead agent definition + lead-common.md + common.md
     /// Read-only: brainstorming and domain expertise for a topic channel.
     ChannelLead {
         /// The channel this lead is responsible for.
@@ -282,13 +282,13 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// tasks, but never implement code. For Claude/z.ai providers, this list is passed
 /// as `--disallowedTools` to the CLI, providing hard enforcement that the LLM
 /// cannot bypass. For Codex, `disallowed_tools` is not supported, so enforcement
-/// relies on the prompt-based instruction in `channel-lead.md`.
+/// relies on the prompt-based instruction in the channel lead agent definition.
 ///
 /// Note: `Bash` is intentionally NOT included because channel leads need it for
 /// coordination commands (`midtown task create`, `midtown channel post`, etc.).
 /// `Edit` is intentionally NOT included because channel leads need it to
 /// maintain their notes and workflow files in `~/.midtown/projects/*/channels/*/`.
-/// The existing soft restriction in `channel-lead.md` covers "do not use Bash to
+/// The soft restriction in the channel lead agent definition covers "do not use Bash to
 /// modify code", which is sufficient since Write is hard-blocked for
 /// Claude/z.ai and prompt-restricted for Codex.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
@@ -372,19 +372,13 @@ impl LaunchConfig {
     /// content goes to `--append-system-prompt` so it merges with the agent's base prompt.
     fn render_append_prompt(&self, project_name: &str) -> String {
         // Layer 2: Shared prompt (common.md, lead-common.md)
+        // Reviewer-specific instructions are in the agent definition (Layer 1),
+        // so no extra overlay is needed here.
         let layer2 = crate::agents::shared_prompt_for_role(self.agent_role());
-
-        // Reviewer appends reviewer.md after Layer 2 (preserving original ordering)
-        let base = if matches!(self.role, CoworkerRole::Reviewer) {
-            let reviewer = crate::agents::reviewer_overlay_prompt();
-            format!("{layer2}\n\n## Reviewer Instructions\n\n{reviewer}")
-        } else {
-            layer2
-        };
 
         // Layer 3: Runtime context (template vars, ops extras, AGENTS.md)
         let ctx = self.runtime_context(project_name);
-        crate::agents::build_runtime_context(&base, &ctx)
+        crate::agents::build_runtime_context(&layer2, &ctx)
     }
 
     fn render_system_prompt(&self, project_name: &str) -> String {
@@ -476,8 +470,8 @@ impl LaunchConfig {
 
     /// Create a config for a reviewer coworker.
     ///
-    /// Reviewers get a specialized system prompt that merges coworker.md +
-    /// common.md + reviewer.md, ensuring they follow reviewer instructions
+    /// Reviewers get a specialized system prompt using the midtown-code-reviewer
+    /// agent definition + common.md, ensuring they follow reviewer instructions
     /// as behavioral rules rather than just task descriptions.
     ///
     /// `restart_count` is 0 for first launch, >0 for respawns. When >0, the
@@ -670,8 +664,8 @@ impl LaunchConfig {
     /// Create a config for a channel lead session.
     ///
     /// Channel leads are long-lived conversational sessions that accumulate
-    /// domain expertise for a topic channel. They use the channel-lead.md
-    /// system prompt, run with read-only tool access, and post responses to
+    /// domain expertise for a topic channel. They use the midtown-channel-lead
+    /// agent definition, run with read-only tool access, and post responses to
     /// their channel via `midtown channel post --channel {name}`.
     ///
     /// The `domain_context` is injected into the system prompt at spawn time.
@@ -795,7 +789,7 @@ impl LaunchConfig {
         //
         // Exception: Codex doesn't support disallowed_tools in its protocol.
         // For Codex channel leads, we rely on the prompt-based restriction in
-        // channel-lead.md ("do not use Edit/Write") instead.
+        // the channel lead agent definition ("do not use Edit/Write") instead.
         let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. })
             && !matches!(self.auth_provider, crate::auth::AuthProvider::Codex)
         {
