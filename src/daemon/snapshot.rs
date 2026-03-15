@@ -360,6 +360,10 @@ pub struct WorldSnapshot {
     /// message context in TaskAssigned/TaskCompleted workflow events without I/O.
     #[serde(default)]
     pub task_message_id_map: HashMap<String, String>,
+    /// Task-to-parent mapping for UI grouping of related tasks.
+    /// Maps child task ID → parent task ID. Used for displaying task hierarchies.
+    #[serde(default)]
+    pub task_parent_map: HashMap<String, String>,
     /// Channel lead session mapping for nudge routing.
     /// Maps channel name → session ID. Used by effects.rs to deliver
     /// `NudgeChannelLead` effects without locking persistent state.
@@ -847,7 +851,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         state.get_coworker_task_assignments().await;
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
-    // task-to-thread, task-to-message, channel-lead, and lead-driven mappings
+    // task-to-thread, task-to-message, task-to-parent, channel-lead, and lead-driven mappings
     let (
         task_channel,
         task_model_map,
@@ -855,6 +859,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_execution_skill_map,
         task_thread_id_map,
         task_message_id_map,
+        task_parent_map,
         channel_lead_sessions,
         lead_driven_channels,
     ) = {
@@ -866,6 +871,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             ps.task_execution_skill.clone(),
             ps.task_thread_id.clone(),
             ps.task_message_id.clone(),
+            ps.task_parent.clone(),
             ps.channel_lead_sessions.clone(),
             ps.lead_driven_channels.clone(),
         )
@@ -1480,6 +1486,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_execution_skill_map,
         task_thread_id_map,
         task_message_id_map,
+        task_parent_map,
         channel_lead_sessions,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
@@ -1556,6 +1563,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_execution_skill_map: HashMap::new(),
         task_thread_id_map: HashMap::new(),
         task_message_id_map: HashMap::new(),
+        task_parent_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),

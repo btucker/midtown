@@ -196,17 +196,17 @@ Prompts are assembled from three distinct layers in `src/agents.rs`:
 
 1. **Agent definition (Layer 1)** — Role identity and behavioral instructions, loaded from composable markdown files in `agents/`. The binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence. Agent definitions (`.claude/agents/midtown-*.md`) are accessible via `load_agent_definition_for_role()` and wired into session spawning via `HeadlessConfig.agent_name`. For Claude Code sessions, Layer 1 is delivered via the `--agent <name>` CLI flag (e.g., `--agent midtown-code-author`) on both fresh and resume sessions, while Layers 2+3 go through `--append-system-prompt` on fresh sessions only. For Codex sessions (which don't support `--agent`), all layers are bundled into `--system-prompt` as before. The mapping from `CoworkerRole` to agent name is in `CoworkerRole::agent_name()`, and `render_append_prompt()` returns only Layers 2+3.
 
-2. **Shared prompt (Layer 2)** — Operational rules shared across roles, loaded via `shared_prompt_for_role()`. Coworkers/reviewers get `common.md` only; leads get `lead-common.md` + `common.md`.
+2. **Shared prompt (Layer 2)** — Operational rules shared across roles, loaded via `shared_prompt_for_role()`. Uses compiled-in content from `agents/common.md` and `agents/lead-common.md`. Coworkers/reviewers get `common.md` only; leads get `lead-common.md` + `common.md`.
 
-3. **Runtime context (Layer 3)** — Template variable replacement and runtime content injection, applied via `build_runtime_context()`. Ops extras are appended before substitution (so `{name}` IS replaced in ops content). AGENTS.md is appended after substitution (so literal `{name}` in AGENTS.md is preserved).
+3. **Runtime context (Layer 3)** — Template variable replacement and runtime content injection, applied via `build_runtime_context()`. Ops extras (`agents/ops-channel-lead.md`) are appended before substitution (so `{name}` IS replaced in ops content). AGENTS.md is appended after substitution (so literal `{name}` in AGENTS.md is preserved).
 
-**Assembly by agent type (current, transitional):**
-- **Project Lead**: `project-lead.md` + `lead-common.md` + `common.md`
-- **Coworker**: `coworker.md` + `common.md`
-- **Reviewer**: `coworker.md` + `common.md` + `reviewer.md` (common.md appears before reviewer instructions)
-- **Channel lead**: `channel-lead.md` + `lead-common.md` + `common.md` (+ `ops-channel-lead.md` for ops channel)
+**Assembly by agent type:**
+- **Project Lead**: `midtown-project-lead.md` (Layer 1) + `lead-common.md` + `common.md` (Layer 2)
+- **Coworker**: `midtown-code-author.md` (Layer 1) + `common.md` (Layer 2)
+- **Reviewer**: `midtown-code-reviewer.md` (Layer 1) + `common.md` (Layer 2)
+- **Channel lead**: `midtown-channel-lead.md` (Layer 1) + `lead-common.md` + `common.md` (Layer 2) + `ops-channel-lead.md` for ops (Layer 3)
 
-**Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_lead}`, `{escalation_target}` (reviewer only), `{channel_name}`, `{domain_context}` (channel lead only), `{code_review_invocation}` (reviewer only).
+**Template variables** (in Layer 2/3 content): `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_lead}`, `{escalation_target}`, `{channel_name}`, `{domain_context}`, `{code_review_invocation}`.
 
 **@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the Project Lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
 
@@ -681,7 +681,7 @@ StreamEvent (NDJSON drain) → extract_tool_events() → Vec<ToolBlock>
 
 ## DM Channel Streaming
 
-Agents without a native home channel get a DM mirror (`dm-<name>`). In practice this means coworkers, reviewers, and currently thread-bound forks. Root leads do not get DM mirrors because their canonical surface is already the main/topic channel, and duplicating that output created noisy parallel histories in the UI.
+Agents without a native home channel get a DM mirror (`dm-<name>`). In practice this means coworkers and reviewers. Root leads and fork sessions do not get DM mirrors — leads already stream to their main/topic channel, and forks stream to their bound thread, so DM copies would be duplicate noise.
 
 **Data flow:**
 ```
@@ -691,13 +691,13 @@ StreamEvent (NDJSON drain) → extract_assistant_text() → aggregated text
     → process_lead_output()     → Effect::PostToChannel { channel: Some("<name>"), tool_data, provider }
                                   (main lead → main channel, channel leads → topic channels, forks → bound topic channels)
     → process_agent_output()    → Effect::PostToChannel { channel: Some("dm-<name>"), tool_data, provider }
-                                  (coworkers, reviewers, and currently forks only)
+                                  (coworkers and reviewers only)
     → channel JSONL file + WebSocket broadcast
 ```
 
 - **`auto_output` flag**: `Message`, `Effect::PostToChannel`, and `ChannelMessageData` carry an `auto_output: bool` field. Only `stream.rs` (`process_lead_output()` and `process_agent_output()`) sets it to `true` — all other code paths (explicit `midtown channel post`, system messages, nudges) default to `false`. The web UI uses this to apply muted styling (dimmed text + left border) to streamed output, creating visual hierarchy between intentional posts and background output.
 
-- **`process_agent_output()`** (`daemon/stream.rs`): Takes the set of active agent session names selected for DM mirroring and posts each agent's aggregated text output to `dm-<name>`. The caller excludes the project lead and root channel leads, so DM mirroring currently covers coworkers, reviewers, and forks. For messages containing tool calls, the effect carries empty `content` with structured `tool_data: Vec<ToolBlock>` and `provider: String` — each client renders tool data its own way (the TUI generates a `[Bash, Read]` text summary locally, the web app renders rich expandable blocks).
+- **`process_agent_output()`** (`daemon/stream.rs`): Takes the set of active agent session names selected for DM mirroring and posts each agent's aggregated text output to `dm-<name>`. The caller excludes the project lead, root channel leads, and fork sessions, so DM mirroring covers coworkers and reviewers. For messages containing tool calls, the effect carries empty `content` with structured `tool_data: Vec<ToolBlock>` and `provider: String` — each client renders tool data its own way (the TUI generates a `[Bash, Read]` text summary locally, the web app renders rich expandable blocks).
 - **Structured tool data** (`ToolBlock` in `message.rs`): Preserves raw tool call JSON (`tool_name`, `input`, `output`, `error`) extracted from stream events. `extract_tool_blocks()` pairs `tool_use` blocks from Assistant events with `tool_result` blocks from User events by `call_id`. `detect_provider()` identifies the AI provider (`"claude"` or `"codex"`) from stream event metadata. Both fields are `Option` with `serde(default)` for backward compatibility with legacy messages.
 - **Nudge content**: When a coworker receives a nudge (task assignment, mention, review, etc.), the nudge message is also posted to `dm-<name>` via `Effect::PostToChannel`. This makes nudge conversations visible in the DM channel alongside coworker output. `DmFromUser` nudges are excluded because the user's message is already written to the DM channel by the RPC post handler before the nudge effect fires. Fork sessions are also excluded — only pool coworker names receive DM posts.
 - **Task separator**: A `PostSystemMessage` separator is posted to `dm-<name>` to visually delineate task boundaries. For regular coworkers this uses the format "─── Task !42: Fix auth bug ───" and happens in three paths: (1) `SpawnSession` when a session spawns, (2) `AssignAndSpawn` when dispatching a new task, and (3) `task.claim` RPC when a coworker self-claims a pending task. Session recovery via `SpawnSession` with `resume=true` omits the separator since one was already posted on initial assignment. Reviewer sessions receive a PR-based separator (e.g., "─── Reviewing PR #42 ───") in their `SpawnCoworkerWithCallbacks` `on_success` effects.

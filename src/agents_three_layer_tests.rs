@@ -345,7 +345,7 @@ fn test_layer3_no_ops_extra_for_non_ops_channel() {
 // ── Section ordering tests ───────────────────────────────────────
 
 #[test]
-fn test_reviewer_prompt_common_md_before_reviewer_instructions() {
+fn test_reviewer_prompt_layer1_before_layer2() {
     let prompt = reviewer_system_prompt(
         "york",
         "midtown",
@@ -353,28 +353,33 @@ fn test_reviewer_prompt_common_md_before_reviewer_instructions() {
         crate::auth::AuthProvider::Claude,
         Some(42),
     );
-    let common_pos = prompt
+    let layer1_pos = prompt
+        .find("# Code Reviewer")
+        .expect("Agent definition (Layer 1) content should be present");
+    let layer2_pos = prompt
         .find("GitHub Etiquette")
-        .expect("common.md content should be present");
-    let reviewer_pos = prompt
-        .find("## Reviewer Instructions")
-        .expect("Reviewer Instructions section should be present");
+        .expect("common.md (Layer 2) content should be present");
     assert!(
-        common_pos < reviewer_pos,
-        "common.md content must appear BEFORE '## Reviewer Instructions' \
-         (common at {common_pos}, reviewer at {reviewer_pos})"
+        layer1_pos < layer2_pos,
+        "Agent definition (Layer 1) must appear BEFORE common.md (Layer 2) \
+         (layer1 at {layer1_pos}, layer2 at {layer2_pos})"
     );
 }
 
 // ── Full assembly regression tests ───────────────────────────────
 
 #[test]
-fn test_assembled_coworker_prompt_has_all_layers() {
+fn test_assembled_coworker_prompt_uses_agent_definition() {
     let prompt = coworker_system_prompt("lexington", "midtown", None);
-    // Layer 1: Agent definition content
+    // Layer 1 must come from the agent definition (midtown-code-author.md),
+    // NOT the old monolithic coworker.md
     assert!(
-        prompt.contains("Code Author") || prompt.contains("coworker"),
-        "Assembled coworker prompt should contain Layer 1 content"
+        prompt.contains("# Code Author"),
+        "Coworker Layer 1 should come from midtown-code-author.md agent definition"
+    );
+    assert!(
+        !prompt.contains("# Coworker System Prompt"),
+        "Coworker prompt should NOT contain old coworker.md header"
     );
     // Layer 2: Common content
     assert!(
@@ -389,7 +394,7 @@ fn test_assembled_coworker_prompt_has_all_layers() {
 }
 
 #[test]
-fn test_assembled_reviewer_prompt_has_all_layers() {
+fn test_assembled_reviewer_prompt_uses_agent_definition() {
     let prompt = reviewer_system_prompt(
         "york",
         "midtown",
@@ -397,10 +402,15 @@ fn test_assembled_reviewer_prompt_has_all_layers() {
         crate::auth::AuthProvider::Claude,
         Some(42),
     );
-    // Layer 1: Reviewer definition content
+    // Layer 1 must come from the agent definition (midtown-code-reviewer.md),
+    // NOT the old monolithic coworker.md + reviewer.md
     assert!(
-        prompt.contains("Code Reviewer") || prompt.contains("THRESHOLD OVERRIDE"),
-        "Assembled reviewer prompt should contain Layer 1 reviewer content"
+        prompt.contains("# Code Reviewer"),
+        "Reviewer Layer 1 should come from midtown-code-reviewer.md agent definition"
+    );
+    assert!(
+        !prompt.contains("# Coworker System Prompt"),
+        "Reviewer prompt should NOT contain old coworker.md header"
     );
     // Layer 2: Common content (reviewers also need operational rules)
     assert!(

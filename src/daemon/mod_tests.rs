@@ -3,18 +3,28 @@ use super::*;
 use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
 #[test]
-fn test_dm_mirror_agent_names_excludes_root_leads() {
+fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
     let name_to_session = std::collections::HashMap::from([
         ("midtown".to_string(), "sess-lead".to_string()),
         ("auth".to_string(), "sess-auth".to_string()),
         ("park".to_string(), "sess-park".to_string()),
         ("reviewer-42".to_string(), "sess-reviewer".to_string()),
         ("auth-discuss-a1b2".to_string(), "sess-fork".to_string()),
+        // Regular coworker with a thread binding (task thread) — should still get DM
+        ("broadway".to_string(), "sess-broadway".to_string()),
     ]);
     let channel_lead_sessions =
         std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
+    // fork_bound_channels only contains fork sessions, not regular coworkers
+    let fork_bound_channels =
+        std::collections::HashMap::from([("auth-discuss-a1b2".to_string(), "auth".to_string())]);
 
-    let dm_names = dm_mirror_agent_names(&name_to_session, &channel_lead_sessions, "midtown");
+    let dm_names = dm_mirror_agent_names(
+        &name_to_session,
+        &channel_lead_sessions,
+        &fork_bound_channels,
+        "midtown",
+    );
 
     assert!(
         !dm_names.contains("midtown"),
@@ -25,6 +35,10 @@ fn test_dm_mirror_agent_names_excludes_root_leads() {
         "root channel leads already own their topic channel and should not get a DM mirror"
     );
     assert!(
+        !dm_names.contains("auth-discuss-a1b2"),
+        "fork sessions stream to their bound thread and should not get a DM mirror"
+    );
+    assert!(
         dm_names.contains("park"),
         "regular coworkers still need DMs"
     );
@@ -33,8 +47,8 @@ fn test_dm_mirror_agent_names_excludes_root_leads() {
         "reviewers still need DMs for streamed output"
     );
     assert!(
-        dm_names.contains("auth-discuss-a1b2"),
-        "thread-bound forks keep DMs until their thread UX is revisited"
+        dm_names.contains("broadway"),
+        "regular coworkers with thread bindings still need DMs (fork_bound_channels excludes them correctly)"
     );
 }
 

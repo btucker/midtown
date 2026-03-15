@@ -34,6 +34,9 @@ pub enum TaskCommand {
         /// Thread ID to route coworker updates back to the fork session that created this task
         #[arg(long)]
         thread_id: Option<String>,
+        /// Parent task ID for UI grouping (e.g., review task as child of implementation task)
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -87,6 +90,16 @@ pub enum TaskCommand {
         /// Task ID to view
         id: String,
     },
+    /// Send a prompt to a task's assigned session
+    Prompt {
+        /// Task ID
+        id: String,
+        /// Prompt message to deliver
+        message: String,
+        /// Optional model override for resumed sessions (e.g., claude/opus, claude/sonnet)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 /// Handle task subcommands that don't require the daemon (list, view).
@@ -111,6 +124,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             plan,
             execution_skill,
             thread_id,
+            parent,
         } => {
             let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
             let effective_thread_id =
@@ -125,6 +139,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 plan.as_deref(),
                 execution_skill.as_deref(),
                 effective_thread_id.as_deref(),
+                parent.as_deref(),
             )
         }
         TaskCommand::Update {
@@ -149,6 +164,9 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
         TaskCommand::Request { description } => client.task_request(description),
+        TaskCommand::Prompt { id, message, model } => {
+            client.task_prompt(id, message, model.as_deref())
+        }
         TaskCommand::List { all } => handle_list(*all),
         TaskCommand::View { id } => handle_view(id),
     }
@@ -231,6 +249,9 @@ fn handle_view(id: &str) -> Result<Response, String> {
         }
         if let Some(skill) = result.get("execution_skill").and_then(|v| v.as_str()) {
             output.push_str(&format!("Skill:    {}\n", skill));
+        }
+        if let Some(parent) = result.get("parent").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Parent:   !{}\n", parent));
         }
     }
     // Silently ignore errors - daemon might not be running or metadata might not exist

@@ -289,6 +289,7 @@ pub(super) async fn handle_task_create(
     plan: Option<&str>,
     execution_skill: Option<&str>,
     thread_id: Option<&str>,
+    parent: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let dir_key = state.paths.dir_key().to_string();
@@ -389,9 +390,18 @@ pub(super) async fn handle_task_create(
             ps.task_thread_id.insert(task_id.clone(), tid.to_string());
             changed = true;
         }
+        if let Some(p) = parent {
+            let normalized = p
+                .strip_prefix('!')
+                .or_else(|| p.strip_prefix('#'))
+                .unwrap_or(p);
+            ps.task_parent
+                .insert(task_id.clone(), normalized.to_string());
+            changed = true;
+        }
         if changed && let Err(e) = ps.save_for_repo(&dir_key) {
             warn!(
-                "Failed to save task plan/execution_skill/thread_id mapping: {}",
+                "Failed to save task plan/execution_skill/thread_id/parent mapping: {}",
                 e
             );
         }
@@ -653,6 +663,7 @@ pub(super) async fn handle_task_metadata(
     let execution_skill = ps.task_execution_skill.get(task_id).cloned();
     let message_id = ps.task_message_id.get(task_id).cloned();
     let thread_id = ps.task_thread_id.get(task_id).cloned();
+    let parent = ps.task_parent.get(task_id).cloned();
 
     Response::success(
         id,
@@ -663,6 +674,7 @@ pub(super) async fn handle_task_metadata(
             "execution_skill": execution_skill,
             "message_id": message_id,
             "thread_id": thread_id,
+            "parent": parent,
         }),
     )
 }
@@ -787,6 +799,239 @@ pub(super) async fn handle_task_claim(
             "message": format!("Claimed task !{}", task_id),
         }),
     )
+}
+
+/// Handle task.prompt RPC — deliver a prompt to a task's assigned session.
+///
+/// Looks up the task, finds its session, and either nudges (if running)
+/// or resumes (if stopped) with the given message. This is the universal
+/// way to interact with a task's agent from any caller (lead, coworker, CLI).
+pub(super) async fn handle_task_prompt(
+    id: RequestId,
+    task_id: &str,
+    message: &str,
+    from: &str,
+    model: Option<&str>,
+    state: &DaemonState,
+) -> Response {
+    // Validate model format if provided
+    if let Some(m) = model
+        && let Err(e) = validate_model_format(m)
+    {
+        return Response::error(id, RpcError::new(-32602, e));
+    }
+
+    // Look up the task
+    let task_id = task_id
+        .strip_prefix('#')
+        .or_else(|| task_id.strip_prefix('!'))
+        .unwrap_or(task_id);
+    let tasks = crate::tasks::read_tasks();
+    let task = tasks.iter().find(|t| t.id == task_id);
+    let Some(task) = task else {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Task !{} not found", task_id)),
+        );
+    };
+
+    // Find the session for this task
+    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
+    let Some(session_id) = session_id else {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32603,
+                format!(
+                    "No session found for task !{} — task may not have been dispatched yet",
+                    task_id
+                ),
+            ),
+        );
+    };
+
+    // Check if the session is running
+    let coworker_name = state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned();
+    let is_alive = if let Some(ref name) = coworker_name {
+        state.session_manager.is_alive(name).await
+    } else {
+        false
+    };
+
+    // Check if the coworker is attached (interactive terminal via `midtown agent attach`).
+    // Attached sessions have is_alive=false (headless process paused), but the session
+    // is actively used interactively. Route through headed intercom instead of resuming.
+    let is_attached = if let Some(ref name) = coworker_name {
+        state.attached_coworkers.lock().unwrap().contains_key(name)
+    } else {
+        false
+    };
+
+    if is_attached {
+        // Session is attached — deliver via headed intercom
+        let name = coworker_name.as_deref().unwrap_or("unknown");
+        state.enqueue_headed_nudge(name, message).await;
+
+        info!(
+            "Delivered prompt to attached session (coworker {}) for task !{}",
+            name, task_id
+        );
+        Response::success(
+            id,
+            serde_json::json!({
+                "type": "message",
+                "message": format!("Prompt delivered to {} (attached, task !{})", name, task_id),
+                "action": "nudged_attached",
+                "session_id": session_id,
+            }),
+        )
+    } else if is_alive {
+        // Session is running — deliver prompt via send_message (like nudge)
+        let name = coworker_name.as_deref().unwrap_or("unknown");
+        match state.session_manager.send_message(name, message).await {
+            Ok(()) => {
+                // Post to DM channel for observability
+                if crate::coworker::is_coworker_name(name) {
+                    let dm_effect = super::effects::Effect::PostToChannel {
+                        sender: from.to_string(),
+                        message: message.to_string(),
+                        channel: Some(format!("dm-{}", name)),
+                        auto_output: false,
+                        message_type: Some(crate::message::MessageType::Nudge),
+                        nudge_type: Some("task_prompt".to_string()),
+                        tool_data: None,
+                        provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
+                    };
+                    super::effects::execute_effects(vec![dm_effect], state).await;
+                }
+
+                info!(
+                    "Delivered prompt to running session {} (coworker {}) for task !{}",
+                    session_id, name, task_id
+                );
+                Response::success(
+                    id,
+                    serde_json::json!({
+                        "type": "message",
+                        "message": format!("Prompt delivered to {} (task !{})", name, task_id),
+                        "action": "nudged",
+                        "session_id": session_id,
+                    }),
+                )
+            }
+            Err(e) => Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to deliver prompt to {}: {}", name, e),
+                ),
+            ),
+        }
+    } else {
+        // Session is stopped — resume with the prompt as initial message
+        let record = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions.get(&session_id).cloned()
+        };
+        let Some(record) = record else {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!(
+                        "Session {} for task !{} has no record — cannot resume",
+                        session_id, task_id
+                    ),
+                ),
+            );
+        };
+
+        // Determine coworker name for resume
+        let name = record
+            .preferred_name
+            .as_deref()
+            .or(record.current_name.as_deref())
+            .or(task.owner.as_deref())
+            .unwrap_or("unknown");
+
+        // Build LaunchConfig for resume
+        let mut config = crate::launch::LaunchConfig::coworker(
+            name.to_string(),
+            state.paths.dir_key().to_string(),
+            crate::launch::SessionMode::ResumeSession(session_id.clone()),
+            Some(message.to_string()),
+            Some(task_id.to_string()),
+        );
+
+        // Use the session's recorded working directory
+        if !record.working_dir.is_empty() {
+            config.working_dir = Some(std::path::PathBuf::from(&record.working_dir));
+        }
+
+        // Apply model: --model flag overrides, else use task's configured model
+        if let Some(m) = model {
+            let mut task_model_map = std::collections::HashMap::new();
+            task_model_map.insert(task_id.to_string(), m.to_string());
+            config.apply_task_model(&task_model_map, task_id);
+        } else {
+            let ps = state.persistent_state.lock().await;
+            config.apply_task_model(&ps.task_model, task_id);
+        }
+
+        // Set channel from task
+        config.channel = task.channel.clone();
+
+        // Spawn the resumed session
+        match state.spawn_coworker(&config).await {
+            Ok(_) => {
+                info!(
+                    "Resumed session {} (coworker {}) for task !{} with prompt",
+                    session_id, name, task_id
+                );
+
+                // Post to DM channel for observability
+                if crate::coworker::is_coworker_name(name) {
+                    let dm_effect = super::effects::Effect::PostToChannel {
+                        sender: from.to_string(),
+                        message: format!("[resumed] {}", message),
+                        channel: Some(format!("dm-{}", name)),
+                        auto_output: false,
+                        message_type: Some(crate::message::MessageType::Nudge),
+                        nudge_type: Some("task_prompt_resume".to_string()),
+                        tool_data: None,
+                        provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
+                    };
+                    super::effects::execute_effects(vec![dm_effect], state).await;
+                }
+
+                Response::success(
+                    id,
+                    serde_json::json!({
+                        "type": "message",
+                        "message": format!("Resumed {} with prompt (task !{})", name, task_id),
+                        "action": "resumed",
+                        "session_id": session_id,
+                    }),
+                )
+            }
+            Err(e) => Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to resume session for task !{}: {}", task_id, e),
+                ),
+            ),
+        }
+    }
 }
 
 // ============================================================================

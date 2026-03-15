@@ -501,6 +501,7 @@ impl DaemonClient {
         plan: Option<&str>,
         execution_skill: Option<&str>,
         thread_id: Option<&str>,
+        parent: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -526,6 +527,9 @@ impl DaemonClient {
         }
         if let Some(tid) = thread_id {
             params["thread_id"] = serde_json::json!(tid);
+        }
+        if let Some(p) = parent {
+            params["parent"] = serde_json::json!(p);
         }
         self.send("task.create", Some(params))
     }
@@ -593,6 +597,24 @@ impl DaemonClient {
                 "from": from
             })),
         )
+    }
+
+    pub fn task_prompt(
+        &self,
+        id: &str,
+        message: &str,
+        model: Option<&str>,
+    ) -> Result<Response, String> {
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        let mut params = serde_json::json!({
+            "id": id,
+            "message": message,
+            "from": from
+        });
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
+        }
+        self.send("task.prompt", Some(params))
     }
 
     // Session commands (attach/detach headless coworkers)
