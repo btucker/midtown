@@ -74,6 +74,8 @@ struct PrContext {
     task_channel: HashMap<String, String>,
     /// Session context for the target PR (if the PR has a stored author session)
     session_context: Option<crate::rules::PrSessionContext>,
+    /// Task-linked session ID for resume (PR → task → session lookup)
+    task_session_id: Option<String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
     /// Used to suppress both `PrApproved` workflow events AND inline nudge effects
     /// while a reviewer is still working, so the contract remains:
@@ -146,6 +148,7 @@ impl PrContext {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
             session_context,
+            task_session_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -162,6 +165,7 @@ impl PrContext {
             pr_task_associations: ps.github.pr_to_task_map(),
             task_channel: ps.task_channel.clone(),
             session_context: None,
+            task_session_id: None,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -1742,14 +1746,8 @@ fn action_to_effects(
 
             vec![Effect::SpawnCoworkerWithCallbacks {
                 config,
-                on_success: vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-                on_failure: vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
+                on_success,
+                on_failure,
             }]
         }
         // HandoffToCoworker: keep existing behavior (Phase 5 will eliminate via task handoff).
@@ -2698,153 +2696,6 @@ async fn collect_comment_notification_effects(
     effects
 }
 
-/// Convert a comment notification `PrAction` into effects.
-///
-/// Similar to `pr_action_to_effects` but uses the comment-specific cooldown,
-/// messages, and `called_in_review_feedback` channel message.
-fn comment_action_to_effects(
-    action: crate::rules::PrAction,
-    pr_number: u64,
-    title: &str,
-    state: &DaemonState,
-    ctx: &PrContext,
-) -> Vec<Effect> {
-    use crate::rules::PrAction;
-    let issue_type = PrIssueType::ReviewComment;
-
-    // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = ctx.get_channel(pr_number);
-
-    match action {
-        PrAction::NudgeOwner { owner, message } => {
-            vec![Effect::nudge_session_with_callbacks(
-                state.session_id_for_name(&owner),
-                message,
-                vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-            )]
-        }
-        PrAction::SpawnOwner { owner, message } => {
-            let session_mode = match &ctx.task_session_id {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.clone()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let mut config = crate::launch::LaunchConfig::coworker(
-                owner.clone(),
-                state.paths.dir_key().to_string(),
-                session_mode,
-                Some(message),
-                ctx.pr_task_associations.get(&pr_number).cloned(),
-            );
-            // Use Opus for review feedback responses (higher quality needed to understand feedback)
-            config.model = "opus".to_string();
-
-            let mut on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: owner.clone(),
-                    status: "running".to_string(),
-                    current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: crate::daemon_messages::called_in_review_feedback(&owner, pr_number),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "PR #{} ({}) owned by {} - review comment: {} (call-in failed)",
-                        pr_number,
-                        truncate_str(title, 40),
-                        owner,
-                        get_issue_action(PrIssueType::ReviewComment)
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
-        PrAction::HandoffToCoworker {
-            assignee,
-            original_author,
-            pr_number,
-            branch,
-            session_id,
-            message,
-        } => handoff_to_coworker_effects(
-            &assignee,
-            &original_author,
-            pr_number,
-            &branch,
-            session_id,
-            &message,
-            "to address review feedback",
-            title,
-            issue_type,
-            state,
-            ctx,
-        ),
-        PrAction::PostToChannel { message } => {
-            vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message,
-                    channel: channel.clone(),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ]
-        }
-        PrAction::Skip { reason } => {
-            debug!("Polling comment notification skipped: {}", reason);
-            vec![]
-        }
-    }
-}
-
 /// Build effects for handing off a PR to a different coworker.
 ///
 /// Shared helper that consolidates the HandoffToCoworker effect-building logic
@@ -3685,210 +3536,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             on_success,
             on_failure,
         });
-    }
-
-    effects
-}
-
-/// Convert a review-complete `PrAction` into effects.
-///
-/// Similar to `pr_action_to_effects` but uses `called_in_review_feedback`
-/// for the spawn message instead of `called_in_pr_issue`.
-fn review_complete_action_to_effects(
-    action: crate::rules::PrAction,
-    pr_number: u64,
-    title: &str,
-    state: &DaemonState,
-    ctx: &PrContext,
-) -> Vec<Effect> {
-    use crate::rules::PrAction;
-    let issue_type = PrIssueType::ReviewComplete;
-
-    // Look up topic channel for this PR's task (falls back to main if not found)
-    let channel = ctx.get_channel(pr_number);
-
-    // Build the workflow event (if task-linked with a channel).
-    let workflow_event = if let (Some(channel_name), Some(task_id)) =
-        (&channel, ctx.pr_task_associations.get(&pr_number))
-    {
-        Some(crate::workflow::WorkflowEvent::ReviewerComplete {
-            channel: channel_name.clone(),
-            task_id: task_id.clone(),
-            pr_number,
-        })
-    } else {
-        None
-    };
-
-    // When a workflow script or lead-driven mode exists AND we have a workflow
-    // event, the script/lead is authoritative: emit only cooldown tracking +
-    // the event. HandoffToCoworker is excluded for workflow scripts but gated
-    // in lead-driven mode (the lead manages the full lifecycle).
-    if let Some(ref event) = workflow_event {
-        let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
-        let has_workflow = channel
-            .as_ref()
-            .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
-        let is_lead_driven = ctx.is_lead_driven(pr_number);
-
-        if is_lead_driven || (has_workflow && !is_handoff) {
-            return vec![
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-                Effect::EmitWorkflowEvent(event.clone()),
-            ];
-        }
-    }
-
-    // Skip actions: no inline effects. Still emit the workflow event if one was
-    // built so the workflow's state machine stays in sync.
-    if let PrAction::Skip { reason } = &action {
-        debug!("{}", reason);
-        let mut effects = Vec::new();
-        if let Some(event) = workflow_event {
-            effects.push(Effect::EmitWorkflowEvent(event));
-        }
-        return effects;
-    }
-
-    // Fallback: inline effects for PRs without channel/task associations or
-    // channels without an assigned workflow. When a workflow event
-    // exists, it's appended alongside inline effects.
-    let mut effects = match action {
-        PrAction::NudgeOwner { owner, message } => {
-            vec![Effect::nudge_session_with_callbacks(
-                state.session_id_for_name(&owner),
-                message,
-                vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-            )]
-        }
-        PrAction::SpawnOwner { owner, message } => {
-            let session_mode = match &ctx.task_session_id {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.clone()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let mut config = crate::launch::LaunchConfig::coworker(
-                owner.clone(),
-                state.paths.dir_key().to_string(),
-                session_mode,
-                Some(message),
-                ctx.pr_task_associations.get(&pr_number).cloned(),
-            );
-            // Use Opus for review feedback responses (higher quality needed to understand feedback)
-            config.model = "opus".to_string();
-
-            let mut on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: owner.clone(),
-                    status: "running".to_string(),
-                    current_task: Some(format!("responding to feedback on PR #{}", pr_number)),
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: daemon_messages::called_in_review_feedback(&owner, pr_number),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
-
-            let on_failure = vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "PR #{} ({}) owned by {} - review complete: {} (call-in failed)",
-                        pr_number,
-                        truncate_str(title, 40),
-                        owner,
-                        get_issue_action(PrIssueType::ReviewComplete)
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
-        }
-        PrAction::HandoffToCoworker {
-            assignee,
-            original_author,
-            pr_number,
-            branch,
-            session_id,
-            message,
-        } => handoff_to_coworker_effects(
-            &assignee,
-            &original_author,
-            pr_number,
-            &branch,
-            session_id,
-            &message,
-            "to address review feedback",
-            title,
-            issue_type,
-            state,
-            ctx,
-        ),
-        PrAction::PostToChannel { message } => {
-            vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message,
-                    channel: channel.clone(),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ]
-        }
-        PrAction::Skip { reason } => {
-            debug!("{}", reason);
-            vec![]
-        }
-    };
-
-    // Append workflow event alongside inline effects (no-op if no script exists,
-    // but keeps the event available for future script adoption).
-    if let Some(event) = workflow_event {
-        effects.push(Effect::EmitWorkflowEvent(event));
     }
 
     effects

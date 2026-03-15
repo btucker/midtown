@@ -1357,7 +1357,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1370,7 +1370,7 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1690,6 +1690,7 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1729,7 +1730,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3249,7 +3250,7 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
         pr_task_associations,
         task_channel,
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4993,7 +4994,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5065,7 +5066,7 @@ fn log_pr_decision_appends_multiple_entries() {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
         session_context: None,
-
+        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
