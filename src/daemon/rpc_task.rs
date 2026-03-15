@@ -830,13 +830,31 @@ pub(crate) async fn deliver_task_prompt(
         return Err(format!("Task !{} not found", task_id));
     };
 
-    // Find the session for this task
+    // Find the session for this task.
+    // First check the in-memory map (fast path for running sessions).
+    // If missing (coworker stopped and map was cleaned up), fall back to
+    // persistent state which survives shutdown/break.
     let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let Some(session_id) = session_id else {
-        return Err(format!(
-            "No session found for task !{} — task may not have been dispatched yet",
-            task_id
-        ));
+    let session_id = match session_id {
+        Some(sid) => sid,
+        None => {
+            // Fallback: find a stopped session record with this task_id
+            let ps = state.persistent_state.lock().await;
+            let found = ps
+                .sessions
+                .iter()
+                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
+                .map(|(sid, _)| sid.clone());
+            match found {
+                Some(sid) => sid,
+                None => {
+                    return Err(format!(
+                        "No session found for task !{} — task may not have been dispatched yet",
+                        task_id
+                    ));
+                }
+            }
+        }
     };
 
     // Check if the session is running

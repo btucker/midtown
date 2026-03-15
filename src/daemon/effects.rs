@@ -3719,6 +3719,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 )
                 .await;
 
+                // Clear in-flight marker so the task can be retried on future ticks.
+                state.clear_task_spawn_in_flight(&task_id);
+
                 match (&result, &pr_context) {
                     (Ok(_), Some(ctx)) => {
                         info!(
