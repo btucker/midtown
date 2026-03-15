@@ -2195,6 +2195,7 @@ fn dispatch_unowned_pending_tasks(
                     source: crate::github_state::AssignmentSource::PollingFallback,
                     restart_count: 0,
                     reviewer_session_id: None,
+                    task_id: Some(task.id.clone()),
                 },
                 effects::Effect::PostPrComment {
                     pr_number,

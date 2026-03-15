@@ -1170,6 +1170,17 @@ fn build_reviewer_respawn_effects(
             source: crate::github_state::AssignmentSource::Manual,
             restart_count: new_restart_count,
             reviewer_session_id: None,
+            task_id: snap
+                .all_tasks
+                .iter()
+                .find(|t| {
+                    t.pr == Some(pr_number)
+                        && snap
+                            .task_agent_type_map
+                            .get(&t.id)
+                            .is_some_and(|at| at == "midtown-code-reviewer")
+                })
+                .map(|t| t.id.clone()),
         },
     ];
 
