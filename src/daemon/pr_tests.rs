@@ -1356,7 +1356,6 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
     PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
@@ -1369,31 +1368,11 @@ fn make_pr_context_empty() -> PrContext {
     PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
     }
-}
-
-/// Helper: extract RecordTaskAssignment effects from SpawnCoworkerWithCallbacks on_success.
-fn extract_record_task_assignments(effects: &[Effect]) -> Vec<(&str, &str)> {
-    effects
-        .iter()
-        .filter_map(|e| match e {
-            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => Some(on_success),
-            _ => None,
-        })
-        .flat_map(|on_success| {
-            on_success.iter().filter_map(|e| match e {
-                Effect::RecordTaskAssignment { coworker, task_id } => {
-                    Some((coworker.as_str(), task_id.as_str()))
-                }
-                _ => None,
-            })
-        })
-        .collect()
 }
 
 /// Task-linked SpawnOwner produces TaskPrompt (task prompt handles session delivery).
@@ -1515,64 +1494,6 @@ fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() 
     );
 }
 
-/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects includes
-/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
-#[test]
-fn handoff_effects_include_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    let ctx = make_pr_context_with_task(77, "300");
-
-    let effects = handoff_to_coworker_effects(
-        "madison",
-        "york",
-        77,
-        "york/fix-auth",
-        "session-123".to_string(),
-        "Taking over PR",
-        "resuming their session",
-        "Fix auth",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let assignments = extract_record_task_assignments(&effects);
-    assert_eq!(
-        assignments.len(),
-        1,
-        "handoff should include RecordTaskAssignment"
-    );
-    assert_eq!(assignments[0], ("madison", "300"));
-}
-
-/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects does NOT include
-/// RecordTaskAssignment when no task association exists.
-#[test]
-fn handoff_effects_no_record_without_task_association() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    let ctx = make_pr_context_empty();
-
-    let effects = handoff_to_coworker_effects(
-        "madison",
-        "york",
-        77,
-        "york/fix-auth",
-        "session-123".to_string(),
-        "Taking over PR",
-        "resuming their session",
-        "Fix auth",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let assignments = extract_record_task_assignments(&effects);
-    assert!(
-        assignments.is_empty(),
-        "handoff should NOT include RecordTaskAssignment without task association"
-    );
-}
-
 /// Task-linked SpawnOwner for ReviewComplete produces TaskPrompt with opus model.
 #[test]
 fn action_to_effects_review_complete_spawn_owner_with_task_produces_task_prompt() {
@@ -1689,7 +1610,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     let ctx = PrContext {
         pr_task_associations,
         task_channel: HashMap::new(),
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
@@ -1715,62 +1635,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
         "TaskPrompt for task 42 should be tracked for cross-tick dedup. Claimed: {:?}, Effects: {:#?}",
         claimed,
         effects
-    );
-}
-
-/// Bug !1377: handoff_to_coworker_effects was missing RecordTaskAssignment in on_success.
-#[test]
-fn handoff_to_coworker_effects_includes_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let mut pr_task_associations = HashMap::new();
-    pr_task_associations.insert(789, "17".to_string());
-
-    let ctx = PrContext {
-        pr_task_associations,
-        task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
-        has_active_reviewer: false,
-        channel_workflows: HashMap::new(),
-        lead_driven_channels: std::collections::HashSet::new(),
-    };
-
-    let effects = handoff_to_coworker_effects(
-        "york",
-        "broadway",
-        789,
-        "york/task-17-fix",
-        "test-session-id".to_string(),
-        "Handoff message",
-        "context",
-        "Refactor module [Midtown !17]",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let spawn_effect = effects
-        .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnCoworkerWithCallbacks");
-
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "york" && task_id == "17"
-        )
-    });
-    assert!(
-        has_record,
-        "handoff_to_coworker_effects on_success must include RecordTaskAssignment for cross-tick dedup"
     );
 }
 
@@ -3241,7 +3105,6 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
     PrContext {
         pr_task_associations,
         task_channel,
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
@@ -3725,59 +3588,6 @@ fn fallback_inline_effects_without_workflow() {
             crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
         ),
         "Event should be PrApproved for PR #42"
-    );
-}
-
-/// !2003: HandoffToCoworker effects are preserved even when a workflow event exists.
-///
-/// When the action is HandoffToCoworker (idle coworker available for session handoff),
-/// the script-authoritative early return is skipped because rpc.nudge_coworker()
-/// cannot replicate handoff behavior (spawning assignee, task reassignment).
-/// The handoff effects should fire alongside the workflow event.
-#[test]
-fn handoff_to_coworker_preserved_with_workflow_channel() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
-
-    let effects = action_to_effects(
-        crate::rules::PrAction::HandoffToCoworker {
-            assignee: "lexington".to_string(),
-            original_author: "broadway".to_string(),
-            pr_number: 42,
-            branch: "broadway/fix-auth".to_string(),
-            session_id: "sess-123".to_string(),
-            message: "PR #42 — changes requested".to_string(),
-        },
-        42,
-        "Fix auth",
-        PrIssueType::ChangesRequested,
-        &state,
-        &ctx,
-    );
-
-    // Should have SpawnCoworkerWithCallbacks (the handoff effect)
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
-    assert!(
-        has_spawn,
-        "HandoffToCoworker should produce SpawnCoworkerWithCallbacks even with workflow channel"
-    );
-
-    // Should also have the workflow event
-    let workflow_events = extract_workflow_events(&effects);
-    assert_eq!(
-        workflow_events.len(),
-        1,
-        "Workflow event should be emitted alongside handoff effects"
-    );
-    assert!(
-        matches!(
-            workflow_events[0],
-            crate::workflow::WorkflowEvent::PrChangesRequested { pr_number: 42, .. }
-        ),
-        "Event should be PrChangesRequested for PR #42"
     );
 }
 
@@ -4940,7 +4750,6 @@ fn log_pr_decision_writes_valid_jsonl() {
     let ctx = PrContext {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
@@ -4987,7 +4796,6 @@ fn log_pr_decision_writes_valid_jsonl() {
     assert_eq!(entry["owner_idle"], false);
     assert_eq!(entry["at_dev_limit"], false);
     assert_eq!(entry["has_active_reviewer"], false);
-    assert_eq!(entry["has_session_context"], false);
     assert_eq!(entry["task_id"], "7");
     assert_eq!(entry["channel"], "installer");
     assert_eq!(entry["action"], "NudgeOwner");
@@ -5012,7 +4820,6 @@ fn log_pr_decision_appends_multiple_entries() {
     let ctx = PrContext {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
-        session_context: None,
         task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
@@ -5656,106 +5463,4 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
          chosen names must be accumulated across loop iterations",
         reviewer_names
     );
-}
-
-#[test]
-fn pr_context_session_context_from_session_record() {
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    // Store a session record with task_id and pr_number
-    let session = super::super::state::SessionRecord {
-        session_id: "session-from-record".to_string(),
-        task_id: Some("42".to_string()),
-        pr_number: Some(100),
-        branch: Some("task-42-feature".to_string()),
-        preferred_name: Some("lexington".to_string()),
-        ..Default::default()
-    };
-    ps.sessions
-        .insert("session-from-record".to_string(), session);
-
-    // Also store a pr_author_session with DIFFERENT data (to verify we prefer SessionRecord).
-    // Use a title with [Midtown !42] so that pr_to_task_map() picks up the association.
-    ps.github.store_pr_author_session(
-        100,
-        "session-from-author",
-        "old-branch",
-        "oldauthor",
-        "Feature [Midtown !42]",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 100);
-
-    // session_context should come from SessionRecord, not pr_author_sessions
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-    assert_eq!(sc.session_id, "session-from-record");
-    assert_eq!(sc.branch, "task-42-feature");
-    assert_eq!(sc.original_author, "lexington");
-    // task_session_id should also be set
-    assert_eq!(ctx.task_session_id, Some("session-from-record".to_string()));
-}
-
-#[test]
-fn pr_context_session_context_branch_from_session_record() {
-    // SessionRecord.branch is backfilled at PR-open time, so task-linked PRs
-    // read branch directly from SessionRecord without pr_author_sessions fallback.
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    let session = super::super::state::SessionRecord {
-        session_id: "session-with-branch".to_string(),
-        task_id: Some("42".to_string()),
-        preferred_name: Some("lexington".to_string()),
-        branch: Some("lexington/task-42-feature".to_string()),
-        ..Default::default()
-    };
-    ps.sessions
-        .insert("session-with-branch".to_string(), session);
-
-    // pr_author_sessions present but should NOT be used for branch
-    ps.github.store_pr_author_session(
-        100,
-        "session-with-branch",
-        "some-other-branch",
-        "lexington",
-        "Feature [Midtown !42]",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 100);
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-
-    // branch comes from SessionRecord, not pr_author_sessions
-    assert_eq!(sc.session_id, "session-with-branch");
-    assert_eq!(sc.branch, "lexington/task-42-feature");
-    assert_eq!(sc.original_author, "lexington");
-}
-
-#[test]
-fn pr_context_session_context_fallback_to_author_session() {
-    let mut ps = super::super::state::DaemonPersistentState::default();
-    ps.github.store_pr_author_session(
-        200,
-        "session-from-author",
-        "feature-branch",
-        "park",
-        "Manual PR",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 200);
-
-    // session_context should come from pr_author_sessions (fallback)
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-    assert_eq!(sc.session_id, "session-from-author");
-    assert_eq!(sc.branch, "feature-branch");
-    assert_eq!(sc.original_author, "park");
-    // No task_session_id (no task association)
-    assert!(ctx.task_session_id.is_none());
 }

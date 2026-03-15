@@ -72,8 +72,6 @@ struct PrContext {
     /// Channel routing: PR number → task ID → channel name
     pr_task_associations: HashMap<u64, String>,
     task_channel: HashMap<String, String>,
-    /// Session context for the target PR (if the PR has a stored author session)
-    session_context: Option<crate::rules::PrSessionContext>,
     /// Task-linked session ID for resume (PR → task → session lookup)
     task_session_id: Option<String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
@@ -106,34 +104,6 @@ impl PrContext {
                 .map(|s| s.session_id.clone())
         });
 
-        // Build session_context: prefer SessionRecord for task-linked PRs,
-        // fall back to pr_author_sessions for non-task PRs (legacy).
-        let pr_author_session = ps.github.get_pr_author_session(pr_number);
-        let session_context = if let Some(ref sid) = task_session_id {
-            // Task-linked: derive PrSessionContext from SessionRecord.
-            // SessionRecord.branch is backfilled at PR-open time, so no fallback needed.
-            ps.sessions
-                .get(sid)
-                .map(|s| crate::rules::PrSessionContext {
-                    session_id: s.session_id.clone(),
-                    branch: s.branch.clone().unwrap_or_default(),
-                    original_author: s
-                        .preferred_name
-                        .clone()
-                        .or_else(|| s.current_name.clone())
-                        .unwrap_or_default(),
-                    pr_number,
-                })
-        } else {
-            // Non-task: fall back to pr_author_sessions (legacy)
-            pr_author_session.map(|s| crate::rules::PrSessionContext {
-                session_id: s.session_id.clone(),
-                branch: s.branch.clone(),
-                original_author: s.original_author.clone(),
-                pr_number,
-            })
-        };
-
         // Gate check: reviewer assigned in github-state (raw presence, no timeout).
         // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event
         // layer stays consistent with the merge enforcement layer.
@@ -147,7 +117,6 @@ impl PrContext {
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
-            session_context,
             task_session_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
@@ -164,7 +133,6 @@ impl PrContext {
         Self {
             pr_task_associations: ps.github.pr_to_task_map(),
             task_channel: ps.task_channel.clone(),
-            session_context: None,
             task_session_id: None,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
@@ -862,7 +830,6 @@ async fn decide_and_build_pr_issue_effects(
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &message,
     );
 
@@ -1594,21 +1561,13 @@ fn action_to_effects(
     // event, the script/lead is authoritative: emit only cooldown tracking +
     // the event. The script handles nudging via rpc.nudge_coworker(); in
     // lead-driven mode, the EmitWorkflowEvent handler relays to the channel lead.
-    //
-    // HandoffToCoworker is excluded for workflow scripts (involves spawning a
-    // different coworker with session context and task reassignment, which
-    // rpc.nudge_coworker() cannot replicate). In lead-driven mode, however,
-    // ALL actions including HandoffToCoworker are gated — the lead manages
-    // the full lifecycle.
     if let Some(ref event) = workflow_event {
-        let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
         let has_workflow = channel
             .as_ref()
             .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
         let is_lead_driven = ctx.is_lead_driven(pr_number);
 
-        // Lead-driven gates everything; workflow scripts gate non-handoff actions.
-        if is_lead_driven || (has_workflow && !is_handoff) {
+        if is_lead_driven || has_workflow {
             // Authoritative — emit cooldown tracking + event only.
             // This fires even for Skip actions so the state machine stays in sync.
             return vec![
@@ -1750,27 +1709,6 @@ fn action_to_effects(
                 on_failure,
             }]
         }
-        // HandoffToCoworker: keep existing behavior (Phase 5 will eliminate via task handoff).
-        PrAction::HandoffToCoworker {
-            assignee,
-            original_author,
-            pr_number,
-            branch,
-            session_id,
-            message,
-        } => handoff_to_coworker_effects(
-            &assignee,
-            &original_author,
-            pr_number,
-            &branch,
-            session_id,
-            &message,
-            "resuming their session for full context",
-            title,
-            issue_type,
-            state,
-            ctx,
-        ),
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
@@ -2658,15 +2596,13 @@ async fn collect_comment_notification_effects(
             continue;
         }
 
-        // Decide action using handoff-aware decision function (preserves session
-        // resume and idle-coworker handoff capabilities)
+        // Decide action using handoff-aware decision function
         let action = crate::rules::decide_pr_comment_action_with_handoff(
             &owner,
             "reviewer", // Generic actor since we don't know the specific commenter from polling
             active_coworkers,
             idle_coworkers,
             state.is_at_dev_limit(&channel_lead_names),
-            pr_ctx.session_context.as_ref(),
             &nudge_msg,
         );
 
@@ -2694,99 +2630,6 @@ async fn collect_comment_notification_effects(
     }
 
     effects
-}
-
-/// Build effects for handing off a PR to a different coworker.
-///
-/// Shared helper that consolidates the HandoffToCoworker effect-building logic
-/// used by `action_to_effects`. The only variation is the `context_suffix`
-/// that describes why the handoff is happening (e.g., "resuming their session for
-/// full context" or "to address review feedback").
-#[allow(clippy::too_many_arguments)]
-fn handoff_to_coworker_effects(
-    assignee: &str,
-    original_author: &str,
-    pr_number: u64,
-    branch: &str,
-    session_id: String,
-    message: &str,
-    context_suffix: &str,
-    title: &str,
-    issue_type: PrIssueType,
-    state: &DaemonState,
-    ctx: &PrContext,
-) -> Vec<Effect> {
-    // Look up topic channel for this PR's task (falls back to main if not found)
-    let mut config = crate::launch::LaunchConfig::pr_handoff(
-        assignee.to_string(),
-        state.paths.dir_key().to_string(),
-        session_id,
-        pr_number,
-        branch,
-        original_author,
-    );
-    // Pass the PR's linked task ID so the handoff coworker knows its task
-    config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
-
-    let mut on_success = vec![
-        Effect::BroadcastCoworkerUpdate {
-            name: assignee.to_string(),
-            status: "running".to_string(),
-            current_task: Some(format!("working on PR #{}", pr_number)),
-        },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "{} is taking over PR #{} from {} ({})",
-                assignee, pr_number, original_author, context_suffix
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
-        Effect::RecordPrNudge {
-            pr_number,
-            issue_type,
-        },
-    ];
-
-    add_task_assignment_to_on_success(&mut on_success, pr_number, assignee, ctx);
-
-    let on_failure = vec![
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "Failed to hand off PR #{} ({}) to {} - {}",
-                pr_number,
-                truncate_str(title, 40),
-                assignee,
-                message
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
-        Effect::RecordPrNudge {
-            pr_number,
-            issue_type,
-        },
-    ];
-
-    vec![Effect::SpawnCoworkerWithCallbacks {
-        config,
-        on_success,
-        on_failure,
-    }]
 }
 
 /// Collect effects for spawning reviewers for PRs that need code review.
@@ -3957,7 +3800,6 @@ pub(super) async fn handle_pr_comment_nudge(
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -4126,7 +3968,6 @@ pub(super) async fn handle_webhook_review_state_change(
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -4230,7 +4071,6 @@ pub(super) async fn handle_webhook_ci_failure(
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
     );
 
@@ -4890,7 +4730,6 @@ fn log_pr_decision(entry: &PrDecisionEntry<'_>) {
         "owner_idle": entry.owner_is_idle,
         "at_dev_limit": entry.at_dev_limit,
         "has_active_reviewer": entry.ctx.has_active_reviewer,
-        "has_session_context": entry.ctx.session_context.is_some(),
         "task_id": task_id,
         "channel": channel,
         "action": entry.action_name,
@@ -4916,7 +4755,6 @@ fn pr_action_name(action: &crate::rules::PrAction) -> &'static str {
     match action {
         crate::rules::PrAction::NudgeOwner { .. } => "NudgeOwner",
         crate::rules::PrAction::SpawnOwner { .. } => "SpawnOwner",
-        crate::rules::PrAction::HandoffToCoworker { .. } => "HandoffToCoworker",
         crate::rules::PrAction::PostToChannel { .. } => "PostToChannel",
         crate::rules::PrAction::Skip { .. } => "Skip",
     }

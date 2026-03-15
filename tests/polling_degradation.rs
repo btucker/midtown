@@ -317,7 +317,6 @@ fn polling_nudges_active_owner() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         message,
     );
 
@@ -342,7 +341,6 @@ fn polling_spawns_inactive_owner() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         message,
     );
 
@@ -368,7 +366,6 @@ fn polling_respects_dev_limit() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         true,              // at dev limit
-        None,
         message,
     );
 
@@ -434,7 +431,6 @@ fn polling_handles_issues_when_webhooks_degraded() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         "PR #42 - CI failed",
     );
     assert!(matches!(action, PrAction::NudgeOwner { .. }));

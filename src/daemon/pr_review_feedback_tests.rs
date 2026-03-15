@@ -29,7 +29,6 @@ mod tests {
         let active_coworkers = vec!["york".to_string()];
         let idle_coworkers = vec!["york".to_string()];
         let at_dev_limit = false;
-        let session_context = None;
         let message = "Review feedback";
 
         let action = decide_pr_comment_action_with_handoff(
@@ -38,7 +37,6 @@ mod tests {
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
-            session_context,
             message,
         );
 
@@ -60,7 +58,6 @@ mod tests {
         let active_coworkers = vec!["york".to_string()];
         let idle_coworkers = vec![]; // york is busy
         let at_dev_limit = false;
-        let session_context = None;
         let message = "Review feedback";
 
         let action = decide_pr_comment_action_with_handoff(
@@ -69,7 +66,6 @@ mod tests {
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
-            session_context,
             message,
         );
 
@@ -116,7 +112,6 @@ mod tests {
         let active_coworkers = vec![]; // york is not active
         let idle_coworkers = vec![];
         let at_dev_limit = false;
-        let session_context = None;
         let message = "Review feedback";
 
         let action = decide_pr_comment_action_with_handoff(
@@ -125,7 +120,6 @@ mod tests {
             &active_coworkers,
             &idle_coworkers,
             at_dev_limit,
-            session_context,
             message,
         );
 

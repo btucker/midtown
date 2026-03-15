@@ -663,44 +663,10 @@ pub enum PrAction {
     NudgeOwner { owner: String, message: String },
     /// Owner is inactive — spawn them with a message.
     SpawnOwner { owner: String, message: String },
-    /// Hand off to any available coworker with the original author's session context.
-    ///
-    /// Used when the PR needs work but the original author is unavailable.
-    /// A different coworker resumes the original session to preserve context.
-    HandoffToCoworker {
-        /// The coworker to assign (typically the first idle one)
-        assignee: String,
-        /// The original PR author
-        original_author: String,
-        /// The PR number
-        pr_number: u64,
-        /// The branch name
-        branch: String,
-        /// The session ID to resume
-        session_id: String,
-        /// The nudge message
-        message: String,
-    },
     /// No identifiable owner — post to channel.
     PostToChannel { message: String },
     /// Skip — dev limit reached, self-comment, on cooldown, or no owner.
     Skip { reason: String },
-}
-
-/// Context for PR session handoff — the stored session info for a PR.
-///
-/// When a coworker opens a PR, we store their session ID so that any
-/// coworker can later resume work on that PR with full context.
-#[derive(Debug, Clone)]
-pub struct PrSessionContext {
-    /// The Claude session ID (UUID) from the original author's session.
-    pub session_id: String,
-    /// The git branch for this PR.
-    pub branch: String,
-    /// The coworker who originally authored the PR.
-    pub original_author: String,
-    /// The PR number.
-    pub pr_number: u64,
 }
 
 /// Core handoff logic shared by PR issue, comment, and review-complete actions.
@@ -711,13 +677,11 @@ pub struct PrSessionContext {
 ///
 /// When the owner is empty, returns `empty_owner_fallback` (PostToChannel for
 /// issue actions, SpawnOwner for comment actions).
-#[allow(clippy::too_many_arguments)]
 fn resolve_pr_handoff(
     owner: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
     at_dev_limit: bool,
-    #[allow(unused_variables)] session_context: Option<&PrSessionContext>,
     message: &str,
     reason_label: &str,
     empty_owner_fallback: PrAction,
@@ -765,14 +729,12 @@ fn resolve_pr_handoff(
 
 /// Decide what action to take for a PR issue detected by polling.
 ///
-/// Considers handing off the PR to a different coworker when the original
-/// author is unavailable. Only nudges the owner if they are both active and idle.
+/// Only nudges the owner if they are both active and idle; spawns if inactive.
 pub fn decide_pr_issue_action_with_handoff(
     owner: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
     at_dev_limit: bool,
-    session_context: Option<&PrSessionContext>,
     message: &str,
 ) -> PrAction {
     resolve_pr_handoff(
@@ -780,7 +742,6 @@ pub fn decide_pr_issue_action_with_handoff(
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
-        session_context,
         message,
         "PR issue",
         PrAction::PostToChannel {
@@ -791,15 +752,13 @@ pub fn decide_pr_issue_action_with_handoff(
 
 /// Decide what action to take for a PR comment nudge (webhook-driven).
 ///
-/// Considers handing off the PR to a different coworker when the original
-/// author is unavailable. Only nudges the owner if they are both active and idle.
+/// Only nudges the owner if they are both active and idle; spawns if inactive.
 pub fn decide_pr_comment_action_with_handoff(
     owner: &str,
     actor: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
     at_dev_limit: bool,
-    session_context: Option<&PrSessionContext>,
     message: &str,
 ) -> PrAction {
     if owner == actor {
@@ -813,7 +772,6 @@ pub fn decide_pr_comment_action_with_handoff(
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
-        session_context,
         message,
         "PR comment",
         PrAction::SpawnOwner {
@@ -827,8 +785,7 @@ pub fn decide_pr_comment_action_with_handoff(
 /// author needs to address feedback.
 ///
 /// Nudge if active (idle or busy), spawn if inactive,
-/// skip if inactive and at dev limit. No handoff — review feedback
-/// goes to the original author.
+/// skip if inactive and at dev limit.
 pub fn decide_review_complete_action(
     owner: &str,
     active_coworkers: &[String],
@@ -836,13 +793,11 @@ pub fn decide_review_complete_action(
     at_dev_limit: bool,
     message: &str,
 ) -> PrAction {
-    // Review complete doesn't use handoff — always route to the original author
     resolve_pr_handoff(
         owner,
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
-        None, // no session context = no handoff
         message,
         "review complete",
         PrAction::SpawnOwner {

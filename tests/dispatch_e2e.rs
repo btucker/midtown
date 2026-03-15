@@ -1413,7 +1413,6 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         &active_coworkers,
         &idle_coworkers,
         is_at_dev_limit,
-        None, // pleasant had empty session_id in snapshot
         "CI is green — please address review feedback and merge",
     );
     assert!(
@@ -1429,7 +1428,6 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         &active_coworkers,
         &idle_coworkers,
         is_at_dev_limit,
-        None,
         "review is complete — please address feedback",
     );
     assert!(

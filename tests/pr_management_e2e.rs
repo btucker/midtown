@@ -354,7 +354,6 @@ fn pr_comment_nudges_owner() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         "PR #60 - changes requested: please address feedback",
     );
 
@@ -391,7 +390,6 @@ fn pr_issue_spawns_inactive_owner() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         "PR #61 - changes requested: please address feedback",
     );
 
@@ -414,7 +412,6 @@ fn pr_issue_respects_dev_limit() {
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         true,              // at dev limit
-        None,
         "PR #62 - CI failed: please investigate",
     );
 
