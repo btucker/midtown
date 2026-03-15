@@ -361,25 +361,23 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
 }
 
 #[test]
-fn test_to_headless_config_reviewer_escalation_target() {
-    // Without escalation_target, falls back to project_name
+fn test_to_headless_config_reviewer_uses_agent_definition() {
+    // For Claude, the system_prompt in HeadlessConfig is Layers 2+3 (append prompt).
+    // Layer 1 (agent definition with reviewer instructions) is loaded via agent_name.
     let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
     let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
-    assert!(
-        headless.system_prompt.contains("@midtown [Review Note]"),
-        "Without escalation_target, review notes should @mention project name"
+
+    // agent_name should point to the code reviewer agent definition
+    assert_eq!(
+        headless.agent_name.as_deref(),
+        Some("midtown-code-reviewer"),
+        "Reviewer should use the midtown-code-reviewer agent definition"
     );
 
-    // With escalation_target set to channel lead
-    let mut config =
-        LaunchConfig::reviewer("york", "myrepo", 42, 0, crate::auth::AuthProvider::Claude);
-    config.escalation_target = Some("daemon-core".to_string());
-    let headless = config.to_headless_config(&test_paths("myrepo", "midtown"));
+    // The append prompt (system_prompt) should contain Layer 2 operational rules
     assert!(
-        headless
-            .system_prompt
-            .contains("@daemon-core [Review Note]"),
-        "With escalation_target, review notes should @mention channel lead"
+        headless.system_prompt.contains("GitHub Etiquette"),
+        "Reviewer append prompt should contain common.md content (Layer 2)"
     );
 }
 
@@ -480,9 +478,9 @@ fn test_render_append_prompt_excludes_layer1() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let append_prompt = config.render_append_prompt("midtown");
 
-    // Layer 1 content is the coworker.md agent definition — it contains "# Code Author"
-    // (from the old-format coworker.md). The append prompt should NOT contain this.
-    // Instead, it should contain Layer 2 content (common.md operational rules).
+    // Layer 1 (agent definition, e.g. midtown-code-author) is loaded via --agent,
+    // not included in the append prompt. The append prompt should only contain
+    // Layer 2 content (common.md operational rules) + Layer 3 runtime context.
     let full_prompt = config.render_system_prompt("midtown");
     assert!(
         append_prompt.len() < full_prompt.len(),

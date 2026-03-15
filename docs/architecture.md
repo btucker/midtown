@@ -194,19 +194,19 @@ Additional call-in flags: `--channel <name>` sets `LaunchConfig.channel` for mes
 
 Prompts are assembled from three distinct layers in `src/agents.rs`:
 
-1. **Agent definition (Layer 1)** — Role identity and behavioral instructions, loaded from composable markdown files in `agents/`. The binary embeds defaults, but `agents/` in the git repo root (or `~/.midtown/agents/`) takes precedence. New-format agent definitions (`agents/definitions/midtown-*.md`) are accessible via `load_agent_definition_for_role()` and wired into session spawning via `HeadlessConfig.agent_name`. For Claude Code sessions, Layer 1 is delivered via the `--agent <name>` CLI flag (e.g., `--agent midtown-code-author`), while Layers 2+3 go through `--append-system-prompt`. For Codex sessions (which don't support `--agent`), all layers are bundled into `--system-prompt` as before. The mapping from `CoworkerRole` to agent name is in `CoworkerRole::agent_name()`, and `render_append_prompt()` returns only Layers 2+3.
+1. **Agent definition (Layer 1)** — Role identity and behavioral instructions, loaded from agent definition files (`agents/definitions/midtown-*.md`) via `load_agent_definition_for_role()`. Search order: `.claude/agents/midtown-*.md` (project-level), `~/.claude/agents/midtown-*.md` (user-level), compiled-in fallback. For Claude Code sessions, Layer 1 is delivered via the `--agent <name>` CLI flag (e.g., `--agent midtown-code-author`), while Layers 2+3 go through `--append-system-prompt`. For Codex sessions (which don't support `--agent`), all layers are bundled into `--system-prompt`. The mapping from `CoworkerRole` to agent name is in `CoworkerRole::agent_name()`, and `render_append_prompt()` returns only Layers 2+3.
 
-2. **Shared prompt (Layer 2)** — Operational rules shared across roles, loaded via `shared_prompt_for_role()`. Coworkers/reviewers get `common.md` only; leads get `lead-common.md` + `common.md`.
+2. **Shared prompt (Layer 2)** — Operational rules shared across roles, loaded via `shared_prompt_for_role()`. Uses compiled-in content from `agents/common.md` and `agents/lead-common.md`. Coworkers/reviewers get `common.md` only; leads get `lead-common.md` + `common.md`.
 
-3. **Runtime context (Layer 3)** — Template variable replacement and runtime content injection, applied via `build_runtime_context()`. Ops extras are appended before substitution (so `{name}` IS replaced in ops content). AGENTS.md is appended after substitution (so literal `{name}` in AGENTS.md is preserved).
+3. **Runtime context (Layer 3)** — Template variable replacement and runtime content injection, applied via `build_runtime_context()`. Ops extras (`agents/ops-channel-lead.md`) are appended before substitution (so `{name}` IS replaced in ops content). AGENTS.md is appended after substitution (so literal `{name}` in AGENTS.md is preserved).
 
-**Assembly by agent type (current, transitional):**
-- **Project Lead**: `project-lead.md` + `lead-common.md` + `common.md`
-- **Coworker**: `coworker.md` + `common.md`
-- **Reviewer**: `coworker.md` + `common.md` + `reviewer.md` (common.md appears before reviewer instructions)
-- **Channel lead**: `channel-lead.md` + `lead-common.md` + `common.md` (+ `ops-channel-lead.md` for ops channel)
+**Assembly by agent type:**
+- **Project Lead**: `midtown-project-lead.md` (Layer 1) + `lead-common.md` + `common.md` (Layer 2)
+- **Coworker**: `midtown-code-author.md` (Layer 1) + `common.md` (Layer 2)
+- **Reviewer**: `midtown-code-reviewer.md` (Layer 1) + `common.md` (Layer 2)
+- **Channel lead**: `midtown-channel-lead.md` (Layer 1) + `lead-common.md` + `common.md` (Layer 2) + `ops-channel-lead.md` for ops (Layer 3)
 
-**Template variables:** `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_lead}`, `{escalation_target}` (reviewer only), `{channel_name}`, `{domain_context}` (channel lead only), `{code_review_invocation}` (reviewer only).
+**Template variables** (in Layer 2/3 content): `{name}` (agent name; project name for Project Lead), `{project_name}` (e.g., `midtown`), `{channel_lead}`, `{escalation_target}`, `{channel_name}`, `{domain_context}`, `{code_review_invocation}`.
 
 **@mention routing:** Agents use `@{project_name}` (e.g., `@midtown`) to mention the Project Lead — not the literal `@lead`. Both `@lead` and `@{project_name}` are recognized by the daemon's nudge routing in `rpc_channel.rs` and `chat.rs`.
 
