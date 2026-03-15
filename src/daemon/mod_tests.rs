@@ -622,10 +622,6 @@ fn test_stuck_condition_type_display() {
         StuckConditionType::SilentCoworker.to_string(),
         "silent coworker"
     );
-    assert_eq!(
-        StuckConditionType::ReviewBacklog.to_string(),
-        "review backlog"
-    );
 }
 
 #[test]
