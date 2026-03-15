@@ -21,19 +21,19 @@ pub struct AgentDefinition {
 pub static AGENT_DEFINITIONS: &[AgentDefinition] = &[
     AgentDefinition {
         filename: "midtown-code-author.md",
-        content: include_str!("../../../../agents/definitions/midtown-code-author.md"),
+        content: include_str!("../../../../.claude/agents/midtown-code-author.md"),
     },
     AgentDefinition {
         filename: "midtown-code-reviewer.md",
-        content: include_str!("../../../../agents/definitions/midtown-code-reviewer.md"),
+        content: include_str!("../../../../.claude/agents/midtown-code-reviewer.md"),
     },
     AgentDefinition {
         filename: "midtown-project-lead.md",
-        content: include_str!("../../../../agents/definitions/midtown-project-lead.md"),
+        content: include_str!("../../../../.claude/agents/midtown-project-lead.md"),
     },
     AgentDefinition {
         filename: "midtown-channel-lead.md",
-        content: include_str!("../../../../agents/definitions/midtown-channel-lead.md"),
+        content: include_str!("../../../../.claude/agents/midtown-channel-lead.md"),
     },
 ];
 

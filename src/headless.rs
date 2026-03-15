@@ -124,12 +124,12 @@ pub struct HeadlessConfig {
     pub disallowed_tools: Vec<String>,
     /// Agent definition name for `--agent <name>` flag.
     ///
-    /// When set, the CLI arg builder emits `--agent <name>` alongside
-    /// `--append-system-prompt` (which carries Layers 2+3). The agent definition
-    /// file provides Layer 1 (role identity).
+    /// When set, the CLI arg builder emits `--agent <name>` for both fresh and
+    /// resume sessions. On fresh sessions, `--append-system-prompt` carries
+    /// Layers 2+3. On resume sessions, `--agent` ensures the agent identity
+    /// is available for task handoff.
     ///
-    /// When `None`, current behavior: `system_prompt` carries all layers via
-    /// `--append-system-prompt`.
+    /// When `None`, `system_prompt` carries all layers via `--append-system-prompt`.
     #[serde(default)]
     pub agent_name: Option<String>,
 }
