@@ -168,6 +168,14 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         args.push("project,local".to_string());
     }
 
+    // Agent definition: when agent_name is set, Layer 1 comes from the agent
+    // definition file via --agent. This is passed in both fresh and resume modes
+    // so that resumed sessions (e.g., task handoff) get the correct agent identity.
+    if let Some(name) = agent_name {
+        args.push("--agent".to_string());
+        args.push(name.clone());
+    }
+
     if is_resume {
         // Resume mode: --resume <id>, no -p flag, no system prompt/schema
         args.push("--resume".to_string());
@@ -188,13 +196,6 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     } else {
         // Fresh mode: -p with system prompt
         args.push("-p".to_string());
-
-        // Agent definition: when agent_name is set, Layer 1 comes from the agent
-        // definition file via --agent, and system_prompt carries only Layers 2+3.
-        if let Some(name) = agent_name {
-            args.push("--agent".to_string());
-            args.push(name.clone());
-        }
 
         args.push("--append-system-prompt".to_string());
         args.push(system_prompt.clone());
