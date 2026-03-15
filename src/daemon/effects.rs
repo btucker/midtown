@@ -377,8 +377,6 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
-    /// Clear a saved PR break session after successful resume.
-    ClearPrBreakSession { name: String },
     /// Assign a reviewer to a PR in github_state and persist.
     AssignReviewer {
         pr_number: u64,
@@ -1853,11 +1851,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         );
                     }
                 }
-            }
-            Effect::ClearPrBreakSession { name } => {
-                let mut sessions = state.pr_break_sessions.write().unwrap();
-                sessions.remove(&name);
-                info!("Cleared PR break session for {}", name);
             }
             Effect::AssignReviewer {
                 pr_number,
