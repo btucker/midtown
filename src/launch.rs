@@ -129,6 +129,12 @@ pub struct LaunchConfig {
     /// the `HeadlessConfig::cwd`. Used by channel leads with `channel_directory`
     /// configured, so they pick up subdirectory-specific CLAUDE.md instructions.
     pub cwd_subdir: Option<String>,
+    /// Override the agent definition name for `--agent <name>`.
+    ///
+    /// When set, `to_headless_config` uses this instead of `role.agent_name()`.
+    /// Used by `task handoff` to swap the agent type on a resumed session
+    /// while preserving conversation history.
+    pub agent_name_override: Option<String>,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -465,6 +471,7 @@ impl LaunchConfig {
             task_id,
             persisted_initial_prompt: None,
             cwd_subdir: None,
+            agent_name_override: None,
         }
     }
 
@@ -510,6 +517,7 @@ impl LaunchConfig {
             task_id: None,
             persisted_initial_prompt: None,
             cwd_subdir: None,
+            agent_name_override: None,
         }
     }
 
@@ -550,6 +558,7 @@ impl LaunchConfig {
             task_id,
             persisted_initial_prompt: None,
             cwd_subdir: None,
+            agent_name_override: None,
         }
     }
 
@@ -600,6 +609,7 @@ impl LaunchConfig {
                 task_id: None,
                 persisted_initial_prompt: None,
                 cwd_subdir: None,
+                agent_name_override: None,
             }
         }
     }
@@ -658,6 +668,7 @@ impl LaunchConfig {
             task_id: None,
             persisted_initial_prompt: None,
             cwd_subdir: None,
+            agent_name_override: None,
         }
     }
 
@@ -684,10 +695,11 @@ impl LaunchConfig {
         let (agent_name, system_prompt) = if is_codex {
             (None, self.render_system_prompt(project_name))
         } else {
-            (
-                Some(self.role.agent_name().to_string()),
-                self.render_append_prompt(project_name),
-            )
+            let name = self
+                .agent_name_override
+                .clone()
+                .unwrap_or_else(|| self.role.agent_name().to_string());
+            (Some(name), self.render_append_prompt(project_name))
         };
 
         // Save the full system prompt (all layers) to disk for attach resumption.

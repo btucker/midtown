@@ -43,6 +43,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -315,6 +316,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -349,6 +351,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));

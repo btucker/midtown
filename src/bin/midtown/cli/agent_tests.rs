@@ -165,6 +165,7 @@ fn test_to_cli_args_resume_includes_all_flags() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings.json");
@@ -217,6 +218,7 @@ fn test_to_cli_args_fresh_generates_session_id() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings2.json");
@@ -258,6 +260,7 @@ fn test_to_cli_args_coworker_restricts_settings() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let settings = std::env::temp_dir().join("test-settings.json");
@@ -382,6 +385,7 @@ fn test_to_cli_args_includes_model_flag() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings.json");
@@ -421,6 +425,7 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings2.json");

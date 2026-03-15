@@ -223,6 +223,7 @@ pub(super) async fn handle_coworker_spawn(
         task_id: task_id.clone(),
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     // Pre-spawn: ensure task worktree exists and register assignment

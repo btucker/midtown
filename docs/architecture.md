@@ -981,7 +981,7 @@ Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task
 - **Coworker dispatch** (`dispatch.rs`): From the assigned task ID
 - **PR auto-pilot** (`pr.rs`, `action_to_effects`): Via `Effect::TaskPrompt` for task-linked PRs, from `pr_task_associations`
 - **Reviewer spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): From `pr_task_associations`
-- **Handoff to coworker** (`pr.rs`, `handoff_to_coworker_effects`): From `pr_task_associations`
+- **Task handoff** (`rpc_task.rs`, `handle_task_handoff`): Swaps the agent type on a task's session via `--resume --agent`
 - **Reviewer follow-up resume** (`pr.rs`, `handle_pr_comment_activity`): From `pr_to_task_map()`
 - **Daemon recovery** (`dispatch.rs`): From the recovery task ID
 

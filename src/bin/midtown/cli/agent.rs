@@ -833,6 +833,7 @@ pub(crate) fn build_attach_launch_spec(
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let system_prompt = match &launch_config.role {
