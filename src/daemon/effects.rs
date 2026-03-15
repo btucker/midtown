@@ -1986,7 +1986,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 session_id,
                 branch,
                 author,
-                title,
+                title: _,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 // Backfill pr_number on the SessionRecord (if it exists).
@@ -2011,10 +2011,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         branch, session_id, record.task_id
                     );
                 }
-                // Still write to pr_author_sessions for backward compatibility
-                // (non-task PRs and legacy code paths still read from it).
-                ps.github
-                    .store_pr_author_session(pr_number, &session_id, &branch, &author, &title);
                 // Link the PR to the worktree by matching branch name.
                 // Use get_by_branch instead of get_by_coworker because coworkers can have
                 // multiple worktrees (one per task), and we need to match the exact branch.
@@ -2040,18 +2036,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
-                    // Mark worktree as completed (for time-based cleanup) and clean up pr_author_sessions
+                    // Mark worktree as completed (for time-based cleanup)
                     {
                         let mut ps = state.persistent_state.lock().await;
                         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(&task_id) {
                             ps.worktree_registry
                                 .mark_completed(&wt_id, chrono::Utc::now());
                         }
-                        // Clean up pr_author_sessions for this task to prevent stale state
-                        ps.github
-                            .pr_author_sessions
-                            .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
-                        // Save both mutations in a single write
                         if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save task completion state: {}", e);
                         }
@@ -2221,14 +2212,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
-                // Remove from registry and clean up pr_author_sessions
+                // Remove from registry
                 let removed = {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
-                    // Also clean up pr_author_sessions for this PR (defense-in-depth)
-                    let pr_session_removed = ps.github.pr_author_sessions.remove(&pr_number);
-                    // Save if either worktree or pr_author_session was removed
-                    if (removed.is_some() || pr_session_removed.is_some())
+                    if removed.is_some()
                         && let Err(e) = ps.save_for_repo(state.paths.dir_key())
                     {
                         warn!("Failed to save daemon state after worktree cleanup: {}", e);
