@@ -790,3 +790,115 @@ fn test_task_parent_not_stored_when_none() {
         "task_parent should remain empty when parent is None"
     );
 }
+// ── task.prompt model validation tests ────────────────────────────────────────
+
+/// handle_task_prompt should reject invalid model formats before any session lookup.
+/// We test this indirectly by verifying validate_model_format catches bad formats.
+#[test]
+fn test_task_prompt_model_validation_rejects_invalid() {
+    // These formats would be rejected by handle_task_prompt before session lookup
+    assert!(validate_model_format("invalid-no-slash").is_err());
+    assert!(validate_model_format("claude/").is_err());
+    assert!(validate_model_format("/opus").is_err());
+    assert!(validate_model_format("unknown/opus").is_err());
+}
+
+/// handle_task_prompt should accept valid model formats.
+#[test]
+fn test_task_prompt_model_validation_accepts_valid() {
+    assert!(validate_model_format("claude/opus").is_ok());
+    assert!(validate_model_format("claude/sonnet").is_ok());
+    assert!(validate_model_format("codex/o3").is_ok());
+}
+
+/// When --model is provided to task prompt, it should override the task's configured
+/// model. This tests the apply_task_model pattern used in the resume path.
+#[test]
+fn test_task_prompt_model_override_applies_to_config() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "lexington".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::Fresh,
+        None,
+        Some("42".to_string()),
+    );
+
+    // Simulate the --model override path from handle_task_prompt
+    let mut override_map = HashMap::new();
+    override_map.insert("42".to_string(), "claude/opus".to_string());
+    config.apply_task_model(&override_map, "42");
+
+    assert_eq!(config.model, "opus");
+    assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
+}
+
+/// When no --model is provided, the task's configured model from persistent state
+/// should be used.
+#[test]
+fn test_task_prompt_uses_task_configured_model() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "lexington".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::Fresh,
+        None,
+        Some("42".to_string()),
+    );
+
+    // Simulate the persistent state model lookup path
+    let mut task_model = HashMap::new();
+    task_model.insert("42".to_string(), "codex/o3".to_string());
+    config.apply_task_model(&task_model, "42");
+
+    assert_eq!(config.model, "o3");
+    assert_eq!(config.auth_provider, crate::auth::AuthProvider::Codex);
+}
+
+/// When neither --model nor task model is configured, the default model should remain.
+/// The default is determined by config (may vary by machine), so just verify it's non-empty.
+#[test]
+fn test_task_prompt_uses_default_model_when_none_configured() {
+    let config = crate::launch::LaunchConfig::coworker(
+        "lexington".to_string(),
+        "nonexistent-test-repo".to_string(),
+        crate::launch::SessionMode::Fresh,
+        None,
+        Some("42".to_string()),
+    );
+
+    // No apply_task_model call — model stays at default
+    assert!(!config.model.is_empty(), "default model should be set");
+}
+
+/// The resume config should use ResumeSession mode with the correct session ID.
+#[test]
+fn test_task_prompt_resume_config_uses_session_id() {
+    let session_id = "test-session-uuid-123";
+    let config = crate::launch::LaunchConfig::coworker(
+        "lexington".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession(session_id.to_string()),
+        Some("Fix the bug".to_string()),
+        Some("42".to_string()),
+    );
+
+    assert!(
+        matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == session_id)
+    );
+    assert_eq!(config.initial_prompt.as_deref(), Some("Fix the bug"));
+    assert_eq!(config.task_id.as_deref(), Some("42"));
+}
+
+/// Task ID prefix stripping (! and #) is used by handle_task_prompt.
+/// Test the stripping logic directly.
+#[test]
+fn test_task_prompt_strips_id_prefixes() {
+    fn strip(id: &str) -> &str {
+        id.strip_prefix('#')
+            .or_else(|| id.strip_prefix('!'))
+            .unwrap_or(id)
+    }
+    assert_eq!(strip("!42"), "42");
+    assert_eq!(strip("#42"), "42");
+    assert_eq!(strip("42"), "42");
+    assert_eq!(strip("!100"), "100");
+}

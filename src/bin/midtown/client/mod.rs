@@ -490,7 +490,6 @@ impl DaemonClient {
     // Task commands
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn task_create(
         &self,
         subject: &str,
@@ -598,6 +597,24 @@ impl DaemonClient {
                 "from": from
             })),
         )
+    }
+
+    pub fn task_prompt(
+        &self,
+        id: &str,
+        message: &str,
+        model: Option<&str>,
+    ) -> Result<Response, String> {
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        let mut params = serde_json::json!({
+            "id": id,
+            "message": message,
+            "from": from
+        });
+        if let Some(m) = model {
+            params["model"] = serde_json::json!(m);
+        }
+        self.send("task.prompt", Some(params))
     }
 
     // Session commands (attach/detach headless coworkers)

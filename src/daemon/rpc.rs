@@ -607,6 +607,27 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_task::handle_task_claim(request.id, task_id, &from, state).await
         }
 
+        "task.prompt" => {
+            let task_id = require_str!(params, "id", request.id);
+            let message = require_str!(params, "message", request.id);
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.project_name.clone());
+            let model = params.str_param("model").map(str::to_string);
+            super::rpc_task::handle_task_prompt(
+                request.id,
+                task_id,
+                message,
+                &from,
+                model.as_deref(),
+                state,
+            )
+            .await
+        }
+
         // ---- Reminders ----
         "reminder.create" => {
             let trigger = require_str!(params, "trigger", request.id);
