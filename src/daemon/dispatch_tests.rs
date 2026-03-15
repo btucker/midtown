@@ -5516,3 +5516,231 @@ fn test_plan_section_with_missing_plan_file_preserves_skill() {
         "Should preserve execution skill even when plan file is missing"
     );
 }
+
+// ======================================================================
+// Reviewer task dispatch tests
+// ======================================================================
+
+/// Test that pending tasks with agent_type "midtown-code-reviewer" are
+/// dispatched with LaunchConfig::reviewer() instead of LaunchConfig::coworker().
+#[test]
+fn test_dispatch_reviewer_task_uses_reviewer_config() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "100".to_string(),
+            subject: "Review PR #42".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: Some("Code review for PR #42".to_string()),
+            channel: Some("web".to_string()),
+            pr: Some(42),
+            created_at: Some(SystemTime::now()),
+        }],
+        task_agent_type_map: [("100".to_string(), "midtown-code-reviewer".to_string())]
+            .into_iter()
+            .collect(),
+        task_pr_number_map: [("100".to_string(), 42u64)].into_iter().collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should have EnsureWorktree + RegisterWorktreeAssignment + AssignAndSpawn
+    let assign_and_spawn = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { config, .. } = e {
+                Some(config)
+            } else {
+                None
+            }
+        })
+        .expect("Should have AssignAndSpawn for reviewer task");
+
+    // Config should be a reviewer config (role = Reviewer)
+    assert_eq!(
+        assign_and_spawn.role,
+        crate::launch::CoworkerRole::Reviewer,
+        "Reviewer task should use reviewer role"
+    );
+    assert_eq!(
+        assign_and_spawn.pr_number,
+        Some(42),
+        "Reviewer config should have the PR number"
+    );
+
+    // Worktree should be review-specific (review-pr-42)
+    let ensure_worktree = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::EnsureWorktree { worktree_id, .. } = e {
+                Some(worktree_id.clone())
+            } else {
+                None
+            }
+        })
+        .expect("Should have EnsureWorktree");
+    assert_eq!(
+        ensure_worktree, "review-pr-42",
+        "Reviewer worktree should use review slug"
+    );
+}
+
+/// Test that reviewer tasks without a PR number are skipped during dispatch.
+#[test]
+fn test_dispatch_reviewer_task_without_pr_number_is_skipped() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "101".to_string(),
+            subject: "Review PR #??".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: None,
+            created_at: Some(SystemTime::now()),
+        }],
+        // Agent type set but NO pr_number
+        task_agent_type_map: [("101".to_string(), "midtown-code-reviewer".to_string())]
+            .into_iter()
+            .collect(),
+        task_pr_number_map: HashMap::new(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should NOT have any spawn effects (no PR number to build reviewer config)
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AssignAndSpawn { .. }));
+    assert!(
+        !has_spawn,
+        "Reviewer task without PR number should not be dispatched"
+    );
+}
+
+/// Test that reviewer task on_success includes PostPrComment and AssignReviewer.
+#[test]
+fn test_dispatch_reviewer_task_on_success_has_reviewer_effects() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "102".to_string(),
+            subject: "Review PR #55".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: Some(55),
+            created_at: Some(SystemTime::now()),
+        }],
+        task_agent_type_map: [("102".to_string(), "midtown-code-reviewer".to_string())]
+            .into_iter()
+            .collect(),
+        task_pr_number_map: [("102".to_string(), 55u64)].into_iter().collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let on_success = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { on_success, .. } = e {
+                Some(on_success)
+            } else {
+                None
+            }
+        })
+        .expect("Should have AssignAndSpawn");
+
+    // on_success should include PostPrComment
+    let has_pr_comment = on_success
+        .iter()
+        .any(|e| matches!(e, Effect::PostPrComment { pr_number: 55, .. }));
+    assert!(
+        has_pr_comment,
+        "Reviewer task on_success should include PostPrComment"
+    );
+
+    // on_success should include AssignReviewer
+    let has_assign = on_success
+        .iter()
+        .any(|e| matches!(e, Effect::AssignReviewer { pr_number: 55, .. }));
+    assert!(
+        has_assign,
+        "Reviewer task on_success should include AssignReviewer"
+    );
+
+    // on_success should include DM separator
+    let has_dm_separator = on_success.iter().any(|e| {
+        matches!(e, Effect::PostSystemMessage { message, .. } if message.contains("Reviewing PR #55"))
+    });
+    assert!(
+        has_dm_separator,
+        "Reviewer task on_success should include DM separator"
+    );
+}
+
+/// Test that reviewer task on_failure includes RemoveReviewerAssignment.
+#[test]
+fn test_dispatch_reviewer_task_on_failure_cleans_up_assignment() {
+    use crate::tasks::{Task, TaskStatus};
+    use std::time::SystemTime;
+
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_without_owners: vec![Task {
+            id: "103".to_string(),
+            subject: "Review PR #66".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            blocked_by: vec![],
+            description: None,
+            channel: None,
+            pr: Some(66),
+            created_at: Some(SystemTime::now()),
+        }],
+        task_agent_type_map: [("103".to_string(), "midtown-code-reviewer".to_string())]
+            .into_iter()
+            .collect(),
+        task_pr_number_map: [("103".to_string(), 66u64)].into_iter().collect(),
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let on_failure = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+                Some(on_failure)
+            } else {
+                None
+            }
+        })
+        .expect("Should have AssignAndSpawn");
+
+    let has_remove_assignment = on_failure
+        .iter()
+        .any(|e| matches!(e, Effect::RemoveReviewerAssignment { pr_number: 66 }));
+    assert!(
+        has_remove_assignment,
+        "Reviewer task on_failure should include RemoveReviewerAssignment"
+    );
+}

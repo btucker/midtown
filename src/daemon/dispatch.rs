@@ -2073,8 +2073,102 @@ fn dispatch_unowned_pending_tasks(
                 on_success: assign_callbacks,
             });
         } else {
-            // Spawn a new coworker — assign ownership atomically with spawn
-            let wt = prepare_task_worktree(&task.id, &task.subject, state.paths.dir_key(), snap);
+            // Check if this is a reviewer task (agent type determines spawn config)
+            let is_reviewer_task = snap
+                .task_agent_type_map
+                .get(&task.id)
+                .is_some_and(|t| t == "midtown-code-reviewer");
+
+            // Reviewer tasks use review-specific worktree (review-pr-XXX) and LaunchConfig
+            let (wt, config) = if is_reviewer_task {
+                let pr_number = snap.task_pr_number_map.get(&task.id).copied().unwrap_or(0);
+                if pr_number == 0 {
+                    warn!(
+                        "Reviewer task !{} has no PR number — skipping dispatch",
+                        task.id
+                    );
+                    continue;
+                }
+
+                let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+                let wt_path =
+                    crate::paths::worktrees_dir_for_repo(&snap.dir_key).join(&worktree_id);
+                let wt = WorktreeSetup {
+                    worktree_id: worktree_id.clone(),
+                    path: wt_path.clone(),
+                    pre_spawn_effects: vec![
+                        effects::Effect::EnsureWorktree {
+                            worktree_id: worktree_id.clone(),
+                            path: wt_path.clone(),
+                        },
+                        effects::Effect::RegisterWorktreeAssignment {
+                            assignment: crate::worktree_registry::WorktreeAssignment {
+                                worktree_id: worktree_id.clone(),
+                                branch_name: worktree_id.clone(),
+                                task_id: Some(task.id.clone()),
+                                current_coworker: None,
+                                pr_number: Some(pr_number),
+                                created_at: chrono::Utc::now(),
+                                completed_at: None,
+                            },
+                        },
+                    ],
+                };
+
+                let auth_provider = crate::config::get_execution_provider_for_role(
+                    &snap.dir_key,
+                    crate::config::ExecutionRole::Reviewer,
+                );
+                let mut config = crate::launch::LaunchConfig::reviewer(
+                    coworker_name.clone(),
+                    snap.dir_key.clone(),
+                    pr_number,
+                    0, // restart_count=0 for new tasks
+                    auth_provider,
+                );
+                config.model = super::helpers::normalize_model_for_provider_role(
+                    &config.model,
+                    config.auth_provider,
+                    &config.role,
+                );
+                config.working_dir = Some(wt_path);
+                config.channel = task.channel.clone();
+                config.task_id = Some(task.id.clone());
+
+                // Route escalation to the channel lead if one exists
+                if let Some(ref ch) = task.channel {
+                    let channel_lead_names = snap.channel_lead_names();
+                    if channel_lead_names.contains(ch) {
+                        config.escalation_target = Some(ch.clone());
+                        config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                            pr_number,
+                            0,
+                            auth_provider,
+                            Some(ch),
+                        ));
+                    }
+                }
+
+                (wt, config)
+            } else {
+                // Standard coworker task
+                let wt =
+                    prepare_task_worktree(&task.id, &task.subject, state.paths.dir_key(), snap);
+                let prompt =
+                    crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
+                let mut config = crate::launch::LaunchConfig::coworker(
+                    coworker_name.clone(),
+                    state.paths.dir_key().to_string(),
+                    crate::launch::SessionMode::Fresh,
+                    Some(prompt),
+                    Some(task.id.clone()),
+                );
+                config.working_dir = Some(wt.path.clone());
+                config.channel = task.channel.clone();
+                config.apply_task_model(&snap.task_model_map, &task.id);
+                (wt, config)
+            };
+
             if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &coworker_name) {
                 debug!(
                     "Pending task !{}: skipping fresh spawn for {} because worktree {} is bound to active coworker {}",
@@ -2082,25 +2176,17 @@ fn dispatch_unowned_pending_tasks(
                 );
                 continue;
             }
-            let prompt =
-                crate::agents::coworker_task_prompt(&task.id, &task.subject, &plan_section);
 
-            let mut config = crate::launch::LaunchConfig::coworker(
-                coworker_name.clone(),
-                state.paths.dir_key().to_string(),
-                crate::launch::SessionMode::Fresh,
-                Some(prompt),
-                Some(task.id.clone()),
-            );
-            config.working_dir = Some(wt.path);
-            config.channel = task.channel.clone();
-            config.apply_task_model(&snap.task_model_map, &task.id);
-
-            let channel_msg = daemon_messages::called_in_assigned_task(
-                &coworker_name,
-                &task.id.to_string(),
-                &task.subject,
-            );
+            let channel_msg = if is_reviewer_task {
+                let pr_number = snap.task_pr_number_map.get(&task.id).copied().unwrap_or(0);
+                daemon_messages::called_in_reviewer(&coworker_name, pr_number)
+            } else {
+                daemon_messages::called_in_assigned_task(
+                    &coworker_name,
+                    &task.id.to_string(),
+                    &task.subject,
+                )
+            };
 
             effects.extend(wt.pre_spawn_effects);
 
@@ -2112,10 +2198,50 @@ fn dispatch_unowned_pending_tasks(
                 Effect::BroadcastCoworkerUpdate {
                     name: coworker_name.clone(),
                     status: "running".to_string(),
-                    current_task: None,
+                    current_task: if is_reviewer_task {
+                        let pr_number = snap.task_pr_number_map.get(&task.id).copied().unwrap_or(0);
+                        Some(format!("reviewing PR #{}", pr_number))
+                    } else {
+                        None
+                    },
                 },
                 Effect::post_to_ops(channel_msg),
             ];
+
+            // Reviewer tasks: post placeholder comment and warn the PR author
+            if is_reviewer_task {
+                let pr_number = snap.task_pr_number_map.get(&task.id).copied().unwrap_or(0);
+
+                // DM separator so the reviewer's output streams to dm-<name>
+                on_success.push(Effect::PostSystemMessage {
+                    message: format!("─── Reviewing PR #{} ───", pr_number),
+                    channel: Some(format!("dm-{}", coworker_name)),
+                });
+
+                // Post "Review in progress" placeholder comment on the PR
+                on_success.push(Effect::PostPrComment {
+                    pr_number,
+                    reviewer_name: coworker_name.clone(),
+                    body: format!(
+                        "<!-- midtown-placeholder -->\n## Review Status\n\n\
+                         🔍 Review in progress by {}...\n\n---\n\
+                         > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
+                         🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                        coworker_name
+                    ),
+                });
+
+                // Update the reviewer assignment with the actual coworker name
+                // (replacing the placeholder set during CreateReviewerTask)
+                on_success.push(Effect::AssignReviewer {
+                    pr_number,
+                    reviewer_name: coworker_name.clone(),
+                    source: crate::github_state::AssignmentSource::PollingFallback,
+                    restart_count: 0,
+                    reviewer_session_id: None,
+                });
+            }
+
             if let Some(ch) = &task.channel {
                 on_success.push(Effect::EmitWorkflowEvent(
                     crate::workflow::WorkflowEvent::TaskAssigned {
@@ -2130,23 +2256,30 @@ fn dispatch_unowned_pending_tasks(
                 ));
             }
 
+            let mut on_failure = spawn_failure_effects(
+                coworker_name.clone(),
+                task.id.clone(),
+                snap.dir_key.clone(),
+                format!(
+                    "⚠️ Spawn failed for task !{} (coworker {}) — backing off for {}s",
+                    task.id,
+                    coworker_name,
+                    SPAWN_FAILURE_COOLDOWN.as_secs()
+                ),
+            );
+            // Reviewer tasks: clean up the optimistic assignment on failure
+            if is_reviewer_task {
+                let pr_number = snap.task_pr_number_map.get(&task.id).copied().unwrap_or(0);
+                on_failure.push(Effect::RemoveReviewerAssignment { pr_number });
+            }
+
             effects.push(Effect::AssignAndSpawn {
                 task_id: task.id.clone(),
                 owner: coworker_name.clone(),
                 dir_key: snap.dir_key.clone(),
                 config,
                 on_success,
-                on_failure: spawn_failure_effects(
-                    coworker_name.clone(),
-                    task.id.clone(),
-                    snap.dir_key.clone(),
-                    format!(
-                        "⚠️ Spawn failed for task !{} (coworker {}) — backing off for {}s",
-                        task.id,
-                        coworker_name,
-                        SPAWN_FAILURE_COOLDOWN.as_secs()
-                    ),
-                ),
+                on_failure,
             });
             spawns_queued_this_tick += 1;
         }

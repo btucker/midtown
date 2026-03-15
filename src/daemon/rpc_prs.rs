@@ -631,26 +631,29 @@ pub(super) async fn handle_pr_review(
         );
     }
 
-    // Extract the reviewer name from the AssignReviewer effect for the response message.
-    let reviewer_name = effects
+    // Check if we're creating a review task (new path) or using legacy assignment
+    let has_review_task = effects
         .iter()
-        .find_map(|e| {
-            if let super::effects::Effect::AssignReviewer { reviewer_name, .. } = e {
-                Some(reviewer_name.clone())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+        .any(|e| matches!(e, super::effects::Effect::CreateReviewerTask { .. }));
 
     super::effects::execute_effects(effects, state).await;
 
-    Response::success(
-        id,
-        serde_json::json!({
-            "message": format!("Reviewer assigned: {} (PR #{})", reviewer_name, pr_number)
-        }),
-    )
+    if has_review_task {
+        Response::success(
+            id,
+            serde_json::json!({
+                "message": format!("Review task created for PR #{} — dispatch will assign a reviewer", pr_number)
+            }),
+        )
+    } else {
+        // Fallback: review completion or other effects were emitted
+        Response::success(
+            id,
+            serde_json::json!({
+                "message": format!("Review effects executed for PR #{}", pr_number)
+            }),
+        )
+    }
 }
 
 /// Fetch a minimal PR JSON for use with `collect_reviewer_effects_with_source`.

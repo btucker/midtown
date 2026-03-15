@@ -227,6 +227,24 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_parent: HashMap<String, String>,
 
+    /// Task-to-agent-type mapping for non-default agent dispatch.
+    ///
+    /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
+    /// When the task dispatch system picks up a pending task with an agent type,
+    /// it builds the appropriate LaunchConfig (e.g., `LaunchConfig::reviewer()`
+    /// instead of `LaunchConfig::coworker()`). Tasks without an entry use the
+    /// default coworker agent.
+    #[serde(default)]
+    pub task_agent_type: HashMap<String, String>,
+
+    /// Task-to-PR-number mapping for reviewer tasks.
+    ///
+    /// Maps task ID → PR number. Used by reviewer tasks to build the correct
+    /// LaunchConfig and initial prompt. Also enables lookup of review tasks
+    /// by PR number (e.g., to check if a PR already has a review task).
+    #[serde(default)]
+    pub task_pr_number: HashMap<String, u64>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -416,6 +434,8 @@ impl DaemonPersistentState {
             self.task_thread_id.remove(task_id);
             self.task_message_id.remove(task_id);
             self.task_parent.remove(task_id);
+            self.task_agent_type.remove(task_id);
+            self.task_pr_number.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
 
@@ -472,6 +492,8 @@ impl DaemonPersistentState {
             task_thread_id: HashMap::new(),
             task_message_id: HashMap::new(),
             task_parent: HashMap::new(),
+            task_agent_type: HashMap::new(),
+            task_pr_number: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),

@@ -129,31 +129,14 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
     )
     .await;
 
-    // A reviewer should be spawned (overflow names are available)
-    let reviewer_name = effects.iter().find_map(|e| {
-        if let Effect::AssignReviewer { reviewer_name, .. } = e {
-            Some(reviewer_name.clone())
-        } else {
-            None
-        }
-    });
+    // A reviewer task should be created — reviewer name selection is handled by dispatch
+    let has_create_reviewer_task = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CreateReviewerTask { pr_number, .. } if *pr_number == 7777));
 
     assert!(
-        reviewer_name.is_some(),
-        "Expected a reviewer to be assigned (overflow names are still available)."
-    );
-
-    let name = reviewer_name.unwrap();
-    assert_ne!(
-        name.as_str(),
-        "amsterdam",
-        "Reviewer should NOT be 'amsterdam' — it has an active session (in active_names) \
-         even though it's not in CoworkerManager. Before fix: CoworkerManager saw 'amsterdam' \
-         as free and allocated it, causing a name collision."
-    );
-    assert_ne!(
-        name.as_str(),
-        "park",
-        "Reviewer should NOT be the PR author 'park'."
+        has_create_reviewer_task,
+        "Expected a CreateReviewerTask effect for PR #7777. \
+         Reviewer name selection (excluding active sessions) is now handled by the dispatch system."
     );
 }

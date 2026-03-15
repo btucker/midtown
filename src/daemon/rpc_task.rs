@@ -664,6 +664,8 @@ pub(super) async fn handle_task_metadata(
     let message_id = ps.task_message_id.get(task_id).cloned();
     let thread_id = ps.task_thread_id.get(task_id).cloned();
     let parent = ps.task_parent.get(task_id).cloned();
+    let agent_type = ps.task_agent_type.get(task_id).cloned();
+    let pr_number = ps.task_pr_number.get(task_id).copied();
 
     Response::success(
         id,
@@ -675,6 +677,8 @@ pub(super) async fn handle_task_metadata(
             "message_id": message_id,
             "thread_id": thread_id,
             "parent": parent,
+            "agent_type": agent_type,
+            "pr_number": pr_number,
         }),
     )
 }

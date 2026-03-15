@@ -460,6 +460,25 @@ pub enum Effect {
         pr_number: u64,
         dir_key: String,
     },
+    /// Create a child review task for a PR.
+    ///
+    /// Creates a pending task with agent type "midtown-code-reviewer" as a child
+    /// of the PR's implementation task. The task dispatch system picks this up
+    /// and spawns a reviewer with the appropriate LaunchConfig.
+    ///
+    /// Also records the reviewer assignment (AssignReviewer) to prevent duplicate
+    /// review tasks from being created on subsequent ticks before dispatch picks
+    /// up the pending task.
+    CreateReviewerTask {
+        pr_number: u64,
+        pr_title: String,
+        /// The implementation task this review is a child of (if known).
+        parent_task_id: Option<String>,
+        /// Channel for routing reviewer output.
+        channel: Option<String>,
+        /// Assignment source (polling vs webhook).
+        source: crate::github_state::AssignmentSource,
+    },
     /// Send a push notification to the mobile PWA.
     ///
     /// Fire-and-forget: the push manager runs in a background task.
@@ -1895,6 +1914,94 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 } else {
                     debug!("No reviewer assignment to remove for PR #{}", pr_number);
+                }
+            }
+            Effect::CreateReviewerTask {
+                pr_number,
+                pr_title,
+                parent_task_id,
+                channel,
+                source,
+            } => {
+                let dir_key = state.paths.dir_key().to_string();
+                let subject = format!("Review PR #{}", pr_number);
+                let truncated_title = super::helpers::truncate_str(&pr_title, 60);
+                let description = format!(
+                    "Code review for PR #{} ({}). \
+                     The task dispatch system will spawn a reviewer agent automatically.",
+                    pr_number, truncated_title
+                );
+                let active_form = format!("Reviewing PR #{}", pr_number);
+
+                // Create the task on disk
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    "",
+                    &dir_key,
+                    None,
+                    channel.as_deref(),
+                    Some(pr_number),
+                ) {
+                    Ok(task_id) => {
+                        info!(
+                            "Created reviewer task !{} for PR #{} (parent: {:?})",
+                            task_id, pr_number, parent_task_id
+                        );
+
+                        // Store all reviewer task metadata in persistent state
+                        {
+                            let mut ps = state.persistent_state.lock().await;
+
+                            // Set agent type so dispatch knows to use reviewer config
+                            ps.task_agent_type
+                                .insert(task_id.clone(), "midtown-code-reviewer".to_string());
+
+                            // Set PR number so dispatch can build reviewer LaunchConfig
+                            ps.task_pr_number.insert(task_id.clone(), pr_number);
+
+                            // Set parent relationship for UI grouping
+                            if let Some(ref parent_id) = parent_task_id {
+                                ps.task_parent.insert(task_id.clone(), parent_id.clone());
+                            }
+
+                            // Set channel for routing
+                            if let Some(ref ch) = channel {
+                                ps.task_channel.insert(task_id.clone(), ch.clone());
+                            }
+
+                            // Record the reviewer assignment to prevent duplicate review tasks.
+                            // Uses a placeholder name that will be replaced when dispatch
+                            // actually spawns the reviewer.
+                            ps.github.assign_reviewer(
+                                pr_number,
+                                &format!("pending-review-task-{}", task_id),
+                                source,
+                            );
+
+                            if let Err(e) = ps.save_for_repo(&dir_key) {
+                                warn!(
+                                    "Failed to save persistent state for reviewer task !{}: {}",
+                                    task_id, e
+                                );
+                            }
+                        }
+
+                        // Post announcement to ops channel
+                        let mut ops_msg = Message::system(format!(
+                            "📋 Created review task !{} for PR #{} ({})",
+                            task_id, pr_number, truncated_title
+                        ));
+                        ops_msg.channel = Some(OPS_CHANNEL.to_string());
+                        let _ = state.send_and_broadcast_async(&ops_msg).await;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to create reviewer task for PR #{}: {}",
+                            pr_number, e
+                        );
+                    }
                 }
             }
             Effect::PostSystemMessage { message, channel } => {

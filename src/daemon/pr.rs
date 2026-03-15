@@ -2894,13 +2894,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         )
     };
 
-    // Accumulate reviewer names chosen in this batch so subsequent PRs
-    // exclude names already assigned to earlier PRs in the same call.
-    // Without this, every PR sees the same available pool and gets the
-    // same name (effects aren't executed until the function returns).
-    let mut chosen_reviewer_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-
     for pr in prs {
         let pf = PrFields::from_json(pr);
         let pr_number = pf.number;
@@ -3173,7 +3166,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review.
+        // Check if already assigned for review (prevents duplicate review tasks).
         // Stale assignments are cleaned up by cleanup_expired_preserving() during
         // the PR poll cycle, so any remaining assignment here is still valid.
         {
@@ -3193,357 +3186,139 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // Skip orphaned PRs (PRs whose author has no active worktree, no running coworker,
         // or can't be determined). These should not get auto-review spawned since the author
-        // can't address feedback. The main PR loop already posts warnings for orphaned PRs
-        // with critical issues.
+        // can't address feedback.
         let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
 
-        // Check if this PR has an active worktree in the registry.
-        // After daemon restart, worktree bindings may have changed (current_coworker
-        // may differ from the PR branch owner), so we can't rely on matching the
-        // owner name. Instead, check if a worktree exists for this PR's task.
-        //
-        // Try multiple strategies to find the worktree:
-        // 1. Look up by PR number (if the PR was linked to a worktree via webhook)
-        // 2. Look up by task ID extracted from PR title (most reliable for task-based PRs)
-        // 3. Fall back to branch name lookup (for non-task PRs or legacy workflows)
-        // 4. If no worktree found and the branch identifies a coworker owner, check whether
-        //    that coworker is currently running (active coworkers can always address feedback)
-        let worktree = worktree_registry
-            .get_by_pr(pr_number)
-            .or_else(|| {
-                // Extract task ID from title and look up by task
-                crate::tasks::extract_task_id_from_pr_title(title).and_then(|task_id| {
-                    let task_id_str = task_id.to_string();
-                    worktree_registry
-                        .all_assignments()
-                        .values()
-                        .find(|a| a.task_id.as_ref() == Some(&task_id_str))
-                })
-            })
-            .or_else(|| worktree_registry.get_by_branch(head_ref));
-
-        let is_orphaned = match worktree {
-            Some(assignment) if assignment.completed_at.is_none() => {
-                // Has active worktree - not orphaned
-                false
-            }
-            Some(_assignment) => {
-                // Worktree exists but is completed.
-                // IMPORTANT: If the PR is still open (which it is, since it's in the `prs` list),
-                // the author can still address review feedback by pushing to the branch.
-                // Therefore, completed worktrees with open PRs are NOT orphaned.
-                //
-                // Only mark as orphaned if the PR is merged/closed (which would exclude it
-                // from the `prs` list in the first place).
-                //
-                // After daemon restart, if a task was marked complete but the PR is still
-                // open awaiting review, polling reconciliation should spawn a reviewer.
-                false
-            }
-            None => {
-                // No worktree found - check if this is a lead PR
-                // Lead PRs are never orphaned because the lead's main worktree is always
-                // available to address review feedback, even if the PR's specific branch
-                // doesn't have a dedicated worktree entry.
-                if is_lead_branch(head_ref) {
-                    debug!(
-                        "PR #{} is a lead PR (branch: {}), not orphaned",
-                        pr_number, head_ref
-                    );
-                    false
-                } else if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
-                    // The branch identifies a coworker owner. Only treat as orphaned if
-                    // the coworker is NOT currently active — an active coworker can always
-                    // address review feedback regardless of whether a worktree is registered.
-                    // Uses the caller-provided active_names (from WorldSnapshot) which includes
-                    // both pane-based and headless sessions, unlike list_running() which only
-                    // tracks pane-based coworkers.
-                    let is_active = active_names.contains(&owner.to_lowercase());
-                    if is_active {
-                        debug!(
-                            "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
-                            pr_number, owner
-                        );
-                        false
-                    } else {
-                        debug!(
-                            "PR #{} is orphaned (no worktree found for owner {}, branch: {}, coworker not running), skipping auto-review",
-                            pr_number, owner, head_ref
-                        );
-                        true
-                    }
-                } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
-                    // PR is authored by the lead (repo owner) but doesn't follow lead/* naming.
-                    // The lead can still address feedback from their main worktree.
-                    debug!(
-                        "PR #{} is authored by lead (branch: {}), not orphaned",
-                        pr_number, head_ref
-                    );
-                    false
-                } else {
-                    debug!(
-                        "PR #{} is orphaned (no determinable owner or worktree, branch: {}), skipping auto-review",
-                        pr_number, head_ref
-                    );
-                    true
-                }
-            }
-        };
-
-        if is_orphaned {
+        if is_pr_orphaned(
+            pr,
+            pr_number,
+            head_ref,
+            title,
+            worktree_registry,
+            branch_owners,
+            active_names,
+            state,
+        ) {
             continue;
         }
 
-        // Extract channel lead names for coworker limit check
+        // Check max coworkers limit before creating review task
         let channel_lead_names = {
             let ps = state.persistent_state.lock().await;
             ps.channel_lead_names()
         };
-
-        // Check max coworkers limit before spawning
         if state.is_at_coworker_limit(&channel_lead_names) {
             debug!(
-                "Max coworkers limit ({}) reached, cannot spawn reviewer for PR #{}",
+                "Max coworkers limit ({}) reached, cannot create reviewer task for PR #{}",
                 state.max_coworkers, pr_number
             );
             continue;
         }
 
-        // Also exclude the PR author from reviewer selection to prevent self-review.
-        // The author is identified via the branch_owners map.
-        let mut excluded_names = channel_lead_names.clone();
-        let pr_author = coworker_from_branch(head_ref, branch_owners);
-        if let Some(ref author) = pr_author {
-            excluded_names.insert(author.clone());
-        }
-        // Exclude all names with active sessions to prevent name collisions.
-        // CoworkerManager only knows about registered coworkers, but a session
-        // may still be running after its coworker was cleaned up from the manager.
-        // active_names (from WorldSnapshot) tracks all names with live sessions.
-        for name in active_names {
-            excluded_names.insert(name.clone());
-        }
-
-        // Also exclude names already chosen for earlier PRs in this batch.
-        for name in &chosen_reviewer_names {
-            excluded_names.insert(name.clone());
-        }
-
-        let reviewer_name = match state
-            .coworkers
-            .next_available_name_excluding(&excluded_names)
-        {
-            Some(name) => name,
-            None => {
-                warn!("No available coworker slots for reviewer");
-                continue;
-            }
-        };
-
-        // Compute worktree details for reviewer worktree
+        // Collision guard: abort if the review worktree is already bound to an active
+        // coworker. Without this, we'd create a review task that dispatch can't spawn
+        // (worktree collision), causing a reset-to-pending loop.
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-        let wt_path = state.paths.worktrees_dir().join(&worktree_id);
-
-        // Collision guard: abort spawn if the worktree is already bound to an active coworker.
-        // The BindCoworkerToWorktree effect has its own collision guard, but by then the
-        // session is already spawned. We must detect this earlier to avoid spawning a
-        // reviewer that will run without a valid worktree binding.
         if let Some(existing) = worktree_registry.get(&worktree_id)
             && let Some(ref bound_to) = existing.current_coworker
             && active_names.contains(bound_to.to_lowercase().as_str())
         {
             warn!(
-                "WORKTREE COLLISION: Aborting reviewer spawn for PR #{} — worktree {} already bound to ACTIVE coworker {}",
+                "WORKTREE COLLISION: Skipping review task for PR #{} — worktree {} already bound to ACTIVE coworker {}",
                 pr_number, worktree_id, bound_to
             );
             continue;
         }
 
-        // Record chosen name so subsequent PRs won't reuse it.
-        // Placed after all early-return guards (coworker limit, name selection,
-        // worktree collision) so a skipped PR doesn't consume a name slot.
-        chosen_reviewer_names.insert(reviewer_name.clone());
-
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
         debug!(
-            "Spawning isolated coworker to review PR #{}: {}",
+            "Creating review task for PR #{}: {}",
             pr_number,
             truncate_str(title, 40)
         );
 
-        // reviewer() now takes the PR number and provider; both are used to generate
-        // a provider-aware initial prompt in addition to spawn arguments.
-        // restart_count=0 for new assignments (not a respawn).
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            state.paths.dir_key(),
-            crate::config::ExecutionRole::Reviewer,
-        );
-        let mut config = crate::launch::LaunchConfig::reviewer(
-            reviewer_name.clone(),
-            state.paths.dir_key(),
+        // Create a child review task under the PR's implementation task.
+        // The task dispatch system will pick this up and spawn a reviewer
+        // with the appropriate LaunchConfig.
+        let parent_task_id = pr_task_associations.get(&pr_number).cloned();
+
+        effects.push(Effect::CreateReviewerTask {
             pr_number,
-            0,
-            auth_provider,
-        );
-        config.model = super::helpers::normalize_model_for_provider_role(
-            &config.model,
-            config.auth_provider,
-            &config.role,
-        );
-        config.working_dir = Some(wt_path.clone());
-
-        // Route reviewer to the task's topic channel so `midtown channel post`
-        // defaults to the right channel (via MIDTOWN_CHANNEL env var).
-        config.channel = pr_ctx.get_channel(pr_number);
-
-        // Pass the PR's linked task ID so the reviewer knows its task
-        // without having to parse it from the PR title.
-        config.task_id = pr_ctx.pr_task_associations.get(&pr_number).cloned();
-
-        // Route escalation mentions (@{escalation_target}) to the channel lead
-        // for this task's channel, falling back to the project lead if no channel
-        // or no channel lead exists.
-        if let Some(ref channel_name) = config.channel
-            && channel_lead_names.contains(channel_name)
-        {
-            config.escalation_target = Some(channel_name.clone());
-            // Belt-and-suspenders: regenerate the initial prompt with the escalation
-            // target so the reviewer knows who to address even if the system prompt
-            // substitution fails.
-            config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
-                pr_number,
-                0,
-                auth_provider,
-                Some(channel_name),
-            ));
-        } else if config.channel.is_some() {
-            // Channel exists but no channel lead registered — log for diagnosis.
-            warn!(
-                "PR #{}: task has channel {:?} but no channel lead registered; \
-                 reviewer escalation_target falls back to project name",
-                pr_number,
-                config.channel.as_deref().unwrap_or("?")
-            );
-        }
-
-        effects.push(Effect::EnsureWorktree {
-            worktree_id: worktree_id.clone(),
-            path: wt_path.clone(),
-        });
-
-        // Reserve the reviewer assignment BEFORE spawning to prevent race conditions.
-        // If multiple events (webhooks, polling) trigger spawns for the same PR
-        // before any spawn completes, they would all pass the is_assigned() check.
-        // By assigning immediately, subsequent calls see the reservation and skip spawning.
-        effects.push(Effect::AssignReviewer {
-            pr_number,
-            reviewer_name: reviewer_name.clone(),
+            pr_title: title.to_string(),
+            parent_task_id,
+            channel: pr_ctx.get_channel(pr_number),
             source,
-            restart_count: 0,
-            reviewer_session_id: None,
-        });
-
-        let mut on_success = vec![
-            // Register the review worktree assignment
-            Effect::RegisterWorktreeAssignment {
-                assignment: crate::worktree_registry::WorktreeAssignment {
-                    worktree_id: worktree_id.clone(),
-                    branch_name: worktree_id.clone(), // Branch name matches worktree_id for review worktrees
-                    task_id: None,                    // Reviewers are not tied to tasks
-                    current_coworker: None,           // Will be set by BindCoworkerToWorktree
-                    pr_number: Some(pr_number),
-                    created_at: chrono::Utc::now(),
-                    completed_at: None, // Will be set when PR is reviewed and merged
-                },
-            },
-            // Bind the reviewer to the worktree
-            Effect::BindCoworkerToWorktree {
-                worktree_id: worktree_id.clone(),
-                coworker: reviewer_name.clone(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: reviewer_name.clone(),
-                status: "running".to_string(),
-                current_task: Some(format!("reviewing PR #{}", pr_number)),
-            },
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            },
-            // DM separator so the reviewer's output streams to dm-<name>
-            Effect::PostSystemMessage {
-                message: format!("─── Reviewing PR #{} ───", pr_number),
-                channel: Some(format!("dm-{}", reviewer_name)),
-            },
-            // Post the "Review in progress" placeholder comment on the PR.
-            // The daemon handles this instead of the reviewer agent to avoid
-            // prompt-compliance issues (e.g., escaped `!` in `<!-- midtown-placeholder -->`).
-            // The comment ID is stored on the PrReviewerAssignment for later update.
-            Effect::PostPrComment {
-                pr_number,
-                reviewer_name: reviewer_name.clone(),
-                body: format!(
-                    "<!-- midtown-placeholder -->\n## Review Status\n\n\
-                     🔍 Review in progress by {}...\n\n---\n\
-                     > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
-                     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                    reviewer_name
-                ),
-            },
-        ];
-
-        // Warn the PR author not to enable auto-merge while the review is in progress.
-        // Without this warning, the author may run `gh pr merge --auto --squash` before
-        // the reviewer finishes, causing the PR to merge as soon as CI passes — bypassing
-        // the review entirely (as happened with PR #1523).
-        if let Some(ref author) = pr_author {
-            on_success.push(Effect::NudgeCoworkerByName {
-                name: author.clone(),
-                message: daemon_messages::reviewer_spawned_author_warning(
-                    &reviewer_name,
-                    pr_number,
-                ),
-            });
-        }
-
-        let on_failure = vec![
-            // Clean up the optimistic assignment we made before spawning
-            Effect::RemoveReviewerAssignment { pr_number },
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "⚠️ Failed to spawn reviewer for PR #{} ({})",
-                    pr_number,
-                    truncate_str(title, 40),
-                ),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            },
-        ];
-
-        effects.push(Effect::SpawnCoworkerWithCallbacks {
-            config,
-            on_success,
-            on_failure,
         });
     }
 
     effects
+}
+
+/// Check if a PR is orphaned (no active author to address review feedback).
+#[allow(clippy::too_many_arguments)]
+fn is_pr_orphaned(
+    pr: &serde_json::Value,
+    pr_number: u64,
+    head_ref: &str,
+    title: &str,
+    worktree_registry: &crate::worktree_registry::WorktreeRegistry,
+    branch_owners: &std::collections::HashMap<String, String>,
+    active_names: &std::collections::HashSet<String>,
+    state: &DaemonState,
+) -> bool {
+    let worktree = worktree_registry
+        .get_by_pr(pr_number)
+        .or_else(|| {
+            crate::tasks::extract_task_id_from_pr_title(title).and_then(|task_id| {
+                let task_id_str = task_id.to_string();
+                worktree_registry
+                    .all_assignments()
+                    .values()
+                    .find(|a| a.task_id.as_ref() == Some(&task_id_str))
+            })
+        })
+        .or_else(|| worktree_registry.get_by_branch(head_ref));
+
+    match worktree {
+        Some(assignment) if assignment.completed_at.is_none() => false,
+        Some(_) => false, // Completed worktree with open PR — author can still push
+        None => {
+            if is_lead_branch(head_ref) {
+                debug!(
+                    "PR #{} is a lead PR (branch: {}), not orphaned",
+                    pr_number, head_ref
+                );
+                false
+            } else if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
+                let is_active = active_names.contains(&owner.to_lowercase());
+                if is_active {
+                    debug!(
+                        "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
+                        pr_number, owner
+                    );
+                    false
+                } else {
+                    debug!(
+                        "PR #{} is orphaned (owner {} not running), skipping auto-review",
+                        pr_number, owner
+                    );
+                    true
+                }
+            } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
+                debug!(
+                    "PR #{} is authored by lead (branch: {}), not orphaned",
+                    pr_number, head_ref
+                );
+                false
+            } else {
+                debug!(
+                    "PR #{} is orphaned (no determinable owner, branch: {}), skipping auto-review",
+                    pr_number, head_ref
+                );
+                true
+            }
+        }
+    }
 }
 
 // NOTE: process_pending_review_spawns and handle_ci_completion_for_review_spawn
@@ -5072,6 +4847,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::PostInsight { .. } => "PostInsight",
         Effect::RespawnChannelLead { .. } => "RespawnChannelLead",
         Effect::TaskPrompt { .. } => "TaskPrompt",
+        Effect::CreateReviewerTask { .. } => "CreateReviewerTask",
     }
 }
 

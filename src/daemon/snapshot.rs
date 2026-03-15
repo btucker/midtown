@@ -364,6 +364,16 @@ pub struct WorldSnapshot {
     /// Maps child task ID → parent task ID. Used for displaying task hierarchies.
     #[serde(default)]
     pub task_parent_map: HashMap<String, String>,
+    /// Task-to-agent-type mapping for non-default agent dispatch.
+    /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
+    /// Used by dispatch.rs to build the appropriate LaunchConfig when spawning.
+    #[serde(default)]
+    pub task_agent_type_map: HashMap<String, String>,
+    /// Task-to-PR-number mapping for reviewer tasks.
+    /// Maps task ID → PR number. Used by dispatch.rs to build reviewer LaunchConfig
+    /// with the correct PR context.
+    #[serde(default)]
+    pub task_pr_number_map: HashMap<String, u64>,
     /// Channel lead session mapping for nudge routing.
     /// Maps channel name → session ID. Used by effects.rs to deliver
     /// `NudgeChannelLead` effects without locking persistent state.
@@ -851,7 +861,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         state.get_coworker_task_assignments().await;
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
-    // task-to-thread, task-to-message, task-to-parent, channel-lead, and lead-driven mappings
+    // task-to-thread, task-to-message, task-to-parent, task-to-agent-type,
+    // task-to-pr-number, channel-lead, and lead-driven mappings
     let (
         task_channel,
         task_model_map,
@@ -860,6 +871,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_thread_id_map,
         task_message_id_map,
         task_parent_map,
+        task_agent_type_map,
+        task_pr_number_map,
         channel_lead_sessions,
         lead_driven_channels,
     ) = {
@@ -872,6 +885,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             ps.task_thread_id.clone(),
             ps.task_message_id.clone(),
             ps.task_parent.clone(),
+            ps.task_agent_type.clone(),
+            ps.task_pr_number.clone(),
             ps.channel_lead_sessions.clone(),
             ps.lead_driven_channels.clone(),
         )
@@ -1487,6 +1502,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_thread_id_map,
         task_message_id_map,
         task_parent_map,
+        task_agent_type_map,
+        task_pr_number_map,
         channel_lead_sessions,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
@@ -1564,6 +1581,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_thread_id_map: HashMap::new(),
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
+        task_agent_type_map: HashMap::new(),
+        task_pr_number_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
