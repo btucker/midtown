@@ -116,8 +116,8 @@ fn build_codex_common_args(model: Option<&str>, additional_dirs: &[PathBuf]) -> 
 /// Fresh sessions get: `-p`, `--append-system-prompt`, `--json-schema`,
 ///   `--session-id` (when pre-assigned), `--settings`, `--setting-sources`.
 ///
-/// Resume sessions get: `--resume <id>`, `--setting-sources`, and skip `--settings`
-///   to avoid "Tool names must be unique" errors.
+/// Resume sessions get: `--resume <id>`, `--setting-sources`, `--agent` (when set),
+///   and skip `--settings` to avoid "Tool names must be unique" errors.
 ///
 /// Fork-resume sessions (legacy two-step path) get: `--resume <id>`,
 ///   `--fork-session`, `--session-id <uuid>`, and skip both `--settings` and
@@ -168,6 +168,15 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         args.push("project,local".to_string());
     }
 
+    // Agent definition: --agent is passed for both fresh and resume sessions.
+    // On fresh sessions, Layer 1 comes from the agent definition file.
+    // On resume sessions, --agent ensures the agent identity is available for
+    // task handoff via --resume --agent.
+    if let Some(name) = agent_name {
+        args.push("--agent".to_string());
+        args.push(name.clone());
+    }
+
     if is_resume {
         // Resume mode: --resume <id>, no -p flag, no system prompt/schema
         args.push("--resume".to_string());
@@ -188,13 +197,6 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     } else {
         // Fresh mode: -p with system prompt
         args.push("-p".to_string());
-
-        // Agent definition: when agent_name is set, Layer 1 comes from the agent
-        // definition file via --agent, and system_prompt carries only Layers 2+3.
-        if let Some(name) = agent_name {
-            args.push("--agent".to_string());
-            args.push(name.clone());
-        }
 
         args.push("--append-system-prompt".to_string());
         args.push(system_prompt.clone());
