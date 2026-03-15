@@ -653,6 +653,40 @@ impl DaemonPersistentState {
     }
 }
 
+/// Derive a `pr_number → task_id` map from session records.
+///
+/// Only sessions that have both `pr_number` and `task_id` set are included.
+/// Used as the primary source for PR↔task mapping in the task-centric model.
+pub fn pr_to_task_map_from_sessions(
+    sessions: &HashMap<String, SessionRecord>,
+) -> HashMap<u64, String> {
+    sessions
+        .values()
+        .filter_map(|s| {
+            let pr = s.pr_number?;
+            let task = s.task_id.as_ref()?;
+            Some((pr, task.clone()))
+        })
+        .collect()
+}
+
+/// Derive a `task_id → pr_number` map from session records.
+///
+/// Only sessions that have both `pr_number` and `task_id` set are included.
+/// Used as the primary source for task↔PR mapping in the task-centric model.
+pub fn task_to_pr_map_from_sessions(
+    sessions: &HashMap<String, SessionRecord>,
+) -> HashMap<String, u64> {
+    sessions
+        .values()
+        .filter_map(|s| {
+            let pr = s.pr_number?;
+            let task = s.task_id.as_ref()?;
+            Some((task.clone(), pr))
+        })
+        .collect()
+}
+
 #[path = "state_tests.rs"]
 #[cfg(test)]
 mod tests;

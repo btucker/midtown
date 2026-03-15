@@ -924,9 +924,19 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
 
     // ── PR author sessions (task → PR mapping) ────────────────────────
+    // Primary: derive from SessionRecord fields (task-centric model).
+    // Fallback: fill gaps from legacy pr_author_sessions in GitHubState.
     let (tasks_with_open_prs, pr_task_associations) = {
         let ps = state.persistent_state.lock().await;
-        (ps.github.task_to_pr_map(), ps.github.pr_to_task_map())
+        let mut tasks_with_open_prs = super::state::task_to_pr_map_from_sessions(&ps.sessions);
+        let mut pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        for (task, pr) in ps.github.task_to_pr_map() {
+            tasks_with_open_prs.entry(task).or_insert(pr);
+        }
+        for (pr, task) in ps.github.pr_to_task_map() {
+            pr_task_associations.entry(pr).or_insert(task);
+        }
+        (tasks_with_open_prs, pr_task_associations)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
