@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getForkOwnerColor } from "./avenue-colors.ts";
-import { AVENUE_COLORS, dateChanged, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";
+import { AVENUE_COLORS, dateChanged, getPermalinkUrl, getSenderColor, senderChanged } from "./messageUtils.ts";
 import type { Message } from "./types.ts";
 
 describe("getSenderColor", () => {
@@ -171,5 +171,67 @@ describe("getForkOwnerColor", () => {
 		// getForkOwnerColor should still resolve the avenue color
 		expect(getForkOwnerColor("park")).toBe(AVENUE_COLORS.park);
 		expect(getForkOwnerColor("lead")).toBe(AVENUE_COLORS.lead);
+	});
+});
+
+describe("senderChanged", () => {
+	function msg(from: string, content?: string, tool_data?: unknown[]): Message {
+		return { from, content: content ?? "", tool_data, id: "", timestamp: "" } as Message;
+	}
+
+	it("returns true for the first message", () => {
+		expect(senderChanged([msg("park", "hello")], 0)).toBe(true);
+	});
+
+	it("returns false for consecutive messages from the same sender", () => {
+		const msgs = [msg("park", "hello"), msg("park", "world")];
+		expect(senderChanged(msgs, 1)).toBe(false);
+	});
+
+	it("returns true when sender differs from previous", () => {
+		const msgs = [msg("park", "hello"), msg("madison", "world")];
+		expect(senderChanged(msgs, 1)).toBe(true);
+	});
+
+	it("returns true when previous message is tool-only from the same sender", () => {
+		// Agent's first message is tool-only (no text, has tool_data).
+		// The next text message should show attribution even though sender matches.
+		const msgs = [msg("park", "", [{ tool_name: "Bash", input: {} }]), msg("park", "Done!")];
+		expect(senderChanged(msgs, 1)).toBe(true);
+	});
+
+	it("returns true when multiple tool-only predecessors from the same sender", () => {
+		const msgs = [
+			msg("park", "", [{ tool_name: "Read", input: {} }]),
+			msg("park", "", [{ tool_name: "Bash", input: {} }]),
+			msg("park", "All done"),
+		];
+		expect(senderChanged(msgs, 2)).toBe(true);
+	});
+
+	it("returns false when tool-only predecessor is from a different sender", () => {
+		// Previous visible message is from park, tool-only from madison in between,
+		// then another park message — should be continuation (false).
+		const msgs = [
+			msg("park", "starting"),
+			msg("madison", "", [{ tool_name: "Bash", input: {} }]),
+			msg("park", "continuing"),
+		];
+		expect(senderChanged(msgs, 2)).toBe(false);
+	});
+
+	it("returns true when all predecessors are tool-only (first visible message)", () => {
+		const msgs = [msg("park", "", [{ tool_name: "Bash", input: {} }]), msg("park", "hello")];
+		expect(senderChanged(msgs, 1)).toBe(true);
+	});
+
+	it("returns false for consecutive tool-only messages from the same sender (expanded tool run)", () => {
+		// Inside expanded ToolRunSummary, tool-only messages are visible and should
+		// use normal adjacent comparison to preserve sender grouping.
+		const msgs = [
+			msg("park", "", [{ tool_name: "Read", input: {} }]),
+			msg("park", "", [{ tool_name: "Bash", input: {} }]),
+		];
+		expect(senderChanged(msgs, 1)).toBe(false);
 	});
 });
