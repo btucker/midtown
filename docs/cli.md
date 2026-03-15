@@ -49,6 +49,7 @@
 | `midtown task list [--all]` | List tasks (pending/in-progress by default) |
 | `midtown task view <id>` | View task details |
 | `midtown task update <id> [--owner <name>] [--status <status>] [--channel <name>] [--model <provider/model>]` | Update a task (use `--model ""` to clear) |
+| `midtown task prompt <id> <message> [--model <provider/model>]` | Send a prompt to a task's session (nudge if running, resume if stopped) |
 
 ## Pull Requests
 

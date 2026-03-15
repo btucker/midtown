@@ -90,6 +90,16 @@ pub enum TaskCommand {
         /// Task ID to view
         id: String,
     },
+    /// Send a prompt to a task's assigned session
+    Prompt {
+        /// Task ID
+        id: String,
+        /// Prompt message to deliver
+        message: String,
+        /// Optional model override for resumed sessions (e.g., claude/opus, claude/sonnet)
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 /// Handle task subcommands that don't require the daemon (list, view).
@@ -154,6 +164,9 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
         TaskCommand::Request { description } => client.task_request(description),
+        TaskCommand::Prompt { id, message, model } => {
+            client.task_prompt(id, message, model.as_deref())
+        }
         TaskCommand::List { all } => handle_list(*all),
         TaskCommand::View { id } => handle_view(id),
     }
