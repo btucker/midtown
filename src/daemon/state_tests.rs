@@ -1338,3 +1338,63 @@ fn test_task_parent_default_empty() {
         "task_parent should default to empty for old state files"
     );
 }
+
+// ── task_reviewer_metadata tests ─────────────────────────────────────────────
+
+#[test]
+fn test_task_reviewer_metadata_roundtrip() {
+    let mut state = DaemonPersistentState::default();
+    state.task_reviewer_metadata.insert(
+        "42".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 99,
+            placeholder_comment_id: Some(12345),
+            restart_count: 2,
+            reviewer_session_id: Some("sess-abc".to_string()),
+        },
+    );
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    let meta = loaded.task_reviewer_metadata.get("42").unwrap();
+    assert_eq!(meta.pr_number, 99);
+    assert_eq!(meta.placeholder_comment_id, Some(12345));
+    assert_eq!(meta.restart_count, 2);
+    assert_eq!(meta.reviewer_session_id, Some("sess-abc".to_string()));
+}
+
+#[test]
+fn test_task_reviewer_metadata_default_empty_for_old_state() {
+    // Verifies that #[serde(default)] allows loading old state files without the field.
+    let json = r#"{}"#;
+    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(
+        state.task_reviewer_metadata.is_empty(),
+        "task_reviewer_metadata should default to empty for old state files"
+    );
+}
+
+#[test]
+fn test_task_reviewer_metadata_optional_fields() {
+    // Verify that optional fields (placeholder_comment_id, reviewer_session_id) can be None.
+    let mut state = DaemonPersistentState::default();
+    state.task_reviewer_metadata.insert(
+        "7".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 55,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: None,
+        },
+    );
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    let meta = loaded.task_reviewer_metadata.get("7").unwrap();
+    assert_eq!(meta.pr_number, 55);
+    assert_eq!(meta.placeholder_comment_id, None);
+    assert_eq!(meta.restart_count, 0);
+    assert_eq!(meta.reviewer_session_id, None);
+}

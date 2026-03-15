@@ -3425,66 +3425,6 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     );
 }
 
-#[tokio::test]
-async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unknown() {
-    use std::collections::{HashMap, HashSet};
-    let pr_number = 2043u64;
-    let pr = json!({
-        "number": pr_number,
-        "headRefName": "reviewer/task-2043-svelte-fix",
-        "title": "feat: ReviewComplete owner fallback path".to_string(),
-        "isDraft": false,
-        "createdAt": "2026-01-01T00:00:00Z",
-        "state": "OPEN",
-    });
-
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "sess-2043",
-            "reviewer/task-2043-svelte-fix",
-            "park",
-            "feat: ReviewComplete owner fallback [Midtown !2043]",
-        );
-        ps.task_channel
-            .insert("2043".to_string(), "daemon-core".to_string());
-        ps.github.mark_reviewed_pr(pr_number);
-        ps.github.add_review_comment_id(pr_number, 1);
-    }
-
-    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
-    let registry = crate::worktree_registry::WorktreeRegistry::new();
-    let active_names = HashSet::new();
-
-    let effects = collect_reviewer_effects_with_source(
-        &branch_owners,
-        &registry,
-        &active_names,
-        &state,
-        &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
-        &HashMap::new(),
-    )
-    .await;
-
-    // With task-linked PR, expect TaskPrompt (or fallback nudge/spawn for task-less PRs)
-    let has_task_prompt_or_nudge = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::TaskPrompt { .. }
-                | Effect::NudgeSessionWithCallbacks { .. }
-                | Effect::SpawnCoworkerWithCallbacks { .. }
-        )
-    });
-    assert!(
-        has_task_prompt_or_nudge,
-        "Expected coworker-directed action (TaskPrompt or nudge/spawn) via author session for PR #2043, got: {:#?}",
-        effects
-    );
-}
-
 /// !2109: When all in-memory owner resolution strategies fail but the PR body
 /// contains `<!-- midtown: name -->` frontmatter, the review-complete notification
 /// should route to the coworker, not fall back to @user.

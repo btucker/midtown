@@ -2687,15 +2687,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         .cloned()
         .collect();
 
-    let (
-        pr_ctx,
-        all_tasks,
-        pr_task_associations,
-        session_task_map,
-        sessions,
-        is_at_dev_limit,
-        pr_author_names,
-    ) = {
+    let (pr_ctx, all_tasks, pr_task_associations, session_task_map, sessions, is_at_dev_limit) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
         let pr_task_associations = ps.github.pr_to_task_map();
@@ -2713,13 +2705,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         let pr_ctx = PrContext::routing_only(&ps);
         let channel_lead_names = ps.channel_lead_names();
         let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-        // PR author fallback: maps PR# → original author name from stored author sessions.
-        let pr_author_names: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .map(|(pr, s)| (*pr, s.original_author.clone()))
-            .collect();
 
         (
             pr_ctx,
@@ -2728,7 +2713,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             session_task_map,
             sessions,
             is_at_dev_limit,
-            pr_author_names,
         )
     };
 
@@ -2926,12 +2910,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, &all_tasks)
             })
             .or_else(|| coworker_from_branch(pf.head_ref, branch_owners))
-            .or_else(|| {
-                // Fallback: check pr_author_sessions for the original PR creator.
-                // This covers cases where the session record is gone but we stored
-                // who created the PR.
-                pr_author_names.get(&pr_number).cloned()
-            })
             .or_else(|| {
                 // Crash-resilient fallback: parse <!-- midtown: name --> from the PR
                 // body. This survives daemon restarts and auth storms since the

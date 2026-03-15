@@ -49,6 +49,23 @@ impl GcResult {
     }
 }
 
+/// Reviewer metadata for a review task, persisted in `DaemonPersistentState`.
+///
+/// Keyed by review task ID in `task_reviewer_metadata`. Consolidates the
+/// per-reviewer fields that were previously spread across multiple HashMaps
+/// (`task_placeholder_comment_id`, `task_restart_count`) and `GitHubState`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskReviewerMetadata {
+    /// PR number being reviewed.
+    pub pr_number: u64,
+    /// GitHub comment ID for the "Review in progress..." placeholder, if posted.
+    pub placeholder_comment_id: Option<u64>,
+    /// Number of times the reviewer session has been restarted (for backoff).
+    pub restart_count: u32,
+    /// Claude Code session ID of the active reviewer session, if any.
+    pub reviewer_session_id: Option<String>,
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -250,6 +267,11 @@ pub struct DaemonPersistentState {
     /// Used to implement exponential backoff for stuck reviewers.
     #[serde(default)]
     pub task_restart_count: HashMap<String, u32>,
+
+    /// Reviewer metadata keyed by review task ID.
+    /// Follows the same pattern as task_channel, task_model, task_parent.
+    #[serde(default)]
+    pub task_reviewer_metadata: HashMap<String, TaskReviewerMetadata>,
 
     /// Channel lead session IDs for resume-on-demand.
     ///
@@ -502,6 +524,7 @@ impl DaemonPersistentState {
             task_agent_type: HashMap::new(),
             task_placeholder_comment_id: HashMap::new(),
             task_restart_count: HashMap::new(),
+            task_reviewer_metadata: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
