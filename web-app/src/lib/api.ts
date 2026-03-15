@@ -78,8 +78,9 @@ function trackThread(
 	const newFullText = extractPlainText(opts?.replyContent ?? content);
 	trackedThreads.update((tracked) => {
 		const existing = tracked[threadParentId];
-		// Keep existing subject/fullText if the new one is just the fallback "Thread"
+		// Keep existing subject if the new one is just the fallback "Thread"
 		const subject = newSubject !== "Thread" ? newSubject : existing?.subject || newSubject;
+		// Keep existing fullText if the new one is empty
 		const fullText = newFullText || existing?.fullText || "";
 		return {
 			...tracked,
@@ -705,7 +706,8 @@ export function handleUpdate(update: Record<string, unknown>): void {
 				if (!isToolOnly(msg) && msg.from !== "user" && msg.from !== get(userSenderName)) {
 					// Auto-track: if the parent message was sent by the user, track
 					// the thread in the sidebar so the user sees replies to their messages.
-					// Pass undefined for replyCount so trackThread initializes to 0 for new
+					// Pass reply content so fullText shows the reply, not the parent.
+					// replyCount is omitted so trackThread initializes to 0 for new
 					// entries (or preserves existing) — the update block below handles the +1.
 					const channelMsgs = get(messagesByChannel)[channelName];
 					const parentMsg = channelMsgs?.find((m: Message) => m.id === threadParentId);
