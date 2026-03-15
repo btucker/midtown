@@ -63,6 +63,7 @@ export interface Task {
 	channel?: string;
 	thread_id?: string;
 	message_id?: string;
+	parent?: string;
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────────

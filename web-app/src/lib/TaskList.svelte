@@ -3,6 +3,7 @@ import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import { openTaskThread } from "./api.ts";
 import { coworkers, kanbanData } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
+import { groupTasksByParent } from "./taskGrouping.ts";
 
 const sidebar = useSidebar();
 
@@ -28,13 +29,14 @@ function filterTasksByChannel(tasks, channel) {
 	return tasks.filter((task) => task.channel === channel);
 }
 
-// Derived: tasks for this channel
-const channelTasks = $derived.by(() => {
+// Derived: tasks for this channel, grouped by parent-child hierarchy
+const groupedTasks = $derived.by(() => {
 	const allTasks = [
 		...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" })),
 		...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" })),
 	];
-	return filterTasksByChannel(allTasks, channelName);
+	const filtered = filterTasksByChannel(allTasks, channelName);
+	return groupTasksByParent(filtered);
 });
 
 // Map coworker name → coworker object for progress/phase lookup
@@ -58,19 +60,20 @@ function handleTaskClick(task) {
 </script>
 
 <div class="flex flex-col gap-0.5 py-1 pb-1.5">
-  {#each channelTasks as task}
+  {#each groupedTasks as { task, depth }}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const reviewInfo = taskReviewerMap.get(String(task.id))}
     <TaskRow
       {task}
       {cw}
+      {depth}
       reviewer={reviewInfo?.reviewer}
       reviewPosted={reviewInfo?.reviewPosted ?? false}
       onclick={() => handleTaskClick(task)}
     />
   {/each}
 
-  {#if channelTasks.length === 0}
+  {#if groupedTasks.length === 0}
     <div class="px-3 py-2 text-[0.72rem] text-muted-foreground italic text-center">No active tasks</div>
   {/if}
 </div>
