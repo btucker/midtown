@@ -440,10 +440,23 @@ describe("getDisplayableDmChannels", () => {
 			{ name: "dm-auth", is_dm: true },
 			{ name: "dm-midtown", is_dm: true },
 			{ name: "dm-park", is_dm: true },
-			{ name: "dm-auth-discuss-a1b2", is_dm: true },
 		]);
 
-		expect(result.map((ch) => ch.name)).toEqual(["dm-park", "dm-auth-discuss-a1b2"]);
+		expect(result.map((ch) => ch.name)).toEqual(["dm-park"]);
+	});
+
+	it("hides DM mirrors for fork sessions that stream to their bound thread", () => {
+		const forkNames = new Set(["auth-discuss-a1b2"]);
+		const result = getDisplayableDmChannels(
+			[
+				{ name: "midtown", is_dm: false },
+				{ name: "dm-park", is_dm: true },
+				{ name: "dm-auth-discuss-a1b2", is_dm: true },
+			],
+			forkNames,
+		);
+
+		expect(result.map((ch) => ch.name)).toEqual(["dm-park"]);
 	});
 });
 
