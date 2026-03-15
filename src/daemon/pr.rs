@@ -3472,9 +3472,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
         };
 
-        // Record chosen name so subsequent PRs won't reuse it.
-        chosen_reviewer_names.insert(reviewer_name.clone());
-
         // Compute worktree details for reviewer worktree
         let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
         let wt_path = state.paths.worktrees_dir().join(&worktree_id);
@@ -3493,6 +3490,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             );
             continue;
         }
+
+        // Record chosen name so subsequent PRs won't reuse it.
+        // Placed after all early-return guards (coworker limit, name selection,
+        // worktree collision) so a skipped PR doesn't consume a name slot.
+        chosen_reviewer_names.insert(reviewer_name.clone());
 
         let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
         debug!(
