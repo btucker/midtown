@@ -69,12 +69,13 @@ function trackThread(
 	threadParentId: string,
 	channelName: string,
 	content: string | null | undefined,
-	replyCount?: number,
+	opts?: { replyCount?: number; replyContent?: string | null },
 ): void {
 	const dismissed = get(dismissedThreads);
 	if (dismissed.has(threadParentId)) return;
 	const newSubject = extractThreadSubject(content);
-	const newFullText = extractPlainText(content);
+	// Use reply content for fullText when available, otherwise fall back to parent content
+	const newFullText = extractPlainText(opts?.replyContent ?? content);
 	trackedThreads.update((tracked) => {
 		const existing = tracked[threadParentId];
 		// Keep existing subject/fullText if the new one is just the fallback "Thread"
@@ -88,7 +89,7 @@ function trackThread(
 				fullText,
 				// Only set lastActivity on initial tracking — WS handler updates it on new replies
 				lastActivity: existing?.lastActivity || new Date().toISOString(),
-				replyCount: replyCount ?? (existing?.replyCount || 0),
+				replyCount: opts?.replyCount ?? (existing?.replyCount || 0),
 			},
 		};
 	});
@@ -710,7 +711,7 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					const parentMsg = channelMsgs?.find((m: Message) => m.id === threadParentId);
 					const uName = get(userSenderName);
 					if (parentMsg && (parentMsg.from === "user" || parentMsg.from === uName)) {
-						trackThread(threadParentId, channelName, parentMsg.content);
+						trackThread(threadParentId, channelName, parentMsg.content, { replyContent: msg.content });
 					}
 
 					const tracked = get(trackedThreads);
@@ -724,12 +725,14 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					}
 					// Update lastActivity/replyCount on the tracked entry
 					if (tracked[threadParentId]) {
+						const replyFullText = extractPlainText(msg.content);
 						trackedThreads.update((t) => ({
 							...t,
 							[threadParentId]: {
 								...t[threadParentId],
 								lastActivity: new Date().toISOString(),
 								replyCount: (t[threadParentId]?.replyCount || 0) + 1,
+								...(replyFullText ? { fullText: replyFullText } : {}),
 							},
 						}));
 					}
@@ -1186,7 +1189,7 @@ export function openThread(parentMessage: Message, channelName: string, { pushSt
 		delete next[parentMessage.id];
 		return next;
 	});
-	trackThread(parentMessage.id, channelName, parentMessage.content, parentMessage.reply_count);
+	trackThread(parentMessage.id, channelName, parentMessage.content, { replyCount: parentMessage.reply_count });
 
 	// Show panel immediately with loading state, then populate with replies
 	threadData.set({ parentMessage, channelName, messages: [], tasks });
