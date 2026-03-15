@@ -114,8 +114,13 @@ export function formatTimeCompact(timestamp: string): string {
 // Returns true if the sender changed from the previous *visible* message.
 // Tool-only messages are collapsed into ToolRunSummary and never render an avatar,
 // so we skip them when walking backward to find the last visually-rendered message.
+// Exception: when the current message is itself tool-only (inside an expanded
+// ToolRunSummary), use normal adjacent comparison to preserve sender grouping.
 export function senderChanged(msgs: Message[], index: number): boolean {
 	if (index === 0) return true;
+	if (isToolOnly(msgs[index])) {
+		return msgs[index].from !== msgs[index - 1].from;
+	}
 	for (let i = index - 1; i >= 0; i--) {
 		if (!isToolOnly(msgs[i])) {
 			return msgs[index].from !== msgs[i].from;

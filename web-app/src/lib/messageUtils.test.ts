@@ -224,4 +224,14 @@ describe("senderChanged", () => {
 		const msgs = [msg("park", "", [{ tool_name: "Bash", input: {} }]), msg("park", "hello")];
 		expect(senderChanged(msgs, 1)).toBe(true);
 	});
+
+	it("returns false for consecutive tool-only messages from the same sender (expanded tool run)", () => {
+		// Inside expanded ToolRunSummary, tool-only messages are visible and should
+		// use normal adjacent comparison to preserve sender grouping.
+		const msgs = [
+			msg("park", "", [{ tool_name: "Read", input: {} }]),
+			msg("park", "", [{ tool_name: "Bash", input: {} }]),
+		];
+		expect(senderChanged(msgs, 1)).toBe(false);
+	});
 });
