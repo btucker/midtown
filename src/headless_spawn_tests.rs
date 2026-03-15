@@ -494,7 +494,9 @@ fn test_fresh_session_without_agent_name_omits_agent_flag() {
 }
 
 #[test]
-fn test_resume_session_ignores_agent_name() {
+fn test_resume_session_passes_agent_name() {
+    // Resume sessions pass --agent for task handoff support (--resume --agent).
+    // The agent identity is needed so the resumed session knows its role.
     let config = HeadlessConfig {
         model: "haiku".to_string(),
         system_prompt: "test".to_string(),
@@ -518,9 +520,21 @@ fn test_resume_session_ignores_agent_name() {
 
     let args = extract_spawn_args(&config);
 
-    // Resume sessions don't pass agent or system prompt
+    // Resume sessions pass --agent for task handoff
+    let agent_pos = args.iter().position(|a| a == "--agent");
     assert!(
-        !args.iter().any(|a| a == "--agent"),
-        "Resume session should NOT include --agent flag"
+        agent_pos.is_some(),
+        "Resume session with agent_name should include --agent flag"
+    );
+    assert_eq!(
+        args.get(agent_pos.unwrap() + 1).map(|s| s.as_str()),
+        Some("midtown-code-author"),
+        "--agent should be followed by the agent name"
+    );
+
+    // Resume sessions should NOT pass --append-system-prompt
+    assert!(
+        !args.iter().any(|a| a == "--append-system-prompt"),
+        "Resume session should NOT include --append-system-prompt"
     );
 }
