@@ -668,6 +668,21 @@ async fn cleanup_pr_tracking_state(
             .collect();
         ps.github
             .backfill_reviewer_session_ids(&reviewer_session_map);
+        // Also backfill task_reviewer_metadata.reviewer_session_id from pr_reviewers
+        // for any entry that was created before the session ID was known.
+        let pr_session_ids: Vec<(u64, String)> = ps
+            .github
+            .pr_reviewers
+            .iter()
+            .filter_map(|(&pr, a)| a.reviewer_session_id.as_ref().map(|sid| (pr, sid.clone())))
+            .collect();
+        for (pr_number, sid) in pr_session_ids {
+            for meta in ps.task_reviewer_metadata.values_mut() {
+                if meta.pr_number == pr_number && meta.reviewer_session_id.is_none() {
+                    meta.reviewer_session_id = Some(sid.clone());
+                }
+            }
+        }
         ps.github.cleanup_stale_webhook_events();
     }
     {

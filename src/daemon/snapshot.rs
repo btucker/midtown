@@ -940,14 +940,24 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         // This is required for decide_dead_reviewer_respawns to detect and
         // respawn reviewers whose processes have exited without posting a review.
         let assignments = build_reviewer_pr_assignments(&ps.github);
-        // Collect PR → restart_count for stuck reviewer backoff
-        let restart_counts: HashMap<u64, u32> = ps
-            .github
-            .pr_reviewers
-            .iter()
-            .filter(|(_, a)| a.restart_count > 0)
-            .map(|(pr, a)| (*pr, a.restart_count))
-            .collect();
+        // Collect PR → restart_count for stuck reviewer backoff.
+        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
+        let restart_counts: HashMap<u64, u32> = {
+            let mut counts: HashMap<u64, u32> = ps
+                .github
+                .pr_reviewers
+                .iter()
+                .filter(|(_, a)| a.restart_count > 0)
+                .map(|(pr, a)| (*pr, a.restart_count))
+                .collect();
+            // task_reviewer_metadata takes precedence over pr_reviewers
+            for meta in ps.task_reviewer_metadata.values() {
+                if meta.restart_count > 0 {
+                    counts.insert(meta.pr_number, meta.restart_count);
+                }
+            }
+            counts
+        };
         (reviewers, assignments, restart_counts)
     };
 
@@ -1001,16 +1011,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
-        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition)
+        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition).
+        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
-                .filter_map(|&pr| {
-                    ps.github
-                        .pr_reviewers
-                        .get(&pr)
-                        .map(|a| (pr, a.placeholder_comment_id))
+                .map(|&pr| {
+                    let id = super::state::task_reviewer_metadata_for_pr(&ps, pr)
+                        .and_then(|m| m.placeholder_comment_id)
+                        .or_else(|| {
+                            ps.github
+                                .pr_reviewers
+                                .get(&pr)
+                                .and_then(|a| a.placeholder_comment_id)
+                        });
+                    (pr, id)
                 })
                 .collect()
         };

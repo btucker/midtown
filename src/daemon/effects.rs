@@ -3890,19 +3890,26 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 
 /// Look up an existing placeholder comment ID for a PR using the 3-tier lookup:
 ///
-/// 1. **Persistent state** — `PrReviewerAssignment.placeholder_comment_id`
+/// 1. **Persistent state** — `task_reviewer_metadata` (preferred) or `PrReviewerAssignment.placeholder_comment_id` (fallback)
 /// 2. **In-memory cache** — `reviewer_placeholder_cache` (TTL-based)
 /// 3. **GitHub API fallback** — `pr_in_progress_placeholder_comment_id` via `spawn_blocking`
 ///
 /// This reuses the same lookup infrastructure as `collect_world_snapshot` in
 /// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    // Tier 1: Check stored placeholder_comment_id from the assignment
+    // Tier 1: Check stored placeholder_comment_id.
+    // Prefer task_reviewer_metadata; fall back to pr_reviewers.
     {
         let ps = state.persistent_state.lock().await;
-        if let Some(assignment) = ps.github.pr_reviewers.get(&pr_number)
-            && let Some(id) = assignment.placeholder_comment_id
-        {
+        let id = super::state::task_reviewer_metadata_for_pr(&ps, pr_number)
+            .and_then(|m| m.placeholder_comment_id)
+            .or_else(|| {
+                ps.github
+                    .pr_reviewers
+                    .get(&pr_number)
+                    .and_then(|a| a.placeholder_comment_id)
+            });
+        if let Some(id) = id {
             return Some(id);
         }
     }
