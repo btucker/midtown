@@ -210,6 +210,13 @@ pub(super) fn build_dm_separator_effect(
     }
 }
 
+/// PR-related context for TaskPrompt observability messages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskPromptPrContext {
+    pub pr_number: u64,
+    pub issue_type: PrIssueType,
+}
+
 /// A side effect that the daemon should execute.
 ///
 /// Pure evaluation functions return `Vec<Effect>` instead of performing side
@@ -753,6 +760,19 @@ pub enum Effect {
         /// to resume this session (preserving conversation history) before falling
         /// back to a fresh spawn.
         old_session_id: Option<String>,
+    },
+
+    /// Deliver a prompt to a task's session (nudge if running, resume if stopped).
+    /// This is the effect-pipeline equivalent of the `task.prompt` RPC call.
+    /// Cooldown tracking (RecordPrNudge) is NOT included — callers emit it separately.
+    TaskPrompt {
+        task_id: String,
+        message: String,
+        /// Optional model override (e.g., "opus" for review feedback).
+        model: Option<String>,
+        /// PR context for observability messages. When set, the executor posts
+        /// a "called in" message to the ops channel on successful delivery.
+        pr_context: Option<TaskPromptPrContext>,
     },
 }
 
@@ -3677,6 +3697,52 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     old_session_id.as_deref(),
                 )
                 .await;
+            }
+            Effect::TaskPrompt {
+                task_id,
+                message,
+                model,
+                pr_context,
+            } => {
+                let result = super::rpc_task::deliver_task_prompt(
+                    &task_id,
+                    &message,
+                    "midtown", // daemon auto-pilot is always "midtown"
+                    model.as_deref(),
+                    state,
+                )
+                .await;
+
+                match (&result, &pr_context) {
+                    (Ok(_), Some(ctx)) => {
+                        info!(
+                            "TaskPrompt delivered for task !{} (PR #{}, {})",
+                            task_id, ctx.pr_number, ctx.issue_type
+                        );
+                    }
+                    (Err(e), _) => {
+                        warn!("TaskPrompt failed for task !{}: {}", task_id, e);
+                        // Post failure to ops channel
+                        let fail_effect = Effect::PostToChannel {
+                            sender: "midtown".to_string(),
+                            message: format!(
+                                "Failed to deliver prompt to task !{}: {}",
+                                task_id, e
+                            ),
+                            channel: Some(OPS_CHANNEL.to_string()),
+                            auto_output: false,
+                            message_type: None,
+                            nudge_type: None,
+                            tool_data: None,
+                            provider: None,
+                            tool_use_id: None,
+                            parent_tool_use_id: None,
+                        };
+                        // Execute inline via Box::pin (breaks async recursion cycle)
+                        Box::pin(execute_effects(vec![fail_effect], state)).await;
+                    }
+                    _ => {}
+                }
             }
         }
     }
