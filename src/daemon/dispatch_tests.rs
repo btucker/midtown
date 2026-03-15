@@ -5516,3 +5516,135 @@ fn test_plan_section_with_missing_plan_file_preserves_skill() {
         "Should preserve execution skill even when plan file is missing"
     );
 }
+
+// ============================================================================
+// Reviewer task dispatch via task_agent_type
+// ============================================================================
+
+/// When a pending task has task_agent_type="midtown-code-reviewer" and a PR number,
+/// dispatch should use reviewer-specific launch config (LaunchConfig::reviewer)
+/// instead of the regular coworker config.
+#[test]
+fn test_reviewer_task_dispatched_with_reviewer_config() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "500".to_string(),
+        subject: "Review PR #42".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #42.".to_string()),
+        blocked_by: vec![],
+        channel: Some("auth".to_string()),
+        pr: Some(42),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("500".to_string(), "midtown-code-reviewer".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should produce an AssignAndSpawn effect for the reviewer task
+    let has_assign_and_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AssignAndSpawn { task_id, .. } if task_id == "500"));
+
+    assert!(
+        has_assign_and_spawn,
+        "Reviewer task should produce AssignAndSpawn effect. Effects: {:#?}",
+        effects
+    );
+
+    // The on_success should include reviewer-specific effects
+    let on_success = effects.iter().find_map(|e| {
+        if let Effect::AssignAndSpawn {
+            on_success,
+            task_id,
+            ..
+        } = e
+        {
+            if task_id == "500" {
+                Some(on_success)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    if let Some(on_success) = on_success {
+        // Should include PostPrComment for placeholder
+        let has_placeholder = on_success
+            .iter()
+            .any(|e| matches!(e, Effect::PostPrComment { pr_number: 42, .. }));
+        assert!(
+            has_placeholder,
+            "Reviewer dispatch should include PostPrComment placeholder. on_success: {:#?}",
+            on_success
+        );
+
+        // Should include AssignReviewer for backward compat
+        let has_assign_reviewer = on_success
+            .iter()
+            .any(|e| matches!(e, Effect::AssignReviewer { pr_number: 42, .. }));
+        assert!(
+            has_assign_reviewer,
+            "Reviewer dispatch should include AssignReviewer. on_success: {:#?}",
+            on_success
+        );
+    }
+}
+
+/// A pending task WITHOUT task_agent_type should dispatch as a regular coworker,
+/// not as a reviewer — even if it has a PR number.
+#[test]
+fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "501".to_string(),
+        subject: "Fix bug in PR #43".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(43),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    // No task_agent_type_map entry — should be treated as regular task
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should NOT have PostPrComment (that's reviewer-specific)
+    let has_post_pr_comment = effects.iter().any(|e| {
+        if let Effect::AssignAndSpawn { on_success, .. } = e {
+            on_success
+                .iter()
+                .any(|s| matches!(s, Effect::PostPrComment { .. }))
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        !has_post_pr_comment,
+        "Regular task with PR should NOT dispatch with PostPrComment. Effects: {:#?}",
+        effects
+    );
+}

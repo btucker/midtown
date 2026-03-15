@@ -502,6 +502,7 @@ impl DaemonClient {
         execution_skill: Option<&str>,
         thread_id: Option<&str>,
         parent: Option<&str>,
+        agent_type: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -530,6 +531,9 @@ impl DaemonClient {
         }
         if let Some(p) = parent {
             params["parent"] = serde_json::json!(p);
+        }
+        if let Some(at) = agent_type {
+            params["agent_type"] = serde_json::json!(at);
         }
         self.send("task.create", Some(params))
     }

@@ -534,6 +534,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let execution_skill = params.str_param("execution_skill");
             let thread_id = params.str_param("thread_id");
             let parent = params.str_param("parent");
+            let agent_type = params.str_param("agent_type");
             super::rpc_task::handle_task_create(
                 request.id,
                 subject,
@@ -546,6 +547,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 execution_skill,
                 thread_id,
                 parent,
+                agent_type,
                 state,
             )
             .await
