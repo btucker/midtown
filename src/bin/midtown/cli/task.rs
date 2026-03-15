@@ -37,6 +37,9 @@ pub enum TaskCommand {
         /// Parent task ID for UI grouping (e.g., review task as child of implementation task)
         #[arg(long)]
         parent: Option<String>,
+        /// Agent type for specialized task dispatch (e.g., midtown-code-reviewer)
+        #[arg(long)]
+        agent_type: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -125,6 +128,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             execution_skill,
             thread_id,
             parent,
+            agent_type,
         } => {
             let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
             let effective_thread_id =
@@ -140,6 +144,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 execution_skill.as_deref(),
                 effective_thread_id.as_deref(),
                 parent.as_deref(),
+                agent_type.as_deref(),
             )
         }
         TaskCommand::Update {

@@ -460,6 +460,18 @@ pub enum Effect {
         pr_number: u64,
         dir_key: String,
     },
+
+    /// Create a child review task for a PR that needs code review.
+    ///
+    /// Replaces the old direct-spawn reviewer flow. Creates a pending task with
+    /// `agent_type=midtown-code-reviewer` and `parent=<implementation task>`.
+    /// The task dispatch system picks it up on the next tick and spawns a
+    /// reviewer session with the appropriate launch config.
+    CreateReviewTask {
+        pr_number: u64,
+        parent_task_id: Option<String>,
+        channel: Option<String>,
+    },
     /// Send a push notification to the mobile PWA.
     ///
     /// Fire-and-forget: the push manager runs in a background task.
@@ -2077,6 +2089,54 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Set PR association for task !{}: PR #{}",
                         task_id, pr_number
                     );
+                }
+            }
+            Effect::CreateReviewTask {
+                pr_number,
+                parent_task_id,
+                channel,
+            } => {
+                let dir_key = state.paths.dir_key().to_string();
+                let subject = format!("Review PR #{}", pr_number);
+                let description = format!(
+                    "Code review for PR #{}. Spawned automatically by the daemon.",
+                    pr_number
+                );
+                let active_form = format!("Reviewing PR #{}", pr_number);
+                match crate::tasks::create_task_for_repo(
+                    &subject,
+                    &description,
+                    &active_form,
+                    "",
+                    &dir_key,
+                    None,
+                    channel.as_deref(),
+                    Some(pr_number),
+                ) {
+                    Ok(task_id) => {
+                        info!(
+                            "Created review task !{} for PR #{} (parent: {:?})",
+                            task_id, pr_number, parent_task_id
+                        );
+                        let mut ps = state.persistent_state.lock().await;
+                        // Store agent type so dispatch uses reviewer config
+                        ps.task_agent_type
+                            .insert(task_id.clone(), "midtown-code-reviewer".to_string());
+                        // Store parent relationship
+                        if let Some(ref parent_id) = parent_task_id {
+                            ps.task_parent.insert(task_id.clone(), parent_id.clone());
+                        }
+                        // Store channel mapping
+                        if let Some(ref ch) = channel {
+                            ps.task_channel.insert(task_id.clone(), ch.clone());
+                        }
+                        if let Err(e) = ps.save_for_repo(&dir_key) {
+                            warn!("Failed to save review task metadata: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to create review task for PR #{}: {}", pr_number, e);
+                    }
                 }
             }
             Effect::SendPushNotification {

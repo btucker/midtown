@@ -290,6 +290,7 @@ pub(super) async fn handle_task_create(
     execution_skill: Option<&str>,
     thread_id: Option<&str>,
     parent: Option<&str>,
+    agent_type: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let dir_key = state.paths.dir_key().to_string();
@@ -397,6 +398,10 @@ pub(super) async fn handle_task_create(
                 .unwrap_or(p);
             ps.task_parent
                 .insert(task_id.clone(), normalized.to_string());
+            changed = true;
+        }
+        if let Some(at) = agent_type {
+            ps.task_agent_type.insert(task_id.clone(), at.to_string());
             changed = true;
         }
         if changed && let Err(e) = ps.save_for_repo(&dir_key) {
@@ -664,6 +669,7 @@ pub(super) async fn handle_task_metadata(
     let message_id = ps.task_message_id.get(task_id).cloned();
     let thread_id = ps.task_thread_id.get(task_id).cloned();
     let parent = ps.task_parent.get(task_id).cloned();
+    let agent_type = ps.task_agent_type.get(task_id).cloned();
 
     Response::success(
         id,
@@ -675,6 +681,7 @@ pub(super) async fn handle_task_metadata(
             "message_id": message_id,
             "thread_id": thread_id,
             "parent": parent,
+            "agent_type": agent_type,
         }),
     )
 }

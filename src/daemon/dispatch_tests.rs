@@ -5516,3 +5516,350 @@ fn test_plan_section_with_missing_plan_file_preserves_skill() {
         "Should preserve execution skill even when plan file is missing"
     );
 }
+
+// ============================================================================
+// Reviewer task dispatch via task_agent_type
+// ============================================================================
+
+/// When a pending task has task_agent_type="midtown-code-reviewer" and a PR number,
+/// dispatch should use reviewer-specific launch config (LaunchConfig::reviewer)
+/// instead of the regular coworker config.
+#[test]
+fn test_reviewer_task_dispatched_with_reviewer_config() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "500".to_string(),
+        subject: "Review PR #42".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #42.".to_string()),
+        blocked_by: vec![],
+        channel: Some("auth".to_string()),
+        pr: Some(42),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("500".to_string(), "midtown-code-reviewer".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should produce an AssignAndSpawn effect for the reviewer task
+    let has_assign_and_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::AssignAndSpawn { task_id, .. } if task_id == "500"));
+
+    assert!(
+        has_assign_and_spawn,
+        "Reviewer task should produce AssignAndSpawn effect. Effects: {:#?}",
+        effects
+    );
+
+    // The on_success should include reviewer-specific effects
+    let on_success = effects.iter().find_map(|e| {
+        if let Effect::AssignAndSpawn {
+            on_success,
+            task_id,
+            ..
+        } = e
+        {
+            if task_id == "500" {
+                Some(on_success)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    if let Some(on_success) = on_success {
+        // Should include PostPrComment for placeholder
+        let has_placeholder = on_success
+            .iter()
+            .any(|e| matches!(e, Effect::PostPrComment { pr_number: 42, .. }));
+        assert!(
+            has_placeholder,
+            "Reviewer dispatch should include PostPrComment placeholder. on_success: {:#?}",
+            on_success
+        );
+
+        // Should include AssignReviewer for backward compat
+        let has_assign_reviewer = on_success
+            .iter()
+            .any(|e| matches!(e, Effect::AssignReviewer { pr_number: 42, .. }));
+        assert!(
+            has_assign_reviewer,
+            "Reviewer dispatch should include AssignReviewer. on_success: {:#?}",
+            on_success
+        );
+    }
+}
+
+/// A pending task WITHOUT task_agent_type should dispatch as a regular coworker,
+/// not as a reviewer — even if it has a PR number.
+#[test]
+fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let task = Task {
+        id: "501".to_string(),
+        subject: "Fix bug in PR #43".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(43),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    // No task_agent_type_map entry — should be treated as regular task
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should NOT have PostPrComment (that's reviewer-specific)
+    let has_post_pr_comment = effects.iter().any(|e| {
+        if let Effect::AssignAndSpawn { on_success, .. } = e {
+            on_success
+                .iter()
+                .any(|s| matches!(s, Effect::PostPrComment { .. }))
+        } else {
+            false
+        }
+    });
+
+    assert!(
+        !has_post_pr_comment,
+        "Regular task with PR should NOT dispatch with PostPrComment. Effects: {:#?}",
+        effects
+    );
+}
+
+/// Reviewer tasks must not be grouped with the implementation coworker even when
+/// they share the same PR number. Without this guard, resolve_grouped_name would
+/// route the reviewer task to the author's running session, dispatching it as a
+/// generic TaskClaimed nudge instead of a fresh reviewer spawn.
+#[test]
+fn test_reviewer_task_not_grouped_with_implementation_coworker() {
+    use crate::tasks::{Task, TaskStatus};
+
+    // Implementation task: already in progress, owned by "park"
+    let impl_task = Task {
+        id: "600".to_string(),
+        subject: "Implement feature for PR #55".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("park".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(55),
+        created_at: None,
+    };
+
+    // Reviewer task: pending, same PR number, should NOT group with park
+    let review_task = Task {
+        id: "601".to_string(),
+        subject: "Review PR #55".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #55.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(55),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.all_tasks = vec![impl_task.clone(), review_task.clone()];
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("601".to_string(), "midtown-code-reviewer".to_string());
+    // Mark park as active so grouping would normally route to them
+    snap.coworkers.active_names.insert("park".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // The reviewer task should spawn a fresh coworker, not nudge park
+    let spawned_as_fresh = effects.iter().any(|e| {
+        matches!(e, Effect::AssignAndSpawn { task_id, owner, .. }
+            if task_id == "601" && owner != "park")
+    });
+
+    assert!(
+        spawned_as_fresh,
+        "Reviewer task should spawn as fresh coworker, not group with implementation owner 'park'. Effects: {:#?}",
+        effects
+    );
+
+    // Double-check: no nudge to park for this task
+    let nudged_park = effects.iter().any(|e| {
+        matches!(e, Effect::NudgeSessionWithCallbacks { reason, .. }
+            if matches!(reason, crate::daemon::wake_reason::WakeReason::TaskClaimed { task_id, .. } if task_id == "601"))
+    });
+
+    assert!(
+        !nudged_park,
+        "Reviewer task should NOT be nudged to existing coworker. Effects: {:#?}",
+        effects
+    );
+}
+
+/// Reviewer tasks must not be assigned to the PR author (parent task owner).
+/// This prevents self-review when all other coworker names happen to be in use.
+#[test]
+fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
+    use crate::tasks::{Task, TaskStatus};
+
+    // Parent implementation task owned by "riverside"
+    let impl_task = Task {
+        id: "700".to_string(),
+        subject: "Implement feature".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("riverside".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    };
+
+    // Reviewer child task
+    let review_task = Task {
+        id: "701".to_string(),
+        subject: "Review PR #88".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #88.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.all_tasks = vec![impl_task, review_task.clone()];
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("701".to_string(), "midtown-code-reviewer".to_string());
+    // Map child → parent so the self-review guard can find the author
+    snap.task_parent_map
+        .insert("701".to_string(), "700".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should spawn, but NOT as "riverside" (the PR author)
+    let spawned = effects.iter().find_map(|e| {
+        if let Effect::AssignAndSpawn { task_id, owner, .. } = e {
+            if task_id == "701" {
+                Some(owner.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        spawned.is_some(),
+        "Reviewer task should produce AssignAndSpawn. Effects: {:#?}",
+        effects
+    );
+    assert_ne!(
+        spawned.unwrap().to_lowercase(),
+        "riverside",
+        "Reviewer must not be assigned to the PR author 'riverside'"
+    );
+}
+
+/// AssignReviewer must appear before PostPrComment in the on_success callback
+/// list so that post_pr_comment() can store the placeholder_comment_id in the
+/// pr_reviewers entry that AssignReviewer creates.
+#[test]
+fn test_reviewer_assign_reviewer_before_post_pr_comment() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let review_task = Task {
+        id: "800".to_string(),
+        subject: "Review PR #99".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #99.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(99),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("800".to_string(), "midtown-code-reviewer".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let on_success = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn {
+                on_success,
+                task_id,
+                ..
+            } = e
+            {
+                if task_id == "800" {
+                    Some(on_success)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .expect("Reviewer task should produce AssignAndSpawn");
+
+    let assign_pos = on_success
+        .iter()
+        .position(|e| matches!(e, Effect::AssignReviewer { .. }))
+        .expect("on_success should contain AssignReviewer");
+    let post_pos = on_success
+        .iter()
+        .position(|e| matches!(e, Effect::PostPrComment { .. }))
+        .expect("on_success should contain PostPrComment");
+
+    assert!(
+        assign_pos < post_pos,
+        "AssignReviewer (pos {}) must come before PostPrComment (pos {}) \
+         so that pr_reviewers entry exists when placeholder_comment_id is stored. \
+         on_success: {:#?}",
+        assign_pos,
+        post_pos,
+        on_success
+    );
+}

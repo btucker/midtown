@@ -227,6 +227,30 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_parent: HashMap<String, String>,
 
+    /// Task-to-agent-type mapping for specialized task dispatch.
+    ///
+    /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
+    /// When set, the task dispatch system uses the specified agent definition
+    /// instead of the default coworker agent. Used to route review tasks
+    /// through the task dispatch system with the correct agent behavior.
+    #[serde(default)]
+    pub task_agent_type: HashMap<String, String>,
+
+    /// Task-to-placeholder-comment-ID mapping for reviewer status comments.
+    ///
+    /// Maps task ID → GitHub comment ID. When a reviewer is spawned for a PR,
+    /// a "Review in progress..." placeholder comment is posted. The comment ID
+    /// is stored here so the reviewer can update it with the final review.
+    #[serde(default)]
+    pub task_placeholder_comment_id: HashMap<String, u64>,
+
+    /// Task-to-restart-count mapping for reviewer backoff.
+    ///
+    /// Maps task ID → number of times the reviewer session has been restarted.
+    /// Used to implement exponential backoff for stuck reviewers.
+    #[serde(default)]
+    pub task_restart_count: HashMap<String, u32>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -416,6 +440,9 @@ impl DaemonPersistentState {
             self.task_thread_id.remove(task_id);
             self.task_message_id.remove(task_id);
             self.task_parent.remove(task_id);
+            self.task_agent_type.remove(task_id);
+            self.task_placeholder_comment_id.remove(task_id);
+            self.task_restart_count.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
 
@@ -472,6 +499,9 @@ impl DaemonPersistentState {
             task_thread_id: HashMap::new(),
             task_message_id: HashMap::new(),
             task_parent: HashMap::new(),
+            task_agent_type: HashMap::new(),
+            task_placeholder_comment_id: HashMap::new(),
+            task_restart_count: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),

@@ -2894,13 +2894,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         )
     };
 
-    // Accumulate reviewer names chosen in this batch so subsequent PRs
-    // exclude names already assigned to earlier PRs in the same call.
-    // Without this, every PR sees the same available pool and gets the
-    // same name (effects aren't executed until the function returns).
-    let mut chosen_reviewer_names: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
-
     for pr in prs {
         let pf = PrFields::from_json(pr);
         let pr_number = pf.number;
@@ -3173,11 +3166,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Check if already assigned for review.
-        // Stale assignments are cleaned up by cleanup_expired_preserving() during
-        // the PR poll cycle, so any remaining assignment here is still valid.
+        // Check if already assigned for review (legacy) or has a review task.
         {
             let ps = state.persistent_state.lock().await;
+            // Legacy: check pr_reviewers for backward compatibility during transition
             if ps.github.is_assigned(pr_number) {
                 if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
                     debug!(
@@ -3187,6 +3179,22 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 } else {
                     debug!("PR #{} has assignment but no reviewer name", pr_number);
                 }
+                continue;
+            }
+        }
+
+        // Check if a review task already exists for this PR (task-based dedup).
+        {
+            let has_review_task = all_tasks.iter().any(|t| {
+                t.pr == Some(pr_number)
+                    && t.status != crate::tasks::TaskStatus::Completed
+                    && t.subject.starts_with("Review PR #")
+            });
+            if has_review_task {
+                debug!(
+                    "PR #{} already has a pending/in-progress review task",
+                    pr_number
+                );
                 continue;
             }
         }
@@ -3295,251 +3303,21 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
-        // Extract channel lead names for coworker limit check
-        let channel_lead_names = {
-            let ps = state.persistent_state.lock().await;
-            ps.channel_lead_names()
-        };
+        // Create a child review task. The task dispatch system handles coworker
+        // limit checks, name allocation, worktree setup, and session spawning.
+        let channel = pr_ctx.get_channel(pr_number);
+        let parent_task_id = pr_task_associations.get(&pr_number).cloned();
 
-        // Check max coworkers limit before spawning
-        if state.is_at_coworker_limit(&channel_lead_names) {
-            debug!(
-                "Max coworkers limit ({}) reached, cannot spawn reviewer for PR #{}",
-                state.max_coworkers, pr_number
-            );
-            continue;
-        }
-
-        // Also exclude the PR author from reviewer selection to prevent self-review.
-        // The author is identified via the branch_owners map.
-        let mut excluded_names = channel_lead_names.clone();
-        let pr_author = coworker_from_branch(head_ref, branch_owners);
-        if let Some(ref author) = pr_author {
-            excluded_names.insert(author.clone());
-        }
-        // Exclude all names with active sessions to prevent name collisions.
-        // CoworkerManager only knows about registered coworkers, but a session
-        // may still be running after its coworker was cleaned up from the manager.
-        // active_names (from WorldSnapshot) tracks all names with live sessions.
-        for name in active_names {
-            excluded_names.insert(name.clone());
-        }
-
-        // Also exclude names already chosen for earlier PRs in this batch.
-        for name in &chosen_reviewer_names {
-            excluded_names.insert(name.clone());
-        }
-
-        let reviewer_name = match state
-            .coworkers
-            .next_available_name_excluding(&excluded_names)
-        {
-            Some(name) => name,
-            None => {
-                warn!("No available coworker slots for reviewer");
-                continue;
-            }
-        };
-
-        // Compute worktree details for reviewer worktree
-        let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-        let wt_path = state.paths.worktrees_dir().join(&worktree_id);
-
-        // Collision guard: abort spawn if the worktree is already bound to an active coworker.
-        // The BindCoworkerToWorktree effect has its own collision guard, but by then the
-        // session is already spawned. We must detect this earlier to avoid spawning a
-        // reviewer that will run without a valid worktree binding.
-        if let Some(existing) = worktree_registry.get(&worktree_id)
-            && let Some(ref bound_to) = existing.current_coworker
-            && active_names.contains(bound_to.to_lowercase().as_str())
-        {
-            warn!(
-                "WORKTREE COLLISION: Aborting reviewer spawn for PR #{} — worktree {} already bound to ACTIVE coworker {}",
-                pr_number, worktree_id, bound_to
-            );
-            continue;
-        }
-
-        // Record chosen name so subsequent PRs won't reuse it.
-        // Placed after all early-return guards (coworker limit, name selection,
-        // worktree collision) so a skipped PR doesn't consume a name slot.
-        chosen_reviewer_names.insert(reviewer_name.clone());
-
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
         debug!(
-            "Spawning isolated coworker to review PR #{}: {}",
+            "Creating review task for PR #{}: {}",
             pr_number,
             truncate_str(title, 40)
         );
 
-        // reviewer() now takes the PR number and provider; both are used to generate
-        // a provider-aware initial prompt in addition to spawn arguments.
-        // restart_count=0 for new assignments (not a respawn).
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            state.paths.dir_key(),
-            crate::config::ExecutionRole::Reviewer,
-        );
-        let mut config = crate::launch::LaunchConfig::reviewer(
-            reviewer_name.clone(),
-            state.paths.dir_key(),
+        effects.push(Effect::CreateReviewTask {
             pr_number,
-            0,
-            auth_provider,
-        );
-        config.model = super::helpers::normalize_model_for_provider_role(
-            &config.model,
-            config.auth_provider,
-            &config.role,
-        );
-        config.working_dir = Some(wt_path.clone());
-
-        // Route reviewer to the task's topic channel so `midtown channel post`
-        // defaults to the right channel (via MIDTOWN_CHANNEL env var).
-        config.channel = pr_ctx.get_channel(pr_number);
-
-        // Pass the PR's linked task ID so the reviewer knows its task
-        // without having to parse it from the PR title.
-        config.task_id = pr_ctx.pr_task_associations.get(&pr_number).cloned();
-
-        // Route escalation mentions (@{escalation_target}) to the channel lead
-        // for this task's channel, falling back to the project lead if no channel
-        // or no channel lead exists.
-        if let Some(ref channel_name) = config.channel
-            && channel_lead_names.contains(channel_name)
-        {
-            config.escalation_target = Some(channel_name.clone());
-            // Belt-and-suspenders: regenerate the initial prompt with the escalation
-            // target so the reviewer knows who to address even if the system prompt
-            // substitution fails.
-            config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
-                pr_number,
-                0,
-                auth_provider,
-                Some(channel_name),
-            ));
-        } else if config.channel.is_some() {
-            // Channel exists but no channel lead registered — log for diagnosis.
-            warn!(
-                "PR #{}: task has channel {:?} but no channel lead registered; \
-                 reviewer escalation_target falls back to project name",
-                pr_number,
-                config.channel.as_deref().unwrap_or("?")
-            );
-        }
-
-        effects.push(Effect::EnsureWorktree {
-            worktree_id: worktree_id.clone(),
-            path: wt_path.clone(),
-        });
-
-        // Reserve the reviewer assignment BEFORE spawning to prevent race conditions.
-        // If multiple events (webhooks, polling) trigger spawns for the same PR
-        // before any spawn completes, they would all pass the is_assigned() check.
-        // By assigning immediately, subsequent calls see the reservation and skip spawning.
-        effects.push(Effect::AssignReviewer {
-            pr_number,
-            reviewer_name: reviewer_name.clone(),
-            source,
-            restart_count: 0,
-            reviewer_session_id: None,
-        });
-
-        let mut on_success = vec![
-            // Register the review worktree assignment
-            Effect::RegisterWorktreeAssignment {
-                assignment: crate::worktree_registry::WorktreeAssignment {
-                    worktree_id: worktree_id.clone(),
-                    branch_name: worktree_id.clone(), // Branch name matches worktree_id for review worktrees
-                    task_id: None,                    // Reviewers are not tied to tasks
-                    current_coworker: None,           // Will be set by BindCoworkerToWorktree
-                    pr_number: Some(pr_number),
-                    created_at: chrono::Utc::now(),
-                    completed_at: None, // Will be set when PR is reviewed and merged
-                },
-            },
-            // Bind the reviewer to the worktree
-            Effect::BindCoworkerToWorktree {
-                worktree_id: worktree_id.clone(),
-                coworker: reviewer_name.clone(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: reviewer_name.clone(),
-                status: "running".to_string(),
-                current_task: Some(format!("reviewing PR #{}", pr_number)),
-            },
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: daemon_messages::called_in_reviewer(&reviewer_name, pr_number),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            },
-            // DM separator so the reviewer's output streams to dm-<name>
-            Effect::PostSystemMessage {
-                message: format!("─── Reviewing PR #{} ───", pr_number),
-                channel: Some(format!("dm-{}", reviewer_name)),
-            },
-            // Post the "Review in progress" placeholder comment on the PR.
-            // The daemon handles this instead of the reviewer agent to avoid
-            // prompt-compliance issues (e.g., escaped `!` in `<!-- midtown-placeholder -->`).
-            // The comment ID is stored on the PrReviewerAssignment for later update.
-            Effect::PostPrComment {
-                pr_number,
-                reviewer_name: reviewer_name.clone(),
-                body: format!(
-                    "<!-- midtown-placeholder -->\n## Review Status\n\n\
-                     🔍 Review in progress by {}...\n\n---\n\
-                     > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
-                     🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                    reviewer_name
-                ),
-            },
-        ];
-
-        // Warn the PR author not to enable auto-merge while the review is in progress.
-        // Without this warning, the author may run `gh pr merge --auto --squash` before
-        // the reviewer finishes, causing the PR to merge as soon as CI passes — bypassing
-        // the review entirely (as happened with PR #1523).
-        if let Some(ref author) = pr_author {
-            on_success.push(Effect::NudgeCoworkerByName {
-                name: author.clone(),
-                message: daemon_messages::reviewer_spawned_author_warning(
-                    &reviewer_name,
-                    pr_number,
-                ),
-            });
-        }
-
-        let on_failure = vec![
-            // Clean up the optimistic assignment we made before spawning
-            Effect::RemoveReviewerAssignment { pr_number },
-            Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: format!(
-                    "⚠️ Failed to spawn reviewer for PR #{} ({})",
-                    pr_number,
-                    truncate_str(title, 40),
-                ),
-                channel: Some(OPS_CHANNEL.to_string()),
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            },
-        ];
-
-        effects.push(Effect::SpawnCoworkerWithCallbacks {
-            config,
-            on_success,
-            on_failure,
+            parent_task_id,
+            channel,
         });
     }
 
@@ -5072,6 +4850,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::PostInsight { .. } => "PostInsight",
         Effect::RespawnChannelLead { .. } => "RespawnChannelLead",
         Effect::TaskPrompt { .. } => "TaskPrompt",
+        Effect::CreateReviewTask { .. } => "CreateReviewTask",
     }
 }
 

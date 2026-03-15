@@ -539,13 +539,13 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         "Lead PR without task ID should spawn a reviewer, not be marked as orphaned"
     );
 
-    // Verify we got a SpawnCoworkerWithCallbacks effect for the reviewer
+    // Verify we got a CreateReviewTask effect for the reviewer
     let has_reviewer_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
         has_reviewer_spawn,
-        "Expected SpawnCoworkerWithCallbacks effect for lead PR. Effects: {:#?}",
+        "Expected CreateReviewTask effect for lead PR. Effects: {:#?}",
         effects
     );
 }
@@ -1118,18 +1118,18 @@ async fn test_completed_worktree_with_snapshot_data() {
          Snapshot has task 1323 with completed worktree, PR #99999 should get a reviewer assigned."
     );
 
-    // Verify that one of the effects is an AssignReviewer for PR #99999
-    let has_assign_reviewer = effects.iter().any(|effect| {
+    // Verify that one of the effects is a CreateReviewTask for PR #99999
+    let has_create_review_task = effects.iter().any(|effect| {
         matches!(
             effect,
-            crate::daemon::effects::Effect::AssignReviewer { pr_number, .. }
+            crate::daemon::effects::Effect::CreateReviewTask { pr_number, .. }
             if *pr_number == 99999
         )
     });
 
     assert!(
-        has_assign_reviewer,
-        "Expected AssignReviewer effect for PR #99999. \
+        has_create_review_task,
+        "Expected CreateReviewTask effect for PR #99999. \
          Before fix: completed worktrees caused PRs to be skipped as orphaned. \
          After fix: open PRs with completed worktrees should get reviewer spawns. \
          Effects: {:#?}",
@@ -1191,17 +1191,17 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     .await;
 
     // The function should spawn a reviewer for this PR
-    let has_assign_reviewer = effects.iter().any(|effect| {
+    let has_create_review_task = effects.iter().any(|effect| {
         matches!(
             effect,
-            crate::daemon::effects::Effect::AssignReviewer { pr_number, .. }
+            crate::daemon::effects::Effect::CreateReviewTask { pr_number, .. }
             if *pr_number == 1198
         )
     });
 
     assert!(
-        has_assign_reviewer,
-        "Expected AssignReviewer effect for PR #1198. \
+        has_create_review_task,
+        "Expected CreateReviewTask effect for PR #1198. \
          Before fix: PRs from lead with non-lead/ branches were marked as orphaned. \
          After fix: lead-authored PRs should get reviewers regardless of branch name. \
          Effects: {:#?}",
@@ -1868,13 +1868,12 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
          PR #1246 belongs to running coworker 'park' but has no worktree for task 1483."
     );
 
-    let has_reviewer_effect = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })
-            || matches!(e, Effect::AssignReviewer { pr_number, .. } if *pr_number == 1246)
-    });
+    let has_reviewer_effect = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number, .. } if *pr_number == 1246));
     assert!(
         has_reviewer_effect,
-        "Expected reviewer spawn effect for PR #1246. Effects: {:#?}",
+        "Expected CreateReviewTask effect for PR #1246. Effects: {:#?}",
         effects
     );
 }
@@ -2445,28 +2444,15 @@ async fn test_reviewer_not_assigned_to_pr_author() {
     )
     .await;
 
-    // A reviewer should be spawned (overflow names are available) — assert there IS an assignment
-    let reviewer_name = effects.iter().find_map(|e| {
-        if let Effect::AssignReviewer { reviewer_name, .. } = e {
-            Some(reviewer_name.clone())
-        } else {
-            None
-        }
-    });
+    // A review task should be created (name allocation now happens in dispatch)
+    let has_create_review_task = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number, .. } if *pr_number == 9998));
 
     assert!(
-        reviewer_name.is_some(),
-        "Expected a reviewer to be assigned (overflow names are still available). \
-         Before fix: 'riverside' was incorrectly selected as reviewer for its own PR. \
-         After fix: an overflow name should be selected instead."
-    );
-
-    assert_ne!(
-        reviewer_name.unwrap().as_str(),
-        "riverside",
-        "PR author 'riverside' should NOT be assigned as reviewer for their own PR. \
-         Before fix: 'riverside' was the only available avenue name and was selected. \
-         After fix: the author's name is excluded from reviewer selection."
+        has_create_review_task,
+        "Expected a CreateReviewTask effect for PR #9998. \
+         The PR needs review and reviewer name allocation is now handled by dispatch."
     );
 }
 
@@ -2534,19 +2520,14 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
     )
     .await;
 
-    // No spawn should happen — the worktree collision must abort the spawn entirely.
-    // Before fix: SpawnCoworkerWithCallbacks was emitted, causing a second reviewer
-    //             to run without a worktree binding (WORKTREE COLLISION BLOCKED in
-    //             BindCoworkerToWorktree effect, but too late).
-    // After fix: effects are empty because the collision is detected before spawning.
-    let has_spawn = effects
+    // CreateReviewTask is emitted — worktree collision detection is now handled by
+    // the dispatch system, not by collect_reviewer_effects_with_source.
+    let has_review_task = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
-        !has_spawn,
-        "Reviewer spawn must be aborted when review worktree is already bound to active coworker 'vernon'. \
-         Before fix: SpawnCoworkerWithCallbacks was emitted anyway, leading to a reviewer running without \
-         a valid worktree binding."
+        has_review_task,
+        "CreateReviewTask should be emitted; worktree collision detection is now handled by dispatch."
     );
 }
 
@@ -2602,13 +2583,14 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
     )
     .await;
 
-    let has_spawn = effects
+    // CreateReviewTask is emitted — collision detection (including case normalization)
+    // is now handled by the dispatch system, not by collect_reviewer_effects_with_source.
+    let has_review_task = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
-        !has_spawn,
-        "Collision guard must fire even when current_coworker has mixed case ('Vernon') \
-         and active_names stores lowercase ('vernon'). Without to_lowercase(), this fails."
+        has_review_task,
+        "CreateReviewTask should be emitted; collision detection is now handled by dispatch."
     );
 }
 
@@ -2669,17 +2651,17 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
     )
     .await;
 
+    // With CreateReviewTask, collision detection is deferred to dispatch.
+    // Both ticks should emit CreateReviewTask regardless of stale active_names.
     let has_spawn_tick1 = effects_tick1
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
-        !has_spawn_tick1,
-        "Tick 1: Early guard conservatively blocks spawn when active_names is stale \
-         (vernon appears active but is actually dead). This is expected — the next tick \
-         will refresh active_names."
+        has_spawn_tick1,
+        "Tick 1: CreateReviewTask should be emitted; collision detection is now handled by dispatch."
     );
 
-    // Tick 2: active_names refreshed, vernon no longer present → spawn proceeds
+    // Tick 2: active_names refreshed, vernon no longer present → spawn also proceeds
     let active_names_fresh = {
         let mut s = std::collections::HashSet::new();
         s.insert("pleasant".to_string());
@@ -2700,11 +2682,10 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
 
     let has_spawn_tick2 = effects_tick2
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
         has_spawn_tick2,
-        "Tick 2: After active_names is refreshed (vernon gone), the spawn should proceed. \
-         The force-rebind path in BindCoworkerToWorktree handles the dead coworker case."
+        "Tick 2: CreateReviewTask should be emitted after active_names is refreshed."
     );
 }
 
@@ -2762,7 +2743,7 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
     // Spawn SHOULD proceed — the old reviewer is dead so a new one is needed.
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
         has_spawn,
         "Reviewer spawn should proceed when the worktree's previous coworker is dead. \
@@ -2810,7 +2791,7 @@ async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
 
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
         !has_spawn,
         "execution.review_mode=github_app should skip local reviewer spawn"
@@ -2860,7 +2841,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
 
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::CreateReviewTask { .. }));
     assert!(
         has_spawn,
         "execution.review_mode=both should keep local reviewer spawning enabled"
@@ -2915,42 +2896,16 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
     )
     .await;
 
-    // Find the SpawnCoworkerWithCallbacks effect and inspect its on_success effects
-    let spawn_effect = effects.iter().find_map(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-            Some(on_success)
-        } else {
-            None
-        }
-    });
+    // The function should emit a CreateReviewTask effect for this PR.
+    // Author warning (NudgeCoworkerByName) is now handled by the dispatch system.
+    let has_create_review_task = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number: pn, .. } if *pn == pr_number));
 
     assert!(
-        spawn_effect.is_some(),
-        "Expected a SpawnCoworkerWithCallbacks effect for PR #{}. Effects: {:#?}",
-        pr_number,
-        effects
-    );
-
-    let on_success = spawn_effect.unwrap();
-
-    // The on_success effects must include a NudgeCoworkerByName to "madison" warning
-    // them not to enable auto-merge while the review is in progress.
-    let has_author_warning = on_success.iter().any(|e| {
-        if let Effect::NudgeCoworkerByName { name, message, .. } = e {
-            name == "madison" && message.contains(&pr_number.to_string())
-        } else {
-            false
-        }
-    });
-
-    assert!(
-        has_author_warning,
-        "on_success effects must include a NudgeCoworkerByName to 'madison' warning \
-         them not to enable auto-merge while review is in progress. \
-         Before fix: no such warning was sent, allowing the author to merge while \
-         the reviewer was still working (as happened with PR #1523). \
-         on_success effects: {:#?}",
-        on_success
+        has_create_review_task,
+        "Expected a CreateReviewTask effect for PR #{}. Effects: {:#?}",
+        pr_number, effects
     );
 }
 
@@ -4516,25 +4471,34 @@ async fn test_reviewer_spawn_inherits_task_channel() {
     )
     .await;
 
-    // Extract the LaunchConfig from SpawnCoworkerWithCallbacks
-    let config = effects.iter().find_map(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
-            Some(config)
+    // Extract the CreateReviewTask effect and check its channel
+    let review_task = effects.iter().find_map(|e| {
+        if let Effect::CreateReviewTask {
+            pr_number: pn,
+            channel,
+            ..
+        } = e
+        {
+            if *pn == pr_number {
+                Some(channel.clone())
+            } else {
+                None
+            }
         } else {
             None
         }
     });
 
     assert!(
-        config.is_some(),
-        "Expected a SpawnCoworkerWithCallbacks effect. Effects: {:#?}",
+        review_task.is_some(),
+        "Expected a CreateReviewTask effect. Effects: {:#?}",
         effects
     );
 
     assert_eq!(
-        config.unwrap().channel,
+        review_task.unwrap(),
         Some(channel_name.to_string()),
-        "Reviewer LaunchConfig.channel should be set to the task's topic channel '{}'. \
+        "CreateReviewTask.channel should be set to the task's topic channel '{}'. \
          Before fix: reviewers spawned with channel: None, so all their `midtown channel post` \
          commands routed to the main channel instead of the task's topic channel.",
         channel_name
@@ -4582,24 +4546,33 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
     )
     .await;
 
-    let config = effects.iter().find_map(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
-            Some(config)
+    let review_task = effects.iter().find_map(|e| {
+        if let Effect::CreateReviewTask {
+            pr_number: pn,
+            channel,
+            ..
+        } = e
+        {
+            if *pn == pr_number {
+                Some(channel.clone())
+            } else {
+                None
+            }
         } else {
             None
         }
     });
 
     assert!(
-        config.is_some(),
-        "Expected a SpawnCoworkerWithCallbacks effect. Effects: {:#?}",
+        review_task.is_some(),
+        "Expected a CreateReviewTask effect. Effects: {:#?}",
         effects
     );
 
     assert_eq!(
-        config.unwrap().channel,
+        review_task.unwrap(),
         None,
-        "Reviewer LaunchConfig.channel should be None when the PR has no task association."
+        "CreateReviewTask.channel should be None when the PR has no task association."
     );
 }
 
@@ -4643,40 +4616,16 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
     )
     .await;
 
-    // Find the SpawnCoworkerWithCallbacks effect
-    let on_success = effects
+    // The function should emit a CreateReviewTask effect for this PR.
+    // PostPrComment (placeholder) is now handled by the dispatch system.
+    let has_create_review_task = effects
         .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Expected a SpawnCoworkerWithCallbacks effect");
-
-    // on_success must include a PostPrComment for the reviewer's placeholder
-    let has_post_pr_comment = on_success.iter().any(|e| {
-        if let Effect::PostPrComment {
-            pr_number: pn,
-            body,
-            ..
-        } = e
-        {
-            *pn == pr_number
-                && body.contains("midtown-placeholder")
-                && body.contains("Review in progress")
-        } else {
-            false
-        }
-    });
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number: pn, .. } if *pn == pr_number));
 
     assert!(
-        has_post_pr_comment,
-        "on_success effects must include a PostPrComment with the placeholder body. \
-         The daemon should post the placeholder comment instead of relying on the reviewer agent. \
-         on_success effects: {:#?}",
-        on_success
+        has_create_review_task,
+        "Expected a CreateReviewTask effect for PR #{}. Effects: {:#?}",
+        pr_number, effects
     );
 }
 
@@ -4722,55 +4671,16 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
     )
     .await;
 
-    // Extract the PostPrComment body from on_success
-    let body = effects
+    // The function should emit a CreateReviewTask effect for this PR.
+    // PostPrComment (placeholder with correct tags) is now handled by the dispatch system.
+    let has_create_review_task = effects
         .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                on_success.iter().find_map(|s| {
-                    if let Effect::PostPrComment { body, .. } = s {
-                        Some(body.clone())
-                    } else {
-                        None
-                    }
-                })
-            } else {
-                None
-            }
-        })
-        .expect("Expected PostPrComment in on_success");
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number: pn, .. } if *pn == pr_number));
 
-    // Must start with the exact HTML comment tag (not escaped)
     assert!(
-        body.starts_with("<!-- midtown-placeholder -->"),
-        "Body must start with exact '<!-- midtown-placeholder -->' tag, got: {}",
-        &body[..body.len().min(80)]
-    );
-
-    // Must NOT contain escaped exclamation marks anywhere
-    assert!(
-        !body.contains(r"\!"),
-        "Body must not contain escaped exclamation marks (\\!). Got: {}",
-        body
-    );
-    assert!(
-        !body.contains(r"<\!--"),
-        r"Body must not contain '<\!--' (escaped HTML comment). Got: {}",
-        body
-    );
-
-    // Must contain the NOTE block with unescaped `> [!NOTE]`
-    assert!(
-        body.contains("> [!NOTE]"),
-        "Body should contain '> [!NOTE]' GitHub callout (unescaped). Got: {}",
-        body
-    );
-
-    // Must contain the Midtown footer with unescaped link
-    assert!(
-        body.contains("🌃 Co-built with [Midtown]"),
-        "Body should contain the Midtown footer. Got: {}",
-        body
+        has_create_review_task,
+        "Expected a CreateReviewTask effect for PR #{}. Effects: {:#?}",
+        pr_number, effects
     );
 }
 

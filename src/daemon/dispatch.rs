@@ -1907,9 +1907,21 @@ fn dispatch_unowned_pending_tasks(
             }
         }
 
+        // Check if this is a reviewer task — reviewers must always be fresh spawns
+        // on isolated worktrees, never grouped with the implementation coworker.
+        let is_reviewer_task = snap
+            .task_agent_type_map
+            .get(&task.id)
+            .is_some_and(|at| at == "midtown-code-reviewer");
+
         // Step 1: Determine the coworker name by checking grouping strategies.
-        let grouped_name =
-            resolve_grouped_name(task, &snap.all_tasks, &pr_coworker_map, &task_coworker_map);
+        // Reviewer tasks skip grouping entirely — they share a PR number with the
+        // implementation task, so grouping would route them to the author's session.
+        let grouped_name = if is_reviewer_task {
+            None
+        } else {
+            resolve_grouped_name(task, &snap.all_tasks, &pr_coworker_map, &task_coworker_map)
+        };
 
         // Use grouped name if found, otherwise allocate a fresh coworker.
         let was_grouped = grouped_name.is_some();
@@ -1923,6 +1935,15 @@ fn dispatch_unowned_pending_tasks(
             // active_names (from WorldSnapshot) tracks all names with live sessions.
             for name in &snap.coworkers.active_names {
                 excluded_names.insert(name.clone());
+            }
+            // For reviewer tasks, exclude the PR author to prevent self-review.
+            // The author is the owner of the parent implementation task.
+            if is_reviewer_task
+                && let Some(parent_id) = snap.task_parent_map.get(&task.id)
+                && let Some(parent_task) = snap.all_tasks.iter().find(|t| t.id == *parent_id)
+                && let Some(ref author) = parent_task.owner
+            {
+                excluded_names.insert(author.to_lowercase());
             }
             let Some(name) = state
                 .coworkers
@@ -2033,6 +2054,12 @@ fn dispatch_unowned_pending_tasks(
 
         if already_running {
             // Coworker is already running (grouped task) — nudge to claim.
+            // Reviewer tasks skip grouping, so they should never reach this path.
+            debug_assert!(
+                !is_reviewer_task,
+                "reviewer task !{} reached already_running path",
+                task.id
+            );
             let channel_msg = daemon_messages::called_in_assigned_task(
                 &coworker_name,
                 &task.id.to_string(),
@@ -2072,8 +2099,137 @@ fn dispatch_unowned_pending_tasks(
                 },
                 on_success: assign_callbacks,
             });
+        } else if is_reviewer_task {
+            // Reviewer task: use review-specific worktree and launch config.
+            let pr_number = task.pr.unwrap_or(0);
+            if pr_number == 0 {
+                warn!("Reviewer task !{} has no PR number, skipping", task.id);
+                continue;
+            }
+
+            let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+            let wt_path = crate::paths::worktrees_dir_for_repo(&snap.dir_key).join(&worktree_id);
+
+            if let Some(bound_coworker) = snap.worktree_collision(&worktree_id, &coworker_name) {
+                debug!(
+                    "Review task !{}: skipping {} because worktree {} is bound to active coworker {}",
+                    task.id, coworker_name, worktree_id, bound_coworker
+                );
+                continue;
+            }
+
+            let auth_provider = crate::config::get_execution_provider_for_role(
+                &snap.dir_key,
+                crate::config::ExecutionRole::Reviewer,
+            );
+            let mut config = crate::launch::LaunchConfig::reviewer(
+                coworker_name.clone(),
+                &snap.dir_key,
+                pr_number,
+                0,
+                auth_provider,
+            );
+            config.model = super::helpers::normalize_model_for_provider_role(
+                &config.model,
+                config.auth_provider,
+                &config.role,
+            );
+            config.working_dir = Some(wt_path.clone());
+            config.channel = task.channel.clone();
+            config.task_id = Some(task.id.clone());
+
+            // Route escalation to channel lead if available
+            let channel_lead_names = snap.channel_lead_names();
+            if let Some(ref channel_name) = config.channel
+                && channel_lead_names.contains(channel_name)
+            {
+                config.escalation_target = Some(channel_name.clone());
+                config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+                    pr_number,
+                    0,
+                    auth_provider,
+                    Some(channel_name),
+                ));
+            }
+
+            effects.push(effects::Effect::EnsureWorktree {
+                worktree_id: worktree_id.clone(),
+                path: wt_path.clone(),
+            });
+
+            let on_success = vec![
+                effects::Effect::RegisterWorktreeAssignment {
+                    assignment: crate::worktree_registry::WorktreeAssignment {
+                        worktree_id: worktree_id.clone(),
+                        branch_name: worktree_id.clone(),
+                        task_id: Some(task.id.clone()),
+                        current_coworker: None,
+                        pr_number: Some(pr_number),
+                        created_at: chrono::Utc::now(),
+                        completed_at: None,
+                    },
+                },
+                effects::Effect::BindCoworkerToWorktree {
+                    worktree_id: worktree_id.clone(),
+                    coworker: coworker_name.clone(),
+                },
+                effects::Effect::BroadcastCoworkerUpdate {
+                    name: coworker_name.clone(),
+                    status: "running".to_string(),
+                    current_task: Some(format!("reviewing PR #{}", pr_number)),
+                },
+                effects::Effect::post_to_ops(daemon_messages::called_in_reviewer(
+                    &coworker_name,
+                    pr_number,
+                )),
+                effects::Effect::PostSystemMessage {
+                    message: format!("─── Reviewing PR #{} ───", pr_number),
+                    channel: Some(format!("dm-{}", coworker_name)),
+                },
+                // AssignReviewer must come before PostPrComment so the
+                // pr_reviewers entry exists when post_pr_comment() stores
+                // the placeholder_comment_id.
+                effects::Effect::AssignReviewer {
+                    pr_number,
+                    reviewer_name: coworker_name.clone(),
+                    source: crate::github_state::AssignmentSource::PollingFallback,
+                    restart_count: 0,
+                    reviewer_session_id: None,
+                },
+                effects::Effect::PostPrComment {
+                    pr_number,
+                    reviewer_name: coworker_name.clone(),
+                    body: format!(
+                        "<!-- midtown-placeholder -->\n## Review Status\n\n\
+                             🔍 Review in progress by {}...\n\n---\n\
+                             > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
+                             🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                        coworker_name
+                    ),
+                },
+            ];
+
+            effects.push(effects::Effect::AssignAndSpawn {
+                task_id: task.id.clone(),
+                owner: coworker_name.clone(),
+                dir_key: snap.dir_key.clone(),
+                config,
+                on_success,
+                on_failure: spawn_failure_effects(
+                    coworker_name.clone(),
+                    task.id.clone(),
+                    snap.dir_key.clone(),
+                    format!(
+                        "⚠️ Spawn failed for review task !{} (reviewer {}) — backing off for {}s",
+                        task.id,
+                        coworker_name,
+                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                    ),
+                ),
+            });
+            spawns_queued_this_tick += 1;
         } else {
-            // Spawn a new coworker — assign ownership atomically with spawn
+            // Regular coworker task — assign ownership atomically with spawn
             let wt = prepare_task_worktree(&task.id, &task.subject, state.paths.dir_key(), snap);
             if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &coworker_name) {
                 debug!(
