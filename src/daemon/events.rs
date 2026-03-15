@@ -67,11 +67,8 @@ pub async fn evaluate_tick(
         DaemonEvent::SessionMonitorTick => {
             let mut effects = Vec::new();
             // Health checks: auth errors first (require user intervention),
-            // then usage limits, idle shutdown, stuck detection.
+            // then usage limits and dead process detection.
             effects.extend(super::health::check_and_handle_auth_errors(snap, state));
-            effects.extend(super::health::check_and_shutdown_idle_coworkers(snap));
-            effects.extend(super::health::check_and_restart_stuck_coworkers(snap, state).await);
-            effects.extend(super::health::check_and_restart_stuck_reviewers(snap));
             effects.extend(super::health::check_and_restart_dead_reviewers(snap));
             effects.extend(super::health::check_for_usage_limits(snap));
             effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));

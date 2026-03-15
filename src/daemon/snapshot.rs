@@ -701,19 +701,6 @@ impl WorldSnapshot {
         None
     }
 
-    /// Build a [`crate::rules::StuckExemptions`] view from this snapshot.
-    ///
-    /// Centralises the four-field construction used by every stuck-detection
-    /// call site (`decide_stuck_coworker_restarts`, `decide_stuck_reviewer_restarts`).
-    pub(crate) fn stuck_exemptions(&self) -> crate::rules::StuckExemptions<'_> {
-        crate::rules::StuckExemptions {
-            usage_limited: &self.health.usage_limited_coworkers,
-            api_error: &self.health.api_error_coworkers,
-            auth_error: &self.health.auth_error_coworkers,
-            attached: &self.coworkers.attached_coworkers,
-        }
-    }
-
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during

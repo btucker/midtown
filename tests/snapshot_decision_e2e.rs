@@ -12,43 +12,8 @@
 mod tests {
     use midtown::daemon::snapshot::WorldSnapshot;
     use midtown::daemon::{
-        Effect, check_and_shutdown_idle_coworkers, check_for_usage_limits,
-        collect_merged_pr_cleanup_effects, reset_orphaned_tasks,
+        Effect, check_for_usage_limits, collect_merged_pr_cleanup_effects, reset_orphaned_tasks,
     };
-
-    /// Example: Test that idle coworker shutdown logic works correctly
-    /// with a real captured snapshot.
-    ///
-    /// Demonstrates calling a real production decision function with a captured snapshot.
-    /// The function returns effects based on the snapshot state.
-    #[test]
-    fn test_idle_shutdown_with_real_snapshot() {
-        // Load a captured snapshot
-        let fixture =
-            include_str!("fixtures/snapshot/snapshot-reviewer-not-spawning-20260214-003545.json");
-        let snapshot: WorldSnapshot =
-            serde_json::from_str(fixture).expect("Failed to deserialize snapshot fixture");
-
-        // Call the actual production decision function
-        let effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-        // Key validation: The function runs without crashing and returns a valid Vec<Effect>.
-        // Whether effects are empty or not depends on the snapshot state.
-        // The important part is we're calling REAL production code, not test mock logic.
-        println!(
-            "check_and_shutdown_idle_coworkers returned {} effects",
-            effects.len()
-        );
-        for effect in &effects {
-            println!("  Effect: {:?}", effect);
-        }
-
-        // Assert the function completed successfully
-        assert!(
-            effects.is_empty() || !effects.is_empty(),
-            "Function should return successfully"
-        );
-    }
 
     /// Example: Test that usage limit detection works with a captured snapshot.
     ///

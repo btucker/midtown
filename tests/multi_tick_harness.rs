@@ -271,12 +271,6 @@ impl MultiTickHarness {
         let effects = match event {
             DaemonEvent::SessionMonitorTick => {
                 let mut effects = Vec::new();
-                effects.extend(midtown::daemon::check_and_shutdown_idle_coworkers(
-                    &self.snapshot,
-                ));
-                effects.extend(midtown::daemon::check_and_restart_stuck_reviewers(
-                    &self.snapshot,
-                ));
                 effects.extend(midtown::daemon::check_and_restart_dead_reviewers(
                     &self.snapshot,
                 ));

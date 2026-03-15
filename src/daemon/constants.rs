@@ -76,11 +76,6 @@ pub(super) const CHANNEL_ROTATION_RETAIN_MINUTES: i64 = 60;
 /// improving task assignment latency. With 5s interval, 10 orphaned worktrees take ~50s.
 pub(super) const ORPHAN_CHECK_INTERVAL_SECS: u64 = 5;
 
-/// Minimum time a coworker must be alive before being sent on a break (90 seconds).
-/// Increased from 60s: session startup + context loading takes 40-60s in practice,
-/// leaving no safety margin at 60s. 90s gives a 30s buffer after initialization.
-pub(super) const MINIMUM_COWORKER_LIFETIME: Duration = Duration::from_secs(90);
-
 /// How long an attached session can persist without a detach before being auto-detached (10 min).
 ///
 /// If the interactive session ends without a proper `midtown agent detach` (terminal crash,
@@ -147,37 +142,9 @@ pub(super) const SPAWN_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 /// Prevents respawn loops if the zombie condition keeps recurring.
 pub(super) const ZOMBIE_RESPAWN_COOLDOWN: Duration = Duration::from_secs(300);
 
-/// How long a coworker's process can go without events before considering it stuck (3 minutes).
-/// If the headless session hasn't emitted any events for this duration, the coworker
-/// is killed and restarted with its current task. The pending tool detection (has_pending_tool)
-/// and running subagent detection (has_running_subagent) provide precise stuck detection,
-/// allowing a shorter timeout without false positives.
-pub(super) const COWORKER_STUCK_DURATION: Duration = Duration::from_secs(180);
-
-/// How long a reviewer's process can go without events before considering it stuck (5 minutes).
-/// Reviewers take longer than task coworkers (reading diffs, writing comments), so this
-/// threshold is longer than COWORKER_STUCK_DURATION.
-pub(super) const REVIEWER_STUCK_DURATION: Duration = Duration::from_secs(300);
-
-/// Stuck duration for reviewers that have posted a "Review in progress" placeholder.
-/// Shorter than REVIEWER_STUCK_DURATION because we know they started the review.
-/// If they die or freeze after posting the placeholder, we recover faster.
-pub(super) const REVIEWER_PLACEHOLDER_STUCK_DURATION: Duration = Duration::from_secs(120);
-
-/// Maximum number of times a stuck reviewer can be restarted for the same PR.
-/// After this many restarts (meaning max_restarts + 1 total attempts), the daemon
-/// stops retrying and posts an escalation warning for the lead to handle.
+/// Maximum number of times a dead reviewer can be respawned for the same PR.
+/// After this many respawns, the daemon stops retrying and posts an escalation warning for the lead to handle.
 pub(super) const MAX_REVIEWER_RESTARTS: u32 = 2;
-
-/// Maximum number of times a stuck task coworker can be restarted.
-/// After this many restarts, the daemon stops retrying and posts an escalation warning.
-pub(super) const MAX_TASK_RESTARTS: u32 = 3;
-
-/// Rolling time window for task stuck-restart safety cap.
-///
-/// If a task hits `MAX_TASK_RESTARTS` within this window, automatic stuck restarts
-/// are paused and the lead is escalated for manual intervention.
-pub(super) const TASK_RESTART_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 /// Extra buffer added to usage limit expiry times before nudging (30 seconds).
 /// Gives the API a moment to actually reset before we ask coworkers to retry.

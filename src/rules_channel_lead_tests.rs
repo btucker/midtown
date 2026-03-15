@@ -1,17 +1,12 @@
 //! Tests for channel lead behavior in decision functions.
 //!
 //! Channel leads are long-running domain experts for topic channels. They are
-//! exempt from idle shutdown (unlike ordinary coworkers) and are also exempt
-//! from task dispatch and orphan recovery.
+//! exempt from task dispatch and orphan recovery.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
-
-use chrono::Utc;
 
 use super::{
-    CoworkerSnapshot, IdleShutdownContext, OrphanRecoveryContext, PendingTaskAction,
-    decide_idle_shutdowns, decide_orphan_recovery, decide_pending_task_action,
+    OrphanRecoveryContext, PendingTaskAction, decide_orphan_recovery, decide_pending_task_action,
 };
 
 fn empty_set() -> HashSet<String> {
@@ -20,43 +15,6 @@ fn empty_set() -> HashSet<String> {
 
 fn names(items: &[&str]) -> HashSet<String> {
     items.iter().map(|s| s.to_string()).collect()
-}
-
-#[test]
-fn channel_lead_is_not_idle_shutdown() {
-    // Channel leads maintain persistent domain context and must never be
-    // idle-shutdown, even when no tasks are assigned.
-    let coworkers = vec![CoworkerSnapshot {
-        name: "ops".to_string(),
-        started_at: Utc::now() - chrono::Duration::minutes(10),
-        session_id: None,
-    }];
-    let empty = empty_set();
-    let leads = names(&["ops"]);
-    let ctx = IdleShutdownContext {
-        coworkers: &coworkers,
-        busy_coworkers: &empty,
-        coworkers_with_open_prs: &empty,
-        active_reviewers: &empty,
-        coworkers_with_unblocked_deps: &empty,
-        ci_passed_pr_coworkers: &empty,
-        usage_limited_coworkers: &empty,
-        api_error_coworkers: &empty,
-        auth_error_coworkers: &empty,
-        pending_task_owners: &empty,
-        review_feedback_pr_coworkers: &empty,
-        coworkers_with_active_tools: &empty,
-        now_utc: Utc::now(),
-        minimum_lifetime: Duration::from_secs(300),
-        repo_name: "test-repo",
-        channel_lead_names: &leads,
-        reviewing_phase_coworkers: &empty,
-    };
-    let result = decide_idle_shutdowns(&ctx);
-    assert!(
-        result.is_empty(),
-        "channel lead should never be idle-shutdown"
-    );
 }
 
 #[test]

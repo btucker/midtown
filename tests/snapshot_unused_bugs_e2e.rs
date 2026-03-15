@@ -8,22 +8,9 @@
 
 use midtown::daemon::snapshot::WorldSnapshot;
 use midtown::daemon::{
-    Effect, check_and_restart_stuck_reviewers, check_and_shutdown_idle_coworkers,
-    check_for_usage_limits, collect_merged_pr_cleanup_effects, reconcile_orphaned_prs,
+    Effect, check_for_usage_limits, collect_merged_pr_cleanup_effects, reconcile_orphaned_prs,
     reset_orphaned_tasks,
 };
-
-fn shutdown_target_names(effects: &[Effect]) -> Vec<String> {
-    effects
-        .iter()
-        .filter_map(|effect| match effect {
-            Effect::BroadcastCoworkerUpdate { name, status, .. } if status == "stopped" => {
-                Some(name.clone())
-            }
-            _ => None,
-        })
-        .collect()
-}
 
 /// Test that duplicate task assignment is prevented.
 ///
@@ -100,119 +87,6 @@ fn test_coworker_break_task_orphaned() {
     );
 }
 
-/// Pending tool executions must protect idle coworkers from shutdown while the tool runs.
-#[test]
-fn test_idle_shutdown_skips_pending_tool_process_health() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-duplicate-task-assignment-1142-20260211-142015.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    let health = snapshot
-        .health
-        .headless_process_health
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("amsterdam"))
-        .map(|(_, health)| health)
-        .expect("amsterdam process health present in snapshot");
-    assert!(
-        health.has_pending_tool,
-        "fixture must include pending tool flag"
-    );
-    assert!(
-        !health.has_running_subagent,
-        "fixture isolates pending tool protection"
-    );
-    assert!(
-        !snapshot
-            .busy_coworkers
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case("amsterdam")),
-        "amsterdam should otherwise appear idle"
-    );
-
-    let effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let shutdown_names = shutdown_target_names(&effects);
-
-    assert!(
-        !shutdown_names
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case("amsterdam")),
-        "Coworker waiting on a pending tool must be protected from idle shutdown"
-    );
-}
-
-/// Running Task subagents must also protect coworkers from idle shutdown decisions.
-#[test]
-fn test_idle_shutdown_skips_running_subagent_process_health() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    let health = snapshot
-        .health
-        .headless_process_health
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("columbus"))
-        .map(|(_, health)| health)
-        .expect("columbus process health present in snapshot");
-    assert!(
-        health.has_running_subagent,
-        "fixture must include subagent flag"
-    );
-    assert!(
-        snapshot
-            .busy_coworkers
-            .iter()
-            .all(|name| !name.eq_ignore_ascii_case("columbus")),
-        "columbus should otherwise look idle"
-    );
-
-    let effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let shutdown_names = shutdown_target_names(&effects);
-
-    assert!(
-        !shutdown_names
-            .iter()
-            .any(|name| name.eq_ignore_ascii_case("columbus")),
-        "Coworker running a Task subagent must be protected from idle shutdown"
-    );
-}
-
-/// Test that dispatch works correctly even with zero active coworkers.
-///
-/// Regression test for: snapshot-dispatch-with-zero-coworkers-20260214-003545.json
-///
-/// Bug: Daemon should gracefully handle the case where all coworkers are idle/stopped.
-#[test]
-fn test_dispatch_with_zero_coworkers() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-dispatch-with-zero-coworkers-20260214-003545.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Multiple decision functions should handle empty coworker set gracefully
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-
-    println!(
-        "With zero coworkers: idle={}, stuck={}, orphan={}",
-        idle_effects.len(),
-        stuck_effects.len(),
-        orphan_effects.len()
-    );
-
-    // All functions should return without panicking
-    // Test passes if we reach this point without panicking
-    // Test passes if we reach this point without panicking
-    // Test passes if we reach this point without panicking
-}
-
 /// Test that lead nudge mechanism works correctly.
 ///
 /// Regression test for: snapshot-lead-nudge-not-working-20260204-145321.json
@@ -272,73 +146,6 @@ fn test_hit_usage_limit() {
     }
 
     // Should schedule a nudge or be empty if already scheduled
-    // Test passes if we reach this point without panicking
-}
-
-/// Test that subagent idle detection doesn't produce false positives.
-///
-/// Regression test for: snapshot-subagent-idle-bug-20260203-151733.json
-///
-/// Bug: Subagent sessions were incorrectly flagged as idle.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_subagent_idle_bug() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-subagent-idle-bug-20260203-151733.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check idle detection doesn't trigger false positives
-    let effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-    println!(
-        "check_and_shutdown_idle_coworkers returned {} effects for subagent",
-        effects.len()
-    );
-    for effect in &effects {
-        println!("  Effect: {:?}", effect);
-    }
-
-    // Should not send active coworkers on shutdown
-    let has_shutdown = effects
-        .iter()
-        .any(|e| matches!(e, Effect::ShutdownCoworker { .. }));
-
-    // This assertion depends on the snapshot - if the bug is that a subagent
-    // was incorrectly shut down, we verify that doesn't happen
-    println!("Subagent idle check: has_shutdown={}", has_shutdown);
-    // TODO: Replace with actual assertion once snapshot schema is updated
-    assert!(!has_shutdown, "Active subagent should not be shut down");
-}
-
-/// Test that lexington premature break is prevented.
-///
-/// Regression test for: snapshot-lexington-premature-break-20260205-131129.json
-///
-/// Bug: Coworker was sent on break before completing their work.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_lexington_premature_break() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-lexington-premature-break-20260205-131129.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check that idle shutdown doesn't trigger prematurely
-    let effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-    println!(
-        "check_and_shutdown_idle_coworkers returned {} effects for premature break",
-        effects.len()
-    );
-    for effect in &effects {
-        println!("  Effect: {:?}", effect);
-    }
-
-    // The function should respect idle timeout before sending on break
     // Test passes if we reach this point without panicking
 }
 
@@ -487,34 +294,6 @@ fn test_reviewer_not_spawning_20260211() {
         "Expected no effects when no PRs need review, got {:?}",
         pr_effects
     );
-}
-
-/// Test that reviewer stuck on PR 1164 is handled.
-///
-/// Regression test for: snapshot-reviewer-assignment-stuck-pr-1164-20260217-020843.json
-///
-/// Bug: Reviewer was assigned but stuck, not making progress on PR review.
-#[test]
-fn test_reviewer_assignment_stuck_pr_1164() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-reviewer-assignment-stuck-pr-1164-20260217-020843.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check if stuck reviewer is detected and restarted
-    let effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!(
-        "check_and_restart_stuck_reviewers returned {} effects for PR 1164",
-        effects.len()
-    );
-    for effect in &effects {
-        println!("  Effect: {:?}", effect);
-    }
-
-    // Should generate restart effects or be empty if not yet stuck
-    // Test passes if we reach this point without panicking
 }
 
 /// Test that orphaned PR recovery works correctly.
@@ -778,36 +557,6 @@ fn test_daemon_not_dispatching_tasks() {
     // Test passes if decision functions handle the state without panicking
 }
 
-/// Test that stuck reviews are handled correctly.
-///
-/// Regression test for: snapshot-stuck-reviews-702-703-20260206-050712.json
-///
-/// Bug: Reviews for PRs 702 and 703 were stuck and not making progress.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_stuck_reviews_702_703() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-stuck-reviews-702-703-20260206-050712.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check if stuck reviewers are detected and restarted
-    let effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!(
-        "check_and_restart_stuck_reviewers returned {} effects for stuck reviews 702-703",
-        effects.len()
-    );
-    for effect in &effects {
-        println!("  Effect: {:?}", effect);
-    }
-
-    // Should restart stuck reviewers or be empty if not yet stuck
-    // Test passes if we reach this point without panicking
-}
-
 /// Test that triple spawn bug is prevented.
 ///
 /// Regression test for: snapshot-triple-spawn-pleasant-875-20260206-053332.json
@@ -862,61 +611,6 @@ fn test_call_in_failed_and_false_recovery() {
     );
 
     // Should not trigger false recovery
-    // Test passes if we reach this point without panicking
-}
-
-/// Test that API errors are handled gracefully.
-///
-/// Regression test for: snapshot-api-errors-20260204-164204.json
-///
-/// Bug: API errors caused the daemon to malfunction.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_api_errors() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-api-errors-20260204-164204.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check multiple decision functions handle API errors
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-
-    println!(
-        "API error handling: idle={}, stuck={}, orphan={}",
-        idle_effects.len(),
-        stuck_effects.len(),
-        orphan_effects.len()
-    );
-
-    // All functions should return without panicking when API errors are present
-    // Test passes if we reach this point without panicking
-}
-
-/// Test that tool name conflicts are detected.
-///
-/// Regression test for: snapshot-tool-names-must-be-unique-all-stuck-20260211-030435.json
-///
-/// Bug: Tool name conflicts caused all coworkers to get stuck.
-#[test]
-fn test_tool_names_must_be_unique_all_stuck() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-tool-names-must-be-unique-all-stuck-20260211-030435.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check if stuck detection works when all coworkers are stuck due to tool conflicts
-    let effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!(
-        "check_and_restart_stuck_reviewers returned {} effects for tool name conflicts",
-        effects.len()
-    );
-
-    // Should handle tool name conflicts gracefully
     // Test passes if we reach this point without panicking
 }
 
@@ -1131,146 +825,6 @@ fn test_double_nudge_pr_merge() {
     // Test passes if we reach this point without panicking
 }
 
-/// Test that madison break loop with PR not merging is handled.
-///
-/// Regression test for: snapshot-madison-break-loop-pr-not-merging-20260205-130328.json
-///
-/// Bug: Coworker was stuck in a break loop while their PR wasn't merging.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_madison_break_loop_pr_not_merging() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-madison-break-loop-pr-not-merging-20260205-130328.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check multiple decision functions for break loop detection
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
-
-    println!(
-        "Madison break loop: idle_effects={}, pr_effects={}",
-        idle_effects.len(),
-        pr_effects.len()
-    );
-
-    // Should not send coworker on break while they have an open PR
-    // Test passes if we reach this point without panicking
-}
-
-/// Test early debug capture scenario.
-///
-/// Regression test for: snapshot-early-debug-capture-20260204-144326.json
-///
-/// Bug: Early debug snapshot captured for investigation.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_early_debug_capture() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-early-debug-capture-20260204-144326.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check multiple decision functions handle the state
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-    println!(
-        "Early debug: orphan={}, pr={}, idle={}",
-        orphan_effects.len(),
-        pr_effects.len(),
-        idle_effects.len()
-    );
-
-    // Test passes if we reach this point without panicking
-}
-
-/// Test that false positive bugs are handled correctly.
-///
-/// Regression test for: snapshot-false-positive-bugs-20260204-135417.json
-///
-/// Bug: False positive bug detection causing incorrect behavior.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_false_positive_bugs() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-false-positive-bugs-20260204-135417.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check that decision functions don't trigger false positives
-    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-
-    println!(
-        "False positive check: stuck={}, orphan={}",
-        stuck_effects.len(),
-        orphan_effects.len()
-    );
-
-    // Should not generate effects for false positive conditions
-    // Test passes if we reach this point without panicking
-}
-
-/// Test stuck compaction false positive.
-///
-/// Regression test for: snapshot-stuck-compaction-false-positive-20260204-174139.json
-///
-/// Bug: Compaction was incorrectly flagged as stuck.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_stuck_compaction_false_positive() {
-    let fixture = include_str!(
-        "fixtures/snapshot/snapshot-stuck-compaction-false-positive-20260204-174139.json"
-    );
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check that stuck detection doesn't fire for compaction
-    let effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!(
-        "check_and_restart_stuck_reviewers returned {} effects for compaction false positive",
-        effects.len()
-    );
-
-    // Should not restart coworkers that are not actually stuck
-    // Test passes if we reach this point without panicking
-}
-
-/// Test compaction investigation scenario.
-///
-/// Regression test for: snapshot-compaction-investigation-20260204-175139.json
-///
-/// Bug: Snapshot captured during compaction investigation.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_compaction_investigation() {
-    let fixture =
-        include_str!("fixtures/snapshot/snapshot-compaction-investigation-20260204-175139.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check that decision functions handle compaction state correctly
-    let effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!("Compaction investigation: {} effects", effects.len());
-
-    // Test passes if we reach this point without panicking
-}
-
 /// Test broadway debug scenario.
 ///
 /// Regression test for: snapshot-broadway-debug-20260203-140232.json
@@ -1293,33 +847,6 @@ fn test_broadway_debug() {
         "Broadway debug: orphan={}, pr={}",
         orphan_effects.len(),
         pr_effects.len()
-    );
-
-    // Test passes if we reach this point without panicking
-}
-
-/// Test generic early snapshot 1.
-///
-/// Regression test for: snapshot-20260203-023035.json
-///
-/// Bug: Early snapshot for general debugging.
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_snapshot_20260203_023035() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-023035.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    // Check basic decision functions
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-    println!(
-        "Snapshot 20260203-023035: orphan={}, idle={}",
-        orphan_effects.len(),
-        idle_effects.len()
     );
 
     // Test passes if we reach this point without panicking
@@ -1368,30 +895,6 @@ fn test_snapshot_20260203_031848() {
     // Test passes if we reach this point without panicking
 }
 
-/// Test generic early snapshot 4.
-///
-/// Regression test for: snapshot-20260203-142602.json
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_snapshot_20260203_142602() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260203-142602.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-    let stuck_effects = check_and_restart_stuck_reviewers(&snapshot);
-
-    println!(
-        "Snapshot 20260203-142602: idle={}, stuck={}",
-        idle_effects.len(),
-        stuck_effects.len()
-    );
-
-    // Test passes if we reach this point without panicking
-}
-
 /// Test generic early snapshot 5.
 ///
 /// Regression test for: snapshot-20260203-162511.json
@@ -1431,30 +934,6 @@ fn test_snapshot_20260203_193252() {
     let effects = reconcile_orphaned_prs(&snapshot);
 
     println!("Snapshot 20260203-193252: pr={}", effects.len());
-
-    // Test passes if we reach this point without panicking
-}
-
-/// Test generic early snapshot 7.
-///
-/// Regression test for: snapshot-20260204-005541.json
-///
-/// SKIPPED: Snapshot is missing `active_session_ids` field (outdated schema).
-#[test]
-#[ignore = "Snapshot uses outdated WorldSnapshot schema"]
-fn test_snapshot_20260204_005541() {
-    let fixture = include_str!("fixtures/snapshot/snapshot-20260204-005541.json");
-    let snapshot: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
-
-    let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let idle_effects = check_and_shutdown_idle_coworkers(&snapshot);
-
-    println!(
-        "Snapshot 20260204-005541: orphan={}, idle={}",
-        orphan_effects.len(),
-        idle_effects.len()
-    );
 
     // Test passes if we reach this point without panicking
 }

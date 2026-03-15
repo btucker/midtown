@@ -2001,6 +2001,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         pr_number, session_id, record.task_id
                     );
                 }
+                // Backfill SessionRecord.branch from PR head_ref (often None at spawn time).
+                if let Some(record) = ps.sessions.get_mut(&session_id)
+                    && record.branch.is_none()
+                {
+                    record.branch = Some(branch.clone());
+                    debug!(
+                        "Backfilled branch={} on SessionRecord {} (task={:?})",
+                        branch, session_id, record.task_id
+                    );
+                }
                 // Still write to pr_author_sessions for backward compatibility
                 // (non-task PRs and legacy code paths still read from it).
                 ps.github
