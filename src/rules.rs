@@ -884,32 +884,6 @@ pub(crate) fn decide_dead_reviewer_escalations(
 // PR owner resume decision
 // ---------------------------------------------------------------------------
 
-/// Session mode for resuming a coworker for PR feedback.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PrOwnerResumeMode {
-    /// Resume with saved session ID (preserves conversation history)
-    WithSavedSession(String),
-    /// Resume without saved session (fresh session)
-    WithoutSavedSession,
-}
-
-/// Decide how to resume a PR owner when PR feedback arrives.
-///
-/// If the owner has a saved session in `pr_break_sessions`, use ResumeSession mode
-/// to preserve conversation history. Otherwise, use fresh Resume mode.
-///
-/// Pure function: takes saved sessions map and returns resume mode.
-pub(crate) fn decide_pr_owner_resume_mode(
-    owner: &str,
-    pr_break_sessions: &HashMap<String, String>,
-) -> PrOwnerResumeMode {
-    if let Some(session_id) = pr_break_sessions.get(owner) {
-        PrOwnerResumeMode::WithSavedSession(session_id.clone())
-    } else {
-        PrOwnerResumeMode::WithoutSavedSession
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Stuck reviewer detection
 // ---------------------------------------------------------------------------
@@ -3635,50 +3609,6 @@ mod tests {
             "should match task owner case-insensitively"
         );
         assert_eq!(respawns[0].name, "Lexington");
-    }
-
-    // -----------------------------------------------------------------------
-    // decide_pr_owner_resume_mode tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn pr_owner_with_saved_session_resumes() {
-        let mut sessions = HashMap::new();
-        sessions.insert("columbus".to_string(), "session-abc-123".to_string());
-
-        let mode = decide_pr_owner_resume_mode("columbus", &sessions);
-
-        assert_eq!(
-            mode,
-            PrOwnerResumeMode::WithSavedSession("session-abc-123".to_string())
-        );
-    }
-
-    #[test]
-    fn pr_owner_without_saved_session_fresh_resume() {
-        let sessions: HashMap<String, String> = HashMap::new();
-
-        let mode = decide_pr_owner_resume_mode("riverside", &sessions);
-
-        assert_eq!(mode, PrOwnerResumeMode::WithoutSavedSession);
-    }
-
-    #[test]
-    fn pr_owner_resume_case_sensitive_match() {
-        // Session keys are case-sensitive (unlike coworker name matching elsewhere)
-        let mut sessions = HashMap::new();
-        sessions.insert("Lexington".to_string(), "session-xyz-789".to_string());
-
-        // Exact match
-        let mode = decide_pr_owner_resume_mode("Lexington", &sessions);
-        assert_eq!(
-            mode,
-            PrOwnerResumeMode::WithSavedSession("session-xyz-789".to_string())
-        );
-
-        // Different case — no match (HashMap uses exact key match)
-        let mode = decide_pr_owner_resume_mode("lexington", &sessions);
-        assert_eq!(mode, PrOwnerResumeMode::WithoutSavedSession);
     }
 
     // -----------------------------------------------------------------------

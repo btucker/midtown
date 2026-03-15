@@ -1357,7 +1357,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1370,7 +1370,7 @@ fn make_pr_context_empty() -> PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1396,14 +1396,13 @@ fn extract_record_task_assignments(effects: &[Effect]) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// Cross-tick spawn dedup (!1377): pr_action_to_effects with SpawnOwner includes
-/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
+/// Task-linked SpawnOwner produces TaskPrompt (task prompt handles session delivery).
 #[test]
-fn pr_action_spawn_owner_includes_record_task_assignment() {
+fn action_to_effects_spawn_owner_with_task_produces_task_prompt() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(42, "100");
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "york".to_string(),
             message: "PR needs attention".to_string(),
@@ -1415,23 +1414,23 @@ fn pr_action_spawn_owner_includes_record_task_assignment() {
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
-    assert_eq!(
-        assignments.len(),
-        1,
-        "SpawnOwner should include RecordTaskAssignment when task association exists"
+    let has_task_prompt = effects
+        .iter()
+        .any(|e| matches!(e, Effect::TaskPrompt { task_id, .. } if task_id == "100"));
+    assert!(
+        has_task_prompt,
+        "SpawnOwner with task association should produce TaskPrompt. Effects: {:#?}",
+        effects
     );
-    assert_eq!(assignments[0], ("york", "100"));
 }
 
-/// Cross-tick spawn dedup (!1377): pr_action_to_effects with SpawnOwner does NOT
-/// include RecordTaskAssignment when no task association exists.
+/// Task-less SpawnOwner falls through to PostToChannel.
 #[test]
-fn pr_action_spawn_owner_no_record_without_task_association() {
+fn action_to_effects_spawn_owner_without_task_produces_post_to_channel() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "york".to_string(),
             message: "PR needs attention".to_string(),
@@ -1443,62 +1442,76 @@ fn pr_action_spawn_owner_no_record_without_task_association() {
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
+    let has_post = effects
+        .iter()
+        .any(|e| matches!(e, Effect::PostToChannel { .. }));
     assert!(
-        assignments.is_empty(),
-        "SpawnOwner should NOT include RecordTaskAssignment when no task association exists"
+        has_post,
+        "SpawnOwner without task should produce PostToChannel. Effects: {:#?}",
+        effects
     );
 }
 
-/// Cross-tick spawn dedup (!1377): comment_action_to_effects with SpawnOwner includes
-/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
+/// Task-linked SpawnOwner for ReviewComment produces TaskPrompt with opus model.
 #[test]
-fn comment_action_spawn_owner_includes_record_task_assignment() {
+fn action_to_effects_comment_spawn_owner_with_task_produces_task_prompt() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(55, "200");
 
-    let effects = comment_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "park".to_string(),
             message: "Review feedback arrived".to_string(),
         },
         55,
         "Add logging",
+        PrIssueType::ReviewComment,
         &state,
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
-    assert_eq!(
-        assignments.len(),
-        1,
-        "comment SpawnOwner should include RecordTaskAssignment"
+    let task_prompt = effects
+        .iter()
+        .find(|e| matches!(e, Effect::TaskPrompt { .. }));
+    assert!(
+        task_prompt.is_some(),
+        "SpawnOwner (comment) with task should produce TaskPrompt. Effects: {:#?}",
+        effects
     );
-    assert_eq!(assignments[0], ("park", "200"));
+    if let Some(Effect::TaskPrompt { model, .. }) = task_prompt {
+        assert_eq!(
+            model.as_deref(),
+            Some("opus"),
+            "Review comment should use opus model"
+        );
+    }
 }
 
-/// Cross-tick spawn dedup (!1377): comment_action_to_effects with SpawnOwner does NOT
-/// include RecordTaskAssignment when no task association exists.
+/// Task-less SpawnOwner for ReviewComment falls through to PostToChannel.
 #[test]
-fn comment_action_spawn_owner_no_record_without_task_association() {
+fn action_to_effects_comment_spawn_owner_without_task_produces_post_to_channel() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
-    let effects = comment_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "park".to_string(),
             message: "Review feedback arrived".to_string(),
         },
         55,
         "Add logging",
+        PrIssueType::ReviewComment,
         &state,
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
+    let has_post = effects
+        .iter()
+        .any(|e| matches!(e, Effect::PostToChannel { .. }));
     assert!(
-        assignments.is_empty(),
-        "comment SpawnOwner should NOT include RecordTaskAssignment without task association"
+        has_post,
+        "SpawnOwner (comment) without task should produce PostToChannel. Effects: {:#?}",
+        effects
     );
 }
 
@@ -1560,55 +1573,67 @@ fn handoff_effects_no_record_without_task_association() {
     );
 }
 
-/// Cross-tick spawn dedup (!1377): review_complete_action_to_effects with SpawnOwner
-/// includes RecordTaskAssignment when pr_task_associations has an entry for the PR.
+/// Task-linked SpawnOwner for ReviewComplete produces TaskPrompt with opus model.
 #[test]
-fn review_complete_spawn_owner_includes_record_task_assignment() {
+fn action_to_effects_review_complete_spawn_owner_with_task_produces_task_prompt() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_with_task(88, "400");
 
-    let effects = review_complete_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "amsterdam".to_string(),
             message: "Review complete".to_string(),
         },
         88,
         "Refactor API",
+        PrIssueType::ReviewComplete,
         &state,
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
-    assert_eq!(
-        assignments.len(),
-        1,
-        "review_complete SpawnOwner should include RecordTaskAssignment"
+    let task_prompt = effects
+        .iter()
+        .find(|e| matches!(e, Effect::TaskPrompt { .. }));
+    assert!(
+        task_prompt.is_some(),
+        "SpawnOwner (review_complete) with task should produce TaskPrompt. Effects: {:#?}",
+        effects
     );
-    assert_eq!(assignments[0], ("amsterdam", "400"));
+    if let Some(Effect::TaskPrompt { model, task_id, .. }) = task_prompt {
+        assert_eq!(task_id, "400");
+        assert_eq!(
+            model.as_deref(),
+            Some("opus"),
+            "Review complete should use opus model"
+        );
+    }
 }
 
-/// Cross-tick spawn dedup (!1377): review_complete_action_to_effects with SpawnOwner
-/// does NOT include RecordTaskAssignment when no task association exists.
+/// Task-less SpawnOwner for ReviewComplete falls through to PostToChannel.
 #[test]
-fn review_complete_spawn_owner_no_record_without_task_association() {
+fn action_to_effects_review_complete_spawn_owner_without_task_produces_post_to_channel() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
-    let effects = review_complete_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "amsterdam".to_string(),
             message: "Review complete".to_string(),
         },
         88,
         "Refactor API",
+        PrIssueType::ReviewComplete,
         &state,
         &ctx,
     );
 
-    let assignments = extract_record_task_assignments(&effects);
+    let has_post = effects
+        .iter()
+        .any(|e| matches!(e, Effect::PostToChannel { .. }));
     assert!(
-        assignments.is_empty(),
-        "review_complete SpawnOwner should NOT include RecordTaskAssignment without task association"
+        has_post,
+        "SpawnOwner (review_complete) without task should produce PostToChannel. Effects: {:#?}",
+        effects
     );
 }
 
@@ -1652,13 +1677,12 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     );
 }
 
-/// Bug !1377: pr_action_to_effects was missing RecordTaskAssignment in on_success,
-/// allowing cross-tick duplicate spawns for the same task.
+/// Cross-tick spawn dedup (!1377): task-linked SpawnOwner produces TaskPrompt,
+/// which is tracked by extract_claimed_task_ids_from_effects.
 #[test]
-fn pr_action_to_effects_includes_record_task_assignment() {
+fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
-    // Build PrContext with a PR→task association
     let mut pr_task_associations = HashMap::new();
     pr_task_associations.insert(123, "42".to_string());
 
@@ -1666,14 +1690,12 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
     };
 
-    // Call pr_action_to_effects with SpawnOwner action
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::SpawnOwner {
             owner: "broadway".to_string(),
             message: "CI failed".to_string(),
@@ -1685,82 +1707,13 @@ fn pr_action_to_effects_includes_record_task_assignment() {
         &ctx,
     );
 
-    // Find the SpawnCoworkerWithCallbacks effect
-    let spawn_effect = effects
-        .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnCoworkerWithCallbacks");
-
-    // Verify RecordTaskAssignment is in on_success
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "broadway" && task_id == "42"
-        )
-    });
+    // TaskPrompt should be tracked by extract_claimed_task_ids_from_effects
+    let claimed = super::super::effects::extract_claimed_task_ids_from_effects(&effects);
     assert!(
-        has_record,
-        "pr_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
-    );
-}
-
-/// Bug !1377: comment_action_to_effects was missing RecordTaskAssignment in on_success.
-#[test]
-fn comment_action_to_effects_includes_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let mut pr_task_associations = HashMap::new();
-    pr_task_associations.insert(456, "99".to_string());
-
-    let ctx = PrContext {
-        pr_task_associations,
-        task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
-        has_active_reviewer: false,
-        channel_workflows: HashMap::new(),
-        lead_driven_channels: std::collections::HashSet::new(),
-    };
-
-    let effects = comment_action_to_effects(
-        crate::rules::PrAction::SpawnOwner {
-            owner: "park".to_string(),
-            message: "Review comment received".to_string(),
-        },
-        456,
-        "Add feature [Midtown !99]",
-        &state,
-        &ctx,
-    );
-
-    let spawn_effect = effects
-        .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnCoworkerWithCallbacks");
-
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "park" && task_id == "99"
-        )
-    });
-    assert!(
-        has_record,
-        "comment_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
+        claimed.contains("42"),
+        "TaskPrompt for task 42 should be tracked for cross-tick dedup. Claimed: {:?}, Effects: {:#?}",
+        claimed,
+        effects
     );
 }
 
@@ -1776,7 +1729,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
         pr_task_associations,
         task_channel: HashMap::new(),
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1817,59 +1770,6 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
     assert!(
         has_record,
         "handoff_to_coworker_effects on_success must include RecordTaskAssignment for cross-tick dedup"
-    );
-}
-
-/// Bug !1377: review_complete_action_to_effects was missing RecordTaskAssignment in on_success.
-#[test]
-fn review_complete_action_to_effects_includes_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let mut pr_task_associations = HashMap::new();
-    pr_task_associations.insert(321, "55".to_string());
-
-    let ctx = PrContext {
-        pr_task_associations,
-        task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
-        has_active_reviewer: false,
-        channel_workflows: HashMap::new(),
-        lead_driven_channels: std::collections::HashSet::new(),
-    };
-
-    let effects = review_complete_action_to_effects(
-        crate::rules::PrAction::SpawnOwner {
-            owner: "amsterdam".to_string(),
-            message: "Review complete".to_string(),
-        },
-        321,
-        "Update docs [Midtown !55]",
-        &state,
-        &ctx,
-    );
-
-    let spawn_effect = effects
-        .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnCoworkerWithCallbacks");
-
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "amsterdam" && task_id == "55"
-        )
-    });
-    assert!(
-        has_record,
-        "review_complete_action_to_effects on_success must include RecordTaskAssignment for cross-tick dedup"
     );
 }
 
@@ -2326,6 +2226,17 @@ async fn test_poll_prs_session_based_owner_resolution() {
         .lock()
         .unwrap()
         .insert("madison".to_string(), "sess-abc".to_string());
+    // Populate persistent_state with pr_author_session so PrContext gets the task association
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.store_pr_author_session(
+            42,
+            "sess-abc",
+            "lexington/fix-auth",
+            "madison",
+            "Fix authentication bug [Midtown !123]",
+        );
+    }
 
     let result = poll_prs_for_issues(&snap, &state).await;
 
@@ -2336,105 +2247,16 @@ async fn test_poll_prs_session_based_owner_resolution() {
 
     let effects = result.expect("poll_prs_for_issues should succeed");
 
-    // With session-based resolution, the owner is "madison" (not "lexington").
-    // The PR has a merge conflict, so we expect a nudge to "madison".
-    let nudges_madison = effects.iter().any(|e| match e {
-        Effect::NudgeSessionWithCallbacks { session_id, .. } => session_id == "sess-abc",
-        Effect::NudgeSession { session_id, .. } => session_id == "sess-abc",
-        _ => false,
-    });
+    // With task-linked PR, the merge conflict produces a TaskPrompt for task "123".
+    // TaskPrompt handles the session lookup internally via task→session mapping.
+    let has_task_prompt = effects
+        .iter()
+        .any(|e| matches!(e, Effect::TaskPrompt { task_id, .. } if task_id == "123"));
 
-    // With session-based owner resolution, the nudge should target "madison"
-    // (the session's current_name), not "lexington" (the branch prefix).
     assert!(
-        nudges_madison,
-        "Expected nudge to 'madison' (session-based owner), not 'lexington' (branch-based). Effects: {:#?}",
+        has_task_prompt,
+        "Expected TaskPrompt for task 123 (session-based owner resolution). Effects: {:#?}",
         effects
-    );
-}
-
-/// PrContext::from_persistent_state should populate task_session_id when a PR's
-/// task has a corresponding session in persistent_state.sessions.
-#[test]
-fn test_pr_context_task_session_id_populated() {
-    use crate::github_state::PrAuthorSession;
-
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    // PR #42 has a pr_author_session with task_id "100"
-    ps.github.pr_author_sessions.insert(
-        42,
-        PrAuthorSession {
-            session_id: "old-session".to_string(),
-            branch: "lexington/fix-auth".to_string(),
-            original_author: "lexington".to_string(),
-            stored_at: chrono::Utc::now(),
-            task_id: Some("100".to_string()),
-        },
-    );
-
-    // Session "sess-xyz" is working on task "100"
-    ps.sessions.insert(
-        "sess-xyz".to_string(),
-        crate::daemon::state::SessionRecord {
-            session_id: "sess-xyz".to_string(),
-            task_id: Some("100".to_string()),
-            current_name: Some("madison".to_string()),
-            preferred_name: Some("madison".to_string()),
-            working_dir: "/tmp/test".to_string(),
-            branch: Some("lexington/fix-auth".to_string()),
-            pr_number: Some(42),
-            is_running: true,
-            resume_on_startup: false,
-            ..Default::default()
-        },
-    );
-
-    let ctx = PrContext::from_persistent_state(&ps, 42);
-
-    assert_eq!(
-        ctx.task_session_id,
-        Some("sess-xyz".to_string()),
-        "task_session_id should be populated from sessions when PR's task has a session"
-    );
-}
-
-/// PrContext::from_persistent_state should leave task_session_id as None when
-/// no session exists for the PR's task.
-#[test]
-fn test_pr_context_task_session_id_none_when_no_session() {
-    use crate::github_state::PrAuthorSession;
-
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    // PR #42 has a pr_author_session with task_id "100", but no session record
-    ps.github.pr_author_sessions.insert(
-        42,
-        PrAuthorSession {
-            session_id: "old-session".to_string(),
-            branch: "lexington/fix-auth".to_string(),
-            original_author: "lexington".to_string(),
-            stored_at: chrono::Utc::now(),
-            task_id: Some("100".to_string()),
-        },
-    );
-
-    let ctx = PrContext::from_persistent_state(&ps, 42);
-
-    assert_eq!(
-        ctx.task_session_id, None,
-        "task_session_id should be None when no session exists for the task"
-    );
-}
-
-/// PrContext::routing_only should always have task_session_id as None.
-#[test]
-fn test_pr_context_routing_only_no_task_session_id() {
-    let ps = super::super::state::DaemonPersistentState::default();
-    let ctx = PrContext::routing_only(&ps);
-    assert_eq!(
-        ctx.task_session_id, None,
-        "routing_only should not populate task_session_id"
     );
 }
 
@@ -3427,7 +3249,7 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
         pr_task_associations,
         task_channel,
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3470,7 +3292,7 @@ fn pr_approved_suppressed_while_reviewer_active() {
     let mut ctx = make_pr_context_with_channel(42, "100", "daemon-core");
     ctx.has_active_reviewer = true;
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — approved".to_string(),
@@ -3505,7 +3327,7 @@ fn pr_approved_emitted_when_no_reviewer_active() {
     assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     // has_active_reviewer defaults to false
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — approved".to_string(),
@@ -3552,7 +3374,7 @@ fn non_approved_events_unaffected_by_reviewer_gate() {
     assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     ctx.has_active_reviewer = true;
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — CI failed".to_string(),
@@ -3606,7 +3428,7 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
     assign_workflow_to_context(&mut ctx, "daemon-core", "tdw");
     ctx.has_active_reviewer = true;
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — approved".to_string(),
@@ -3643,7 +3465,7 @@ fn pr_approved_re_emitted_after_reviewer_clears() {
     assign_workflow_to_context(&mut ctx_cleared, "daemon-core", "tdw");
     ctx_cleared.has_active_reviewer = false;
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — approved".to_string(),
@@ -3791,12 +3613,18 @@ async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unk
     )
     .await;
 
-    assert!(
-        effects.iter().any(|e| matches!(
+    // With task-linked PR, expect TaskPrompt (or fallback nudge/spawn for task-less PRs)
+    let has_task_prompt_or_nudge = effects.iter().any(|e| {
+        matches!(
             e,
-            Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
-        )),
-        "Expected coworker-directed nudge via author session for PR #2043, got: {:#?}",
+            Effect::TaskPrompt { .. }
+                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::SpawnCoworkerWithCallbacks { .. }
+        )
+    });
+    assert!(
+        has_task_prompt_or_nudge,
+        "Expected coworker-directed action (TaskPrompt or nudge/spawn) via author session for PR #2043, got: {:#?}",
         effects
     );
 }
@@ -3859,10 +3687,10 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
 /// !2003, !2019: Fallback path — without a workflow script, inline effects are
 /// preserved alongside the workflow event.
 ///
-/// When no `workflow.py` exists, `pr_action_to_effects` falls through to the
-/// inline-effects path (NudgeSession + RecordPrNudge) and appends the workflow
-/// event. This preserves backward compatibility for projects that haven't
-/// adopted workflows.
+/// When no `workflow.py` exists, `action_to_effects` falls through to the
+/// inline-effects path (TaskPrompt + RecordPrNudge for task-linked PRs) and
+/// appends the workflow event. This preserves backward compatibility for
+/// projects that haven't adopted workflows.
 #[test]
 fn fallback_inline_effects_without_workflow() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
@@ -3870,7 +3698,7 @@ fn fallback_inline_effects_without_workflow() {
 
     let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::NudgeOwner {
             owner: "broadway".to_string(),
             message: "PR #42 — approved".to_string(),
@@ -3882,13 +3710,14 @@ fn fallback_inline_effects_without_workflow() {
         &ctx,
     );
 
-    // Without a script: inline NudgeSession effect fires AND workflow event is appended
-    let has_nudge = effects
+    // With task association: TaskPrompt fires AND workflow event is appended
+    let has_task_prompt = effects
         .iter()
-        .any(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::TaskPrompt { task_id, .. } if task_id == "100"));
     assert!(
-        has_nudge,
-        "Fallback path should produce NudgeSessionWithCallbacks when no workflow script exists"
+        has_task_prompt,
+        "Fallback path should produce TaskPrompt for task-linked PRs. Effects: {:#?}",
+        effects
     );
 
     let workflow_events = extract_workflow_events(&effects);
@@ -3918,7 +3747,7 @@ fn handoff_to_coworker_preserved_with_workflow_channel() {
 
     let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
 
-    let effects = pr_action_to_effects(
+    let effects = action_to_effects(
         crate::rules::PrAction::HandoffToCoworker {
             assignee: "lexington".to_string(),
             original_author: "broadway".to_string(),
@@ -5164,7 +4993,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5236,7 +5065,7 @@ fn log_pr_decision_appends_multiple_entries() {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
         session_context: None,
-        task_session_id: None,
+
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),

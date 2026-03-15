@@ -804,6 +804,11 @@ pub(crate) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
                 }
             }
 
+            // Task prompt claims the task's session (nudge or resume).
+            Effect::TaskPrompt { task_id, .. } => {
+                ids.insert(task_id.clone());
+            }
+
             // Keep this for completeness and safety in tests/caller-defined
             // effects, even though production callsites generally use callback
             // forms above.
