@@ -436,7 +436,7 @@ pub enum Effect {
     ///
     /// When a coworker opens a PR, backfill `pr_number` and `branch` on the
     /// SessionRecord and link the PR to the worktree by branch name.
-    StorePrAuthorSession {
+    LinkPrToSession {
         pr_number: u64,
         session_id: String,
         branch: String,
@@ -1997,7 +1997,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::StorePrAuthorSession {
+            Effect::LinkPrToSession {
                 pr_number,
                 session_id,
                 branch,

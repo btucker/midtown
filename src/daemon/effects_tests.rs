@@ -3191,7 +3191,7 @@ async fn test_record_task_assignment_fixes_insight_routing() {
 }
 
 #[test]
-fn store_pr_author_session_backfills_pr_number_on_session_record() {
+fn link_pr_to_session_backfills_pr_number_on_session_record() {
     let mut ps = crate::daemon::state::DaemonPersistentState::default();
     let session = crate::daemon::state::SessionRecord {
         session_id: "session-abc".to_string(),
@@ -3200,7 +3200,7 @@ fn store_pr_author_session_backfills_pr_number_on_session_record() {
     };
     ps.sessions.insert("session-abc".to_string(), session);
 
-    // Simulate what StorePrAuthorSession handler does:
+    // Simulate what LinkPrToSession handler does:
     let pr_number: u64 = 100;
     let session_id = "session-abc";
     if let Some(record) = ps.sessions.get_mut(session_id)
@@ -3213,7 +3213,7 @@ fn store_pr_author_session_backfills_pr_number_on_session_record() {
 }
 
 #[test]
-fn store_pr_author_session_does_not_overwrite_existing_pr_number() {
+fn link_pr_to_session_does_not_overwrite_existing_pr_number() {
     let mut ps = crate::daemon::state::DaemonPersistentState::default();
     let session = crate::daemon::state::SessionRecord {
         session_id: "session-abc".to_string(),
@@ -3237,7 +3237,7 @@ fn store_pr_author_session_does_not_overwrite_existing_pr_number() {
 }
 
 #[test]
-fn store_pr_author_session_backfills_branch_on_session_record() {
+fn link_pr_to_session_backfills_branch_on_session_record() {
     let mut ps = crate::daemon::state::DaemonPersistentState::default();
     let session = crate::daemon::state::SessionRecord {
         session_id: "session-abc".to_string(),
@@ -3247,7 +3247,7 @@ fn store_pr_author_session_backfills_branch_on_session_record() {
     };
     ps.sessions.insert("session-abc".to_string(), session);
 
-    // Simulate what StorePrAuthorSession handler does:
+    // Simulate what LinkPrToSession handler does:
     let branch = "feature-branch".to_string();
     let session_id = "session-abc";
     if let Some(record) = ps.sessions.get_mut(session_id)

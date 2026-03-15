@@ -3547,7 +3547,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // Store author session for PR handoff (allows any coworker to resume the PR)
                     if let Some(ref author) = pr_opened.author_coworker {
                         if let Some(session_id) = state.coworkers.get_session_id(author) {
-                            pr_effects.push(effects::Effect::StorePrAuthorSession {
+                            pr_effects.push(effects::Effect::LinkPrToSession {
                                 pr_number: pr_opened.pr_number,
                                 session_id,
                                 branch: pr_opened.branch.clone(),
