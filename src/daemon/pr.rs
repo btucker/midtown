@@ -96,7 +96,32 @@ impl PrContext {
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
         let pr_task_associations = ps.github.pr_to_task_map();
 
-        let session_context =
+        // Session-centric resume: PR → task → session
+        let task_session_id = pr_task_associations.get(&pr_number).and_then(|task_id| {
+            ps.sessions
+                .values()
+                .find(|s| s.task_id.as_deref() == Some(task_id))
+                .map(|s| s.session_id.clone())
+        });
+
+        // Build session_context: prefer SessionRecord for task-linked PRs,
+        // fall back to pr_author_sessions for non-task PRs (legacy).
+        let session_context = if let Some(ref sid) = task_session_id {
+            // Task-linked: derive PrSessionContext from SessionRecord
+            ps.sessions
+                .get(sid)
+                .map(|s| crate::rules::PrSessionContext {
+                    session_id: s.session_id.clone(),
+                    branch: s.branch.clone().unwrap_or_default(),
+                    original_author: s
+                        .preferred_name
+                        .clone()
+                        .or_else(|| s.current_name.clone())
+                        .unwrap_or_default(),
+                    pr_number,
+                })
+        } else {
+            // Non-task: fall back to pr_author_sessions (legacy)
             ps.github
                 .get_pr_author_session(pr_number)
                 .map(|s| crate::rules::PrSessionContext {
@@ -104,7 +129,8 @@ impl PrContext {
                     branch: s.branch.clone(),
                     original_author: s.original_author.clone(),
                     pr_number,
-                });
+                })
+        };
 
         // Gate check: reviewer assigned in github-state (raw presence, no timeout).
         // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event

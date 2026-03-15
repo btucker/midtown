@@ -5709,3 +5709,68 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
         reviewer_names
     );
 }
+
+#[test]
+fn pr_context_session_context_from_session_record() {
+    let mut ps = super::super::state::DaemonPersistentState::default();
+
+    // Store a session record with task_id and pr_number
+    let session = super::super::state::SessionRecord {
+        session_id: "session-from-record".to_string(),
+        task_id: Some("42".to_string()),
+        pr_number: Some(100),
+        branch: Some("task-42-feature".to_string()),
+        preferred_name: Some("lexington".to_string()),
+        ..Default::default()
+    };
+    ps.sessions
+        .insert("session-from-record".to_string(), session);
+
+    // Also store a pr_author_session with DIFFERENT data (to verify we prefer SessionRecord).
+    // Use a title with [Midtown !42] so that pr_to_task_map() picks up the association.
+    ps.github.store_pr_author_session(
+        100,
+        "session-from-author",
+        "old-branch",
+        "oldauthor",
+        "Feature [Midtown !42]",
+    );
+
+    let ctx = super::PrContext::from_persistent_state(&ps, 100);
+
+    // session_context should come from SessionRecord, not pr_author_sessions
+    let sc = ctx
+        .session_context
+        .as_ref()
+        .expect("should have session_context");
+    assert_eq!(sc.session_id, "session-from-record");
+    assert_eq!(sc.branch, "task-42-feature");
+    assert_eq!(sc.original_author, "lexington");
+    // task_session_id should also be set
+    assert_eq!(ctx.task_session_id, Some("session-from-record".to_string()));
+}
+
+#[test]
+fn pr_context_session_context_fallback_to_author_session() {
+    let mut ps = super::super::state::DaemonPersistentState::default();
+    ps.github.store_pr_author_session(
+        200,
+        "session-from-author",
+        "feature-branch",
+        "park",
+        "Manual PR",
+    );
+
+    let ctx = super::PrContext::from_persistent_state(&ps, 200);
+
+    // session_context should come from pr_author_sessions (fallback)
+    let sc = ctx
+        .session_context
+        .as_ref()
+        .expect("should have session_context");
+    assert_eq!(sc.session_id, "session-from-author");
+    assert_eq!(sc.branch, "feature-branch");
+    assert_eq!(sc.original_author, "park");
+    // No task_session_id (no task association)
+    assert!(ctx.task_session_id.is_none());
+}
