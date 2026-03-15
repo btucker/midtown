@@ -764,7 +764,7 @@ Two RPC methods in `rpc_workflow.rs` provide access:
 Effect gating for lead-driven channels spans three decision modules:
 
 - **Dispatch** (`dispatch.rs`): `dispatch_via_sessions_inner`, `dispatch_owned_pending_tasks`, and `dispatch_unowned_pending_tasks` skip coworker spawning/nudging for tasks in lead-driven channels. Merged-PR auto-complete runs *before* the lead-driven check so task lifecycle cleanup still works.
-- **PR actions** (`pr.rs`): `pr_action_to_effects` and `review_complete_action_to_effects` replace inline effects (NudgeOwner, SpawnOwner, HandoffToCoworker) with `RecordPrNudge` + `EmitWorkflowEvent` when the PR's channel is lead-driven. Reviewer spawning is gated in `collect_reviewer_effects_with_source`. Stuck-condition scenarios (`collect_stuck_condition_effects`) skip PRs in lead-driven channels entirely.
+- **PR actions** (`pr.rs`): `action_to_effects` replaces inline effects (NudgeOwner, SpawnOwner, HandoffToCoworker) with `RecordPrNudge` + `EmitWorkflowEvent` when the PR's channel is lead-driven. For task-linked PRs, `NudgeOwner` and `SpawnOwner` are collapsed into `Effect::TaskPrompt` — `deliver_task_prompt` handles nudge-if-running / resume-if-stopped internally. Reviewer spawning is gated in `collect_reviewer_effects_with_source`. Stuck-condition scenarios (`collect_stuck_condition_effects`) skip PRs in lead-driven channels entirely.
 - **Effect execution** (`effects.rs`): `EmitWorkflowEvent` dispatches to either the workflow plugin daemon (when a script exists) or posts a human-readable @mention to the channel lead (lead-driven mode). The `PrContext::lead_driven_channels` field provides the lookup for all PR-related gating via `is_lead_driven(pr_number)`.
 
 ### Plugin Daemon (Unix Socket IPC)
@@ -969,10 +969,8 @@ Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task
 
 **Spawn sites that set `task_id`**:
 - **Coworker dispatch** (`dispatch.rs`): From the assigned task ID
-- **PR owner resume** (`pr.rs`, `pr_action_to_effects`): From `pr_task_associations`
+- **PR auto-pilot** (`pr.rs`, `action_to_effects`): Via `Effect::TaskPrompt` for task-linked PRs, from `pr_task_associations`
 - **Reviewer spawn** (`pr.rs`, `collect_reviewer_effects_with_source`): From `pr_task_associations`
-- **Review-complete nudge** (`pr.rs`, `review_complete_action_to_effects`): From `pr_task_associations`
-- **Comment activity** (`pr.rs`, `comment_action_to_effects`): From `pr_task_associations`
 - **Handoff to coworker** (`pr.rs`, `handoff_to_coworker_effects`): From `pr_task_associations`
 - **Reviewer follow-up resume** (`pr.rs`, `handle_pr_comment_activity`): From `pr_to_task_map()`
 - **Daemon recovery** (`dispatch.rs`): From the recovery task ID

@@ -1656,26 +1656,36 @@ fn action_to_effects(
                 },
             ]
         }
-        // Task-less PRs: fall through to PostToChannel (external/manual PRs).
-        PrAction::NudgeOwner { message, .. } | PrAction::SpawnOwner { message, .. } => {
-            vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message,
-                    channel: channel.clone(),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
+        // Task-less PRs: nudge if running, spawn if stopped.
+        PrAction::NudgeOwner { owner, message } => {
+            vec![Effect::nudge_session_with_callbacks(
+                state.session_id_for_name(&owner),
+                message,
+                vec![Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
-                },
-            ]
+                }],
+            )]
+        }
+        PrAction::SpawnOwner { owner, message } => {
+            let config = crate::launch::LaunchConfig::coworker(
+                owner.clone(),
+                state.paths.dir_key().to_string(),
+                crate::launch::SessionMode::Resume,
+                Some(message),
+                None,
+            );
+            vec![Effect::SpawnCoworkerWithCallbacks {
+                config,
+                on_success: vec![Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                }],
+                on_failure: vec![Effect::RecordPrNudge {
+                    pr_number,
+                    issue_type,
+                }],
+            }]
         }
         // HandoffToCoworker: keep existing behavior (Phase 5 will eliminate via task handoff).
         PrAction::HandoffToCoworker {

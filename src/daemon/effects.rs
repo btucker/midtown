@@ -770,8 +770,9 @@ pub enum Effect {
         message: String,
         /// Optional model override (e.g., "opus" for review feedback).
         model: Option<String>,
-        /// PR context for observability messages. When set, the executor posts
-        /// a "called in" message to the ops channel on successful delivery.
+        /// PR context for observability logging. When set, the executor logs
+        /// the delivery at INFO level on success, and posts to the ops channel
+        /// on failure.
         pr_context: Option<TaskPromptPrContext>,
     },
 }
