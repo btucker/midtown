@@ -604,63 +604,6 @@ impl LaunchConfig {
         }
     }
 
-    /// Create a config for PR handoff — a coworker taking over another's PR.
-    ///
-    /// This resumes the original author's Claude session to preserve full context
-    /// (code understanding, decisions made, etc.) while having a different coworker
-    /// continue the work. Used when the original PR author is unavailable.
-    pub fn pr_handoff(
-        name: impl Into<String>,
-        dir_key: impl Into<String>,
-        session_id: String,
-        pr_number: u64,
-        branch: &str,
-        original_author: &str,
-    ) -> Self {
-        let repo = dir_key.into();
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            &repo,
-            crate::config::ExecutionRole::Coworker,
-        );
-        let initial_prompt = format!(
-            "You're taking over PR #{} from {}.\n\n\
-            First, checkout the branch:\n\
-            ```bash\n\
-            git fetch origin {}\n\
-            git checkout {}\n\
-            ```\n\n\
-            Then continue where {} left off. This is their PR, so you have their full context \
-            from the resumed session. Address any review feedback, fix any issues, and push \
-            your changes to the branch.\n\n\
-            When done, post to the channel that you've addressed the feedback on PR #{}.",
-            pr_number, original_author, branch, branch, original_author, pr_number
-        );
-
-        // PR handoff uses the coworker model config but falls back to "opus" (not "sonnet")
-        // because handoffs deal with complex PR context that benefits from a larger model.
-        let model =
-            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Coworker)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        LaunchConfig {
-            name: name.into(),
-            session_mode: SessionMode::ResumeSession(session_id),
-            role: CoworkerRole::Coworker,
-            initial_prompt: Some(initial_prompt),
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model,
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-        }
-    }
-
     /// Create a config for a channel lead session.
     ///
     /// Channel leads are long-lived conversational sessions that accumulate
@@ -1123,31 +1066,6 @@ mod tests {
         assert_eq!(config.role, CoworkerRole::Reviewer);
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        assert_eq!(config.model, expected);
-    }
-
-    #[test]
-    fn test_launch_config_pr_handoff_factory() {
-        let config = LaunchConfig::pr_handoff(
-            "york".to_string(),
-            "myrepo",
-            "session-123".to_string(),
-            42,
-            "feature/branch",
-            "original-author",
-        );
-        assert_eq!(config.name, "york");
-        assert_eq!(
-            config.session_mode,
-            SessionMode::ResumeSession("session-123".to_string())
-        );
-        assert!(config.initial_prompt.is_some());
-        assert!(config.pr_number.is_none()); // Handoff is not a reviewer
-        // pr_handoff reads coworker config with "opus" as fallback
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
                 .map(|s| s.as_model_str().to_string())
                 .unwrap_or_else(|| "opus".to_string());
         assert_eq!(config.model, expected);
