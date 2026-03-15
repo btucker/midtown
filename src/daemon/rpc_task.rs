@@ -801,27 +801,25 @@ pub(super) async fn handle_task_claim(
     )
 }
 
-/// Handle task.prompt RPC — deliver a prompt to a task's assigned session.
+/// Result of a successful task prompt delivery.
+pub(crate) struct TaskPromptResult {
+    pub message: String,
+    pub action: &'static str, // "nudged_attached", "nudged", or "resumed"
+    pub session_id: String,
+}
+
+/// Core task prompt delivery — shared by the RPC handler and Effect executor.
 ///
-/// Looks up the task, finds its session, and either nudges (if running)
-/// or resumes (if stopped) with the given message. This is the universal
-/// way to interact with a task's agent from any caller (lead, coworker, CLI).
-pub(super) async fn handle_task_prompt(
-    id: RequestId,
+/// Returns Ok(TaskPromptResult) on success, Err(error_message) on failure.
+/// The `from` field identifies the sender for DM channel observability.
+pub(crate) async fn deliver_task_prompt(
     task_id: &str,
     message: &str,
     from: &str,
     model: Option<&str>,
     state: &DaemonState,
-) -> Response {
-    // Validate model format if provided
-    if let Some(m) = model
-        && let Err(e) = validate_model_format(m)
-    {
-        return Response::error(id, RpcError::new(-32602, e));
-    }
-
-    // Look up the task
+) -> Result<TaskPromptResult, String> {
+    // Strip #/! prefix from task_id
     let task_id = task_id
         .strip_prefix('#')
         .or_else(|| task_id.strip_prefix('!'))
@@ -829,25 +827,34 @@ pub(super) async fn handle_task_prompt(
     let tasks = crate::tasks::read_tasks();
     let task = tasks.iter().find(|t| t.id == task_id);
     let Some(task) = task else {
-        return Response::error(
-            id,
-            RpcError::new(-32602, format!("Task !{} not found", task_id)),
-        );
+        return Err(format!("Task !{} not found", task_id));
     };
 
-    // Find the session for this task
+    // Find the session for this task.
+    // First check the in-memory map (fast path for running sessions).
+    // If missing (coworker stopped and map was cleaned up), fall back to
+    // persistent state which survives shutdown/break.
     let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let Some(session_id) = session_id else {
-        return Response::error(
-            id,
-            RpcError::new(
-                -32603,
-                format!(
-                    "No session found for task !{} — task may not have been dispatched yet",
-                    task_id
-                ),
-            ),
-        );
+    let session_id = match session_id {
+        Some(sid) => sid,
+        None => {
+            // Fallback: find a stopped session record with this task_id
+            let ps = state.persistent_state.lock().await;
+            let found = ps
+                .sessions
+                .iter()
+                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
+                .map(|(sid, _)| sid.clone());
+            match found {
+                Some(sid) => sid,
+                None => {
+                    return Err(format!(
+                        "No session found for task !{} — task may not have been dispatched yet",
+                        task_id
+                    ));
+                }
+            }
+        }
     };
 
     // Check if the session is running
@@ -881,15 +888,11 @@ pub(super) async fn handle_task_prompt(
             "Delivered prompt to attached session (coworker {}) for task !{}",
             name, task_id
         );
-        Response::success(
-            id,
-            serde_json::json!({
-                "type": "message",
-                "message": format!("Prompt delivered to {} (attached, task !{})", name, task_id),
-                "action": "nudged_attached",
-                "session_id": session_id,
-            }),
-        )
+        Ok(TaskPromptResult {
+            message: format!("Prompt delivered to {} (attached, task !{})", name, task_id),
+            action: "nudged_attached",
+            session_id,
+        })
     } else if is_alive {
         // Session is running — deliver prompt via send_message (like nudge)
         let name = coworker_name.as_deref().unwrap_or("unknown");
@@ -909,30 +912,20 @@ pub(super) async fn handle_task_prompt(
                         tool_use_id: None,
                         parent_tool_use_id: None,
                     };
-                    super::effects::execute_effects(vec![dm_effect], state).await;
+                    Box::pin(super::effects::execute_effects(vec![dm_effect], state)).await;
                 }
 
                 info!(
                     "Delivered prompt to running session {} (coworker {}) for task !{}",
                     session_id, name, task_id
                 );
-                Response::success(
-                    id,
-                    serde_json::json!({
-                        "type": "message",
-                        "message": format!("Prompt delivered to {} (task !{})", name, task_id),
-                        "action": "nudged",
-                        "session_id": session_id,
-                    }),
-                )
+                Ok(TaskPromptResult {
+                    message: format!("Prompt delivered to {} (task !{})", name, task_id),
+                    action: "nudged",
+                    session_id,
+                })
             }
-            Err(e) => Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!("Failed to deliver prompt to {}: {}", name, e),
-                ),
-            ),
+            Err(e) => Err(format!("Failed to deliver prompt to {}: {}", name, e)),
         }
     } else {
         // Session is stopped — resume with the prompt as initial message
@@ -941,16 +934,10 @@ pub(super) async fn handle_task_prompt(
             ps.sessions.get(&session_id).cloned()
         };
         let Some(record) = record else {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!(
-                        "Session {} for task !{} has no record — cannot resume",
-                        session_id, task_id
-                    ),
-                ),
-            );
+            return Err(format!(
+                "Session {} for task !{} has no record — cannot resume",
+                session_id, task_id
+            ));
         };
 
         // Determine coworker name for resume
@@ -1010,27 +997,54 @@ pub(super) async fn handle_task_prompt(
                         tool_use_id: None,
                         parent_tool_use_id: None,
                     };
-                    super::effects::execute_effects(vec![dm_effect], state).await;
+                    Box::pin(super::effects::execute_effects(vec![dm_effect], state)).await;
                 }
 
-                Response::success(
-                    id,
-                    serde_json::json!({
-                        "type": "message",
-                        "message": format!("Resumed {} with prompt (task !{})", name, task_id),
-                        "action": "resumed",
-                        "session_id": session_id,
-                    }),
-                )
+                Ok(TaskPromptResult {
+                    message: format!("Resumed {} with prompt (task !{})", name, task_id),
+                    action: "resumed",
+                    session_id,
+                })
             }
-            Err(e) => Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!("Failed to resume session for task !{}: {}", task_id, e),
-                ),
-            ),
+            Err(e) => Err(format!(
+                "Failed to resume session for task !{}: {}",
+                task_id, e
+            )),
         }
+    }
+}
+
+/// Handle task.prompt RPC — deliver a prompt to a task's assigned session.
+///
+/// Looks up the task, finds its session, and either nudges (if running)
+/// or resumes (if stopped) with the given message. This is the universal
+/// way to interact with a task's agent from any caller (lead, coworker, CLI).
+pub(super) async fn handle_task_prompt(
+    id: RequestId,
+    task_id: &str,
+    message: &str,
+    from: &str,
+    model: Option<&str>,
+    state: &DaemonState,
+) -> Response {
+    // Validate model format if provided
+    if let Some(m) = model
+        && let Err(e) = validate_model_format(m)
+    {
+        return Response::error(id, RpcError::new(-32602, e));
+    }
+
+    match deliver_task_prompt(task_id, message, from, model, state).await {
+        Ok(result) => Response::success(
+            id,
+            serde_json::json!({
+                "type": "message",
+                "message": result.message,
+                "action": result.action,
+                "session_id": result.session_id,
+            }),
+        ),
+        Err(e) => Response::error(id, RpcError::new(-32603, e)),
     }
 }
 
