@@ -218,6 +218,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_message_id: HashMap<String, String>,
 
+    /// Task-to-parent mapping for UI grouping of related tasks.
+    ///
+    /// Maps child task ID → parent task ID. Parent-child is a UI grouping
+    /// relationship for showing related tasks (e.g., a review task as a child
+    /// of its implementation task). Child tasks can start while the parent is
+    /// open — this is purely organizational, not a blocking dependency.
+    #[serde(default)]
+    pub task_parent: HashMap<String, String>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -319,7 +328,7 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
                     state.github.pr_reviewers.len(),
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
@@ -330,6 +339,7 @@ impl DaemonPersistentState {
                     state.task_execution_skill.len(),
                     state.task_thread_id.len(),
                     state.task_message_id.len(),
+                    state.task_parent.len(),
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
                     state.channel_workflows.len(),
@@ -357,7 +367,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
             self.github.pr_reviewers.len(),
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
@@ -366,6 +376,7 @@ impl DaemonPersistentState {
             self.task_model.len(),
             self.task_plan.len(),
             self.task_execution_skill.len(),
+            self.task_parent.len(),
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
             self.channel_workflows.len(),
@@ -404,6 +415,7 @@ impl DaemonPersistentState {
             self.task_execution_skill.remove(task_id);
             self.task_thread_id.remove(task_id);
             self.task_message_id.remove(task_id);
+            self.task_parent.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
 
@@ -459,6 +471,7 @@ impl DaemonPersistentState {
             task_execution_skill: HashMap::new(),
             task_thread_id: HashMap::new(),
             task_message_id: HashMap::new(),
+            task_parent: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),

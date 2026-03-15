@@ -34,6 +34,9 @@ pub enum TaskCommand {
         /// Thread ID to route coworker updates back to the fork session that created this task
         #[arg(long)]
         thread_id: Option<String>,
+        /// Parent task ID for UI grouping (e.g., review task as child of implementation task)
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -111,6 +114,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             plan,
             execution_skill,
             thread_id,
+            parent,
         } => {
             let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
             let effective_thread_id =
@@ -125,6 +129,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 plan.as_deref(),
                 execution_skill.as_deref(),
                 effective_thread_id.as_deref(),
+                parent.as_deref(),
             )
         }
         TaskCommand::Update {
@@ -231,6 +236,9 @@ fn handle_view(id: &str) -> Result<Response, String> {
         }
         if let Some(skill) = result.get("execution_skill").and_then(|v| v.as_str()) {
             output.push_str(&format!("Skill:    {}\n", skill));
+        }
+        if let Some(parent) = result.get("parent").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Parent:   !{}\n", parent));
         }
     }
     // Silently ignore errors - daemon might not be running or metadata might not exist

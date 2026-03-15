@@ -1056,6 +1056,10 @@ fn apply_gc_prunes_orphaned_task_metadata() {
         .task_message_id
         .insert("orphan-1".to_string(), "msg-1".to_string());
 
+    state
+        .task_parent
+        .insert("orphan-1".to_string(), "parent-1".to_string());
+
     // Also add a surviving task to make sure it's not touched
     state
         .task_channel
@@ -1070,6 +1074,7 @@ fn apply_gc_prunes_orphaned_task_metadata() {
     assert!(!state.task_execution_skill.contains_key("orphan-1"));
     assert!(!state.task_thread_id.contains_key("orphan-1"));
     assert!(!state.task_message_id.contains_key("orphan-1"));
+    assert!(!state.task_parent.contains_key("orphan-1"));
     // Alive task untouched
     assert_eq!(
         state.task_channel.get("alive-1"),
@@ -1256,5 +1261,28 @@ fn test_resolve_bound_thread_id_missing_mapping() {
         ps.resolve_bound_thread_id(Some("99")),
         None,
         "Should return None when task_id has no thread mapping"
+    );
+}
+
+// ── task_parent tests ────────────────────────────────────────────────────────
+
+#[test]
+fn test_task_parent_mapping_roundtrip() {
+    let mut state = DaemonPersistentState::default();
+    state.task_parent.insert("43".to_string(), "42".to_string());
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(loaded.task_parent.get("43"), Some(&"42".to_string()));
+}
+
+#[test]
+fn test_task_parent_default_empty() {
+    let json = r#"{}"#;
+    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(
+        state.task_parent.is_empty(),
+        "task_parent should default to empty for old state files"
     );
 }

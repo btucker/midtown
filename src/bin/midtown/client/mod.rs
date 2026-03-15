@@ -490,6 +490,7 @@ impl DaemonClient {
     // Task commands
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn task_create(
         &self,
         subject: &str,
@@ -501,6 +502,7 @@ impl DaemonClient {
         plan: Option<&str>,
         execution_skill: Option<&str>,
         thread_id: Option<&str>,
+        parent: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -526,6 +528,9 @@ impl DaemonClient {
         }
         if let Some(tid) = thread_id {
             params["thread_id"] = serde_json::json!(tid);
+        }
+        if let Some(p) = parent {
+            params["parent"] = serde_json::json!(p);
         }
         self.send("task.create", Some(params))
     }
