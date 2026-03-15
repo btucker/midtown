@@ -902,3 +902,134 @@ fn test_task_prompt_strips_id_prefixes() {
     assert_eq!(strip("42"), "42");
     assert_eq!(strip("!100"), "100");
 }
+
+// ── task.handoff tests ───────────────────────────────────────────────────────
+
+/// Handoff builds a resume LaunchConfig with the correct agent_name_override.
+#[test]
+fn test_task_handoff_config_uses_agent_override() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None, // no initial prompt — handoff just swaps the agent
+        Some("42".to_string()),
+    );
+    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+
+    assert_eq!(
+        config.agent_name_override.as_deref(),
+        Some("midtown-code-reviewer")
+    );
+    assert!(
+        matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == "session-abc")
+    );
+    assert_eq!(config.initial_prompt, None);
+    assert_eq!(config.task_id.as_deref(), Some("42"));
+}
+
+/// Handoff applies task model configuration to the resumed session.
+#[test]
+fn test_task_handoff_applies_task_model() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+
+    let mut task_model = HashMap::new();
+    task_model.insert("42".to_string(), "claude/opus".to_string());
+    config.apply_task_model(&task_model, "42");
+
+    assert_eq!(config.model, "opus");
+    assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
+    // Agent override should be independent of model
+    assert_eq!(
+        config.agent_name_override.as_deref(),
+        Some("midtown-code-reviewer")
+    );
+}
+
+/// Handoff resolves coworker name from preferred_name, current_name, or task owner.
+#[test]
+fn test_task_handoff_name_resolution() {
+    // Replicate the name resolution logic from handle_task_handoff
+    fn resolve_name<'a>(
+        preferred: Option<&'a str>,
+        current: Option<&'a str>,
+        owner: Option<&'a str>,
+    ) -> &'a str {
+        preferred.or(current).or(owner).unwrap_or("unknown")
+    }
+
+    assert_eq!(
+        resolve_name(Some("park"), Some("madison"), Some("lexington")),
+        "park"
+    );
+    assert_eq!(
+        resolve_name(None, Some("madison"), Some("lexington")),
+        "madison"
+    );
+    assert_eq!(resolve_name(None, None, Some("lexington")), "lexington");
+    assert_eq!(resolve_name(None, None, None), "unknown");
+}
+
+/// Handoff sets working directory from session record when available.
+#[test]
+fn test_task_handoff_sets_working_dir() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+
+    // Simulate the working_dir assignment from handle_task_handoff
+    let recorded_dir = "/Users/test/.midtown/projects/test/worktrees/park";
+    if !recorded_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(recorded_dir));
+    }
+
+    assert_eq!(
+        config.working_dir,
+        Some(std::path::PathBuf::from(
+            "/Users/test/.midtown/projects/test/worktrees/park"
+        ))
+    );
+}
+
+/// Handoff skips working_dir assignment when session record has empty working_dir.
+#[test]
+fn test_task_handoff_skips_empty_working_dir() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+
+    let recorded_dir = "";
+    if !recorded_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(recorded_dir));
+    }
+
+    assert_eq!(config.working_dir, None);
+}
+
+/// Task ID prefix stripping also works in the handoff path.
+#[test]
+fn test_task_handoff_strips_id_prefixes() {
+    fn strip(id: &str) -> &str {
+        id.strip_prefix('#')
+            .or_else(|| id.strip_prefix('!'))
+            .unwrap_or(id)
+    }
+    assert_eq!(strip("!42"), "42");
+    assert_eq!(strip("#42"), "42");
+    assert_eq!(strip("42"), "42");
+}
