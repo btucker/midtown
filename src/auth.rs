@@ -56,6 +56,7 @@ pub const DEFAULT_PROFILE: &str = "default";
 
 /// Claude entries that are shared via symlink across profiles.
 const CLAUDE_SHARED_SYMLINK_ENTRIES: &[&str] = &[
+    "agents",
     "plans",
     "plugins",
     "projects",

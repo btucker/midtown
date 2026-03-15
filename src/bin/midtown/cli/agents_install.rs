@@ -1,9 +1,9 @@
 //! Agent definition installation.
 //!
-//! Installs compiled-in agent definition files to Claude Code agent directories
-//! so that Claude Code can load them via the `--agent` flag. Definitions are
-//! installed to every auth profile's `agents/` subdir (so profile-scoped sessions
-//! can find them) plus `~/.claude/agents/` as a fallback for non-midtown sessions.
+//! Installs compiled-in agent definition files to `~/.midtown/platforms/claude/agents/`
+//! so that Claude Code can load them via the `--agent` flag. Each auth profile
+//! symlinks `agents/` to this shared directory (via `CLAUDE_SHARED_SYMLINK_ENTRIES`),
+//! so all profile-scoped sessions can find the definitions.
 //!
 //! Called from `midtown start` (first-run install) and `midtown update` (upgrade install).
 
@@ -84,39 +84,18 @@ pub fn check_agent_definitions_outdated(agents_dir: &Path) -> Vec<&'static Agent
         .collect()
 }
 
-/// Return the default Claude Code agents directory (`~/.claude/agents/`).
+/// Return the shared Claude Code agents directory (`~/.midtown/platforms/claude/agents/`).
+///
+/// Agent definitions are installed here once. Each auth profile symlinks its own
+/// `agents/` entry to this shared directory, so definitions are visible to all
+/// profile-scoped sessions without per-profile installation.
 pub fn claude_agents_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
+        .join(".midtown")
+        .join("platforms")
+        .join("claude")
         .join("agents")
-}
-
-/// Return all Claude agents directories: one per auth profile plus the global fallback.
-///
-/// Each profile at `~/.midtown/auth/<profile>/claude/` gets an `agents/` subdir so
-/// sessions launched with `CLAUDE_CONFIG_DIR` pointing there can find the definitions.
-/// The global `~/.claude/agents/` is included as a fallback for sessions running
-/// outside midtown.
-pub fn all_claude_agents_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-
-    if let Ok(profiles) = midtown::auth::list_profiles_for(midtown::auth::AuthProvider::Claude) {
-        for profile in profiles {
-            dirs.push(
-                midtown::auth::profile_dir_for(midtown::auth::AuthProvider::Claude, &profile)
-                    .join("agents"),
-            );
-        }
-    }
-
-    // Fallback: ~/.claude/agents/ for non-midtown sessions
-    let fallback = claude_agents_dir();
-    if !dirs.contains(&fallback) {
-        dirs.push(fallback);
-    }
-
-    dirs
 }
 
 #[path = "agents_install_tests.rs"]

@@ -1,5 +1,5 @@
 use super::{
-    AGENT_DEFINITIONS, all_claude_agents_dirs, check_agent_definitions_outdated, claude_agents_dir,
+    AGENT_DEFINITIONS, check_agent_definitions_outdated, claude_agents_dir,
     install_agent_definitions,
 };
 use std::fs;
@@ -172,12 +172,12 @@ fn install_creates_parent_directories() {
 }
 
 #[test]
-fn all_claude_agents_dirs_includes_fallback() {
-    let dirs = all_claude_agents_dirs();
-    assert!(!dirs.is_empty(), "should return at least one directory");
+fn claude_agents_dir_points_to_shared_platform_dir() {
+    let dir = claude_agents_dir();
+    let path_str = dir.to_string_lossy();
     assert!(
-        dirs.contains(&claude_agents_dir()),
-        "should include ~/.claude/agents/ fallback"
+        path_str.contains(".midtown/platforms/claude/agents"),
+        "should point to shared platform dir, got: {path_str}"
     );
 }
 

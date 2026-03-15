@@ -78,7 +78,7 @@ pub fn handle_update(check_only: bool, force: bool) -> Result<Response, String> 
         }
     }
 
-    // Update agent definitions in all profile dirs + ~/.claude/agents/ fallback
+    // Update agent definitions in shared dir (~/.midtown/platforms/claude/agents/)
     update_agent_definitions(force)?;
 
     Ok(Response::Message {
@@ -387,22 +387,15 @@ fn write_last_check_timestamp() -> Result<(), String> {
 /// With `force`: overwrites all definitions without prompting.
 /// Without `force`: checks for outdated definitions and prompts the user.
 fn update_agent_definitions(force: bool) -> Result<(), String> {
-    let agents_dirs = super::agents_install::all_claude_agents_dirs();
-
-    // Check outdated against the first directory (definitions are identical across dirs)
-    let outdated = agents_dirs
-        .first()
-        .map(|d| super::agents_install::check_agent_definitions_outdated(d))
-        .unwrap_or_default();
+    let agents_dir = super::agents_install::claude_agents_dir();
+    let outdated = super::agents_install::check_agent_definitions_outdated(&agents_dir);
 
     if outdated.is_empty() {
         return Ok(());
     }
 
     if force {
-        for agents_dir in &agents_dirs {
-            super::agents_install::install_agent_definitions(agents_dir, true)?;
-        }
+        super::agents_install::install_agent_definitions(&agents_dir, true)?;
         let names: Vec<&str> = outdated.iter().map(|d| d.filename).collect();
         eprintln!("Updated agent definitions: {}", names.join(", "));
         return Ok(());
@@ -410,14 +403,12 @@ fn update_agent_definitions(force: bool) -> Result<(), String> {
 
     // Print summary and prompt
     eprintln!("\nAgent definitions have changed:");
-    if let Some(first_dir) = agents_dirs.first() {
-        for def in &outdated {
-            let path = first_dir.join(def.filename);
-            if path.exists() {
-                eprintln!("  {} (modified)", def.filename);
-            } else {
-                eprintln!("  {} (new)", def.filename);
-            }
+    for def in &outdated {
+        let path = agents_dir.join(def.filename);
+        if path.exists() {
+            eprintln!("  {} (modified)", def.filename);
+        } else {
+            eprintln!("  {} (new)", def.filename);
         }
     }
 
@@ -426,9 +417,7 @@ fn update_agent_definitions(force: bool) -> Result<(), String> {
 
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y") {
-        for agents_dir in &agents_dirs {
-            super::agents_install::install_agent_definitions(agents_dir, true)?;
-        }
+        super::agents_install::install_agent_definitions(&agents_dir, true)?;
         eprintln!("Updated agent definitions");
     } else {
         eprintln!("Skipped agent definition update (use --force to overwrite)");

@@ -679,23 +679,15 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     // Check and install required plugins before starting daemon
     ensure_required_plugins();
 
-    // Install agent definitions to all profile dirs + ~/.claude/agents/ fallback
-    for agents_dir in super::agents_install::all_claude_agents_dirs() {
-        match super::agents_install::install_agent_definitions(&agents_dir, false) {
-            Ok(installed) if !installed.is_empty() => {
-                let names: Vec<&str> = installed.iter().map(|d| d.filename).collect();
-                eprintln!(
-                    "Installed agent definitions to {}: {}",
-                    agents_dir.display(),
-                    names.join(", ")
-                );
-            }
-            Err(e) => eprintln!(
-                "Warning: Failed to install agent definitions to {}: {e}",
-                agents_dir.display()
-            ),
-            _ => {}
+    // Install agent definitions to shared dir (~/.midtown/platforms/claude/agents/)
+    let agents_dir = super::agents_install::claude_agents_dir();
+    match super::agents_install::install_agent_definitions(&agents_dir, false) {
+        Ok(installed) if !installed.is_empty() => {
+            let names: Vec<&str> = installed.iter().map(|d| d.filename).collect();
+            eprintln!("Installed agent definitions: {}", names.join(", "));
         }
+        Err(e) => eprintln!("Warning: Failed to install agent definitions: {e}"),
+        _ => {}
     }
 
     // Build web-app if source is available and dist is stale
