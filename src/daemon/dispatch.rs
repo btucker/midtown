@@ -1936,6 +1936,15 @@ fn dispatch_unowned_pending_tasks(
             for name in &snap.coworkers.active_names {
                 excluded_names.insert(name.clone());
             }
+            // For reviewer tasks, exclude the PR author to prevent self-review.
+            // The author is the owner of the parent implementation task.
+            if is_reviewer_task
+                && let Some(parent_id) = snap.task_parent_map.get(&task.id)
+                && let Some(parent_task) = snap.all_tasks.iter().find(|t| t.id == *parent_id)
+                && let Some(ref author) = parent_task.owner
+            {
+                excluded_names.insert(author.to_lowercase());
+            }
             let Some(name) = state
                 .coworkers
                 .next_available_name_excluding(&excluded_names)
@@ -2177,6 +2186,16 @@ fn dispatch_unowned_pending_tasks(
                     message: format!("─── Reviewing PR #{} ───", pr_number),
                     channel: Some(format!("dm-{}", coworker_name)),
                 },
+                // AssignReviewer must come before PostPrComment so the
+                // pr_reviewers entry exists when post_pr_comment() stores
+                // the placeholder_comment_id.
+                effects::Effect::AssignReviewer {
+                    pr_number,
+                    reviewer_name: coworker_name.clone(),
+                    source: crate::github_state::AssignmentSource::PollingFallback,
+                    restart_count: 0,
+                    reviewer_session_id: None,
+                },
                 effects::Effect::PostPrComment {
                     pr_number,
                     reviewer_name: coworker_name.clone(),
@@ -2187,13 +2206,6 @@ fn dispatch_unowned_pending_tasks(
                              🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
                         coworker_name
                     ),
-                },
-                effects::Effect::AssignReviewer {
-                    pr_number,
-                    reviewer_name: coworker_name.clone(),
-                    source: crate::github_state::AssignmentSource::PollingFallback,
-                    restart_count: 0,
-                    reviewer_session_id: None,
                 },
             ];
 

@@ -5721,3 +5721,145 @@ fn test_reviewer_task_not_grouped_with_implementation_coworker() {
         effects
     );
 }
+
+/// Reviewer tasks must not be assigned to the PR author (parent task owner).
+/// This prevents self-review when all other coworker names happen to be in use.
+#[test]
+fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
+    use crate::tasks::{Task, TaskStatus};
+
+    // Parent implementation task owned by "riverside"
+    let impl_task = Task {
+        id: "700".to_string(),
+        subject: "Implement feature".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("riverside".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    };
+
+    // Reviewer child task
+    let review_task = Task {
+        id: "701".to_string(),
+        subject: "Review PR #88".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #88.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.all_tasks = vec![impl_task, review_task.clone()];
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("701".to_string(), "midtown-code-reviewer".to_string());
+    // Map child → parent so the self-review guard can find the author
+    snap.task_parent_map
+        .insert("701".to_string(), "700".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    // Should spawn, but NOT as "riverside" (the PR author)
+    let spawned = effects.iter().find_map(|e| {
+        if let Effect::AssignAndSpawn { task_id, owner, .. } = e {
+            if task_id == "701" {
+                Some(owner.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        spawned.is_some(),
+        "Reviewer task should produce AssignAndSpawn. Effects: {:#?}",
+        effects
+    );
+    assert_ne!(
+        spawned.unwrap().to_lowercase(),
+        "riverside",
+        "Reviewer must not be assigned to the PR author 'riverside'"
+    );
+}
+
+/// AssignReviewer must appear before PostPrComment in the on_success callback
+/// list so that post_pr_comment() can store the placeholder_comment_id in the
+/// pr_reviewers entry that AssignReviewer creates.
+#[test]
+fn test_reviewer_assign_reviewer_before_post_pr_comment() {
+    use crate::tasks::{Task, TaskStatus};
+
+    let review_task = Task {
+        id: "800".to_string(),
+        subject: "Review PR #99".to_string(),
+        status: TaskStatus::Pending,
+        owner: None,
+        description: Some("Code review for PR #99.".to_string()),
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(99),
+        created_at: None,
+    };
+
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_without_owners = vec![review_task];
+    snap.dir_key = "test-repo".to_string();
+    snap.project_name = "test-repo".to_string();
+    snap.default_channel = "test-repo".to_string();
+    snap.task_agent_type_map
+        .insert("800".to_string(), "midtown-code-reviewer".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let on_success = effects
+        .iter()
+        .find_map(|e| {
+            if let Effect::AssignAndSpawn {
+                on_success,
+                task_id,
+                ..
+            } = e
+            {
+                if task_id == "800" {
+                    Some(on_success)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .expect("Reviewer task should produce AssignAndSpawn");
+
+    let assign_pos = on_success
+        .iter()
+        .position(|e| matches!(e, Effect::AssignReviewer { .. }))
+        .expect("on_success should contain AssignReviewer");
+    let post_pos = on_success
+        .iter()
+        .position(|e| matches!(e, Effect::PostPrComment { .. }))
+        .expect("on_success should contain PostPrComment");
+
+    assert!(
+        assign_pos < post_pos,
+        "AssignReviewer (pos {}) must come before PostPrComment (pos {}) \
+         so that pr_reviewers entry exists when placeholder_comment_id is stored. \
+         on_success: {:#?}",
+        assign_pos,
+        post_pos,
+        on_success
+    );
+}
