@@ -1,4 +1,7 @@
-use super::{AGENT_DEFINITIONS, check_agent_definitions_outdated, install_agent_definitions};
+use super::{
+    AGENT_DEFINITIONS, all_claude_agents_dirs, check_agent_definitions_outdated, claude_agents_dir,
+    install_agent_definitions,
+};
 use std::fs;
 use tempfile::TempDir;
 
@@ -166,6 +169,16 @@ fn install_creates_parent_directories() {
     let result = install_agent_definitions(&agents_dir, false);
     assert!(result.is_ok());
     assert!(agents_dir.exists(), "should create parent directories");
+}
+
+#[test]
+fn all_claude_agents_dirs_includes_fallback() {
+    let dirs = all_claude_agents_dirs();
+    assert!(!dirs.is_empty(), "should return at least one directory");
+    assert!(
+        dirs.contains(&claude_agents_dir()),
+        "should include ~/.claude/agents/ fallback"
+    );
 }
 
 #[test]
