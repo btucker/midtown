@@ -1041,8 +1041,10 @@ pub(super) async fn handle_task_handoff(
         .or_else(|| task_id.strip_prefix('!'))
         .unwrap_or(task_id);
 
-    // Validate task exists
-    let tasks = crate::tasks::read_tasks();
+    // Validate task exists (use repo-scoped lookup so tests with
+    // set_test_midtown_base_dir can find their tasks)
+    let dir_key = state.paths.dir_key();
+    let tasks = crate::tasks::read_tasks_for_repo(Some(dir_key));
     if !tasks.iter().any(|t| t.id == task_id) {
         return Response::error(
             id,

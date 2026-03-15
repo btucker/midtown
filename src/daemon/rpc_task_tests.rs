@@ -1033,3 +1033,219 @@ fn test_task_handoff_strips_id_prefixes() {
     assert_eq!(strip("#42"), "42");
     assert_eq!(strip("42"), "42");
 }
+
+// ── handle_task_handoff async tests ──────────────────────────────────────────
+//
+// These require a minimal DaemonState to exercise the async handler's
+// error paths (task not found, session not found).
+
+fn make_test_state(
+    repo_name: &str,
+) -> (
+    super::super::DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    use std::process::Command;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let project_dir = tempfile::tempdir().expect("project temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config email");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config name");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(project_dir.path().to_path_buf()).expect("wm");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+    let channel_router = crate::ChannelRouter::new(project_dir.path(), "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let state = super::super::DaemonState::new(
+        "/tmp/rpc-task-test.sock".into(),
+        cm,
+        crate::paths::ProjectPaths::with_project_name(repo_name, repo_name),
+        vec![project_dir.path().to_path_buf()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+
+    (state, project_dir, _guard)
+}
+
+/// handle_task_handoff returns an error when the task ID does not exist.
+#[tokio::test]
+async fn test_handle_task_handoff_task_not_found() {
+    let (state, _dir, _guard) = make_test_state("handoff-test");
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(1),
+        "nonexistent-999",
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    let json = serde_json::to_value(&response).expect("serialize");
+    let error = json.get("error").expect("should have error");
+    let message = error.get("message").expect("error message");
+    assert!(
+        message.as_str().unwrap().contains("not found"),
+        "expected 'not found' in error, got: {}",
+        message
+    );
+}
+
+/// handle_task_handoff strips ! and # prefixes from task IDs before lookup.
+#[tokio::test]
+async fn test_handle_task_handoff_strips_prefix_in_handler() {
+    let (state, _dir, _guard) = make_test_state("handoff-strip-test");
+    // Both !999 and #999 should resolve to "999" and return "not found"
+    // (not a parse error or panic)
+    for prefix_id in ["!999", "#999"] {
+        let response = handle_task_handoff(
+            crate::rpc::RequestId::Number(1),
+            prefix_id,
+            "midtown-code-reviewer",
+            None,
+            "lead",
+            &state,
+        )
+        .await;
+
+        let json = serde_json::to_value(&response).expect("serialize");
+        let error = json.get("error").expect("should have error");
+        let message = error
+            .get("message")
+            .expect("error message")
+            .as_str()
+            .unwrap();
+        assert!(
+            message.contains("not found"),
+            "prefix '{}' should strip to '999' and return not found, got: {}",
+            prefix_id,
+            message
+        );
+    }
+}
+
+/// handle_task_handoff returns "no session found" when the task exists
+/// but no session has been assigned to it.
+#[tokio::test]
+async fn test_handle_task_handoff_no_session_found() {
+    let (state, _dir, _guard) = make_test_state("handoff-nosess-test");
+
+    // Create a real task in the test repo's task storage
+    let task_id = crate::tasks::create_task_for_repo(
+        "Test handoff task",
+        "description",
+        "Testing handoff task",
+        "park",
+        "handoff-nosess-test",
+        None,
+        None,
+        None,
+    )
+    .expect("create task");
+
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(2),
+        &task_id,
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    let json = serde_json::to_value(&response).expect("serialize");
+    let error = json.get("error").expect("should have error");
+    let message = error
+        .get("message")
+        .expect("error message")
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("No session found"),
+        "expected 'No session found', got: {}",
+        message
+    );
+}
+
+/// handle_task_handoff succeeds (updates agent type) when a session mapping
+/// exists in task_to_session but the session record is missing from persistent
+/// state. Main's implementation gracefully proceeds — it updates task_agent_type
+/// and returns success without requiring the session record for the no-message path.
+#[tokio::test]
+async fn test_handle_task_handoff_session_exists_but_no_record() {
+    let (state, _dir, _guard) = make_test_state("handoff-norec-test");
+
+    // Create a real task
+    let task_id = crate::tasks::create_task_for_repo(
+        "Test handoff no record",
+        "description",
+        "Testing handoff",
+        "park",
+        "handoff-norec-test",
+        None,
+        None,
+        None,
+    )
+    .expect("create task");
+
+    // Insert a fake session mapping (task → session) without a corresponding
+    // session record in persistent state
+    let fake_session_id = "fake-session-abc-123";
+    state
+        .task_to_session
+        .lock()
+        .unwrap()
+        .insert(task_id.clone(), fake_session_id.to_string());
+
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(3),
+        &task_id,
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    // With no message, handle_task_handoff updates task_agent_type and returns
+    // success even without a session record (graceful degradation).
+    let json = serde_json::to_value(&response).expect("serialize");
+    let result = json.get("result").expect("should have result");
+    let message = result
+        .get("message")
+        .expect("result message")
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("agent type changed"),
+        "expected 'agent type changed' in result, got: {}",
+        message
+    );
+}
