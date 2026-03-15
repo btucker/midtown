@@ -679,7 +679,7 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
     // Check and install required plugins before starting daemon
     ensure_required_plugins();
 
-    // Install agent definitions to ~/.claude/agents/ (first-run: only write missing files)
+    // Install agent definitions to shared dir (~/.midtown/platforms/claude/agents/)
     let agents_dir = super::agents_install::claude_agents_dir();
     match super::agents_install::install_agent_definitions(&agents_dir, false) {
         Ok(installed) if !installed.is_empty() => {

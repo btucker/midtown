@@ -1,11 +1,14 @@
 //! Agent definition installation.
 //!
-//! Installs compiled-in agent definition files to `~/.claude/agents/` so that
-//! Claude Code can load them via the `--agent` flag. Called from `midtown start`
-//! (first-run install) and `midtown update` (upgrade install).
+//! Installs compiled-in agent definition files to `~/.midtown/platforms/claude/agents/`
+//! so that Claude Code can load them via the `--agent` flag. Each auth profile
+//! symlinks `agents/` to this shared directory (via `CLAUDE_SHARED_SYMLINK_ENTRIES`),
+//! so all profile-scoped sessions can find the definitions.
+//!
+//! Called from `midtown start` (first-run install) and `midtown update` (upgrade install).
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A compiled-in agent definition file.
 #[derive(Debug)]
@@ -81,11 +84,17 @@ pub fn check_agent_definitions_outdated(agents_dir: &Path) -> Vec<&'static Agent
         .collect()
 }
 
-/// Return the default Claude Code agents directory (`~/.claude/agents/`).
-pub fn claude_agents_dir() -> std::path::PathBuf {
+/// Return the shared Claude Code agents directory (`~/.midtown/platforms/claude/agents/`).
+///
+/// Agent definitions are installed here once. Each auth profile symlinks its own
+/// `agents/` entry to this shared directory, so definitions are visible to all
+/// profile-scoped sessions without per-profile installation.
+pub fn claude_agents_dir() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".claude")
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".midtown")
+        .join("platforms")
+        .join("claude")
         .join("agents")
 }
 

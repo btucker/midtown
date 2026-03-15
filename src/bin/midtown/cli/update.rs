@@ -78,7 +78,7 @@ pub fn handle_update(check_only: bool, force: bool) -> Result<Response, String> 
         }
     }
 
-    // Update agent definitions in ~/.claude/agents/
+    // Update agent definitions in shared dir (~/.midtown/platforms/claude/agents/)
     update_agent_definitions(force)?;
 
     Ok(Response::Message {

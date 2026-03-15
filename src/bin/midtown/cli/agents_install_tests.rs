@@ -1,4 +1,7 @@
-use super::{AGENT_DEFINITIONS, check_agent_definitions_outdated, install_agent_definitions};
+use super::{
+    AGENT_DEFINITIONS, check_agent_definitions_outdated, claude_agents_dir,
+    install_agent_definitions,
+};
 use std::fs;
 use tempfile::TempDir;
 
@@ -166,6 +169,16 @@ fn install_creates_parent_directories() {
     let result = install_agent_definitions(&agents_dir, false);
     assert!(result.is_ok());
     assert!(agents_dir.exists(), "should create parent directories");
+}
+
+#[test]
+fn claude_agents_dir_points_to_shared_platform_dir() {
+    let dir = claude_agents_dir();
+    let path_str = dir.to_string_lossy();
+    assert!(
+        path_str.contains(".midtown/platforms/claude/agents"),
+        "should point to shared platform dir, got: {path_str}"
+    );
 }
 
 #[test]
