@@ -219,12 +219,7 @@ pub struct SnapshotPrState {
 pub struct SnapshotReviewerState {
     /// Currently active reviewers (from both in-memory tracker and persistent state).
     pub active_reviewers: HashSet<String>,
-    /// Coworkers currently in `WorkflowPhase::Reviewing` (lowercase names).
-    /// Defense-in-depth guard for idle shutdown: protects reviewers when their
-    /// assignment timestamp has expired but their session is still working.
-    #[serde(default)]
-    pub reviewing_phase_coworkers: HashSet<String>,
-    /// Reviewer → assigned PR number mapping (from github-state.json).
+    /// Reviewer → assigned PR number mapping (from task_session_spans).
     pub reviewer_pr_assignments: HashMap<String, u64>,
     /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
     /// Maps PR number → GitHub comment database ID.
@@ -940,46 +935,19 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Reviewer state ──────────────────────────────────────────────────
     let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
-        let reviewers = compute_active_reviewers_with_health(&ps.github, &headless_process_health);
-        // Build reviewer → PR assignments from persistent state so that dead
+        let reviewers = compute_active_reviewers_from_spans(&ps, &headless_process_health);
+        // Build reviewer → PR assignments from task_session_spans so that dead
         // reviewers (absent from active_coworkers) are still included.
         // This is required for decide_dead_reviewer_respawns to detect and
         // respawn reviewers whose processes have exited without posting a review.
-        let assignments = build_reviewer_pr_assignments(&ps.github);
-        // Collect PR → restart_count for stuck reviewer backoff.
-        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
-        let restart_counts: HashMap<u64, u32> = {
-            let mut counts: HashMap<u64, u32> = ps
-                .github
-                .pr_reviewers
-                .iter()
-                .filter(|(_, a)| a.restart_count > 0)
-                .map(|(pr, a)| (*pr, a.restart_count))
-                .collect();
-            // task_reviewer_metadata takes precedence over pr_reviewers
-            for meta in ps.task_reviewer_metadata.values() {
-                if meta.restart_count > 0 {
-                    counts.insert(meta.pr_number, meta.restart_count);
-                }
-            }
-            counts
-        };
-        (reviewers, assignments, restart_counts)
-    };
-
-    // ── Reviewing-phase coworkers (defense-in-depth idle-shutdown guard) ─
-    let reviewing_phase_coworkers: HashSet<String> = {
-        let records = state.coworker_records.read().await;
-        records
+        let assignments = build_reviewer_pr_assignments_from_spans(&ps);
+        // Collect PR → restart_count for stuck reviewer backoff (from task_restart_count).
+        let restart_counts: HashMap<u64, u32> = ps
+            .task_restart_count
             .iter()
-            .filter(|(_, rec)| {
-                matches!(
-                    rec.workflow_phase,
-                    Some(crate::coworker_state::WorkflowPhase::Reviewing)
-                )
-            })
-            .map(|(name, _)| name.to_lowercase())
-            .collect()
+            .filter_map(|(task_id, &count)| ps.task_pr_number.get(task_id).map(|&pr| (pr, count)))
+            .collect();
+        (reviewers, assignments, restart_counts)
     };
 
     // ── Reviewer escalation tracking ──────────────────────────────────
@@ -1003,12 +971,10 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
     // Collect placeholder comment IDs for assigned PRs that haven't been reviewed yet.
     //
-    // Three-tier lookup for each assigned PR:
-    // 1. Check `PrReviewerAssignment.placeholder_comment_id` (set when daemon posts the comment)
-    // 2. Check the in-memory TTL cache (120s for both positive and negative results)
-    // 3. Fall back to API lookup via `pr_in_progress_placeholder_comment_id()`
-    //
-    // Tier 1 eliminates most API calls for daemon-posted placeholders.
+    // Read from task_placeholder_comment_id (task-centric), mapped to PR numbers via
+    // task_pr_number. Falls back to a three-tier lookup for PRs without a task entry:
+    // 1. Check the in-memory TTL cache (120s for both positive and negative results)
+    // 2. Fall back to API lookup via `pr_in_progress_placeholder_comment_id()`
     const PLACEHOLDER_CACHE_TTL_SECS: u64 = 120;
     let reviewer_in_progress_comment_ids: HashMap<u64, u64> = {
         let assigned_unreviewed_prs: Vec<u64> = reviewer_pr_assignments
@@ -1018,20 +984,19 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect();
 
         // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition).
-        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
+        // Read from task_placeholder_comment_id keyed by task_id, mapped to pr via task_pr_number.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
                 .map(|&pr| {
-                    let id = super::state::task_reviewer_metadata_for_pr(&ps, pr)
-                        .and_then(|m| m.placeholder_comment_id)
-                        .or_else(|| {
-                            ps.github
-                                .pr_reviewers
-                                .get(&pr)
-                                .and_then(|a| a.placeholder_comment_id)
-                        });
+                    // Find a task_id for this PR via task_pr_number reverse lookup
+                    let id = ps
+                        .task_pr_number
+                        .iter()
+                        .find(|&(_, &p)| p == pr)
+                        .and_then(|(task_id, _)| ps.task_placeholder_comment_id.get(task_id))
+                        .copied();
                     (pr, id)
                 })
                 .collect()
@@ -1039,7 +1004,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
         let mut result = HashMap::new();
         for pr_number in assigned_unreviewed_prs {
-            // Tier 1: Check stored placeholder_comment_id from the assignment
+            // Tier 1: Check stored placeholder_comment_id from task_placeholder_comment_id
             if let Some(Some(stored_id)) = stored_placeholder_ids.get(&pr_number) {
                 result.insert(pr_number, *stored_id);
                 continue;
@@ -1493,7 +1458,6 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         },
         reviewer: SnapshotReviewerState {
             active_reviewers,
-            reviewing_phase_coworkers,
             reviewer_pr_assignments,
             reviewer_in_progress_comment_ids,
             reviewed_prs,
@@ -1648,79 +1612,55 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
     }
 }
 
-/// Extra seconds beyond the assignment timeout that an alive reviewer is still protected.
+/// Compute the active reviewers set from task_session_spans.
 ///
-/// Both `SessionMonitorTick` and `PrPollTick` fire every 30 seconds. At the 600-second
-/// expiry boundary, if the idle check fires just before the poll tick refreshes the
-/// assignment timestamp, the reviewer loses protection. A 30-second grace window covers
-/// this race without promoting truly stale assignments (e.g., from a session that ended
-/// long before a new session with the same name was spawned).
-const REVIEWER_ALIVE_GRACE_SECS: u64 = 30;
-
-/// Compute the active reviewers set, augmented with alive-but-recently-expired reviewers.
+/// Returns all reviewers with an open span (end_time = None, agent_type = "reviewer")
+/// where either:
+/// - The associated session record's `is_running` flag is true, OR
+/// - The process health map shows the agent as alive.
 ///
-/// `active_reviewers()` only returns reviewers whose assignment is within the
-/// 600-second timeout window. However, there is a race condition between
-/// `SessionMonitorTick` (idle shutdown, every 30s) and `PrPollTick` (which refreshes
-/// assignment timestamps, also every 30s): when both fire at T=600s, if the idle
-/// check fires first, a still-running reviewer loses their protection.
-///
-/// This function adds a secondary protection: if a coworker's process is alive
-/// in `process_health` AND their assignment is within the extended window
-/// (`PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + REVIEWER_ALIVE_GRACE_SECS`), they are
-/// included in the result. The time bound prevents truly stale historical assignments
-/// (from a previous session with the same name) from providing false protection.
-pub(crate) fn compute_active_reviewers_with_health(
-    github: &crate::github_state::GitHubState,
+/// This replaces the old `compute_active_reviewers_with_health` that read from
+/// `GitHubState` assignment tracking + process health. The span-based approach uses
+/// `SessionRecord.is_running` directly, eliminating the assignment timeout race
+/// that required the grace window.
+pub(crate) fn compute_active_reviewers_from_spans(
+    ps: &crate::daemon::state::DaemonPersistentState,
     process_health: &HashMap<String, ProcessHealth>,
-) -> std::collections::HashSet<String> {
-    let mut reviewers = github.active_reviewers();
-    for (name, health) in process_health {
-        if health.is_alive && github.reviewer_has_recent_assignment(name, REVIEWER_ALIVE_GRACE_SECS)
-        {
-            reviewers.insert(name.clone());
+) -> HashSet<String> {
+    let mut reviewers = HashSet::new();
+    for span in ps.active_reviewer_spans() {
+        let is_running = ps
+            .sessions
+            .get(&span.session_id)
+            .map(|s| s.is_running)
+            .unwrap_or(false);
+        let is_alive = process_health
+            .get(&span.agent_name)
+            .map(|h| h.is_alive)
+            .unwrap_or(false);
+        if is_running || is_alive {
+            reviewers.insert(span.agent_name.clone());
         }
     }
     reviewers
 }
 
-/// Build the reviewer → PR number assignment map from persistent GitHub state.
+/// Build the reviewer → PR number assignment map from task_session_spans.
 ///
-/// This reads from `pr_reviewers` directly rather than filtering through
-/// `active_coworkers`, so that dead reviewers (whose processes have exited)
-/// are still included in the map. This is required for
-/// `decide_dead_reviewer_respawns` to detect and respawn reviewers that died
-/// before posting their review.
-///
-/// Intentionally does NOT apply the `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` filter.
-/// A dead reviewer's assignment may expire before the respawn logic fires;
-/// filtering it out here would make the reviewer invisible to
-/// `decide_dead_reviewer_respawns` and cause the review to be permanently lost.
-/// Use `active_reviewers()` when you need the timeout-filtered list for display
-/// or logging.
-///
-/// When a reviewer has multiple entries in `pr_reviewers` (e.g., a stale assignment
-/// from one PR and a fresh assignment for another), the most recently assigned entry
-/// is kept to ensure the map is deterministic regardless of `HashMap` iteration order.
-pub(crate) fn build_reviewer_pr_assignments(
-    github: &crate::github_state::GitHubState,
+/// Reads from open reviewer spans (end_time = None, agent_type = "reviewer"),
+/// mapping agent_name → PR number via task_pr_number. Dead reviewers (whose
+/// process has exited but whose span is still open) are included so that
+/// `decide_dead_reviewer_respawns` can detect and respawn them.
+pub(crate) fn build_reviewer_pr_assignments_from_spans(
+    ps: &crate::daemon::state::DaemonPersistentState,
 ) -> HashMap<String, u64> {
-    let mut result: HashMap<String, (u64, chrono::DateTime<chrono::Utc>)> = HashMap::new();
-    for (&pr_number, assignment) in &github.pr_reviewers {
-        let is_newer = result
-            .get(&assignment.reviewer)
-            .is_none_or(|(_, existing_at)| assignment.assigned_at > *existing_at);
-        if is_newer {
-            result.insert(
-                assignment.reviewer.clone(),
-                (pr_number, assignment.assigned_at),
-            );
+    let mut assignments = HashMap::new();
+    for span in ps.active_reviewer_spans() {
+        if let Some(&pr) = ps.task_pr_number.get(&span.task_id) {
+            assignments.insert(span.agent_name.clone(), pr);
         }
     }
-    result
-        .into_iter()
-        .map(|(reviewer, (pr, _))| (reviewer, pr))
-        .collect()
+    assignments
 }
 
 /// How long to cache worktree freshness results before re-running git fetch.

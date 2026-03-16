@@ -990,7 +990,6 @@ pub(super) fn check_for_state_gc(
         }
 
         // Dead reviewer sessions: prune immediately (ephemeral lifecycle).
-        // Resume-on-@mention uses PrReviewerAssignment (not session records).
         if record.is_reviewer {
             dead_session_ids.push(session_id.clone());
             continue;
@@ -1159,12 +1158,7 @@ fn build_reviewer_respawn_effects(
             status: "running".to_string(),
             current_task: Some(format!("reviewing PR #{}", pr_number)),
         },
-        Effect::AssignReviewer {
-            pr_number,
-            reviewer_name: name.to_string(),
-            source: crate::github_state::AssignmentSource::Manual,
-            restart_count: new_restart_count,
-            reviewer_session_id: None,
+        Effect::CreateTaskSessionSpan {
             task_id: snap
                 .all_tasks
                 .iter()
@@ -1175,7 +1169,13 @@ fn build_reviewer_respawn_effects(
                             .get(&t.id)
                             .is_some_and(|at| at == "midtown-code-reviewer")
                 })
-                .map(|t| t.id.clone()),
+                .map(|t| t.id.clone())
+                .unwrap_or_default(),
+            agent_name: name.to_string(),
+            agent_type: "reviewer".to_string(),
+            session_id: String::new(),
+            pr_number: Some(pr_number),
+            restart_count: new_restart_count,
         },
     ];
 

@@ -1,134 +1,98 @@
-//! Test that breaking a reviewer clears their PR assignment.
+//! Test that breaking a reviewer clears their task session span.
 //!
 //! Regression test for: When a reviewer coworker is manually broken
-//! (`midtown agent stop`), the daemon didn't clear the review assignment
-//! from GitHubState. It then detected the PR still needs review, sees no
-//! active reviewer, and respawned one — creating a loop.
+//! (`midtown agent stop`), the daemon didn't clear the review span.
+//! It then detected the PR still needs review, sees no active reviewer,
+//! and respawned one — creating a loop.
 
-use midtown::github_state::{AssignmentSource, GitHubState};
+use midtown::daemon::DaemonPersistentState;
 
 #[test]
-fn test_breaking_reviewer_should_clear_assignment() {
-    // Setup: Create a GitHub state with a reviewer assigned to PR #42
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "amsterdam", AssignmentSource::Webhook);
+fn test_breaking_reviewer_should_clear_span() {
+    let mut ps = DaemonPersistentState::default();
 
-    // Verify the assignment exists
-    assert_eq!(state.get_reviewer(42), Some("amsterdam"));
-    assert!(state.is_assigned(42));
+    // Setup: Create a reviewer span for PR #42
+    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
+    ps.task_pr_number.insert("review-42".to_string(), 42);
 
-    // Simulate breaking the reviewer: clear the assignment
-    let removed = state.remove_assignment_by_reviewer("amsterdam");
+    // Verify the span exists
+    assert!(ps.active_reviewer_for_pr(42).is_some());
 
-    // Verify the assignment was removed
-    assert!(removed.is_some());
-    let assignment = removed.unwrap();
-    assert_eq!(assignment.reviewer, "amsterdam");
-    assert_eq!(assignment.pr_number, 42);
+    // Simulate breaking the reviewer via clear_reviewer_assignment
+    let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
+    assert!(cleared, "should have cleared an assignment");
 
-    // Verify no assignment remains
-    assert_eq!(state.get_reviewer(42), None);
-    assert!(!state.is_assigned(42));
-
-    // Verify the PR won't be detected as needing a reviewer again
-    assert_eq!(state.pr_for_reviewer("amsterdam"), None);
+    // Verify no active reviewer remains
+    assert!(ps.active_reviewer_for_pr(42).is_none());
 }
 
 #[test]
-fn test_breaking_untracked_reviewer_still_clears_assignment() {
-    // Regression test for review feedback issue #1:
-    // When a coworker is not tracked (already deregistered, crashed, or broken twice)
-    // but still has an active reviewer assignment, the early return in handle_coworker_break
-    // would skip the cleanup, causing the daemon to respawn them.
+fn test_breaking_untracked_reviewer_still_clears_span() {
+    let mut ps = DaemonPersistentState::default();
 
-    // Setup: A reviewer assignment exists but the coworker is not tracked
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "amsterdam", AssignmentSource::Webhook);
+    // A reviewer span exists but the coworker session is not tracked
+    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
+    ps.task_pr_number.insert("review-42".to_string(), 42);
+    assert!(ps.active_reviewer_for_pr(42).is_some());
 
-    // Verify assignment exists
-    assert_eq!(state.get_reviewer(42), Some("amsterdam"));
+    // Clear even if coworker is not tracked
+    let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
+    assert!(cleared);
 
-    // Simulate the fix: clear assignment even if coworker is not tracked
-    // (This would be called before the early return in handle_coworker_break)
-    let removed = state.remove_assignment_by_reviewer("amsterdam");
-    assert!(removed.is_some());
-
-    // Verify the assignment was cleared
-    assert_eq!(state.get_reviewer(42), None);
-
-    // The daemon should NOT spawn a new reviewer on the next tick
-    // because there's no assignment anymore
+    assert!(ps.active_reviewer_for_pr(42).is_none());
 }
 
 #[test]
 fn test_breaking_non_reviewer_is_safe() {
-    // Setup: Create a GitHub state with a reviewer assigned
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "lexington", AssignmentSource::Webhook);
+    let mut ps = DaemonPersistentState::default();
+
+    // Setup: Create a reviewer span for lexington
+    ps.create_span("review-42", "lexington", "reviewer", "sess-rev-42");
+    ps.task_pr_number.insert("review-42".to_string(), 42);
 
     // Try to break a coworker that's not reviewing anything
-    let removed = state.remove_assignment_by_reviewer("park");
+    let cleared = ps.clear_reviewer_assignment("park", "test-repo");
+    assert!(!cleared, "should not have cleared anything");
 
-    // Should return None (no assignment to remove)
-    assert!(removed.is_none());
-
-    // Original assignment should still be there
-    assert_eq!(state.get_reviewer(42), Some("lexington"));
+    // Original span should still be there
+    assert!(ps.active_reviewer_for_pr(42).is_some());
 }
 
 #[test]
-fn test_breaking_reviewer_with_multiple_assignments() {
-    // Setup: Multiple reviewers assigned
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "amsterdam", AssignmentSource::Webhook);
-    state.assign_reviewer(43, "lexington", AssignmentSource::Webhook);
+fn test_breaking_reviewer_with_multiple_spans() {
+    let mut ps = DaemonPersistentState::default();
+
+    // Multiple reviewers assigned
+    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
+    ps.task_pr_number.insert("review-42".to_string(), 42);
+    ps.create_span("review-43", "lexington", "reviewer", "sess-rev-43");
+    ps.task_pr_number.insert("review-43".to_string(), 43);
 
     // Break amsterdam
-    let removed = state.remove_assignment_by_reviewer("amsterdam");
-    assert!(removed.is_some());
-    assert_eq!(removed.unwrap().pr_number, 42);
+    let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
+    assert!(cleared);
 
-    // Amsterdam's assignment should be cleared
-    assert_eq!(state.get_reviewer(42), None);
+    // Amsterdam's span should be closed
+    assert!(ps.active_reviewer_for_pr(42).is_none());
 
-    // Lexington's assignment should be unaffected
-    assert_eq!(state.get_reviewer(43), Some("lexington"));
+    // Lexington's span should be unaffected
+    assert!(ps.active_reviewer_for_pr(43).is_some());
 }
 
 #[test]
 fn test_coworker_break_prevents_respawn_loop() {
-    // Integration test that verifies the full daemon behavior:
-    // When a reviewer coworker is broken, their assignment is cleared,
-    // and the daemon won't spawn a new reviewer on the next tick.
-    //
-    // This test verifies the complete cycle:
-    // 1. Reviewer is assigned to a PR
-    // 2. Coworker is broken (simulated by calling remove_assignment_by_reviewer)
-    // 3. Assignment is cleared
-    // 4. Next tick won't see a reviewer need (preventing respawn loop)
+    let mut ps = DaemonPersistentState::default();
 
-    // Setup: A reviewer is assigned to PR #42
-    let mut state = GitHubState::default();
-    state.assign_reviewer(42, "amsterdam", AssignmentSource::Webhook);
+    // A reviewer is assigned to PR #42
+    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
+    ps.task_pr_number.insert("review-42".to_string(), 42);
+    assert!(ps.active_reviewer_for_pr(42).is_some());
 
-    // Verify precondition: PR is assigned to amsterdam
-    assert_eq!(state.get_reviewer(42), Some("amsterdam"));
-    assert_eq!(state.pr_for_reviewer("amsterdam"), Some(42));
+    // Simulate the break command
+    let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
+    assert!(cleared);
 
-    // Simulate the break command: remove assignment by reviewer name
-    // (This is what the Effect::ClearOrphanedReviewerAssignments does internally)
-    let removed = state.remove_assignment_by_reviewer("amsterdam");
-    assert!(removed.is_some());
-
-    // Verify postcondition: PR is no longer assigned
-    assert_eq!(state.get_reviewer(42), None);
-    assert!(!state.is_assigned(42));
-    assert_eq!(state.pr_for_reviewer("amsterdam"), None);
-
-    // This state represents what the daemon sees on the next tick:
-    // - PR #42 has no reviewer assignment
-    // - amsterdam is not tracking any PR
-    // - The daemon won't detect this as "needs reviewer"
-    // - No spawn effect will be produced
-    // - The respawn loop is prevented
+    // No active reviewer remains - daemon won't try to respawn
+    assert!(ps.active_reviewer_for_pr(42).is_none());
+    assert!(ps.active_reviewer_spans().is_empty());
 }

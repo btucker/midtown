@@ -232,24 +232,21 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let name_session_map: std::collections::HashMap<String, String> =
             state.name_to_session.lock().unwrap().clone();
 
-        // Look up whether the @mentioned name has an existing reviewer session.
-        // Use pr_reviewers to find the assignment by reviewer name, then prefer
-        // reviewer_session_id from task_reviewer_metadata (falling back to pr_reviewers).
+        // Look up whether the @mentioned name has an existing reviewer session via spans.
         let reviewer_session = {
             let ps = state.persistent_state.lock().await;
-            ps.github
-                .pr_reviewers
-                .values()
-                .find(|a| a.reviewer.eq_ignore_ascii_case(&target_name))
-                .and_then(|a| {
-                    // Prefer session ID from task_reviewer_metadata; fall back to pr_reviewers.
-                    let session_id = super::state::task_reviewer_metadata_for_pr(&ps, a.pr_number)
-                        .and_then(|m| m.reviewer_session_id.clone())
-                        .or_else(|| a.reviewer_session_id.clone());
-                    session_id.map(|sid| ReviewerSessionInfo {
-                        session_id: sid,
-                        task_id: Some(format!("{}", a.pr_number)),
-                    })
+            ps.active_reviewer_spans()
+                .into_iter()
+                .find(|s| s.agent_name.eq_ignore_ascii_case(&target_name))
+                .and_then(|s| {
+                    if s.session_id.is_empty() {
+                        None
+                    } else {
+                        Some(ReviewerSessionInfo {
+                            session_id: s.session_id.clone(),
+                            task_id: Some(s.task_id.clone()),
+                        })
+                    }
                 })
         };
 

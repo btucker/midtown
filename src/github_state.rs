@@ -1,36 +1,19 @@
 //! Persistent GitHub state for the midtown daemon.
 //!
-//! Stores PR reviewer assignments in a JSON file that survives daemon restarts.
-//! This prevents duplicate reviewer assignments and enables the web UI to show
-//! which coworker is reviewing each PR.
+//! Stores PR review cache, webhook event timestamps, rate limits, review comment IDs,
+//! and external PR tracking in a JSON file that survives daemon restarts.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 use tracing::{debug, warn};
 
-/// How long a review assignment is valid before it expires (10 minutes).
-/// Mirrors PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS from the in-memory tracker.
-pub const PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS: u64 = 600;
-
-/// Grace period (in seconds) for the optimistic assignment window. Assignments
-/// younger than this are never pruned, even if the reviewer isn't running yet,
-/// because the spawn may still be in progress. After this window, assignments
-/// where the session never started (no `reviewer_session_id`) and the reviewer
-/// is not running are considered orphaned and removed.
-pub const OPTIMISTIC_ASSIGNMENT_GRACE_SECS: u64 = 60;
-
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GitHubState {
-    /// Map of PR number -> reviewer assignment
-    #[serde(default)]
-    pub pr_reviewers: HashMap<u64, PrReviewerAssignment>,
-
     /// Set of PR numbers that have a confirmed completed review.
     /// Review status is monotonic — once a PR has a review, it never loses it.
     /// This cache eliminates redundant `gh pr view` calls on every poll cycle.
@@ -76,63 +59,6 @@ pub struct GitHubState {
     pub allowed_external_repos: HashSet<String>,
 }
 
-/// How the reviewer assignment was triggered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AssignmentSource {
-    /// Triggered by a GitHub webhook event (PR opened / ready_for_review).
-    Webhook,
-    /// Triggered by the periodic polling loop as a fallback.
-    PollingFallback,
-    /// Manually assigned (e.g., by the lead or via an RPC command).
-    Manual,
-}
-
-impl fmt::Display for AssignmentSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AssignmentSource::Webhook => write!(f, "webhook"),
-            AssignmentSource::PollingFallback => write!(f, "polling"),
-            AssignmentSource::Manual => write!(f, "manual"),
-        }
-    }
-}
-
-/// A PR reviewer assignment record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrReviewerAssignment {
-    /// PR number
-    pub pr_number: u64,
-    /// Coworker name assigned to review (display/routing label).
-    pub reviewer: String,
-    /// Claude session ID for the reviewing session, if known.
-    ///
-    /// Used to uniquely identify the session when multiple sessions share
-    /// a coworker name. `None` for assignments created before session tracking
-    /// was added (backward-compatible with persisted state).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reviewer_session_id: Option<String>,
-    /// When the assignment was made
-    pub assigned_at: DateTime<Utc>,
-    /// How this assignment was triggered (webhook, polling fallback, or manual).
-    #[serde(default = "default_assignment_source")]
-    pub source: AssignmentSource,
-    /// Optional webhook delivery ID for debugging/telemetry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub webhook_event_id: Option<String>,
-    /// How many times this reviewer has been restarted for the same PR.
-    /// Used by stuck reviewer detection to implement backoff — after
-    /// `MAX_REVIEWER_RESTARTS`, no further restarts are attempted.
-    #[serde(default)]
-    pub restart_count: u32,
-    /// GitHub comment ID of the "Review in progress" placeholder comment.
-    ///
-    /// Set by the daemon when it posts the placeholder via `PostPrComment`.
-    /// Used to update the placeholder with the final review via `pr.review-post`.
-    /// Eliminates the need for API lookups to find the placeholder comment.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub placeholder_comment_id: Option<u64>,
-}
-
 /// Info about an external (fork/cross-repo) PR that is blocked from daemon processing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalPrInfo {
@@ -149,10 +75,6 @@ pub struct ExternalPrInfo {
     pub notified: bool,
 }
 
-fn default_assignment_source() -> AssignmentSource {
-    AssignmentSource::PollingFallback
-}
-
 impl GitHubState {
     /// Load state from a file, returning default if file doesn't exist.
     pub fn load(path: &Path) -> io::Result<Self> {
@@ -162,10 +84,7 @@ impl GitHubState {
                     warn!("Failed to parse github-state.json: {}", e);
                     io::Error::new(ErrorKind::InvalidData, e)
                 })?;
-                debug!(
-                    "Loaded GitHub state with {} PR reviewers",
-                    state.pr_reviewers.len()
-                );
+                debug!("Loaded GitHub state");
                 Ok(state)
             }
             Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -184,262 +103,8 @@ impl GitHubState {
         }
         let contents = serde_json::to_string_pretty(self)?;
         fs::write(path, contents)?;
-        debug!(
-            "Saved GitHub state with {} PR reviewers",
-            self.pr_reviewers.len()
-        );
+        debug!("Saved GitHub state");
         Ok(())
-    }
-
-    /// Assign a reviewer to a PR with the given source.
-    pub fn assign_reviewer(&mut self, pr_number: u64, reviewer: &str, source: AssignmentSource) {
-        let assignment = PrReviewerAssignment {
-            pr_number,
-            reviewer: reviewer.to_string(),
-            reviewer_session_id: None,
-            assigned_at: Utc::now(),
-            source,
-            webhook_event_id: None,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        };
-        self.pr_reviewers.insert(pr_number, assignment);
-    }
-
-    /// Assign a reviewer to a PR with a webhook event ID for tracing.
-    pub fn assign_reviewer_with_event_id(
-        &mut self,
-        pr_number: u64,
-        reviewer: &str,
-        source: AssignmentSource,
-        webhook_event_id: Option<String>,
-    ) {
-        let assignment = PrReviewerAssignment {
-            pr_number,
-            reviewer: reviewer.to_string(),
-            reviewer_session_id: None,
-            assigned_at: Utc::now(),
-            source,
-            webhook_event_id,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        };
-        self.pr_reviewers.insert(pr_number, assignment);
-    }
-
-    /// Assign a reviewer to a PR with a specific restart count.
-    ///
-    /// Used by stuck reviewer detection to preserve the restart count across
-    /// restarts, enabling backoff after repeated failures.
-    pub fn assign_reviewer_with_restart_count(
-        &mut self,
-        pr_number: u64,
-        reviewer: &str,
-        source: AssignmentSource,
-        restart_count: u32,
-    ) {
-        let assignment = PrReviewerAssignment {
-            pr_number,
-            reviewer: reviewer.to_string(),
-            reviewer_session_id: None,
-            assigned_at: Utc::now(),
-            source,
-            webhook_event_id: None,
-            restart_count,
-            placeholder_comment_id: None,
-        };
-        self.pr_reviewers.insert(pr_number, assignment);
-    }
-
-    /// Check if a PR has a reviewer assigned.
-    pub fn get_reviewer(&self, pr_number: u64) -> Option<&str> {
-        self.pr_reviewers
-            .get(&pr_number)
-            .map(|a| a.reviewer.as_str())
-    }
-
-    /// Check if a PR has been assigned for review and the assignment hasn't expired.
-    pub fn is_assigned(&self, pr_number: u64) -> bool {
-        match self.pr_reviewers.get(&pr_number) {
-            Some(assignment) => {
-                let elapsed = Utc::now().signed_duration_since(assignment.assigned_at);
-                elapsed < chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64)
-            }
-            None => false,
-        }
-    }
-
-    /// Remove a reviewer assignment (e.g., when PR is merged/closed).
-    pub fn remove_assignment(&mut self, pr_number: u64) -> Option<PrReviewerAssignment> {
-        self.pr_reviewers.remove(&pr_number)
-    }
-
-    /// Get all coworkers currently assigned to review PRs.
-    pub fn assigned_reviewers(&self) -> impl Iterator<Item = &str> {
-        self.pr_reviewers.values().map(|a| a.reviewer.as_str())
-    }
-
-    /// Get the PR number assigned to a specific reviewer.
-    pub fn pr_for_reviewer(&self, reviewer: &str) -> Option<u64> {
-        self.pr_reviewers
-            .iter()
-            .find(|(_, a)| a.reviewer == reviewer)
-            .map(|(pr_number, _)| *pr_number)
-    }
-
-    /// Returns true if the reviewer has an assignment whose timestamp falls within
-    /// `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs`.
-    ///
-    /// Used by `compute_active_reviewers_with_health` to protect alive reviewers
-    /// during the race window between `SessionMonitorTick` and `PrPollTick` without
-    /// promoting truly stale assignments from sessions that ended long ago.
-    pub fn reviewer_has_recent_assignment(&self, reviewer: &str, extra_secs: u64) -> bool {
-        let limit =
-            chrono::Duration::seconds((PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS + extra_secs) as i64);
-        self.pr_reviewers.iter().any(|(_, a)| {
-            a.reviewer == reviewer && Utc::now().signed_duration_since(a.assigned_at) < limit
-        })
-    }
-
-    /// Remove a reviewer assignment by coworker name (e.g., when coworker session ends).
-    ///
-    /// Returns the removed assignment if found.
-    pub fn remove_assignment_by_reviewer(
-        &mut self,
-        reviewer: &str,
-    ) -> Option<PrReviewerAssignment> {
-        if let Some(pr_number) = self.pr_for_reviewer(reviewer) {
-            self.pr_reviewers.remove(&pr_number)
-        } else {
-            None
-        }
-    }
-
-    /// Clean up assignments that have expired (older than timeout).
-    pub fn cleanup_expired_assignments(&mut self) {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        let to_remove: Vec<_> = self
-            .pr_reviewers
-            .iter()
-            .filter(|(_, a)| now.signed_duration_since(a.assigned_at) > timeout)
-            .map(|(pr, _)| *pr)
-            .collect();
-
-        for pr in to_remove {
-            debug!(
-                "Cleaning up expired reviewer assignment for PR #{} (timed out)",
-                pr
-            );
-            self.pr_reviewers.remove(&pr);
-        }
-    }
-
-    /// Clean up expired assignments, but preserve those for active coworkers.
-    ///
-    /// Same as `cleanup_expired_assignments` but skips removal of assignments
-    /// where the reviewer coworker is still running. This prevents losing track
-    /// of a reviewer just because the review is taking longer than the timeout.
-    /// Running coworkers' assignments are preserved regardless of timeout.
-    ///
-    /// **Optimistic assignment safety**: Assignments younger than
-    /// `OPTIMISTIC_ASSIGNMENT_GRACE_SECS` (60s) are never pruned, even if the
-    /// reviewer doesn't appear in `running_coworkers`. This protects against
-    /// the window between optimistic assignment (before spawn) and worktree
-    /// creation (after spawn completes).
-    ///
-    /// **Orphaned assignment cleanup**: Assignments older than the grace period
-    /// but younger than `timeout` (600s) are removed if the reviewer is not
-    /// running AND the session never started (`reviewer_session_id` is `None`).
-    /// This handles the case where a coworker was repurposed before the review
-    /// session started — without this, the stale assignment blocks re-spawning
-    /// for the full 600-second timeout.
-    ///
-    /// When `running_session_ids` is provided, assignments with a known
-    /// `reviewer_session_id` are matched by session ID instead of name. This
-    /// enables correct behavior when multiple sessions share a coworker name.
-    /// Assignments without a `reviewer_session_id` fall back to name matching.
-    pub fn cleanup_expired_preserving(
-        &mut self,
-        running_coworkers: &std::collections::HashSet<String>,
-        running_session_ids: Option<&std::collections::HashSet<String>>,
-    ) {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        let grace = chrono::Duration::seconds(OPTIMISTIC_ASSIGNMENT_GRACE_SECS as i64);
-
-        let is_reviewer_running = |a: &PrReviewerAssignment| -> bool {
-            // If we have session IDs and the assignment has one, prefer session-based matching
-            if let (Some(session_ids), Some(sid)) = (running_session_ids, &a.reviewer_session_id) {
-                return session_ids.contains(sid);
-            }
-            // Fall back to name-based matching
-            running_coworkers.contains(&a.reviewer)
-        };
-
-        let to_remove: Vec<_> = self
-            .pr_reviewers
-            .iter()
-            .filter(|(_, a)| {
-                let elapsed = now.signed_duration_since(a.assigned_at);
-                if is_reviewer_running(a) {
-                    return false;
-                }
-                // Case 1: Assignment expired by timeout (original behavior)
-                if elapsed > timeout {
-                    return true;
-                }
-                // Case 2: Assignment past grace period, session never started
-                // (coworker was repurposed before the review session began)
-                if elapsed > grace && a.reviewer_session_id.is_none() {
-                    return true;
-                }
-                false
-            })
-            .map(|(pr, _)| *pr)
-            .collect();
-
-        for pr in &to_remove {
-            debug!(
-                "Cleaning up stale reviewer assignment for PR #{} (coworker not running)",
-                pr
-            );
-            self.pr_reviewers.remove(pr);
-        }
-
-        // Refresh timestamps for running coworkers whose assignments would have expired
-        for assignment in self.pr_reviewers.values_mut() {
-            if now.signed_duration_since(assignment.assigned_at) > timeout
-                && is_reviewer_running(assignment)
-            {
-                assignment.assigned_at = now;
-            }
-        }
-    }
-
-    /// Backfill `reviewer_session_id` for assignments that were created before
-    /// the session ID was known (optimistic assignment pattern).
-    ///
-    /// During reviewer spawn, the assignment is created BEFORE the spawn completes,
-    /// so `reviewer_session_id` is initially `None`. Once the session starts and
-    /// the `init` event provides the session ID, subsequent poll ticks can observe
-    /// it in the snapshot's `running_coworkers`. This method matches assignments
-    /// by reviewer name and fills in the missing session ID.
-    pub fn backfill_reviewer_session_ids(
-        &mut self,
-        coworker_session_ids: &std::collections::HashMap<String, String>,
-    ) {
-        for assignment in self.pr_reviewers.values_mut() {
-            if assignment.reviewer_session_id.is_none()
-                && let Some(sid) = coworker_session_ids.get(&assignment.reviewer)
-            {
-                assignment.reviewer_session_id = Some(sid.clone());
-                debug!(
-                    "Backfilled reviewer_session_id for PR #{} (reviewer={}, session={})",
-                    assignment.pr_number, assignment.reviewer, sid
-                );
-            }
-        }
     }
 
     /// Record that a webhook event handled a specific PR.
@@ -480,62 +145,19 @@ impl GitHubState {
         self.reviewed_prs.insert(pr_number);
     }
 
-    /// Count active (non-expired) review assignments.
-    pub fn active_count(&self) -> usize {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        self.pr_reviewers
-            .values()
-            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
-            .count()
-    }
-
-    /// Get the set of coworker names with active (non-expired) review assignments.
-    pub fn active_reviewers(&self) -> std::collections::HashSet<String> {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        self.pr_reviewers
-            .values()
-            .filter(|a| now.signed_duration_since(a.assigned_at) < timeout)
-            .map(|a| a.reviewer.clone())
-            .collect()
-    }
-
-    /// Get all active (non-expired) review assignments.
-    pub fn active_assignments(&self) -> HashMap<u64, PrReviewerAssignment> {
-        let now = Utc::now();
-        let timeout = chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64);
-        self.pr_reviewers
-            .iter()
-            .filter(|(_, a)| now.signed_duration_since(a.assigned_at) < timeout)
-            .map(|(pr, a)| (*pr, a.clone()))
-            .collect()
-    }
-
     /// Clean up review cache entries for PRs that are no longer open.
     fn cleanup_closed_review_cache(&mut self, open_pr_numbers: &[u64]) {
         let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
         self.reviewed_prs.retain(|pr| open_set.contains(pr));
     }
 
-    /// Clean up assignments for PRs that are no longer open.
+    /// Clean up state for PRs that are no longer open.
     ///
-    /// Takes a list of open PR numbers and removes assignments for any PRs not in the list.
+    /// Takes a list of open PR numbers and removes state for any PRs not in the list.
     pub fn cleanup_closed_prs(&mut self, open_pr_numbers: &[u64]) {
         let open_set: std::collections::HashSet<_> = open_pr_numbers.iter().collect();
-        let to_remove: Vec<_> = self
-            .pr_reviewers
-            .keys()
-            .filter(|pr| !open_set.contains(pr))
-            .copied()
-            .collect();
 
-        for pr in to_remove {
-            debug!("Cleaning up reviewer assignment for closed PR #{}", pr);
-            self.pr_reviewers.remove(&pr);
-        }
-
-        // Also clean up review cache for closed PRs
+        // Clean up review cache for closed PRs
         self.cleanup_closed_review_cache(open_pr_numbers);
 
         // Clean up per-PR webhook event timestamps for closed PRs
@@ -655,7 +277,3 @@ pub fn load_state_for_repo(repo: &str) -> io::Result<GitHubState> {
     let path = crate::paths::github_state_file_for_repo(repo);
     GitHubState::load(&path)
 }
-
-#[path = "github_state_tests.rs"]
-#[cfg(test)]
-mod tests;

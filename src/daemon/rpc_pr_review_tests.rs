@@ -67,14 +67,11 @@ fn make_test_state(
 async fn test_pr_review_already_assigned_returns_message() {
     let (state, _temp_dir, _guard) = make_test_state("testrepo");
 
-    // Pre-assign a reviewer so the handler can detect it without a GH API call.
+    // Create a reviewer span so the handler can detect it without a GH API call.
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            42,
-            "lexington",
-            crate::github_state::AssignmentSource::Manual,
-        );
+        ps.create_span("task-42", "lexington", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), 42);
     }
 
     let response = handle_pr_review(RequestId::Number(1), 42, &state).await;

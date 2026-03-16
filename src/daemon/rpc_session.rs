@@ -177,8 +177,8 @@ async fn resolve_attach_target_candidates(
             let mut matches: Vec<String> = Vec::new();
             // Check reviewer assignments
             let persistent = state.persistent_state.lock().await;
-            if let Some(reviewer) = persistent.github.get_reviewer(pr_num) {
-                matches.push(reviewer.to_lowercase());
+            if let Some(span) = persistent.active_reviewer_for_pr(pr_num) {
+                matches.push(span.agent_name.to_lowercase());
             }
             matches.extend(persistent.sessions.values().filter_map(|record| {
                 if record.pr_number == Some(pr_num) {

@@ -1,6 +1,5 @@
 use super::*;
 use crate::daemon::trackers::PrIssueType;
-use crate::github_state::AssignmentSource;
 use std::process::Command;
 
 fn mk_session_record(
@@ -1524,12 +1523,13 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
 
     let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-test");
 
-    // Pre-assign a reviewer so post_pr_comment can store the comment ID
+    // Pre-create a reviewer span so post_pr_comment can store the comment ID
     let pr_number = 42u64;
+    let task_id = "42";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "park", AssignmentSource::Webhook);
+        ps.create_span(task_id, "park", "reviewer", "");
+        ps.task_pr_number.insert(task_id.to_string(), pr_number);
     }
 
     // Mock `gh` to output a comment URL (like real `gh pr comment` does)
@@ -1565,16 +1565,11 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
         std::env::set_var("PATH", &original_path);
     }
 
-    // Verify the comment ID was parsed and stored on the assignment
+    // Verify the comment ID was parsed and stored in task_placeholder_comment_id
     {
         let ps = state.persistent_state.lock().await;
-        let assignment = ps
-            .github
-            .pr_reviewers
-            .get(&pr_number)
-            .expect("assignment should still exist");
         assert_eq!(
-            assignment.placeholder_comment_id,
+            ps.task_placeholder_comment_id.get(task_id).copied(),
             Some(98765),
             "Should parse comment ID 98765 from the issuecomment URL"
         );
@@ -1604,10 +1599,11 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-bare");
 
     let pr_number = 55u64;
+    let task_id = "55";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "madison", AssignmentSource::PollingFallback);
+        ps.create_span(task_id, "madison", "reviewer", "");
+        ps.task_pr_number.insert(task_id.to_string(), pr_number);
     }
 
     // Mock gh to output just a URL ending in a bare number
@@ -1643,9 +1639,8 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
 
     {
         let ps = state.persistent_state.lock().await;
-        let assignment = ps.github.pr_reviewers.get(&pr_number).unwrap();
         assert_eq!(
-            assignment.placeholder_comment_id,
+            ps.task_placeholder_comment_id.get(task_id).copied(),
             Some(11223),
             "Should parse comment ID 11223 from the bare numeric URL"
         );
@@ -1653,7 +1648,7 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
 }
 
 /// Verify that when a placeholder comment ID is already stored on the
-/// `PrReviewerAssignment` (from a previous reviewer cycle), `post_pr_comment`
+/// task metadata (from a previous reviewer cycle), `post_pr_comment`
 /// edits the existing comment (PATCH) instead of creating a new one.
 ///
 /// Uses the 3-tier lookup: tier 1 (persistent state) returns the stored ID,
@@ -1669,15 +1664,15 @@ async fn test_post_pr_comment_reuses_existing_placeholder() {
 
     let pr_number = 77u64;
     let existing_comment_id = 55555u64;
+    let task_id = "77";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "riverside", AssignmentSource::Webhook);
+        ps.create_span(task_id, "riverside", "reviewer", "");
+        ps.task_pr_number.insert(task_id.to_string(), pr_number);
         // Pre-populate the placeholder_comment_id (as if a previous reviewer
         // cycle posted it before timing out). This is the tier 1 lookup path.
-        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-            assignment.placeholder_comment_id = Some(existing_comment_id);
-        }
+        ps.task_placeholder_comment_id
+            .insert(task_id.to_string(), existing_comment_id);
     }
 
     // Mock `gh` to:
@@ -1745,18 +1740,13 @@ fi
         log_contents,
     );
 
-    // Verify: the existing comment ID is still stored on the assignment
+    // Verify: the existing comment ID is still stored in task_placeholder_comment_id
     {
         let ps = state.persistent_state.lock().await;
-        let assignment = ps
-            .github
-            .pr_reviewers
-            .get(&pr_number)
-            .expect("assignment should still exist");
         assert_eq!(
-            assignment.placeholder_comment_id,
+            ps.task_placeholder_comment_id.get(task_id).copied(),
             Some(existing_comment_id),
-            "Should preserve the existing comment ID on the assignment"
+            "Should preserve the existing comment ID in task_placeholder_comment_id"
         );
     }
 
@@ -1789,11 +1779,12 @@ async fn test_post_pr_comment_reuses_placeholder_via_api_fallback() {
 
     let pr_number = 88u64;
     let existing_comment_id = 66666u64;
+    let task_id = "88";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "madison", AssignmentSource::Webhook);
-        // Do NOT set placeholder_comment_id — simulates daemon restart
+        ps.create_span(task_id, "madison", "reviewer", "");
+        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        // Do NOT set task_placeholder_comment_id — simulates daemon restart
     }
 
     // Mock `gh` to:
@@ -1869,15 +1860,13 @@ fi
         log_contents,
     );
 
-    // Verify: the placeholder ID was stored on the assignment
+    // Verify: the placeholder ID was stored in task_placeholder_comment_id
     {
         let ps = state.persistent_state.lock().await;
-        let assignment = ps
-            .github
-            .pr_reviewers
-            .get(&pr_number)
-            .expect("assignment should still exist");
-        assert_eq!(assignment.placeholder_comment_id, Some(existing_comment_id),);
+        assert_eq!(
+            ps.task_placeholder_comment_id.get(task_id).copied(),
+            Some(existing_comment_id),
+        );
     }
 }
 
@@ -3263,20 +3252,17 @@ fn link_pr_to_session_backfills_branch_on_session_record() {
 }
 
 // ============================================================================
-// lookup_existing_placeholder — task_reviewer_metadata tier-1 path
+// lookup_existing_placeholder — task_placeholder_comment_id path
 // ============================================================================
 
 /// Verify that `post_pr_comment` reuses a placeholder stored in
-/// `task_reviewer_metadata` even when `pr_reviewers` has no `placeholder_comment_id`.
+/// `task_placeholder_comment_id` via active reviewer spans.
 ///
 /// This covers the tier-1 lookup path in `lookup_existing_placeholder` that
-/// prefers `task_reviewer_metadata` over `pr_reviewers`. Before this path was
-/// added, only `PrReviewerAssignment.placeholder_comment_id` was checked, causing
-/// the task-centric model to miss stored placeholder IDs.
+/// finds the placeholder via spans + task_placeholder_comment_id.
 #[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
 #[tokio::test]
-async fn test_post_pr_comment_reuses_placeholder_from_task_reviewer_metadata() {
-    use crate::daemon::state::TaskReviewerMetadata;
+async fn test_post_pr_comment_reuses_placeholder_from_task_placeholder_comment_id() {
     use std::os::unix::fs::PermissionsExt;
 
     let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
@@ -3285,25 +3271,14 @@ async fn test_post_pr_comment_reuses_placeholder_from_task_reviewer_metadata() {
 
     let pr_number = 66u64;
     let existing_comment_id = 77777u64;
+    let task_id = "review-task-66";
     {
         let mut ps = state.persistent_state.lock().await;
-        // Reviewer assignment exists but has NO placeholder_comment_id —
-        // simulates the task-centric path where pr_reviewers is legacy.
-        ps.github
-            .assign_reviewer(pr_number, "lexington", AssignmentSource::Webhook);
-        // placeholder_comment_id is intentionally NOT set on the assignment.
-
-        // Populate task_reviewer_metadata with the placeholder — this is the
-        // preferred tier-1 source when a review task is tracked.
-        ps.task_reviewer_metadata.insert(
-            "review-task-66".to_string(),
-            TaskReviewerMetadata {
-                pr_number,
-                placeholder_comment_id: Some(existing_comment_id),
-                restart_count: 1,
-                reviewer_session_id: Some("sess-lex-1".to_string()),
-            },
-        );
+        // Create a reviewer span and populate task_placeholder_comment_id
+        ps.create_span(task_id, "lexington", "reviewer", "sess-lex-1");
+        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        ps.task_placeholder_comment_id
+            .insert(task_id.to_string(), existing_comment_id);
     }
 
     // Mock `gh` to accept the PATCH and log all calls.
@@ -3357,12 +3332,12 @@ fi
     let log_contents = std::fs::read_to_string(&log_file).unwrap_or_default();
     assert!(
         log_contents.contains("PATCH"),
-        "Should have called gh api --method PATCH to edit the placeholder from task_reviewer_metadata, got: {}",
+        "Should have called gh api --method PATCH to edit the placeholder from task_placeholder_comment_id, got: {}",
         log_contents,
     );
     assert!(
         !log_contents.contains("pr comment"),
-        "Should NOT have called `gh pr comment` when task_reviewer_metadata has a placeholder, got: {}",
+        "Should NOT have called `gh pr comment` when task_placeholder_comment_id has a placeholder, got: {}",
         log_contents,
     );
 }

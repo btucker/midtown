@@ -521,7 +521,7 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -978,7 +978,7 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -1042,7 +1042,7 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -1118,7 +1118,7 @@ async fn test_completed_worktree_with_snapshot_data() {
         &active_names,
         &state,
         &[pr_json], // Synthetic PR that extracts task ID 1323 from title
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -1197,7 +1197,7 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -1774,7 +1774,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         &snap.coworkers.active_names, // Real snapshot active_names: includes "park"
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -1847,7 +1847,7 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2340,7 +2340,7 @@ async fn test_reviewer_not_assigned_to_pr_author() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2416,7 +2416,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2479,7 +2479,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2547,7 +2547,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         &active_names_stale,
         &state,
         std::slice::from_ref(&pr_json),
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2576,7 +2576,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         &active_names_fresh,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2636,7 +2636,7 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2685,7 +2685,7 @@ async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2735,7 +2735,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -2792,7 +2792,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -3386,7 +3386,7 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -3460,7 +3460,7 @@ async fn test_review_complete_falls_back_to_user_when_no_task_or_branch_owner() 
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -3531,23 +3531,20 @@ fn fallback_inline_effects_without_workflow() {
 }
 
 /// Gate !1902: has_cached_review bypass — PrApproved is NOT suppressed when the
-/// review is already cached, even if get_reviewer() still returns Some.
+/// review is already cached, even if an active reviewer span still exists.
 ///
 /// This handles the race between webhook review completion (which caches the
-/// review) and the poll tick that clears the reviewer assignment.
+/// review) and the span closure.
 #[tokio::test]
 async fn pr_approved_not_suppressed_when_review_cached() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42;
 
-    // Simulate: reviewer is assigned BUT review is already cached (complete)
+    // Simulate: reviewer span exists BUT review is already cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "lexington",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "lexington", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -3563,65 +3560,53 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     );
 }
 
-/// A coworker in Reviewing phase with no assignment (cleared) should NOT
-/// block PrApproved for any specific PR — without PR-specific evidence,
-/// suppressing would incorrectly gate unrelated PRs.
+/// A coworker with no assignment should NOT block PrApproved — without PR-specific
+/// evidence, suppressing would incorrectly gate unrelated PRs.
 #[test]
-fn augment_reviewer_ignores_reviewing_phase_without_assignment() {
+fn augment_reviewer_no_assignment_does_not_flag_active() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // Coworker "lexington" is in Reviewing phase,
-    // but the reviewer_pr_assignments has been cleared.
-    let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewing_phase_coworkers
-        .insert("lexington".to_string());
     // reviewer_pr_assignments is empty — no PR-specific evidence
+    let snap = super::super::snapshot::minimal_snapshot_for_test();
 
     ctx.augment_reviewer_from_snapshot(pr_number, &snap);
 
     assert!(
         !ctx.has_active_reviewer,
-        "Should NOT flag active reviewer when coworker has no assignment (would block all PRs)"
+        "Should NOT flag active reviewer when there is no assignment"
     );
 }
 
-/// Bug !1907 issue 1 (inverse): augment_reviewer_from_snapshot also catches the
-/// case where the assignment exists but the coworker hasn't entered Reviewing phase.
+/// augment_reviewer_from_snapshot flags an active reviewer when an assignment exists.
 #[test]
-fn augment_reviewer_catches_assignment_without_reviewing_phase() {
+fn augment_reviewer_catches_assignment() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // Assignment exists for "lexington" → PR 42, but they aren't in
-    // reviewing_phase_coworkers yet (e.g., just started, haven't set workflow phase).
+    // Assignment exists for "lexington" → PR 42.
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
     snap.reviewer
         .reviewer_pr_assignments
         .insert("lexington".to_string(), pr_number);
-    // reviewing_phase_coworkers is empty
 
     ctx.augment_reviewer_from_snapshot(pr_number, &snap);
 
     assert!(
         ctx.has_active_reviewer,
-        "Should flag active reviewer when assignment exists even without Reviewing phase"
+        "Should flag active reviewer when assignment exists"
     );
 }
 
-/// Bug !1907 issue 1: augment_reviewer_from_snapshot should NOT flag active
-/// reviewer when a coworker is in Reviewing phase for a DIFFERENT PR.
+/// augment_reviewer_from_snapshot should NOT flag active reviewer when the
+/// assignment is for a DIFFERENT PR.
 #[test]
-fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
+fn augment_reviewer_ignores_assignment_for_different_pr() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // "lexington" is reviewing PR 99, not PR 42
+    // "lexington" is assigned to PR 99, not PR 42
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewing_phase_coworkers
-        .insert("lexington".to_string());
     snap.reviewer
         .reviewer_pr_assignments
         .insert("lexington".to_string(), 99);
@@ -3630,7 +3615,7 @@ fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
 
     assert!(
         !ctx.has_active_reviewer,
-        "Should NOT flag active reviewer when coworker is reviewing a different PR"
+        "Should NOT flag active reviewer when assignment is for a different PR"
     );
 }
 
@@ -3911,14 +3896,11 @@ async fn auto_merge_blocked_when_reviewer_active() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42u64;
 
-    // Assign a reviewer to this PR (without marking the review as cached/complete)
+    // Create a reviewer span for this PR (without marking the review as cached/complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "york",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "york", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
     }
 
     // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
@@ -4011,14 +3993,11 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42u64;
 
-    // Assign reviewer AND mark review as cached (complete)
+    // Create reviewer span AND mark review as cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "york",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "york", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -4264,7 +4243,7 @@ async fn test_reviewer_spawn_inherits_task_channel() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4339,7 +4318,7 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4409,7 +4388,7 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4464,7 +4443,7 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
         &active_names,
         &state,
         &[pr_json],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4568,7 +4547,7 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4669,7 +4648,7 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
@@ -4857,7 +4836,7 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -4945,7 +4924,7 @@ async fn test_review_complete_lead_branch_no_repeat_after_cooldown() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -5013,7 +4992,7 @@ async fn test_review_complete_lead_branch_survives_cleanup() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -5081,7 +5060,7 @@ async fn test_review_complete_coworker_pr_no_repeat_after_cooldown() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &HashMap::new(),
     )
     .await;
@@ -5383,17 +5362,26 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
         &active_names,
         &state,
         &[pr1, pr2],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true,
         &std::collections::HashMap::new(),
     )
     .await;
 
-    // Extract all reviewer names from AssignReviewer effects
+    // Extract all reviewer names from CreateTaskSessionSpan effects
     let reviewer_names: Vec<String> = effects
         .iter()
         .filter_map(|e| {
-            if let Effect::AssignReviewer { reviewer_name, .. } = e {
-                Some(reviewer_name.clone())
+            if let Effect::CreateTaskSessionSpan {
+                agent_name,
+                agent_type,
+                ..
+            } = e
+            {
+                if agent_type == "reviewer" {
+                    Some(agent_name.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }

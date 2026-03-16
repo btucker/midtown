@@ -377,27 +377,6 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
-    /// Assign a reviewer to a PR in github_state and persist.
-    AssignReviewer {
-        pr_number: u64,
-        reviewer_name: String,
-        source: crate::github_state::AssignmentSource,
-        /// How many times this reviewer has been restarted for this PR.
-        /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
-        restart_count: u32,
-        /// Claude session ID for the reviewer, if known.
-        /// Initially `None` for optimistic assignments (before spawn completes);
-        /// backfilled by `backfill_reviewer_session_ids()` during subsequent poll ticks.
-        reviewer_session_id: Option<String>,
-        /// Review task ID, if known. Used to populate `task_reviewer_metadata`
-        /// so the new task-centric model can find reviewer state by task ID.
-        task_id: Option<String>,
-    },
-    /// Remove a reviewer assignment for a specific PR.
-    ///
-    /// Used when a reviewer spawn fails after the assignment was already recorded
-    /// (optimistic assignment to prevent race conditions).
-    RemoveReviewerAssignment { pr_number: u64 },
     /// Record that a reviewer escalation warning has been posted for a PR.
     ///
     /// Prevents the escalation warning from firing every tick. The in-memory
@@ -411,8 +390,6 @@ pub enum Effect {
     /// This allows the lead to be re-nudged if the task later completes without merging
     /// and the PR becomes orphaned again.
     ClearOrphanedPrLeadNudge { pr_number: u64 },
-    /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
-    ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
     ///
     /// Used when a CI check has been pending for > 4x its typical duration.
@@ -724,7 +701,7 @@ pub enum Effect {
     /// Executed as an `on_success` callback after spawning a reviewer session.
     /// The daemon posts the comment (avoiding prompt-compliance issues with
     /// escaped `!` characters) and stores the comment ID on the
-    /// `PrReviewerAssignment` for later update via `pr.review-post`.
+    /// task metadata for later update via `pr.review-post`.
     PostPrComment {
         pr_number: u64,
         reviewer_name: String,
@@ -787,6 +764,21 @@ pub enum Effect {
         /// on failure.
         pr_context: Option<TaskPromptPrContext>,
     },
+
+    /// Create a new task session span (reviewer or dev session starting work).
+    CreateTaskSessionSpan {
+        task_id: String,
+        agent_name: String,
+        agent_type: String,
+        session_id: String,
+        /// For reviewer tasks: the PR number being reviewed.
+        pr_number: Option<u64>,
+        /// How many times this reviewer has been restarted for this PR.
+        /// Persisted to `task_restart_count` for stuck reviewer backoff.
+        restart_count: u32,
+    },
+    /// Close a task session span (session stopping work on a task).
+    CloseTaskSessionSpan { session_id: String, task_id: String },
 }
 
 /// Extract task IDs that are currently claimed by spawn or nudge effects.
@@ -1190,6 +1182,10 @@ async fn clear_stale_task_session_binding(
     // (clearing task_id, resume_on_startup, is_running with expected_session_id logic).
     let mut ps = state.persistent_state.lock().await;
     let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
+    // Close open spans for the expected session (it is being marked stopped).
+    if let Some(sid) = expected_session_id {
+        ps.close_spans_for_session(sid);
+    }
     if cleared > 0
         && let Err(e) = ps.save_for_repo(state.paths.dir_key())
     {
@@ -1590,6 +1586,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Mark any SessionRecord currently allocated to this name as
                 // stale so the session won't be auto-resumed under this name.
+                let mut stale_ids_for_spans: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
                     if record.current_name.as_deref().is_some_and(|n| n == name)
                         && record.is_running
@@ -1601,6 +1598,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record.is_running = false;
                         record.resume_on_startup = false;
                         record.current_name = None;
+                        stale_ids_for_spans.push(record.session_id.clone());
                     }
                 }
                 // Preserve the channel_lead_sessions key (insert empty string)
@@ -1640,6 +1638,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     record.is_running = false;
                     record.resume_on_startup = false;
                     record.current_name = None;
+                    stale_ids_for_spans.push(record.session_id.clone());
+                }
+
+                // Close open spans for all sessions being marked stopped.
+                for sid in &stale_ids_for_spans {
+                    ps.close_spans_for_session(sid);
                 }
 
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -1866,67 +1870,40 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::AssignReviewer {
+            Effect::CreateTaskSessionSpan {
+                task_id,
+                agent_name,
+                agent_type,
+                session_id,
                 pr_number,
-                reviewer_name,
-                source,
                 restart_count,
-                reviewer_session_id,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.create_span(&task_id, &agent_name, &agent_type, &session_id);
+                if let Some(pr) = pr_number {
+                    ps.task_pr_number.insert(task_id.clone(), pr);
+                }
+                if restart_count > 0 {
+                    ps.task_restart_count.insert(task_id.clone(), restart_count);
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save daemon-state.json after CreateTaskSessionSpan: {}",
+                        e
+                    );
+                }
+            }
+            Effect::CloseTaskSessionSpan {
+                session_id,
                 task_id,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                if restart_count > 0 {
-                    ps.github.assign_reviewer_with_restart_count(
-                        pr_number,
-                        &reviewer_name,
-                        source,
-                        restart_count,
-                    );
-                } else {
-                    ps.github.assign_reviewer(pr_number, &reviewer_name, source);
-                }
-                // Set the session ID if provided (assign_reviewer* methods don't take it yet)
-                if let Some(ref sid) = reviewer_session_id
-                    && let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number)
-                {
-                    assignment.reviewer_session_id = Some(sid.clone());
-                }
-                // Populate task_reviewer_metadata so the task-centric model can find
-                // reviewer state by task ID without going through pr_reviewers.
-                if let Some(ref tid) = task_id {
-                    ps.task_reviewer_metadata
-                        .entry(tid.clone())
-                        .and_modify(|existing| {
-                            // Update fields but preserve placeholder_comment_id
-                            existing.restart_count = restart_count;
-                            existing.reviewer_session_id = reviewer_session_id.clone();
-                        })
-                        .or_insert(crate::daemon::state::TaskReviewerMetadata {
-                            pr_number,
-                            placeholder_comment_id: None,
-                            restart_count,
-                            reviewer_session_id: reviewer_session_id.clone(),
-                        });
-                }
+                ps.close_span(&session_id, &task_id);
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to save daemon-state.json: {}", e);
-                }
-            }
-            Effect::RemoveReviewerAssignment { pr_number } => {
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(assignment) = ps.github.remove_assignment(pr_number) {
-                    debug!(
-                        "Removed reviewer assignment for PR #{} (was assigned to {})",
-                        pr_number, assignment.reviewer
+                    warn!(
+                        "Failed to save daemon-state.json after CloseTaskSessionSpan: {}",
+                        e
                     );
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!(
-                            "Failed to save daemon-state.json after removing assignment: {}",
-                            e
-                        );
-                    }
-                } else {
-                    debug!("No reviewer assignment to remove for PR #{}", pr_number);
                 }
             }
             Effect::PostSystemMessage { message, channel } => {
@@ -1947,15 +1924,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 msg.channel = channel;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
-                }
-            }
-            Effect::ClearOrphanedReviewerAssignments { orphaned_coworkers } => {
-                if orphaned_coworkers.is_empty() {
-                    continue;
-                }
-                let mut ps = state.persistent_state.lock().await;
-                for name in &orphaned_coworkers {
-                    ps.clear_reviewer_assignment(name, state.paths.dir_key());
                 }
             }
             Effect::RerunWorkflow {
@@ -2658,6 +2626,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 let removed_lead = ps.channel_lead_sessions.remove(&name).is_some();
                                 // Mark any SessionRecord with this name as no longer running
                                 let mut removed_session = false;
+                                let mut stopped_ids: Vec<String> = Vec::new();
                                 for record in ps.sessions.values_mut() {
                                     if record
                                         .current_name
@@ -2668,7 +2637,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         record.current_name = None;
                                         record.resume_on_startup = false;
                                         removed_session = true;
+                                        stopped_ids.push(record.session_id.clone());
                                     }
+                                }
+                                for sid in &stopped_ids {
+                                    ps.close_spans_for_session(sid);
                                 }
                                 if removed_lead || removed_session {
                                     debug!(
@@ -3049,6 +3022,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             // (e.g., after daemon restart). Clearing current_name
                             // prevents ambiguous lookups where multiple records share
                             // the same name (e.g., insight handler's find-by-name).
+                            let mut displaced_ids: Vec<String> = Vec::new();
                             for record in ps.sessions.values_mut() {
                                 if record.session_id != session_id
                                     && (record.preferred_name.as_deref() == Some(&name)
@@ -3056,9 +3030,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 {
                                     if record.is_running {
                                         record.is_running = false;
+                                        displaced_ids.push(record.session_id.clone());
                                     }
                                     record.current_name = None;
                                 }
+                            }
+                            for sid in &displaced_ids {
+                                ps.close_spans_for_session(sid);
                             }
                             // Look up task_thread_id so coworker posts route to the
                             // task's thread. This is set either explicitly via --thread-id
@@ -3221,6 +3199,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Some(record) = ps.sessions.get_mut(&session_id) {
                         record.is_running = false;
                     }
+                    // Close any open task-session spans for the shutting-down session.
+                    ps.close_spans_for_session(&session_id);
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save persistent state after ShutdownSession for {}: {}",
@@ -3908,25 +3888,22 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 
 /// Look up an existing placeholder comment ID for a PR using the 3-tier lookup:
 ///
-/// 1. **Persistent state** — `task_reviewer_metadata` (preferred) or `PrReviewerAssignment.placeholder_comment_id` (fallback)
+/// 1. **Persistent state** — `task_placeholder_comment_id` (via active reviewer spans)
 /// 2. **In-memory cache** — `reviewer_placeholder_cache` (TTL-based)
 /// 3. **GitHub API fallback** — `pr_in_progress_placeholder_comment_id` via `spawn_blocking`
 ///
 /// This reuses the same lookup infrastructure as `collect_world_snapshot` in
 /// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    // Tier 1: Check stored placeholder_comment_id.
-    // Prefer task_reviewer_metadata; fall back to pr_reviewers.
+    // Tier 1: Check stored task_placeholder_comment_id.
     {
         let ps = state.persistent_state.lock().await;
-        let id = super::state::task_reviewer_metadata_for_pr(&ps, pr_number)
-            .and_then(|m| m.placeholder_comment_id)
-            .or_else(|| {
-                ps.github
-                    .pr_reviewers
-                    .get(&pr_number)
-                    .and_then(|a| a.placeholder_comment_id)
-            });
+        // Find the task ID for this PR from active reviewer spans
+        let id = ps
+            .active_reviewer_spans()
+            .iter()
+            .find(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+            .and_then(|s| ps.task_placeholder_comment_id.get(&s.task_id).copied());
         if let Some(id) = id {
             return Some(id);
         }
@@ -3967,7 +3944,7 @@ async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Opt
 ///
 /// Uses `gh api --method PATCH` to edit an existing placeholder or
 /// `gh pr comment` to create a new one. Stores the comment ID on the
-/// `PrReviewerAssignment` so the daemon can later update the placeholder
+/// task metadata so the daemon can later update the placeholder
 /// with the final review via `pr.review-post`.
 ///
 /// When a placeholder comment already exists on the PR (from a previous
@@ -4092,19 +4069,20 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID on the reviewer assignment and in task_reviewer_metadata.
+        // Store the comment ID in task_placeholder_comment_id for the reviewer task.
         // Serialize under the lock, then write to disk after releasing it
         // to avoid blocking the tokio runtime with file I/O.
         let serialized = {
             let mut ps = state.persistent_state.lock().await;
-            if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-                assignment.placeholder_comment_id = Some(comment_id);
-            }
-            // Also update task_reviewer_metadata for any review task tied to this PR.
-            for meta in ps.task_reviewer_metadata.values_mut() {
-                if meta.pr_number == pr_number {
-                    meta.placeholder_comment_id = Some(comment_id);
-                }
+            // Find the reviewer task for this PR and store the placeholder comment ID.
+            let task_ids: Vec<String> = ps
+                .active_reviewer_spans()
+                .iter()
+                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+                .map(|s| s.task_id.clone())
+                .collect();
+            for tid in task_ids {
+                ps.task_placeholder_comment_id.insert(tid, comment_id);
             }
             serde_json::to_string_pretty(&*ps).ok()
         };
@@ -4650,6 +4628,7 @@ async fn respawn_fork(
         // prevents ambiguous find-by-name lookups when multiple records share
         // the same name. Must check both fields because rpc_auth.rs matches
         // sessions by either preferred_name or current_name.
+        let mut displaced_fork_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
             if record.session_id != fork_session_id
                 && (record.preferred_name.as_deref() == Some(&name)
@@ -4658,7 +4637,11 @@ async fn respawn_fork(
                 record.is_running = false;
                 record.current_name = None;
                 record.preferred_name = None;
+                displaced_fork_ids.push(record.session_id.clone());
             }
+        }
+        for sid in &displaced_fork_ids {
+            ps.close_spans_for_session(sid);
         }
         ps.sessions.insert(
             fork_session_id.clone(),
