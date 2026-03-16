@@ -697,15 +697,19 @@ pub fn pr_to_task_map_from_sessions(
 /// Find `TaskReviewerMetadata` by PR number.
 ///
 /// Since `task_reviewer_metadata` is keyed by task ID, this performs a linear
-/// scan to find the entry matching the given PR number. Returns the first match.
-/// Used to prefer `task_reviewer_metadata` over `pr_reviewers` for data lookups.
+/// scan to find the entry matching the given PR number. When multiple entries
+/// exist for the same PR (e.g., completed review task + new review task),
+/// returns the one with the highest task ID (most recent) to avoid reading
+/// stale `restart_count` or `placeholder_comment_id` from a prior review cycle.
 pub fn task_reviewer_metadata_for_pr(
     ps: &DaemonPersistentState,
     pr_number: u64,
 ) -> Option<&TaskReviewerMetadata> {
     ps.task_reviewer_metadata
-        .values()
-        .find(|m| m.pr_number == pr_number)
+        .iter()
+        .filter(|(_, m)| m.pr_number == pr_number)
+        .max_by_key(|(task_id, _)| task_id.parse::<u64>().unwrap_or(0))
+        .map(|(_, m)| m)
 }
 
 /// Derive a `task_id → pr_number` map from session records.
