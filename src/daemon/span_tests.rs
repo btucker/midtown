@@ -313,6 +313,27 @@ fn test_gc_closes_orphaned_spans() {
 }
 
 #[test]
+fn test_gc_preserves_empty_session_id_spans() {
+    let mut ps = DaemonPersistentState::default();
+    // Span with empty session_id (optimistic assignment before session spawns)
+    // should NOT be force-closed by GC — empty means "pending", not "stale".
+    ps.task_session_spans
+        .push(make_span("task-1", "river", "reviewer", "", 0, None));
+
+    ps.apply_gc(&[], &[]);
+
+    let span = ps
+        .task_session_spans
+        .iter()
+        .find(|s| s.task_id == "task-1")
+        .unwrap();
+    assert!(
+        span.end_time.is_none(),
+        "Span with empty session_id should stay open (optimistic assignment)"
+    );
+}
+
+#[test]
 fn test_gc_removes_old_closed_spans() {
     let mut ps = DaemonPersistentState::default();
     let now = Utc::now();
