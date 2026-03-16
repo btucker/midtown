@@ -132,13 +132,8 @@ function selectChannel(channelName) {
 	// feel sluggish on desktop. Now the channel switches instantly and messages
 	// appear when the fetch completes.
 
-	// Close mobile sidebar overlay when navigating to a channel
-	sidebar.setOpenMobile(false);
-
-	// Close thread panel when switching channels — thread context is
-	// channel-scoped and should not carry over to a different channel.
-	// pushState: false because we push our own entry below with the new channel.
-	closeThread({ pushState: false });
+	const isAlreadyActive = $activeChannel === channelName;
+	const isAlreadyExpanded = expandedChannels.has(channelName);
 
 	// Compute and apply the new expanded state for this channel.
 	// computeExpandedAfterChannelNameClick handles two cases:
@@ -149,11 +144,30 @@ function selectChannel(channelName) {
 		taskThreadIds,
 		completedTaskThreadIds,
 	});
-	if (next.has(channelName)) {
+	const willExpand = next.has(channelName);
+	if (willExpand) {
 		expandedChannels.add(channelName);
 	} else {
 		expandedChannels.delete(channelName);
 	}
+
+	// On mobile, first tap expands the channel to show tasks/threads — keep the
+	// sidebar open so the user can see them. Only close on the second tap (channel
+	// is already active and expanded) or when tapping a channel with nothing to expand.
+	// On desktop, setOpenMobile is a no-op so we always call it.
+	if (sidebar.isMobile) {
+		const shouldKeepOpen = !isAlreadyActive && willExpand;
+		if (!shouldKeepOpen) {
+			sidebar.setOpenMobile(false);
+		}
+	} else {
+		sidebar.setOpenMobile(false);
+	}
+
+	// Close thread panel when switching channels — thread context is
+	// channel-scoped and should not carry over to a different channel.
+	// pushState: false because we push our own entry below with the new channel.
+	closeThread({ pushState: false });
 
 	activeChannel.set(channelName);
 	pushNavState({ channel: channelName });
