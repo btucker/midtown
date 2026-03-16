@@ -712,6 +712,7 @@ pub(super) async fn handle_channel_archive(
                 let removed_lead = ps.channel_lead_sessions.remove(name).is_some();
                 // Mark any SessionRecord with this name as no longer running
                 let mut removed_session = false;
+                let mut stopped_ids: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
                     if record
                         .current_name
@@ -722,7 +723,11 @@ pub(super) async fn handle_channel_archive(
                         record.current_name = None;
                         record.resume_on_startup = false;
                         removed_session = true;
+                        stopped_ids.push(record.session_id.clone());
                     }
+                }
+                for sid in &stopped_ids {
+                    ps.close_spans_for_session(sid);
                 }
                 if removed_lead || removed_session {
                     debug!(
@@ -867,6 +872,7 @@ pub(super) async fn handle_channel_rename(
         // Mark any SessionRecord for the old channel lead as no longer running.
         // Like channel_lead_sessions, we clear rather than migrate to avoid stale
         // references to the dead session.
+        let mut stopped_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
             if record
                 .current_name
@@ -876,7 +882,11 @@ pub(super) async fn handle_channel_rename(
                 record.is_running = false;
                 record.current_name = None;
                 record.resume_on_startup = false;
+                stopped_ids.push(record.session_id.clone());
             }
+        }
+        for sid in &stopped_ids {
+            ps.close_spans_for_session(sid);
         }
 
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {

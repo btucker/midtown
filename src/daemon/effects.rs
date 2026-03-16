@@ -1202,6 +1202,10 @@ async fn clear_stale_task_session_binding(
     // (clearing task_id, resume_on_startup, is_running with expected_session_id logic).
     let mut ps = state.persistent_state.lock().await;
     let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
+    // Close open spans for the expected session (it is being marked stopped).
+    if let Some(sid) = expected_session_id {
+        ps.close_spans_for_session(sid);
+    }
     if cleared > 0
         && let Err(e) = ps.save_for_repo(state.paths.dir_key())
     {
@@ -1602,6 +1606,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                 // Mark any SessionRecord currently allocated to this name as
                 // stale so the session won't be auto-resumed under this name.
+                let mut stale_ids_for_spans: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
                     if record.current_name.as_deref().is_some_and(|n| n == name)
                         && record.is_running
@@ -1613,6 +1618,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record.is_running = false;
                         record.resume_on_startup = false;
                         record.current_name = None;
+                        stale_ids_for_spans.push(record.session_id.clone());
                     }
                 }
                 // Preserve the channel_lead_sessions key (insert empty string)
@@ -1652,6 +1658,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     record.is_running = false;
                     record.resume_on_startup = false;
                     record.current_name = None;
+                    stale_ids_for_spans.push(record.session_id.clone());
+                }
+
+                // Close open spans for all sessions being marked stopped.
+                for sid in &stale_ids_for_spans {
+                    ps.close_spans_for_session(sid);
                 }
 
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -2723,6 +2735,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 let removed_lead = ps.channel_lead_sessions.remove(&name).is_some();
                                 // Mark any SessionRecord with this name as no longer running
                                 let mut removed_session = false;
+                                let mut stopped_ids: Vec<String> = Vec::new();
                                 for record in ps.sessions.values_mut() {
                                     if record
                                         .current_name
@@ -2733,7 +2746,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         record.current_name = None;
                                         record.resume_on_startup = false;
                                         removed_session = true;
+                                        stopped_ids.push(record.session_id.clone());
                                     }
+                                }
+                                for sid in &stopped_ids {
+                                    ps.close_spans_for_session(sid);
                                 }
                                 if removed_lead || removed_session {
                                     debug!(
@@ -3114,6 +3131,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             // (e.g., after daemon restart). Clearing current_name
                             // prevents ambiguous lookups where multiple records share
                             // the same name (e.g., insight handler's find-by-name).
+                            let mut displaced_ids: Vec<String> = Vec::new();
                             for record in ps.sessions.values_mut() {
                                 if record.session_id != session_id
                                     && (record.preferred_name.as_deref() == Some(&name)
@@ -3121,9 +3139,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 {
                                     if record.is_running {
                                         record.is_running = false;
+                                        displaced_ids.push(record.session_id.clone());
                                     }
                                     record.current_name = None;
                                 }
+                            }
+                            for sid in &displaced_ids {
+                                ps.close_spans_for_session(sid);
                             }
                             // Look up task_thread_id so coworker posts route to the
                             // task's thread. This is set either explicitly via --thread-id
@@ -3286,6 +3308,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     if let Some(record) = ps.sessions.get_mut(&session_id) {
                         record.is_running = false;
                     }
+                    // Close any open task-session spans for the shutting-down session.
+                    ps.close_spans_for_session(&session_id);
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save persistent state after ShutdownSession for {}: {}",
@@ -4715,6 +4739,7 @@ async fn respawn_fork(
         // prevents ambiguous find-by-name lookups when multiple records share
         // the same name. Must check both fields because rpc_auth.rs matches
         // sessions by either preferred_name or current_name.
+        let mut displaced_fork_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
             if record.session_id != fork_session_id
                 && (record.preferred_name.as_deref() == Some(&name)
@@ -4723,7 +4748,11 @@ async fn respawn_fork(
                 record.is_running = false;
                 record.current_name = None;
                 record.preferred_name = None;
+                displaced_fork_ids.push(record.session_id.clone());
             }
+        }
+        for sid in &displaced_fork_ids {
+            ps.close_spans_for_session(sid);
         }
         ps.sessions.insert(
             fork_session_id.clone(),

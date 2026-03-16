@@ -814,6 +814,7 @@ pub async fn clear_stale_running_sessions(
 ) {
     let mut state = persistent_state.lock().await;
     let mut cleared = 0usize;
+    let mut stale_session_ids: Vec<String> = Vec::new();
 
     for record in state.sessions.values_mut() {
         if !record.is_running {
@@ -834,6 +835,12 @@ pub async fn clear_stale_running_sessions(
         );
         record.is_running = false;
         cleared += 1;
+        stale_session_ids.push(record.session_id.clone());
+    }
+
+    // Close any open task-session spans for sessions that were not recovered.
+    for session_id in &stale_session_ids {
+        state.close_spans_for_session(session_id);
     }
 
     if cleared > 0 {
