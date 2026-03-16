@@ -787,6 +787,18 @@ pub enum Effect {
         /// on failure.
         pr_context: Option<TaskPromptPrContext>,
     },
+
+    /// Create a new task session span (reviewer or dev session starting work).
+    CreateTaskSessionSpan {
+        task_id: String,
+        agent_name: String,
+        agent_type: String,
+        session_id: String,
+        /// For reviewer tasks: the PR number being reviewed.
+        pr_number: Option<u64>,
+    },
+    /// Close a task session span (session stopping work on a task).
+    CloseTaskSessionSpan { session_id: String, task_id: String },
 }
 
 /// Extract task IDs that are currently claimed by spawn or nudge effects.
@@ -1927,6 +1939,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 } else {
                     debug!("No reviewer assignment to remove for PR #{}", pr_number);
+                }
+            }
+            Effect::CreateTaskSessionSpan {
+                task_id,
+                agent_name,
+                agent_type,
+                session_id,
+                pr_number,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.create_span(&task_id, &agent_name, &agent_type, &session_id);
+                if let Some(pr) = pr_number {
+                    ps.task_pr_number.insert(task_id.clone(), pr);
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save daemon-state.json after CreateTaskSessionSpan: {}",
+                        e
+                    );
+                }
+            }
+            Effect::CloseTaskSessionSpan {
+                session_id,
+                task_id,
+            } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.close_span(&session_id, &task_id);
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save daemon-state.json after CloseTaskSessionSpan: {}",
+                        e
+                    );
                 }
             }
             Effect::PostSystemMessage { message, channel } => {
