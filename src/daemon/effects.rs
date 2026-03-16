@@ -2109,9 +2109,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Store agent type so dispatch uses reviewer config
                         ps.task_agent_type
                             .insert(task_id.clone(), "midtown-code-reviewer".to_string());
-                        // Store parent relationship
+                        // Store parent relationship + inherit thread
                         if let Some(ref parent_id) = parent_task_id {
                             ps.task_parent.insert(task_id.clone(), parent_id.clone());
+                            if !ps.task_thread_id.contains_key(&task_id)
+                                && let Some(parent_thread) =
+                                    ps.task_thread_id.get(parent_id).cloned()
+                            {
+                                ps.task_thread_id.insert(task_id.clone(), parent_thread);
+                            }
                         }
                         // Store channel mapping
                         if let Some(ref ch) = channel {

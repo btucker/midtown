@@ -398,6 +398,14 @@ pub(super) async fn handle_task_create(
                 .unwrap_or(p);
             ps.task_parent
                 .insert(task_id.clone(), normalized.to_string());
+            // Child tasks inherit the parent's thread so all messages
+            // appear in the same thread (unless an explicit thread_id
+            // was already set above).
+            if !ps.task_thread_id.contains_key(&task_id)
+                && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+            {
+                ps.task_thread_id.insert(task_id.clone(), parent_thread);
+            }
             changed = true;
         }
         if let Some(at) = agent_type {
