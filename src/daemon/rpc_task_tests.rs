@@ -790,6 +790,130 @@ fn test_task_parent_not_stored_when_none() {
         "task_parent should remain empty when parent is None"
     );
 }
+
+// ── child task thread inheritance tests ──────────────────────────────────────
+
+/// When a child task is created with a parent but no explicit thread_id,
+/// it should inherit the parent's task_thread_id so all messages from the
+/// child task go to the same thread as the parent.
+#[test]
+fn test_child_task_inherits_parent_thread_id() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+
+    // Parent task "42" has a thread binding
+    ps.task_thread_id
+        .insert("42".to_string(), "thread-parent-msg".to_string());
+
+    // Create child task "43" with parent "42", no explicit thread_id
+    let task_id = "43";
+    let thread_id: Option<&str> = None;
+    let parent: Option<&str> = Some("42");
+
+    // Replicate the handle_task_create storage logic (with inheritance)
+    if let Some(tid) = thread_id {
+        ps.task_thread_id
+            .insert(task_id.to_string(), tid.to_string());
+    }
+    if let Some(p) = parent {
+        let normalized = p
+            .strip_prefix('!')
+            .or_else(|| p.strip_prefix('#'))
+            .unwrap_or(p);
+        ps.task_parent
+            .insert(task_id.to_string(), normalized.to_string());
+        // Inherit parent's thread_id if child doesn't have one
+        if !ps.task_thread_id.contains_key(task_id)
+            && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+        {
+            ps.task_thread_id.insert(task_id.to_string(), parent_thread);
+        }
+    }
+
+    assert_eq!(
+        ps.task_thread_id.get("43"),
+        Some(&"thread-parent-msg".to_string()),
+        "child task should inherit parent's task_thread_id"
+    );
+}
+
+/// When a child task has an explicit thread_id, it should NOT be overridden
+/// by the parent's thread_id.
+#[test]
+fn test_child_task_explicit_thread_id_not_overridden() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+
+    ps.task_thread_id
+        .insert("42".to_string(), "parent-thread".to_string());
+
+    let task_id = "43";
+    let thread_id: Option<&str> = Some("child-explicit-thread");
+    let parent: Option<&str> = Some("42");
+
+    if let Some(tid) = thread_id {
+        ps.task_thread_id
+            .insert(task_id.to_string(), tid.to_string());
+    }
+    if let Some(p) = parent {
+        let normalized = p
+            .strip_prefix('!')
+            .or_else(|| p.strip_prefix('#'))
+            .unwrap_or(p);
+        ps.task_parent
+            .insert(task_id.to_string(), normalized.to_string());
+        if !ps.task_thread_id.contains_key(task_id)
+            && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+        {
+            ps.task_thread_id.insert(task_id.to_string(), parent_thread);
+        }
+    }
+
+    assert_eq!(
+        ps.task_thread_id.get("43"),
+        Some(&"child-explicit-thread".to_string()),
+        "explicit thread_id should not be overridden by parent's"
+    );
+}
+
+/// When a parent task has no thread_id, the child should not get one either.
+#[test]
+fn test_child_task_no_inheritance_when_parent_has_no_thread() {
+    use crate::daemon::state::DaemonPersistentState;
+
+    let mut ps = DaemonPersistentState::default();
+    // Parent "42" has no task_thread_id
+
+    let task_id = "43";
+    let thread_id: Option<&str> = None;
+    let parent: Option<&str> = Some("42");
+
+    if let Some(tid) = thread_id {
+        ps.task_thread_id
+            .insert(task_id.to_string(), tid.to_string());
+    }
+    if let Some(p) = parent {
+        let normalized = p
+            .strip_prefix('!')
+            .or_else(|| p.strip_prefix('#'))
+            .unwrap_or(p);
+        ps.task_parent
+            .insert(task_id.to_string(), normalized.to_string());
+        if !ps.task_thread_id.contains_key(task_id)
+            && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+        {
+            ps.task_thread_id.insert(task_id.to_string(), parent_thread);
+        }
+    }
+
+    assert!(
+        !ps.task_thread_id.contains_key("43"),
+        "child should not get a thread_id when parent has none"
+    );
+}
+
 // ── task.prompt model validation tests ────────────────────────────────────────
 
 /// handle_task_prompt should reject invalid model formats before any session lookup.

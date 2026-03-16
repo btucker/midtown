@@ -29,9 +29,10 @@ fn mention_nudge_produces_nudge_effect() {
 }
 
 #[test]
-fn render_thread_context_uses_self_id_for_top_level() {
+fn format_mention_nudge_uses_self_id_for_top_level() {
+    use crate::daemon::wake_reason::NudgeTarget;
     let msg = Message::text("user", "Top level");
-    let label = super::render_thread_context(&msg);
+    let label = super::format_mention_nudge(&msg, NudgeTarget::TaskWorker);
     assert!(
         label.contains(&msg.id),
         "Top-level messages should include their own ID"
@@ -39,7 +40,8 @@ fn render_thread_context_uses_self_id_for_top_level() {
 }
 
 #[test]
-fn render_thread_context_uses_parent_id_for_thread_replies() {
+fn format_mention_nudge_uses_parent_id_for_thread_replies() {
+    use crate::daemon::wake_reason::NudgeTarget;
     let parent_id = "parent-1234";
     let msg = Message::thread_reply(
         "midtown",
@@ -48,7 +50,7 @@ fn render_thread_context_uses_parent_id_for_thread_replies() {
         parent_id,
         MessageType::Text,
     );
-    let label = super::render_thread_context(&msg);
+    let label = super::format_mention_nudge(&msg, NudgeTarget::TaskWorker);
     assert!(
         label.contains(parent_id),
         "Thread replies should include thread parent ID in nudges"
@@ -60,7 +62,8 @@ fn render_thread_context_uses_parent_id_for_thread_replies() {
 }
 
 #[test]
-fn render_thread_context_includes_reply_instructions_for_thread_replies() {
+fn format_mention_nudge_includes_reply_instructions_for_thread_replies() {
+    use crate::daemon::wake_reason::NudgeTarget;
     let parent_id = "parent-5678";
     let msg = Message::thread_reply(
         "daemon-core",
@@ -69,7 +72,7 @@ fn render_thread_context_includes_reply_instructions_for_thread_replies() {
         parent_id,
         MessageType::Text,
     );
-    let label = super::render_thread_context(&msg);
+    let label = super::format_mention_nudge(&msg, NudgeTarget::TaskWorker);
     assert!(
         label.contains("--thread parent-5678"),
         "Thread nudge should include --thread flag with parent_id"
@@ -85,16 +88,29 @@ fn render_thread_context_includes_reply_instructions_for_thread_replies() {
 }
 
 #[test]
-fn render_thread_context_no_instructions_for_top_level_messages() {
+fn format_mention_nudge_top_level_includes_channel_instructions() {
+    use crate::daemon::wake_reason::NudgeTarget;
     let msg = Message::for_channel("midtown", "amsterdam", "Regular post", MessageType::Text);
-    let label = super::render_thread_context(&msg);
+    let label = super::format_mention_nudge(&msg, NudgeTarget::TaskWorker);
     assert!(
         !label.contains("--thread"),
         "Top-level messages should not include thread instructions"
     );
     assert!(
-        !label.contains("midtown channel read"),
-        "Top-level messages should not include thread read instructions"
+        label.contains("midtown channel read"),
+        "Top-level messages should include channel read instructions"
+    );
+    assert!(
+        label.contains("midtown channel post"),
+        "Top-level messages should include channel post instructions"
+    );
+    assert!(
+        label.contains("Prefer replying in a thread"),
+        "Top-level should encourage thread replies"
+    );
+    assert!(
+        label.contains("Acknowledge"),
+        "Should include acknowledge instruction"
     );
 }
 

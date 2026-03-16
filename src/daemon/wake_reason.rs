@@ -17,12 +17,29 @@ pub struct ThreadContext {
     pub channel_name: String,
 }
 
+/// What kind of session is receiving the nudge — determines output behavior guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NudgeTarget {
+    /// Fork session — stdout auto-posts to the thread.
+    #[allow(dead_code)]
+    // Used in tests; production use comes with mention routing consolidation
+    Fork,
+    /// Channel lead — stdout auto-posts to the channel as a top-level message.
+    #[allow(dead_code)]
+    // Used in tests; production use comes with mention routing consolidation
+    ChannelLead,
+    /// Task worker (dev, reviewer, etc.) — stdout does not auto-post anywhere.
+    TaskWorker,
+}
+
 impl ThreadContext {
     /// Format the standard thread reply instructions appended to nudge messages.
     ///
     /// Includes the `--thread` flag for both posting and reading thread context,
     /// `--last 50` for limiting message count, and a reminder to keep text output
     /// brief to avoid duplicate top-level messages.
+    ///
+    /// Deprecated: prefer `format_nudge_instructions` which is context-aware.
     pub fn reply_instructions(&self) -> String {
         format!(
             "This is a thread reply. To reply in the thread:\n  \
@@ -34,6 +51,85 @@ impl ThreadContext {
             self.parent_id, self.channel_name, self.parent_id, self.channel_name
         )
     }
+}
+
+/// Format context-aware nudge instructions based on location and session type.
+///
+/// Produces instructions that tell the agent:
+/// 1. How to read context (thread or channel)
+/// 2. How to reply (with appropriate --thread/--channel flags)
+/// 3. What happens to its stdout (varies by session type)
+/// 4. To acknowledge the mention immediately before working on it
+pub fn format_nudge_instructions(
+    thread_ctx: Option<&ThreadContext>,
+    channel: &str,
+    target: NudgeTarget,
+) -> String {
+    let mut parts = Vec::new();
+
+    // Location-dependent: how to read context and reply
+    if let Some(ctx) = thread_ctx {
+        parts.push(format!(
+            "This is a thread reply. To read recent thread context:\n  \
+             midtown channel read --last 15 --thread {} --channel {}\n\
+             To reply in the thread:\n  \
+             midtown channel post \"...\" --thread {} --channel {}",
+            ctx.parent_id, ctx.channel_name, ctx.parent_id, ctx.channel_name
+        ));
+    } else {
+        parts.push(format!(
+            "To read recent channel context:\n  \
+             midtown channel read --last 15 --channel {channel}\n\
+             To post a message:\n  \
+             midtown channel post \"...\" --channel {channel}\n\
+             Prefer replying in a thread to keep the channel organized, \
+             unless there's already a relevant top-level discussion in progress."
+        ));
+    }
+
+    // Session-type-dependent: what happens to stdout
+    match target {
+        NudgeTarget::Fork => {
+            parts.push(
+                "Your text output is automatically posted to the thread. \
+                 Use `midtown channel post` only if you need to post to a \
+                 different thread or channel."
+                    .to_string(),
+            );
+        }
+        NudgeTarget::ChannelLead => {
+            parts.push(
+                "Your text output is automatically posted to the channel \
+                 as a top-level message. Use `midtown channel post` with \
+                 `--thread` to reply in a specific thread instead."
+                    .to_string(),
+            );
+        }
+        NudgeTarget::TaskWorker => {
+            parts.push(
+                "Your text output is not automatically posted to any channel. \
+                 Use `midtown channel post` to share messages."
+                    .to_string(),
+            );
+        }
+    }
+
+    // Universal: acknowledge first
+    let ack_cmd = if let Some(ctx) = thread_ctx {
+        format!(
+            "midtown channel post \"...\" --thread {} --channel {}",
+            ctx.parent_id, ctx.channel_name
+        )
+    } else {
+        format!("midtown channel post \"...\" --channel {channel}")
+    };
+    parts.push(format!(
+        "Acknowledge this mention immediately with a brief `{ack_cmd}` \
+         reply before spending time on it — the person who mentioned you \
+         is waiting to know you saw it."
+    ));
+
+    parts.join("\n\n")
 }
 
 /// Why a session is being woken up.

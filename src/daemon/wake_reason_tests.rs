@@ -1,4 +1,4 @@
-use super::{ThreadContext, WakeReason};
+use super::{NudgeTarget, ThreadContext, WakeReason};
 
 #[test]
 fn task_created_nudge_message() {
@@ -601,5 +601,116 @@ fn reply_instructions_channel_read_includes_thread_flag() {
     assert!(
         read_cmd.contains("--channel ops"),
         "channel read command should include --channel: {read_cmd}"
+    );
+}
+
+// ── format_nudge_instructions tests ─────────────────────────────────────────
+
+#[test]
+fn nudge_instructions_thread_task_worker() {
+    let ctx = ThreadContext {
+        parent_id: "thread-42".to_string(),
+        channel_name: "dev".to_string(),
+    };
+    let result = super::format_nudge_instructions(Some(&ctx), "dev", NudgeTarget::TaskWorker);
+
+    assert!(
+        result.contains("--thread thread-42"),
+        "should include thread flag"
+    );
+    assert!(
+        result.contains("--channel dev"),
+        "should include channel flag"
+    );
+    assert!(result.contains("--last 15"), "should include read limit");
+    assert!(
+        result.contains("not automatically posted"),
+        "task worker stdout warning"
+    );
+    assert!(
+        result.contains("Acknowledge"),
+        "should include ack instruction"
+    );
+}
+
+#[test]
+fn nudge_instructions_thread_channel_lead() {
+    let ctx = ThreadContext {
+        parent_id: "thread-42".to_string(),
+        channel_name: "dev".to_string(),
+    };
+    let result = super::format_nudge_instructions(Some(&ctx), "dev", NudgeTarget::ChannelLead);
+
+    assert!(
+        result.contains("automatically posted to the channel"),
+        "channel lead stdout warning"
+    );
+    assert!(
+        !result.contains("not automatically posted"),
+        "should not have task worker warning"
+    );
+}
+
+#[test]
+fn nudge_instructions_thread_fork() {
+    let ctx = ThreadContext {
+        parent_id: "thread-42".to_string(),
+        channel_name: "dev".to_string(),
+    };
+    let result = super::format_nudge_instructions(Some(&ctx), "dev", NudgeTarget::Fork);
+
+    assert!(
+        result.contains("automatically posted to the thread"),
+        "fork stdout warning"
+    );
+}
+
+#[test]
+fn nudge_instructions_top_level_task_worker() {
+    let result = super::format_nudge_instructions(None, "dev", NudgeTarget::TaskWorker);
+
+    assert!(
+        !result.contains("--thread"),
+        "top-level should not include thread flag"
+    );
+    assert!(result.contains("--channel dev"), "should include channel");
+    assert!(result.contains("--last 15"), "should include read limit");
+    assert!(
+        result.contains("Prefer replying in a thread"),
+        "should encourage thread replies"
+    );
+    assert!(
+        result.contains("Acknowledge"),
+        "should include ack instruction"
+    );
+    assert!(
+        result.contains("not automatically posted"),
+        "task worker stdout warning"
+    );
+}
+
+#[test]
+fn nudge_instructions_top_level_ack_uses_channel_post() {
+    let result = super::format_nudge_instructions(None, "ops", NudgeTarget::TaskWorker);
+
+    // The ack instruction should use channel post with --channel, not --thread
+    assert!(
+        result.contains("midtown channel post \"...\" --channel ops"),
+        "ack command should use channel post with --channel for top-level: {result}"
+    );
+}
+
+#[test]
+fn nudge_instructions_thread_ack_uses_thread_post() {
+    let ctx = ThreadContext {
+        parent_id: "parent-99".to_string(),
+        channel_name: "ops".to_string(),
+    };
+    let result = super::format_nudge_instructions(Some(&ctx), "ops", NudgeTarget::TaskWorker);
+
+    // The ack instruction should use channel post with --thread
+    assert!(
+        result.contains("midtown channel post \"...\" --thread parent-99 --channel ops"),
+        "ack command should use --thread for thread context: {result}"
     );
 }

@@ -226,7 +226,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         }
 
         let is_running = state.coworkers.get(&target_name).is_some();
-        let nudge_text = render_thread_context(msg);
+        let nudge_text = format_mention_nudge(msg, super::wake_reason::NudgeTarget::TaskWorker);
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
         let name_session_map: std::collections::HashMap<String, String> =
@@ -277,7 +277,8 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
 async fn route_at_all(state: &DaemonState, msg: &Message) {
     // Only nudge Running coworkers — Stopping/Starting coworkers have no active session.
     let running_coworkers = state.coworkers.list_running();
-    let nudge_text = render_thread_context(msg);
+    // Use TaskWorker for coworker nudges; the lead nudge below uses its own effect
+    let nudge_text = format_mention_nudge(msg, super::wake_reason::NudgeTarget::TaskWorker);
 
     info!(
         "@all broadcast from {} to {} running coworker(s) + lead",
@@ -338,12 +339,11 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
     }
 }
 
-/// Human-friendly label for nudges that preserves thread context by using
-/// the parent message ID when the source message is a thread reply.
+/// Format a mention nudge message with context-aware instructions.
 ///
-/// For thread replies, appends instructions for replying and reading the thread
-/// so the recipient knows how to participate in the conversation.
-fn render_thread_context(msg: &Message) -> String {
+/// Combines the original message content with instructions appropriate for
+/// the target session type and location (thread vs top-level).
+fn format_mention_nudge(msg: &Message, target: super::wake_reason::NudgeTarget) -> String {
     let base = format!(
         "{} said ({}): {}",
         msg.from,
@@ -351,15 +351,21 @@ fn render_thread_context(msg: &Message) -> String {
         msg.content
     );
 
-    if let Some(parent_id) = &msg.thread_parent_id {
-        let ctx = super::wake_reason::ThreadContext {
-            parent_id: parent_id.clone(),
-            channel_name: msg.channel_name().to_string(),
-        };
-        format!("{base}\n\n{}", ctx.reply_instructions())
-    } else {
-        base
-    }
+    let thread_ctx =
+        msg.thread_parent_id
+            .as_ref()
+            .map(|parent_id| super::wake_reason::ThreadContext {
+                parent_id: parent_id.clone(),
+                channel_name: msg.channel_name().to_string(),
+            });
+
+    let instructions = super::wake_reason::format_nudge_instructions(
+        thread_ctx.as_ref(),
+        msg.channel_name(),
+        target,
+    );
+
+    format!("{base}\n\n{instructions}")
 }
 
 /// Convert a `MentionAction` decision into executable effects.

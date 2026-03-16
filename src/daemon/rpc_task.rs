@@ -398,6 +398,14 @@ pub(super) async fn handle_task_create(
                 .unwrap_or(p);
             ps.task_parent
                 .insert(task_id.clone(), normalized.to_string());
+            // Child tasks inherit the parent's thread so all messages
+            // appear in the same thread (unless an explicit thread_id
+            // was already set above).
+            if !ps.task_thread_id.contains_key(&task_id)
+                && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+            {
+                ps.task_thread_id.insert(task_id.clone(), parent_thread);
+            }
             changed = true;
         }
         if let Some(at) = agent_type {
@@ -416,11 +424,26 @@ pub(super) async fn handle_task_create(
     // channel lead. Capture message ID for task-as-thread feature.
     // Only store the mapping if the write succeeds — a failed write means no channel
     // message exists, so storing the ID would create an orphan thread root.
+    //
+    // Resolve the effective thread_id: use the explicit --thread-id if provided,
+    // otherwise check if the child inherited a thread from its parent.
+    let effective_thread_id: Option<String> = match thread_id {
+        Some(t) => Some(t.to_string()),
+        None => {
+            let ps = state.persistent_state.lock().await;
+            ps.task_thread_id.get(&task_id).cloned()
+        }
+    };
     let author = task_created_message_author(effective_channel, state.default_channel_name());
-    let msg = task_announcement_message(effective_channel, &author, subject, thread_id);
+    let msg = task_announcement_message(
+        effective_channel,
+        &author,
+        subject,
+        effective_thread_id.as_deref(),
+    );
     let announcement_message_id = msg.id.clone();
     let mut event_message_id = None;
-    let mut event_thread_id = thread_id.map(|t| t.to_string());
+    let mut event_thread_id = effective_thread_id;
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
             event_message_id = Some(announcement_message_id.clone());
@@ -428,9 +451,9 @@ pub(super) async fn handle_task_create(
             ps.task_message_id
                 .insert(task_id.clone(), announcement_message_id.clone());
             // Default task_thread_id to the announcement message ID when no
-            // explicit --thread-id was provided. This ensures SpawnSession
-            // picks up a bound_thread_id so coworker messages auto-route to
-            // the task announcement thread.
+            // thread_id was resolved (explicit --thread-id, or inherited from
+            // parent). This ensures SpawnSession picks up a bound_thread_id
+            // so coworker messages auto-route to the task's thread.
             if !ps.task_thread_id.contains_key(&task_id) {
                 ps.task_thread_id
                     .insert(task_id.clone(), announcement_message_id.clone());
