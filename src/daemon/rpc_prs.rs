@@ -54,11 +54,20 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
 
     debug!("Cache miss, fetching fresh PR data");
 
-    // Get reviewer assignments from persistent state (best-effort via try_lock)
-    let reviewer_assignments: HashMap<u64, crate::github_state::PrReviewerAssignment> = state
+    // Get reviewer assignments from active spans (best-effort via try_lock)
+    let reviewer_assignments: HashMap<u64, String> = state
         .persistent_state
         .try_lock()
-        .map(|ps| ps.github.active_assignments())
+        .map(|ps| {
+            ps.active_reviewer_spans()
+                .into_iter()
+                .filter_map(|s| {
+                    ps.task_pr_number
+                        .get(&s.task_id)
+                        .map(|&pr| (pr, s.agent_name.clone()))
+                })
+                .collect()
+        })
         .unwrap_or_default();
 
     let is_multi_repo = all_repo_paths.len() > 1;
@@ -200,7 +209,7 @@ query($owner: String!, $repo: String!) {
 /// Returns `(open_prs, merged_prs)` formatted for the kanban board.
 /// Falls back to empty vectors on failure.
 fn fetch_prs_all(
-    reviewer_assignments: &HashMap<u64, crate::github_state::PrReviewerAssignment>,
+    reviewer_assignments: &HashMap<u64, String>,
     name_with_owner: &str,
     repo_path: &std::path::Path,
     repo_label: Option<&str>,
@@ -320,12 +329,8 @@ fn fetch_prs_all(
                     let (reviewer, reviewer_assigned_at, review_posted) =
                         if let Some(reviewer) = comment_reviewer {
                             (Some(reviewer), reviewed_at, true)
-                        } else if let Some(assignment) = reviewer_assignments.get(&number) {
-                            (
-                                Some(assignment.reviewer.clone()),
-                                Some(assignment.assigned_at.to_rfc3339()),
-                                false,
-                            )
+                        } else if let Some(reviewer_name) = reviewer_assignments.get(&number) {
+                            (Some(reviewer_name.clone()), None, false)
                         } else {
                             (None, None, false)
                         };
@@ -575,10 +580,11 @@ pub(super) async fn handle_pr_review(
         );
     }
 
-    // Check if already assigned.
+    // Check if already assigned via active spans.
     {
         let ps = state.persistent_state.lock().await;
-        if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
+        if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
+            let reviewer = span.agent_name.clone();
             return Response::success(
                 id,
                 serde_json::json!({
@@ -757,23 +763,16 @@ pub(super) async fn handle_pr_merge(
     // prompt-based instructions that were bypassed in the PR #1624 incident,
     // this check cannot be circumvented by the lead or coworker.
     //
-    // Uses `get_reviewer()` (raw assignment presence) instead of
-    // `is_assigned()` (600s timeout). The timeout-based check would let
-    // merges slip through for long-running reviews. Assignments are only
-    // removed when the review actually completes or the PR is closed.
-    //
-    // However, there is a window between the webhook marking the review
-    // as complete (`mark_reviewed_pr`) and the poll tick clearing the
-    // assignment (`remove_assignment`). To avoid blocking legitimate
-    // merges during this window, we skip the block if the review is
-    // already cached as complete.
+    // Check active reviewer spans — block merge while reviewer is still working.
+    // Bypass if the review is already cached as complete (handles race between
+    // webhook review completion and span closure).
     //
     // Checked before any API calls for fast rejection.
     {
         let ps = state.persistent_state.lock().await;
-        if let Some(reviewer) = ps.github.get_reviewer(pr_number) {
+        if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
             if !ps.github.has_cached_review(pr_number) {
-                let reviewer = reviewer.to_string();
+                let reviewer = span.agent_name.clone();
                 let message = format!(
                     "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
                     pr_number, reviewer
@@ -782,7 +781,7 @@ pub(super) async fn handle_pr_merge(
                 return Response::error(id, RpcError::new(-32603, message));
             }
             debug!(
-                "PR #{} has reviewer assigned but review is already complete — allowing merge",
+                "PR #{} has reviewer span but review is already complete — allowing merge",
                 pr_number
             );
         }
@@ -1020,14 +1019,15 @@ pub(super) async fn handle_pr_review_post(
 ) -> Response {
     info!("Review post requested for PR #{}", pr_number);
 
-    // Step 1: Look up the reviewer name and placeholder comment ID
+    // Step 1: Look up the reviewer name and placeholder comment ID via spans
     let (reviewer_name, placeholder_comment_id) = {
         let ps = state.persistent_state.lock().await;
-        match ps.github.pr_reviewers.get(&pr_number) {
-            Some(assignment) => (
-                assignment.reviewer.clone(),
-                assignment.placeholder_comment_id,
-            ),
+        match ps.active_reviewer_for_pr(pr_number) {
+            Some(span) => {
+                let name = span.agent_name.clone();
+                let comment_id = ps.task_placeholder_comment_id.get(&span.task_id).copied();
+                (name, comment_id)
+            }
             None => {
                 return Response::error(
                     id,

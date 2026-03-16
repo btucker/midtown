@@ -56,10 +56,13 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     ) = {
         let ps = state.persistent_state.lock().await;
         let rev_map: std::collections::HashMap<String, u64> = ps
-            .github
-            .active_assignments()
-            .iter()
-            .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
+            .active_reviewer_spans()
+            .into_iter()
+            .filter_map(|s| {
+                ps.task_pr_number
+                    .get(&s.task_id)
+                    .map(|&pr| (s.agent_name.clone(), pr))
+            })
             .collect();
         let wt_map: std::collections::HashMap<String, u64> = ps
             .worktree_registry

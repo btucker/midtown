@@ -294,9 +294,15 @@ pub(super) async fn handle_auth_switch(
             .iter()
             .filter_map(|cw| {
                 persistent
-                    .github
-                    .pr_for_reviewer(&cw.name)
-                    .map(|pr| (cw.name.clone(), pr))
+                    .active_reviewer_spans()
+                    .into_iter()
+                    .find(|s| s.agent_name == cw.name)
+                    .and_then(|s| {
+                        persistent
+                            .task_pr_number
+                            .get(&s.task_id)
+                            .map(|&pr| (cw.name.clone(), pr))
+                    })
             })
             .collect();
         let channel_leads = persistent

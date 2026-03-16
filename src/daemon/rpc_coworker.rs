@@ -1123,15 +1123,24 @@ async fn build_coworkers_data(
 ) -> (Vec<serde_json::Value>, std::collections::HashSet<String>) {
     // Get reviewer assignments, worktree registry, and channel lead names from persistent state
     // (best-effort via try_lock)
-    let (reviewer_assignments, worktree_pr_map, channel_lead_names): (
-        HashMap<u64, crate::github_state::PrReviewerAssignment>,
+    let (reviewer_pr_map, worktree_pr_map, channel_lead_names): (
+        HashMap<String, u64>,
         HashMap<String, u64>,
         std::collections::HashSet<String>,
     ) = state
         .persistent_state
         .try_lock()
         .map(|ps| {
-            let assignments = ps.github.active_assignments();
+            // Build reviewer -> PR map from active spans
+            let rev_map: HashMap<String, u64> = ps
+                .active_reviewer_spans()
+                .into_iter()
+                .filter_map(|s| {
+                    ps.task_pr_number
+                        .get(&s.task_id)
+                        .map(|&pr| (s.agent_name.clone(), pr))
+                })
+                .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)
             let wt_map: HashMap<String, u64> = ps
                 .worktree_registry
@@ -1144,15 +1153,9 @@ async fn build_coworkers_data(
                 })
                 .collect();
             let cl_names = ps.channel_lead_names();
-            (assignments, wt_map, cl_names)
+            (rev_map, wt_map, cl_names)
         })
         .unwrap_or_default();
-
-    // Build reviewer -> PR number map from reviewer_assignments
-    let reviewer_pr_map: HashMap<String, u64> = reviewer_assignments
-        .iter()
-        .map(|(pr_number, assignment)| (assignment.reviewer.clone(), *pr_number))
-        .collect();
 
     let active_coworkers = state.coworkers.list();
     let coworker_records = state.coworker_records.read().await;

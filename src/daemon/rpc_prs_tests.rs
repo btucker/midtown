@@ -1,5 +1,4 @@
 use super::*;
-use crate::github_state::AssignmentSource;
 
 // ============================================================================
 // Helper: create a minimal DaemonState for merge-gate tests
@@ -75,14 +74,11 @@ async fn test_merge_blocked_while_reviewer_actively_assigned() {
     let (state, _tmp, _guard) = make_merge_test_state();
     let pr_number: u64 = 1624;
 
-    // Assign a reviewer to the PR (simulates daemon spawning a reviewer coworker)
+    // Create a reviewer span for the PR (simulates daemon spawning a reviewer coworker)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "park",
-            crate::github_state::AssignmentSource::Webhook,
-        );
+        ps.create_span("task-1624", "park", "reviewer", "");
+        ps.task_pr_number.insert("task-1624".to_string(), pr_number);
     }
 
     // Attempt to merge — should be rejected because reviewer is active
@@ -132,15 +128,12 @@ async fn test_merge_not_blocked_when_reviewed_but_assignment_not_yet_cleared() {
     let (state, _tmp, _guard) = make_merge_test_state();
     let pr_number: u64 = 88;
 
-    // Simulate the race: reviewer is assigned AND review is cached as complete,
-    // but `remove_assignment` hasn't run yet (poll tick pending).
+    // Simulate the race: reviewer span is open AND review is cached as complete,
+    // but the span hasn't been closed yet (poll tick pending).
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "park",
-            crate::github_state::AssignmentSource::Webhook,
-        );
+        ps.create_span("task-88", "park", "reviewer", "");
+        ps.task_pr_number.insert("task-88".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -163,15 +156,12 @@ async fn test_merge_not_blocked_after_reviewer_assignment_removed() {
     let (state, _tmp, _guard) = make_merge_test_state();
     let pr_number: u64 = 42;
 
-    // Assign then remove reviewer (simulates completed review flow)
+    // Create then close reviewer span (simulates completed review flow)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "park",
-            crate::github_state::AssignmentSource::Webhook,
-        );
-        ps.github.remove_assignment(pr_number);
+        ps.create_span("task-42", "park", "reviewer", "sess-park-1");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        ps.close_spans_for_task("task-42");
     }
 
     let response = handle_pr_merge(crate::rpc::RequestId::Number(3), pr_number, &state).await;
@@ -331,14 +321,13 @@ async fn test_review_post_with_stored_comment_id_succeeds() {
     let pr_number = 42u64;
     let comment_id = 98765u64;
 
-    // Pre-assign reviewer with a stored placeholder comment ID
+    // Create reviewer span with a stored placeholder comment ID
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "park", AssignmentSource::Webhook);
-        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-            assignment.placeholder_comment_id = Some(comment_id);
-        }
+        ps.create_span("task-42", "park", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        ps.task_placeholder_comment_id
+            .insert("task-42".to_string(), comment_id);
     }
 
     // Mock `gh` to handle both `repo view` and `api --method PATCH` calls
@@ -441,8 +430,8 @@ async fn test_review_post_body_format() {
     // Instead, test the body formatting logic directly.
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "lexington", AssignmentSource::Manual);
+        ps.create_span("task-50", "lexington", "reviewer", "");
+        ps.task_pr_number.insert("task-50".to_string(), pr_number);
     }
 
     // The handler constructs the body at line 1015-1018 of rpc_prs.rs:
@@ -511,11 +500,10 @@ async fn test_review_post_gh_api_failure_returns_error() {
 
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .assign_reviewer(pr_number, "york", AssignmentSource::Webhook);
-        if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-            assignment.placeholder_comment_id = Some(55555);
-        }
+        ps.create_span("task-77", "york", "reviewer", "");
+        ps.task_pr_number.insert("task-77".to_string(), pr_number);
+        ps.task_placeholder_comment_id
+            .insert("task-77".to_string(), 55555);
     }
 
     // Mock `gh` — `repo view` succeeds but `api PATCH` fails

@@ -1166,14 +1166,14 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
             // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
             // "isDraft" / "reviewDecision". Handle both shapes.
-            // Look up reviewer from persistent state (covers both RPC and CLI shapes)
-            let assignment = persistent_state.github.pr_reviewers.get(&pr_number);
+            // Look up reviewer from active spans (covers both RPC and CLI shapes)
+            let span = persistent_state.active_reviewer_for_pr(pr_number);
             let reviewer = pr
                 .get("reviewer")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| assignment.map(|a| a.reviewer.clone()));
-            let reviewer_assigned_at = assignment.map(|a| a.assigned_at.to_rfc3339());
+                .or_else(|| span.map(|s| s.agent_name.clone()));
+            let reviewer_assigned_at = span.map(|s| s.start_time.to_rfc3339());
             // Prefer review_posted from RPC response (computed from actual PR comments),
             // fall back to persistent local state for the CLI path
             let review_posted = pr
