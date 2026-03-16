@@ -553,15 +553,9 @@ async fn collect_orphaned_pr_effects(
 
 /// Cleanup expired tracking entries and stale state.
 ///
-/// Cleans up: PR issue tracker, persistent state (expired reviewer assignments,
-/// session ID backfill, stale webhook events), cooldowns, and RPC response cache.
-async fn cleanup_pr_tracking_state(
-    state: &DaemonState,
-    _snap: &WorldSnapshot,
-    _running_coworker_names: &HashSet<String>,
-    _running_reviewer_session_ids: &HashSet<String>,
-    _review_branch_owners: &HashSet<String>,
-) {
+/// Cleans up: PR issue tracker, persistent state (stale webhook events),
+/// cooldowns, and RPC response cache.
+async fn cleanup_pr_tracking_state(state: &DaemonState) {
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
         tracker.cleanup();
@@ -586,8 +580,6 @@ async fn update_pr_caches(
     state: &DaemonState,
     snap: &WorldSnapshot,
     prs: &[serde_json::Value],
-    _running_coworker_names: &HashSet<String>,
-    _running_reviewer_session_ids: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -1028,51 +1020,6 @@ pub(super) async fn poll_prs_for_issues(
         .map(|c| c.name.clone())
         .collect();
 
-    // Get running coworkers for cleanup_expired_preserving, which removes timed-out
-    // reviewer assignments but preserves those for still-running reviewers (i.e., reviews
-    // that are taking longer than the timeout but the reviewer is still actively working).
-    // Only include coworkers that own a review worktree branch — if a reviewer name was
-    // reused for dev work after restart, the stale assignment should expire naturally
-    // rather than being preserved by the dev coworker's presence.
-    // Also exclude usage-limited coworkers: they can't complete reviews.
-    // Normalize to lowercase for consistent matching — worktree_branch_owners
-    // comes from WorktreeAssignment.current_coworker (external input), while
-    // running_coworkers uses names from AVENUE_NAMES (always lowercase).
-    let review_branch_owners: HashSet<String> = snap
-        .worktree_branch_owners
-        .iter()
-        .filter(|(branch, _)| branch.starts_with("review-pr-"))
-        .map(|(_, owner)| owner.to_lowercase())
-        .collect();
-    let running_coworker_names: HashSet<String> = snap
-        .coworkers
-        .running_coworkers
-        .iter()
-        .map(|c| c.name.clone())
-        .filter(|name| {
-            review_branch_owners.contains(&name.to_lowercase())
-                && !snap
-                    .health
-                    .usage_limited_coworkers
-                    .contains(&name.to_lowercase())
-        })
-        .collect();
-    // Build session ID set for same reviewer-subset — enables session-based matching
-    // in cleanup_expired_preserving when assignments carry a reviewer_session_id.
-    let running_reviewer_session_ids: HashSet<String> = snap
-        .coworkers
-        .running_coworkers
-        .iter()
-        .filter(|c| {
-            review_branch_owners.contains(&c.name.to_lowercase())
-                && !snap
-                    .health
-                    .usage_limited_coworkers
-                    .contains(&c.name.to_lowercase())
-        })
-        .filter_map(|c| c.session_id.clone())
-        .collect();
-
     // Get list of idle coworkers for handoff decisions
     let idle_coworkers: Vec<String> = {
         let records = state.coworker_records.read().await;
@@ -1132,14 +1079,7 @@ pub(super) async fn poll_prs_for_issues(
 
     let prs: Vec<serde_json::Value> = serde_json::from_str(&stdout)?;
 
-    cleanup_pr_tracking_state(
-        state,
-        snap,
-        &running_coworker_names,
-        &running_reviewer_session_ids,
-        &review_branch_owners,
-    )
-    .await;
+    cleanup_pr_tracking_state(state).await;
 
     // Filter to only open PRs (defense-in-depth: gh pr list --state open should only return
     // open PRs, but verify via the state field to guard against stale/cached results)
@@ -1174,16 +1114,7 @@ pub(super) async fn poll_prs_for_issues(
             .collect()
     };
 
-    effects.extend(
-        update_pr_caches(
-            state,
-            snap,
-            &prs,
-            &running_coworker_names,
-            &running_reviewer_session_ids,
-        )
-        .await,
-    );
+    effects.extend(update_pr_caches(state, snap, &prs).await);
 
     // Clean up external PR tracking for truly closed PRs, using the unfiltered
     // open PR list so blocked-but-still-open external PRs are preserved.
@@ -2501,7 +2432,7 @@ async fn collect_reviewer_effects(
         &snap.coworkers.active_names,
         state,
         prs,
-        crate::github_state::AssignmentSource::PollingFallback,
+        true, // is_polling_fallback
         pre_fetched_review_content,
     )
     .await
@@ -2707,7 +2638,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     active_names: &std::collections::HashSet<String>,
     state: &DaemonState,
     prs: &[serde_json::Value],
-    source: crate::github_state::AssignmentSource,
+    is_polling_fallback: bool,
     pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
@@ -2808,7 +2739,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // spawns reviewers in real-time via rpc.spawn_reviewer() on pr.opened,
         // so polling should only act as a safety net for missed webhooks — not
         // race with the workflow.
-        let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
+        let review_delay = if is_polling_fallback {
             let has_workflow = pr_task_associations
                 .get(&pr_number)
                 .and_then(|task_id| task_channel.get(task_id))
@@ -2836,7 +2767,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // When polling, defer to webhooks if one recently handled this PR.
         // This prevents polling from spawning a duplicate reviewer when the
         // webhook already triggered reviewer spawning via the workflow script.
-        if source == crate::github_state::AssignmentSource::PollingFallback {
+        if is_polling_fallback {
             let window_secs = review_delay as i64 * 2;
             let webhook_recently_handled =
                 pr_last_webhook_event.get(&pr_number).is_some_and(|ts| {
@@ -4461,12 +4392,9 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
         Effect::RecordPermanentPrNudge { .. } => "RecordPermanentPrNudge",
         Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
-        Effect::AssignReviewer { .. } => "AssignReviewer",
-        Effect::RemoveReviewerAssignment { .. } => "RemoveReviewerAssignment",
         Effect::RecordReviewerEscalation { .. } => "RecordReviewerEscalation",
         Effect::RecordOrphanedPrLeadNudge { .. } => "RecordOrphanedPrLeadNudge",
         Effect::ClearOrphanedPrLeadNudge { .. } => "ClearOrphanedPrLeadNudge",
-        Effect::ClearOrphanedReviewerAssignments { .. } => "ClearOrphanedReviewerAssignments",
         Effect::RerunWorkflow { .. } => "RerunWorkflow",
         Effect::UpdatePrComment { .. } => "UpdatePrComment",
         Effect::LinkPrToSession { .. } => "LinkPrToSession",

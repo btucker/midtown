@@ -377,26 +377,6 @@ pub enum Effect {
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
     RecordTaskAssignment { coworker: String, task_id: String },
-    /// Assign a reviewer to a PR in github_state and persist.
-    AssignReviewer {
-        pr_number: u64,
-        reviewer_name: String,
-        source: crate::github_state::AssignmentSource,
-        /// How many times this reviewer has been restarted for this PR.
-        /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
-        restart_count: u32,
-        /// Claude session ID for the reviewer, if known.
-        /// Initially `None` for optimistic assignments (before spawn completes).
-        reviewer_session_id: Option<String>,
-        /// Review task ID, if known. Used to create a TaskSessionSpan
-        /// so the task-centric model can find reviewer state by task ID.
-        task_id: Option<String>,
-    },
-    /// Remove a reviewer assignment for a specific PR.
-    ///
-    /// Used when a reviewer spawn fails after the assignment was already recorded
-    /// (optimistic assignment to prevent race conditions).
-    RemoveReviewerAssignment { pr_number: u64 },
     /// Record that a reviewer escalation warning has been posted for a PR.
     ///
     /// Prevents the escalation warning from firing every tick. The in-memory
@@ -410,8 +390,6 @@ pub enum Effect {
     /// This allows the lead to be re-nudged if the task later completes without merging
     /// and the PR becomes orphaned again.
     ClearOrphanedPrLeadNudge { pr_number: u64 },
-    /// Clear reviewer assignments for orphaned coworkers (sessions that ended unexpectedly).
-    ClearOrphanedReviewerAssignments { orphaned_coworkers: Vec<String> },
     /// Re-run a GitHub Actions workflow that appears to be stuck.
     ///
     /// Used when a CI check has been pending for > 4x its typical duration.
@@ -723,7 +701,7 @@ pub enum Effect {
     /// Executed as an `on_success` callback after spawning a reviewer session.
     /// The daemon posts the comment (avoiding prompt-compliance issues with
     /// escaped `!` characters) and stores the comment ID on the
-    /// `PrReviewerAssignment` for later update via `pr.review-post`.
+    /// task metadata for later update via `pr.review-post`.
     PostPrComment {
         pr_number: u64,
         reviewer_name: String,
@@ -1889,55 +1867,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::AssignReviewer {
-                pr_number,
-                reviewer_name,
-                source: _,
-                restart_count,
-                reviewer_session_id,
-                task_id,
-            } => {
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(ref tid) = task_id {
-                    ps.close_spans_for_task(tid);
-                    ps.create_span(
-                        tid,
-                        &reviewer_name,
-                        "reviewer",
-                        reviewer_session_id.as_deref().unwrap_or(""),
-                    );
-                    ps.task_pr_number.insert(tid.clone(), pr_number);
-                    if restart_count > 0 {
-                        ps.task_restart_count.insert(tid.clone(), restart_count);
-                    }
-                }
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to save daemon-state.json: {}", e);
-                }
-            }
-            Effect::RemoveReviewerAssignment { pr_number } => {
-                let mut ps = state.persistent_state.lock().await;
-                let task_ids: Vec<String> = ps
-                    .active_reviewer_spans()
-                    .iter()
-                    .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-                    .map(|s| s.task_id.clone())
-                    .collect();
-                if task_ids.is_empty() {
-                    debug!("No reviewer spans to close for PR #{}", pr_number);
-                } else {
-                    for tid in &task_ids {
-                        debug!("Closing reviewer span for PR #{} (task {})", pr_number, tid);
-                        ps.close_spans_for_task(tid);
-                    }
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!(
-                            "Failed to save daemon-state.json after removing assignment: {}",
-                            e
-                        );
-                    }
-                }
-            }
             Effect::CreateTaskSessionSpan {
                 task_id,
                 agent_name,
@@ -1988,15 +1917,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 msg.channel = channel;
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post system message: {}", e);
-                }
-            }
-            Effect::ClearOrphanedReviewerAssignments { orphaned_coworkers } => {
-                if orphaned_coworkers.is_empty() {
-                    continue;
-                }
-                let mut ps = state.persistent_state.lock().await;
-                for name in &orphaned_coworkers {
-                    ps.clear_reviewer_assignment(name, state.paths.dir_key());
                 }
             }
             Effect::RerunWorkflow {
@@ -4017,7 +3937,7 @@ async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Opt
 ///
 /// Uses `gh api --method PATCH` to edit an existing placeholder or
 /// `gh pr comment` to create a new one. Stores the comment ID on the
-/// `PrReviewerAssignment` so the daemon can later update the placeholder
+/// task metadata so the daemon can later update the placeholder
 /// with the final review via `pr.review-post`.
 ///
 /// When a placeholder comment already exists on the PR (from a previous
