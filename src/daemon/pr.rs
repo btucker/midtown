@@ -4574,6 +4574,8 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::RespawnChannelLead { .. } => "RespawnChannelLead",
         Effect::TaskPrompt { .. } => "TaskPrompt",
         Effect::CreateReviewTask { .. } => "CreateReviewTask",
+        Effect::CreateTaskSessionSpan { .. } => "CreateTaskSessionSpan",
+        Effect::CloseTaskSessionSpan { .. } => "CloseTaskSessionSpan",
     }
 }
 
