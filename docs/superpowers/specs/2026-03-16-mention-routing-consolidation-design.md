@@ -93,6 +93,23 @@ System/daemon-generated messages (from `SKIP_SENDERS`) that mention channel lead
 - `@ops` is a channel lead name like any other — resolved via step 3 above.
 - System messages that mention channel lead names are routed through the same `route_mentions()` path. The `chat_monitor_loop` skip logic is adjusted to still call `route_mentions()` for system messages before continuing (preserving the current pattern but using the unified path).
 
+### Mention Message Formatting
+
+Currently, mention messages are formatted through two separate codepaths:
+1. `render_thread_context()` in `chat.rs` — produces a freeform string for `Nudge` wake reasons
+2. `WakeReason::Mention` in `wake_reason.rs` — structured wake reason for channel lead nudges
+
+Both call `ThreadContext::reply_instructions()` for thread context, but only when the mention is in a thread. Top-level mentions get no instructions at all. Additionally, `reply_instructions()` includes "IMPORTANT: Keep text output brief or omit it — text output auto-posts as a top-level message" which only applies to leads/forks, not to task workers receiving mentions.
+
+After consolidation, all mentions go through a single formatting path that produces context-dependent instructions:
+
+- **Task worker in a thread**: Include thread reply commands (`--thread`, `--channel`), thread read command. No output suppression warning (task workers post via `midtown channel post`, not stdout).
+- **Task worker top-level**: Include channel post command. No thread commands needed.
+- **Channel lead in a thread**: Include thread reply/read commands. Include output suppression warning (leads' stdout auto-posts to channel).
+- **Channel lead top-level**: No thread commands. Include output suppression warning.
+
+The "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()` and instead added only when the target is a lead/fork session.
+
 ### Delivery via `TaskPrompt`
 
 No changes to the core delivery mechanism. `deliver_task_prompt()` in `rpc_task.rs` already handles:
@@ -136,9 +153,11 @@ No changes to the core delivery mechanism. `deliver_task_prompt()` in `rpc_task.
 
 - `decide_mention_action()` in `rules.rs`
 - `mention_action_to_effects()` in `chat.rs`
+- `render_thread_context()` in `chat.rs` — replaced by unified mention formatting
 - `!N` task-based rerouting in `route_mentions()`
 - `@lead` special-casing in `chat_monitor_loop()`
 - `@ops` special-casing in `chat_monitor_loop()`
+- "Keep text output brief" warning from `ThreadContext::reply_instructions()`
 
 ### Unchanged
 
