@@ -123,7 +123,7 @@ The agent needs to understand what happens to its text output (stdout), since th
 
 **Acknowledge-first instruction:**
 
-All mention instructions include: "Acknowledge this mention immediately with a brief reply before spending time on it — the person who mentioned you is waiting to know you saw it."
+All mention instructions include: "Acknowledge this mention immediately with a brief `midtown channel post` reply before spending time on it — the person who mentioned you is waiting to know you saw it." The instruction explicitly names `midtown channel post` (with the appropriate `--thread`/`--channel` flags) so that task workers — whose stdout doesn't auto-post — actually produce a visible acknowledgement.
 
 The current "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()`. Instead, the output behavior note and acknowledge-first instruction are dynamically set based on the target session's type (`coworker_type` from `SessionRecord` or agent type from dispatch).
 
