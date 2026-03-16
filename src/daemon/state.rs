@@ -52,8 +52,8 @@ impl GcResult {
 /// A temporal record of a session working on a task.
 ///
 /// Tracks the time span during which a specific session was assigned to a task.
-/// Replaces the dual pr_reviewers/task_reviewer_metadata model with a single
-/// source of truth. Open spans (end_time = None) represent active assignments.
+/// Single source of truth for session-task assignments.
+/// Open spans (end_time = None) represent active assignments.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskSessionSpan {
     /// Task ID this span belongs to.

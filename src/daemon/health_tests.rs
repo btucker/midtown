@@ -3198,7 +3198,7 @@ fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
 /// the PR being respawned.
 ///
 /// This exercises the `snap.all_tasks.iter().find(...)` path in health.rs that
-/// looks up the review task ID for the `task_reviewer_metadata` model.
+/// looks up the review task ID for the task session span model.
 #[test]
 fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
     use crate::coworker::{Coworker, CoworkerStatus};
