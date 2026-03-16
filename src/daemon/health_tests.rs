@@ -3265,12 +3265,21 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
-    // AssignReviewer is nested in SpawnCoworkerWithCallbacks.on_success
-    let assign_reviewer_task_id = effects.iter().find_map(|e| {
+    // CreateTaskSessionSpan is nested in SpawnCoworkerWithCallbacks.on_success
+    let span_task_id = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
             on_success.iter().find_map(|inner| {
-                if let Effect::AssignReviewer { task_id, .. } = inner {
-                    Some(task_id.clone())
+                if let Effect::CreateTaskSessionSpan {
+                    task_id,
+                    agent_type,
+                    ..
+                } = inner
+                {
+                    if agent_type == "reviewer" {
+                        Some(task_id.clone())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -3281,24 +3290,24 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
     });
 
     assert!(
-        assign_reviewer_task_id.is_some(),
-        "expected an AssignReviewer effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
+        span_task_id.is_some(),
+        "expected a CreateTaskSessionSpan effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
         effects
     );
     assert_eq!(
-        assign_reviewer_task_id.unwrap(),
-        Some(review_task_id.to_string()),
-        "AssignReviewer.task_id should be Some when a matching review task exists in all_tasks"
+        span_task_id.unwrap(),
+        review_task_id.to_string(),
+        "CreateTaskSessionSpan.task_id should match the review task ID"
     );
 }
 
-/// Verify that `build_reviewer_respawn_effects` sets `task_id: None` on the
-/// `AssignReviewer` effect when no matching review task exists in `all_tasks`.
+/// Verify that `build_reviewer_respawn_effects` sets `task_id` to empty string on the
+/// `CreateTaskSessionSpan` effect when no matching review task exists in `all_tasks`.
 ///
 /// This covers the fallback path when the review task hasn't been created yet
 /// (legacy flow) or when no task matched the PR + agent-type filter.
 #[test]
-fn build_reviewer_respawn_task_id_is_none_when_no_matching_task() {
+fn build_reviewer_respawn_task_id_is_empty_when_no_matching_task() {
     use crate::coworker::{Coworker, CoworkerStatus};
 
     let now = chrono::Utc::now();
@@ -3342,16 +3351,25 @@ fn build_reviewer_respawn_task_id_is_none_when_no_matching_task() {
     snap.name_session_map
         .insert("riverside".to_string(), "sess-rev-88".to_string());
 
-    // No tasks in all_tasks — the None path
+    // No tasks in all_tasks — the empty string path
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
-    // AssignReviewer is nested in SpawnCoworkerWithCallbacks.on_success
-    let assign_reviewer_task_id = effects.iter().find_map(|e| {
+    // CreateTaskSessionSpan is nested in SpawnCoworkerWithCallbacks.on_success
+    let span_task_id = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
             on_success.iter().find_map(|inner| {
-                if let Effect::AssignReviewer { task_id, .. } = inner {
-                    Some(task_id.clone())
+                if let Effect::CreateTaskSessionSpan {
+                    task_id,
+                    agent_type,
+                    ..
+                } = inner
+                {
+                    if agent_type == "reviewer" {
+                        Some(task_id.clone())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -3362,13 +3380,12 @@ fn build_reviewer_respawn_task_id_is_none_when_no_matching_task() {
     });
 
     assert!(
-        assign_reviewer_task_id.is_some(),
-        "expected an AssignReviewer effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
+        span_task_id.is_some(),
+        "expected a CreateTaskSessionSpan effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
         effects
     );
-    assert_eq!(
-        assign_reviewer_task_id.unwrap(),
-        None,
-        "AssignReviewer.task_id should be None when no matching review task exists in all_tasks"
+    assert!(
+        span_task_id.unwrap().is_empty(),
+        "CreateTaskSessionSpan.task_id should be empty when no matching review task exists in all_tasks"
     );
 }
