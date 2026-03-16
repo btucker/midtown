@@ -16,11 +16,10 @@ use super::{DaemonState, snapshot};
 
 /// Check for reviewer processes that exited without posting their review.
 ///
+/// Dead reviewers (process exited without posting a review) need respawning.
 /// When a reviewer's Claude Code session ends naturally (max turns, rate limit,
 /// context window full) before posting the review, the process dies while the
-/// reviewer assignment remains. Unlike stuck reviewers (alive but unresponsive),
-/// these reviewers are dead — so `decide_stuck_reviewer_restarts` won't catch them
-/// because it exempts dead processes.
+/// reviewer assignment remains.
 ///
 /// This function detects dead reviewers with unposted reviews and respawns them,
 /// up to `MAX_REVIEWER_RESTARTS` attempts per PR. When a dead reviewer exhausts
@@ -1051,21 +1050,17 @@ pub(super) fn check_for_state_gc(
 
 /// Build the effects needed to respawn a reviewer for a given PR.
 ///
-/// Shared by `check_and_restart_stuck_reviewers` and
-/// `check_and_restart_dead_reviewers`.  Both functions need the same
-/// worktree-setup → launch-config → spawn sequence; only the reason string
-/// embedded in an abandoned "Review in progress" comment differs.
+/// Used by `check_and_restart_dead_reviewers`. Handles the
+/// worktree-setup → launch-config → spawn sequence, and optionally updates an
+/// abandoned "Review in progress" placeholder comment.
 ///
 /// ## Caller responsibilities
 ///
-/// **Pre-spawn (asymmetric):** `check_and_restart_stuck_reviewers` must push a
-/// [`shutdown_effect`] *before* calling this helper — the reviewer process is
-/// still alive and must be killed first.  `check_and_restart_dead_reviewers`
-/// must *not* — the process has already exited, so no shutdown is needed.
+/// **Pre-spawn:** `check_and_restart_dead_reviewers` must *not* push a shutdown
+/// effect — the process has already exited, so no shutdown is needed.
 ///
-/// **Post-spawn:** each caller appends its own trailing effects after this
-/// helper returns (e.g. the `CoworkerStuck` workflow event for stuck reviewers,
-/// or the ops-channel message for dead reviewers).
+/// **Post-spawn:** the caller appends its own trailing effects after this
+/// helper returns (e.g. the ops-channel message for dead reviewers).
 fn build_reviewer_respawn_effects(
     snap: &snapshot::WorldSnapshot,
     name: &str,
