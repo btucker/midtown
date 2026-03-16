@@ -3194,8 +3194,8 @@ fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
 // ── build_reviewer_respawn_effects task_id lookup ────────────────────────────
 
 /// Verify that `build_reviewer_respawn_effects` sets `task_id: Some(...)` on the
-/// `AssignReviewer` effect when `all_tasks` contains a matching review task for
-/// the PR being respawned.
+/// `CreateTaskSessionSpan` effect when `all_tasks` contains a matching review task
+/// for the PR being respawned.
 ///
 /// This exercises the `snap.all_tasks.iter().find(...)` path in health.rs that
 /// looks up the review task ID for the task session span model.
