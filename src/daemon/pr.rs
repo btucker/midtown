@@ -1471,7 +1471,10 @@ fn build_workflow_event(
 /// `review_complete_action_to_effects` with a single function. For task-linked PRs,
 /// `NudgeOwner` and `SpawnOwner` are collapsed into `Effect::TaskPrompt` — the
 /// `deliver_task_prompt` function handles nudge-if-running / resume-if-stopped
-/// internally. For task-less PRs, falls through to `PostToChannel`.
+/// internally. For task-less PRs, `NudgeOwner` produces
+/// `NudgeSessionWithCallbacks` and `SpawnOwner` produces
+/// `SpawnCoworkerWithCallbacks` — only `PrAction::PostToChannel` maps to
+/// `Effect::PostToChannel`.
 ///
 /// Gates `PrApproved` events: when `ctx.has_active_reviewer` is true, both the
 /// workflow event and inline effects are suppressed. The Approved cooldown is
