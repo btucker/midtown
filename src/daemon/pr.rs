@@ -92,15 +92,13 @@ impl PrContext {
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
-        // Gate check: reviewer assigned in github-state (raw presence, no timeout).
-        // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event
-        // layer stays consistent with the merge enforcement layer.
+        // Gate check: active reviewer span exists for this PR.
         //
         // Bypass: if the review is already cached (complete), don't suppress
-        // PrApproved even if the assignment hasn't been cleared yet. This handles
-        // the race between webhook review completion and poll-tick assignment removal.
-        let has_active_reviewer =
-            ps.github.get_reviewer(pr_number).is_some() && !ps.github.has_cached_review(pr_number);
+        // PrApproved even if the span hasn't been closed yet. This handles
+        // the race between webhook review completion and span closure.
+        let has_active_reviewer = ps.active_reviewer_for_pr(pr_number).is_some()
+            && !ps.github.has_cached_review(pr_number);
 
         Self {
             pr_task_associations,
@@ -557,14 +555,12 @@ async fn collect_orphaned_pr_effects(
 ///
 /// Cleans up: PR issue tracker, persistent state (expired reviewer assignments,
 /// session ID backfill, stale webhook events), cooldowns, and RPC response cache.
-/// Preserves assignments for running reviewer coworkers so active reviews aren't
-/// interrupted.
 async fn cleanup_pr_tracking_state(
     state: &DaemonState,
-    snap: &WorldSnapshot,
-    running_coworker_names: &HashSet<String>,
-    running_reviewer_session_ids: &HashSet<String>,
-    review_branch_owners: &HashSet<String>,
+    _snap: &WorldSnapshot,
+    _running_coworker_names: &HashSet<String>,
+    _running_reviewer_session_ids: &HashSet<String>,
+    _review_branch_owners: &HashSet<String>,
 ) {
     {
         let mut tracker = state.pr_issue_tracker.lock().await;
@@ -572,38 +568,6 @@ async fn cleanup_pr_tracking_state(
     }
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github
-            .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
-        // Backfill reviewer_session_id for assignments created before the session
-        // started (optimistic assignment pattern: assign before spawn completes).
-        let reviewer_session_map: HashMap<String, String> = snap
-            .coworkers
-            .running_coworkers
-            .iter()
-            .filter(|c| review_branch_owners.contains(&c.name.to_lowercase()))
-            .filter_map(|c| {
-                c.session_id
-                    .as_ref()
-                    .map(|sid| (c.name.clone(), sid.clone()))
-            })
-            .collect();
-        ps.github
-            .backfill_reviewer_session_ids(&reviewer_session_map);
-        // Also backfill task_reviewer_metadata.reviewer_session_id from pr_reviewers
-        // for any entry that was created before the session ID was known.
-        let pr_session_ids: Vec<(u64, String)> = ps
-            .github
-            .pr_reviewers
-            .iter()
-            .filter_map(|(&pr, a)| a.reviewer_session_id.as_ref().map(|sid| (pr, sid.clone())))
-            .collect();
-        for (pr_number, sid) in pr_session_ids {
-            for meta in ps.task_reviewer_metadata.values_mut() {
-                if meta.pr_number == pr_number && meta.reviewer_session_id.is_none() {
-                    meta.reviewer_session_id = Some(sid.clone());
-                }
-            }
-        }
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -622,8 +586,8 @@ async fn update_pr_caches(
     state: &DaemonState,
     snap: &WorldSnapshot,
     prs: &[serde_json::Value],
-    running_coworker_names: &HashSet<String>,
-    running_reviewer_session_ids: &HashSet<String>,
+    _running_coworker_names: &HashSet<String>,
+    _running_reviewer_session_ids: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -708,8 +672,6 @@ async fn update_pr_caches(
     {
         let mut ps = state.persistent_state.lock().await;
         ps.github.cleanup_closed_prs(&open_pr_numbers);
-        ps.github
-            .cleanup_expired_preserving(running_coworker_names, Some(running_reviewer_session_ids));
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("Failed to save daemon-state.json after cleanup: {}", e);
         }
@@ -1700,13 +1662,13 @@ async fn collect_stuck_condition_effects(
         let assigned: HashSet<u64> = prs
             .iter()
             .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
-            .filter(|&n| ps.github.is_assigned(n))
+            .filter(|&n| ps.active_reviewer_for_pr(n).is_some())
             .collect();
         let active_reviewers: HashSet<u64> = prs
             .iter()
             .filter_map(|pr| {
                 let n = pr.get("number").and_then(|n| n.as_u64())?;
-                if ps.github.get_reviewer(n).is_some() && !ps.github.has_cached_review(n) {
+                if ps.active_reviewer_for_pr(n).is_some() && !ps.github.has_cached_review(n) {
                     Some(n)
                 } else {
                     None
@@ -2582,12 +2544,17 @@ async fn collect_review_complete_effects(
     // idle reviewers stuck with assignments preventing break dispatch.
     {
         let mut ps = state.persistent_state.lock().await;
-        if ps.github.is_assigned(pr_number) {
-            debug!(
-                "PR #{} review completed, freeing reviewer assignment",
-                pr_number
-            );
-            ps.github.remove_assignment(pr_number);
+        if ps.active_reviewer_for_pr(pr_number).is_some() {
+            debug!("PR #{} review completed, closing reviewer spans", pr_number);
+            let task_ids: Vec<String> = ps
+                .active_reviewer_spans()
+                .iter()
+                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+                .map(|s| s.task_id.clone())
+                .collect();
+            for tid in task_ids {
+                ps.close_spans_for_task(&tid);
+            }
             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                 warn!("Failed to save daemon-state.json: {}", e);
             }
@@ -3556,23 +3523,29 @@ pub(super) async fn handle_pr_comment_nudge(
             pr_number, activity.actor
         );
 
-        // Look up the reviewer assignment and task association from persistent state
-        let (reviewer_info, task_id) = {
+        // Look up the reviewer span and task association from persistent state
+        let (reviewer_name, reviewer_session_id, task_id) = {
             let ps = state.persistent_state.lock().await;
-            let reviewer = ps.github.pr_reviewers.get(&pr_number).cloned();
-            let tid = super::state::pr_to_task_map_from_sessions(&ps.sessions)
-                .get(&pr_number)
-                .cloned();
-            (reviewer, tid)
+            let span = ps.active_reviewer_for_pr(pr_number);
+            match span {
+                Some(s) => {
+                    let name = s.agent_name.clone();
+                    let sid = if s.session_id.is_empty() {
+                        None
+                    } else {
+                        Some(s.session_id.clone())
+                    };
+                    let tid = super::state::pr_to_task_map_from_sessions(&ps.sessions)
+                        .get(&pr_number)
+                        .cloned();
+                    (name, sid, tid)
+                }
+                None => {
+                    debug!("PR #{} has no active reviewer span, skipping", pr_number);
+                    return;
+                }
+            }
         };
-
-        let Some(assignment) = reviewer_info else {
-            debug!("PR #{} has no reviewer assignment, skipping", pr_number);
-            return;
-        };
-
-        let reviewer_name = assignment.reviewer;
-        let reviewer_session_id = assignment.reviewer_session_id;
         let nudge_msg = format!(
             "PR #{} author {} posted a follow-up comment. Please review and respond.",
             pr_number, activity.actor
@@ -3805,42 +3778,14 @@ pub(super) async fn handle_webhook_review_state_change(
         .cloned()
         .collect();
 
-    // Pre-collect reviewing-phase coworker names (read lock, then release)
-    // so we can augment the reviewer check without holding two locks.
-    let reviewing_names: std::collections::HashSet<String> = {
-        let records = state.coworker_records.read().await;
-        records
-            .iter()
-            .filter(|(_, rec)| {
-                matches!(
-                    rec.workflow_phase,
-                    Some(crate::coworker_state::WorkflowPhase::Reviewing)
-                )
-            })
-            .map(|(name, _)| name.to_lowercase())
-            .collect()
-    };
-
     // Extract all decision context from persistent state in one lock
     let (pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
         let mut ctx = PrContext::from_persistent_state(&ps, pr_number);
 
-        // Defense-in-depth: OR logic matching augment_reviewer_from_snapshot.
-        // Either signal independently indicates the reviewer is still working:
-        //   A) assignment exists for this PR (coworker hasn't entered Reviewing phase yet)
-        //   B) coworker in Reviewing phase with a matching assignment for this PR
+        // Defense-in-depth: check spans for an active reviewer on this PR.
         if !ctx.has_active_reviewer {
-            let has_assignment = ps
-                .github
-                .assigned_reviewers()
-                .any(|name| ps.github.pr_for_reviewer(name) == Some(pr_number));
-
-            let has_reviewing_phase = reviewing_names
-                .iter()
-                .any(|name| ps.github.pr_for_reviewer(name) == Some(pr_number));
-
-            ctx.has_active_reviewer = has_assignment || has_reviewing_phase;
+            ctx.has_active_reviewer = ps.active_reviewer_for_pr(pr_number).is_some();
         }
 
         (ctx, ps.channel_lead_names())

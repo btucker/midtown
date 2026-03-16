@@ -3531,23 +3531,20 @@ fn fallback_inline_effects_without_workflow() {
 }
 
 /// Gate !1902: has_cached_review bypass — PrApproved is NOT suppressed when the
-/// review is already cached, even if get_reviewer() still returns Some.
+/// review is already cached, even if an active reviewer span still exists.
 ///
 /// This handles the race between webhook review completion (which caches the
-/// review) and the poll tick that clears the reviewer assignment.
+/// review) and the span closure.
 #[tokio::test]
 async fn pr_approved_not_suppressed_when_review_cached() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42;
 
-    // Simulate: reviewer is assigned BUT review is already cached (complete)
+    // Simulate: reviewer span exists BUT review is already cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "lexington",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "lexington", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -3899,14 +3896,11 @@ async fn auto_merge_blocked_when_reviewer_active() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42u64;
 
-    // Assign a reviewer to this PR (without marking the review as cached/complete)
+    // Create a reviewer span for this PR (without marking the review as cached/complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "york",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "york", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
     }
 
     // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
@@ -3999,14 +3993,11 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr_number = 42u64;
 
-    // Assign reviewer AND mark review as cached (complete)
+    // Create reviewer span AND mark review as cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            "york",
-            crate::github_state::AssignmentSource::PollingFallback,
-        );
+        ps.create_span("task-42", "york", "reviewer", "");
+        ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
 
