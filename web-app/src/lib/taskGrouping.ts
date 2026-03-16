@@ -2,26 +2,23 @@ import type { Task } from "./types.ts";
 
 export interface GroupedTask {
 	task: Task;
-	depth: number;
+	children: Task[];
 }
 
 /**
  * Arrange tasks into parent-child groups for display.
  *
- * Returns a flat list with depth annotations:
- * - Top-level tasks (no parent, or parent not in the list) get depth 0
- * - Children are placed immediately after their parent with depth 1
+ * Returns one entry per top-level task with its children attached:
+ * - Top-level tasks (no parent, or parent not in the list) get an entry
+ * - Children are attached to their parent's `children` array
  *
- * Children whose parent is not in the visible list are shown at depth 0
+ * Children whose parent is not in the visible list are promoted to top-level
  * to avoid orphaned invisible tasks.
  */
 export function groupTasksByParent(tasks: Task[]): GroupedTask[] {
 	const taskIds = new Set(tasks.map((t) => String(t.id)));
 	const topLevelIds = new Set<string>();
 
-	// Separate into parents/top-level and children-with-visible-parent.
-	// A task is only treated as a child if its parent is in the list AND
-	// is not itself a child (prevents cycles and limits nesting to 1 level).
 	const childrenByParent = new Map<string, Task[]>();
 	const topLevel: Task[] = [];
 
@@ -49,17 +46,9 @@ export function groupTasksByParent(tasks: Task[]): GroupedTask[] {
 		}
 	}
 
-	// Build flat list: each top-level task followed by its children
-	const result: GroupedTask[] = [];
-	for (const task of topLevel) {
-		result.push({ task, depth: 0 });
-		const children = childrenByParent.get(String(task.id));
-		if (children) {
-			for (const child of children) {
-				result.push({ task: child, depth: 1 });
-			}
-		}
-	}
-
-	return result;
+	// Build result: each top-level task with its children array
+	return topLevel.map((task) => ({
+		task,
+		children: childrenByParent.get(String(task.id)) || [],
+	}));
 }

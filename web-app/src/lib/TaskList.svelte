@@ -60,14 +60,17 @@ function handleTaskClick(task) {
 </script>
 
 <div class="flex flex-col gap-0.5 py-1 pb-1.5">
-  {#each groupedTasks as { task, depth }}
+  {#each groupedTasks as { task, children }}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const reviewInfo = taskReviewerMap.get(String(task.id))}
+    {@const childReviewer = !reviewInfo && children.length > 0
+      ? children.find((c) => /review/i.test(c.subject))?.owner ?? null
+      : null}
     <TaskRow
       {task}
       {cw}
-      {depth}
-      reviewer={reviewInfo?.reviewer}
+      {children}
+      reviewer={reviewInfo?.reviewer ?? childReviewer}
       reviewPosted={reviewInfo?.reviewPosted ?? false}
       onclick={() => handleTaskClick(task)}
     />
