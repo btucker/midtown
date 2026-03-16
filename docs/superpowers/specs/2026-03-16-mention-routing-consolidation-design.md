@@ -105,11 +105,11 @@ After consolidation, all mentions go through a single formatting path that produ
 
 **In a thread** (mention has `thread_parent_id`):
 - Thread reply command: `midtown channel post "..." --thread <id> --channel <ch>`
-- Thread read command: `midtown channel read --last 5 --thread <id> --channel <ch>`
+- Thread read command: `midtown channel read --last 15 --thread <id> --channel <ch>`
 - For leads/forks only: output suppression warning (stdout auto-posts to channel)
 
 **Top-level** (mention is not in a thread):
-- Channel context: `midtown channel read --last 5 --channel <ch>` so the recipient can see what's been discussed
+- Channel context: `midtown channel read --last 15 --channel <ch>` so the recipient can see what's been discussed
 - Channel post command: `midtown channel post "..." --channel <ch>`
 - Guidance: prefer replying in a thread (to keep the channel organized) unless there's already a relevant top-level discussion in progress
 - For leads/forks only: output suppression warning
