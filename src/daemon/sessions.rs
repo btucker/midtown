@@ -1251,7 +1251,7 @@ impl SessionManager {
 
                         if !stderr_lines.is_empty() {
                             stderr_by_name.insert(name.clone(), stderr_lines.clone());
-                            debug!(
+                            warn!(
                                 "Session '{}' exited (stdout closed) with stderr: {:?}",
                                 name, stderr_lines
                             );
@@ -1500,7 +1500,7 @@ impl SessionManager {
                             name, exit_status, cs.status
                         );
                         if !stderr_lines.is_empty() {
-                            debug!(
+                            warn!(
                                 "Session '{}' reconciled exit with stderr: {:?}",
                                 name, stderr_lines
                             );
@@ -1523,6 +1523,10 @@ impl SessionManager {
                             name, e
                         );
                         if !stderr_lines.is_empty() {
+                            warn!(
+                                "Session '{}' liveness-check failure with stderr: {:?}",
+                                name, stderr_lines
+                            );
                             stderr_by_name.insert(name.clone(), stderr_lines);
                         }
                         cs.status = SessionStatus::Stopped;
