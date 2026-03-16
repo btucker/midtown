@@ -103,10 +103,16 @@ Both call `ThreadContext::reply_instructions()` for thread context, but only whe
 
 After consolidation, all mentions go through a single formatting path that produces context-dependent instructions:
 
-- **Task worker in a thread**: Include thread reply commands (`--thread`, `--channel`), thread read command. No output suppression warning (task workers post via `midtown channel post`, not stdout).
-- **Task worker top-level**: Include channel post command. No thread commands needed.
-- **Channel lead in a thread**: Include thread reply/read commands. Include output suppression warning (leads' stdout auto-posts to channel).
-- **Channel lead top-level**: No thread commands. Include output suppression warning.
+**In a thread** (mention has `thread_parent_id`):
+- Thread reply command: `midtown channel post "..." --thread <id> --channel <ch>`
+- Thread read command: `midtown channel read --last 50 --thread <id> --channel <ch>`
+- For leads/forks only: output suppression warning (stdout auto-posts to channel)
+
+**Top-level** (mention is not in a thread):
+- Channel context: `midtown channel read --last 50 --channel <ch>` so the recipient can see what's been discussed
+- Channel post command: `midtown channel post "..." --channel <ch>`
+- Guidance: prefer replying in a thread (to keep the channel organized) unless there's already a relevant top-level discussion in progress
+- For leads/forks only: output suppression warning
 
 The "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()` and instead added only when the target is a lead/fork session.
 
