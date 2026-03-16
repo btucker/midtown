@@ -630,6 +630,27 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             .await
         }
 
+        "task.handoff" => {
+            let task_id = require_str!(params, "id", request.id);
+            let agent = require_str!(params, "agent", request.id);
+            let from = params
+                .str_param("from")
+                .filter(|from| !from.trim().is_empty())
+                .filter(|from| !from.eq_ignore_ascii_case("unknown"))
+                .map(str::to_string)
+                .unwrap_or_else(|| state.project_name.clone());
+            let message = params.str_param("message").map(str::to_string);
+            super::rpc_task::handle_task_handoff(
+                request.id,
+                task_id,
+                agent,
+                message.as_deref(),
+                &from,
+                state,
+            )
+            .await
+        }
+
         // ---- Reminders ----
         "reminder.create" => {
             let trigger = require_str!(params, "trigger", request.id);

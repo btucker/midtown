@@ -1551,6 +1551,17 @@ impl DaemonState {
 
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config(&self.paths);
+
+        // Override agent_name from task_agent_type if the task has a custom agent type.
+        // This supports task handoff: when `midtown task handoff --agent <type>` changes
+        // the agent type, subsequent resumes pick up the new agent definition via --agent.
+        if let Some(ref task_id) = config.task_id {
+            let ps = self.persistent_state.lock().await;
+            if let Some(agent_type) = ps.task_agent_type.get(task_id) {
+                headless_config.agent_name = Some(agent_type.clone());
+            }
+        }
+
         // Apply cwd_subdir: if a subdirectory is configured (e.g., channel_directory),
         // append it to the worktree root so the session runs in that subdirectory.
         if let Some(ref subdir) = launch_config.cwd_subdir {

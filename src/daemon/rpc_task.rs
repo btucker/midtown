@@ -1021,6 +1021,150 @@ pub(crate) async fn deliver_task_prompt(
     }
 }
 
+/// Handle task.handoff RPC — swap the agent type on a task's session.
+///
+/// Stops the current session (if running), updates the task's agent type
+/// in persistent state, then optionally resumes with a message. Claude Code's
+/// `--resume <id> --agent <name>` applies the new agent's system prompt while
+/// preserving conversation history.
+pub(super) async fn handle_task_handoff(
+    id: RequestId,
+    task_id: &str,
+    agent: &str,
+    message: Option<&str>,
+    from: &str,
+    state: &DaemonState,
+) -> Response {
+    // Strip #/! prefix from task_id
+    let task_id = task_id
+        .strip_prefix('#')
+        .or_else(|| task_id.strip_prefix('!'))
+        .unwrap_or(task_id);
+
+    // Validate task exists
+    let tasks = crate::tasks::read_tasks();
+    if !tasks.iter().any(|t| t.id == task_id) {
+        return Response::error(
+            id,
+            RpcError::new(-32602, format!("Task !{} not found", task_id)),
+        );
+    }
+
+    // Find the session for this task
+    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
+    let session_id = match session_id {
+        Some(sid) => sid,
+        None => {
+            let ps = state.persistent_state.lock().await;
+            let found = ps
+                .sessions
+                .iter()
+                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
+                .map(|(sid, _)| sid.clone());
+            match found {
+                Some(sid) => sid,
+                None => {
+                    return Response::error(
+                        id,
+                        RpcError::new(
+                            -32603,
+                            format!(
+                                "No session found for task !{} — task may not have been dispatched yet",
+                                task_id
+                            ),
+                        ),
+                    );
+                }
+            }
+        }
+    };
+
+    // Stop the session if running
+    let coworker_name = state
+        .session_to_name
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned();
+    if let Some(ref name) = coworker_name
+        && state.session_manager.is_alive(name).await
+    {
+        info!(
+            "Stopping session {} (coworker {}) for task !{} handoff to agent {}",
+            session_id, name, task_id, agent
+        );
+        state.broadcast_coworker_update(name, "stopped", None);
+        if let Err(e) = state.session_manager.shutdown(name).await {
+            warn!("Failed to shut down session for handoff: {}", e);
+        }
+        state.cleanup_coworker_state(name).await;
+    }
+
+    // Update task_agent_type in persistent state
+    let dir_key = state.paths.dir_key().to_string();
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.task_agent_type
+            .insert(task_id.to_string(), agent.to_string());
+        if let Err(e) = ps.save_for_repo(&dir_key) {
+            warn!("Failed to save task_agent_type after handoff: {}", e);
+        }
+    }
+
+    info!(
+        "Task !{} agent type changed to {} (session {})",
+        task_id, agent, session_id
+    );
+
+    // If a message was provided, resume with the new agent and deliver the prompt.
+    // deliver_task_prompt will resume the stopped session, and spawn_coworker will
+    // pick up the updated task_agent_type to set --agent on the CLI.
+    if let Some(msg) = message {
+        match deliver_task_prompt(task_id, msg, from, None, state).await {
+            Ok(result) => Response::success(
+                id,
+                serde_json::json!({
+                    "type": "message",
+                    "message": format!("Task !{} handed off to agent {} and resumed", task_id, agent),
+                    "action": "handoff_resumed",
+                    "session_id": result.session_id,
+                }),
+            ),
+            Err(e) => {
+                // Agent type was updated but resume failed — still report partial success
+                warn!(
+                    "Task !{} agent type updated to {} but resume failed: {}",
+                    task_id, agent, e
+                );
+                Response::success(
+                    id,
+                    serde_json::json!({
+                        "type": "message",
+                        "message": format!(
+                            "Task !{} agent type changed to {} but resume failed: {}",
+                            task_id, agent, e
+                        ),
+                        "action": "handoff_no_resume",
+                        "session_id": session_id,
+                    }),
+                )
+            }
+        }
+    } else {
+        // No message — just update the agent type, session stays stopped.
+        // The next `task prompt` will resume with the new agent.
+        Response::success(
+            id,
+            serde_json::json!({
+                "type": "message",
+                "message": format!("Task !{} agent type changed to {}", task_id, agent),
+                "action": "handoff",
+                "session_id": session_id,
+            }),
+        )
+    }
+}
+
 /// Handle task.prompt RPC — deliver a prompt to a task's assigned session.
 ///
 /// Looks up the task, finds its session, and either nudges (if running)
