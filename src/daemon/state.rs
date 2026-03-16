@@ -476,10 +476,15 @@ impl DaemonPersistentState {
             result.orphaned_tasks_pruned += 1;
         }
 
-        // 3. Force-close open spans for sessions that no longer exist
+        // 3. Force-close open spans for sessions that no longer exist.
+        // Skip spans with empty session_id — these are optimistic assignments
+        // created before the session spawns (session_id is backfilled later).
         let now = Utc::now();
         for span in &mut self.task_session_spans {
-            if span.end_time.is_none() && !self.sessions.contains_key(&span.session_id) {
+            if span.end_time.is_none()
+                && !span.session_id.is_empty()
+                && !self.sessions.contains_key(&span.session_id)
+            {
                 span.end_time = Some(now);
             }
         }
