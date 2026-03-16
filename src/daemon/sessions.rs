@@ -1451,9 +1451,10 @@ impl SessionManager {
     /// app-server process), checks whether the event channel is still open.
     ///
     /// Returns the names of sessions that were discovered to be dead.
-    pub async fn reconcile_process_health(&self) -> Vec<String> {
+    pub async fn reconcile_process_health(&self) -> (Vec<String>, HashMap<String, Vec<String>>) {
         let mut sessions = self.sessions.write().await;
         let mut newly_stopped = Vec::new();
+        let mut stderr_by_name: HashMap<String, Vec<String>> = HashMap::new();
 
         for (_slot_id, cs) in sessions.iter_mut() {
             // Only check sessions that we think are alive
@@ -1490,11 +1491,21 @@ impl SessionManager {
             } else {
                 match session.try_wait() {
                     Ok(Some(exit_status)) => {
-                        // Process has exited but drain_events didn't catch it
+                        // Process has exited but drain_events didn't catch it.
+                        // Drain stderr before dropping the session handle so crash
+                        // diagnostics are preserved.
+                        let stderr_lines = session.drain_stderr_final().await;
                         warn!(
                             "Session '{}' process exited (status={}) but was still tracked as {:?} — forcing cleanup",
                             name, exit_status, cs.status
                         );
+                        if !stderr_lines.is_empty() {
+                            debug!(
+                                "Session '{}' reconciled exit with stderr: {:?}",
+                                name, stderr_lines
+                            );
+                            stderr_by_name.insert(name.clone(), stderr_lines);
+                        }
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         newly_stopped.push(name.clone());
@@ -1503,11 +1514,17 @@ impl SessionManager {
                         // Process is still running — all good
                     }
                     Err(e) => {
-                        // Error checking process status — treat as dead
+                        // Error checking process status — treat as dead.
+                        // Drain stderr before dropping — even on error, there
+                        // may be useful output buffered.
+                        let stderr_lines = session.drain_stderr_final().await;
                         warn!(
                             "Failed to check process liveness for session '{}': {} — marking as stopped",
                             name, e
                         );
+                        if !stderr_lines.is_empty() {
+                            stderr_by_name.insert(name.clone(), stderr_lines);
+                        }
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         newly_stopped.push(name.clone());
@@ -1516,7 +1533,7 @@ impl SessionManager {
             }
         }
 
-        newly_stopped
+        (newly_stopped, stderr_by_name)
     }
 
     /// Check if a session was a failed resume attempt.

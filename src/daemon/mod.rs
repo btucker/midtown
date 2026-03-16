@@ -3821,7 +3821,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     state.plugin_daemon.ensure_running().await;
                 }
 
-                let (events, stopped, stderr_by_name) = state.session_manager.drain_events().await;
+                let (events, stopped, mut stderr_by_name) = state.session_manager.drain_events().await;
 
                 // Update health state from SessionManager (used by snapshot for decision functions)
                 let health = state.session_manager.collect_health().await;
@@ -3985,7 +3985,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // Defense-in-depth: check process liveness via try_wait() to catch
                 // sessions where the process exited but drain_events didn't detect it
                 // (e.g., pipe buffering issues, partial reads, timing races).
-                let reconciled = state.session_manager.reconcile_process_health().await;
+                let (reconciled, reconciled_stderr) =
+                    state.session_manager.reconcile_process_health().await;
                 let mut all_stopped: Vec<String> = stopped;
                 if !reconciled.is_empty() {
                     warn!(
@@ -3994,6 +3995,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         reconciled
                     );
                     all_stopped.extend(reconciled);
+                    // Merge reconciled stderr into the main stderr map so crash
+                    // diagnostics are included in exit messages.
+                    stderr_by_name.extend(reconciled_stderr);
                 }
 
                 // Handle stopped sessions: deregister, record stop time, post to channel
