@@ -56,11 +56,13 @@ function avatarLetter(name) {
 	return (name || "?")[0].toUpperCase();
 }
 
-// When in a dedicated fork session with a known parent lead, display the
-// parent lead's name/color instead of the fork session's "fork-XXXX" name.
+// Show the fork's actual name (e.g., "web-ghost-town-a1b2") so creative
+// fork names are visible. Use the parent lead's color for visual continuity.
 let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead);
-let displayName = $derived(isForkWithParent ? forkParentLead : msg.from);
-let displayColor = $derived(getSenderColor(displayName, senderOverrides, channelName));
+let displayName = $derived(msg.from);
+let displayColor = $derived(
+	getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName),
+);
 // For click navigation, always use msg.from (the actual session name) so
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
 let clickName = $derived(msg.from);
