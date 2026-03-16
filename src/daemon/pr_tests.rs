@@ -877,7 +877,19 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
         "reviewDecision": "CHANGES_REQUESTED",
     });
 
-    let snap = minimal_snapshot_for_test();
+    let mut snap = minimal_snapshot_for_test();
+    // Provide a task so the owner resolves via task metadata from PR title
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "5151".to_string(),
+        subject: "Fix CI flake".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     {
@@ -2261,34 +2273,6 @@ fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
     );
 }
 
-/// !2109: Unit tests for resolve_pr_owner_from_body
-#[test]
-fn test_resolve_pr_owner_from_body_extracts_name() {
-    assert_eq!(
-        resolve_pr_owner_from_body("<!-- midtown: park -->\n## Summary"),
-        Some("park".to_string())
-    );
-}
-
-#[test]
-fn test_resolve_pr_owner_from_body_ignores_midtown_lead() {
-    assert_eq!(
-        resolve_pr_owner_from_body("<!-- midtown: midtown -->\n## Summary"),
-        None,
-        "Should not return 'midtown' as PR owner — that's the lead"
-    );
-}
-
-#[test]
-fn test_resolve_pr_owner_from_body_returns_none_without_frontmatter() {
-    assert_eq!(resolve_pr_owner_from_body("No frontmatter here"), None);
-}
-
-#[test]
-fn test_resolve_pr_owner_from_body_handles_empty_body() {
-    assert_eq!(resolve_pr_owner_from_body(""), None);
-}
-
 /// Bug: Reviewer spawning selects the PR author's name as the reviewer, causing a coworker
 /// to review its own PR.
 ///
@@ -3444,7 +3428,7 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
 /// contains `<!-- midtown: name -->` frontmatter, the review-complete notification
 /// should route to the coworker, not fall back to @user.
 #[tokio::test]
-async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fail() {
+async fn test_review_complete_falls_back_to_user_when_no_task_or_branch_owner() {
     use std::collections::{HashMap, HashSet};
     let pr_number = 2109u64;
     let pr = json!({
@@ -3460,8 +3444,8 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
     let (state, _tmp, _guard) = make_test_state("test-repo");
     {
         let mut ps = state.persistent_state.lock().await;
-        // No session records, no task associations
-        // Only the PR body frontmatter identifies the owner
+        // No session records, no task associations, no branch ownership
+        // Body frontmatter is no longer used for owner resolution
         ps.github.mark_reviewed_pr(pr_number);
         ps.github.add_review_comment_id(pr_number, 1);
     }
@@ -3481,16 +3465,16 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
     )
     .await;
 
-    // Should NOT fall back to @user — the PR body frontmatter identifies the owner as "park"
+    // With no task or branch owner, should fall back to @user
     assert!(
-        !effects.iter().any(|e| matches!(
+        effects.iter().any(|e| matches!(
             e,
             Effect::PostToChannel {
                 message,
                 ..
             } if message.contains("@user")
         )),
-        "Should not fall back to @user when PR body has frontmatter, got: {:#?}",
+        "Should fall back to @user when no task or branch owner exists, got: {:#?}",
         effects
     );
 }

@@ -515,13 +515,17 @@ The daemon receives real-time GitHub events via webhooks (PR creation, reviews, 
 
 ### PR Coworker Attribution
 
-PR-to-coworker resolution uses two paths depending on context:
+PR-to-coworker resolution uses a unified 3-step pipeline across both webhook and polling paths:
 
-- **Webhooks** (real-time): Frontmatter-only (`<!-- midtown: name -->` in the PR body). Webhooks do not attempt branch-based resolution — if frontmatter is missing, the PR's `owner_coworker` is `None` and the daemon falls back to session-based resolution. CI events (`status`, `check_run`) never carry a PR body, so they always resolve to `None` at webhook time; the daemon handles attribution via session-based resolution on the next tick.
+1. **Session-based** (PR# → task → session → current_name): Look up the active session for the task that owns this PR.
+2. **Task metadata** (PR#, title, or branch → task → owner): Search tasks by `task.pr` number, by task ID extracted from the PR title, or by task ID extracted from the branch name.
+3. **Branch-based** (`coworker_from_branch`): Look up the branch name in the `worktree_branch_owners` map from the worktree registry. Resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names.
 
-- **Polling** (backstop): Session-based resolution first (PR# → task → session → current_name), then task metadata lookup, then branch-based lookup via the `worktree_branch_owners` map from the worktree registry, and finally PR body frontmatter (`<!-- midtown: name -->`) as a crash-resilient fallback that survives daemon restarts and session record loss. The branch map resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names. Legacy coworker-prefixed branches (e.g., `lexington/fix-auth`) are no longer supported.
+If all three steps fail, the owner is `None` and the daemon falls back to notifying `@user`.
 
-Key functions: `determine_pr_coworker()` (webhook.rs, frontmatter-only), `resolve_pr_owner()` (pr.rs, session + task metadata + branch map + body frontmatter), `resolve_pr_owner_from_body()` (pr.rs, frontmatter extraction), `coworker_from_branch()` (helpers.rs, pure map lookup).
+Webhooks call `resolve_pr_owner_from_state()` (async, reads `DaemonState` locks). Polling calls `resolve_pr_owner()` (pure, operates on snapshot data). Both use the same 3-step chain.
+
+Key functions: `resolve_pr_owner()` (pr.rs, session + task metadata + branch), `resolve_pr_owner_from_state()` (pr.rs, async wrapper), `resolve_pr_owner_from_task_metadata()` (pr.rs, task lookup), `coworker_from_branch()` (helpers.rs, pure map lookup), `determine_pr_coworker()` (webhook.rs, frontmatter extraction for `PrOpenedInfo` only).
 
 ### PR Decision Logging
 
