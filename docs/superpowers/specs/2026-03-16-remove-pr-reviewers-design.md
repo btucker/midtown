@@ -71,7 +71,8 @@ impl DaemonPersistentState {
     pub fn spans_for_task(&self, task_id: &str) -> Vec<&TaskSessionSpan>;
 
     /// Find the active reviewer span for a PR number.
-    /// Joins through sessions to find the task's PR number.
+    /// Joins task_id from the span → SessionRecord.pr_number to find the PR.
+    /// Also checks task_to_pr_map_from_sessions() as fallback.
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&TaskSessionSpan>;
 
     /// Check if a PR has an active reviewer (replaces is_assigned).
@@ -86,19 +87,34 @@ impl DaemonPersistentState {
 
     /// Close all open spans for a session (used on session shutdown).
     pub fn close_spans_for_session(&mut self, session_id: &str);
+
+    /// Close all open spans for a task (used on task completion/cancellation).
+    pub fn close_spans_for_task(&mut self, task_id: &str);
 }
 ```
+
+### PR Number Resolution
+
+`active_reviewer_for_pr(pr_number)` needs to map PR → task to find the relevant span. The join path:
+
+1. Filter `task_session_spans` for active reviewer spans (`end_time = None`, `agent_type = "reviewer"`)
+2. For each span, look up `SessionRecord` by `span.session_id`
+3. Check `SessionRecord.pr_number == Some(pr_number)`
+
+This works because `SessionRecord.pr_number` is already set when a coworker opens a PR and persists across restarts. The existing `pr_to_task_map_from_sessions()` helper uses this same join.
+
+For the assignment window (span created but PR not yet opened by the reviewer), the task's PR number can also be resolved through the task itself — the review task is created with the PR number context. We store this in `task_pr_number: HashMap<String, u64>` (a new per-task map following the existing `task_*` pattern) to ensure the join works before the reviewer session populates `SessionRecord.pr_number`.
 
 ### Lifecycle: When Spans Are Created and Closed
 
 | Event | Action |
 |---|---|
 | Coworker spawned for task | Create span with `start_time = now`, `end_time = None` |
-| Reviewer spawned for PR review task | Create span with `agent_type = "reviewer"` |
+| Reviewer spawned for PR review task | Create span with `agent_type = "reviewer"`, populate `task_pr_number` |
 | Session completes/exits | Close span (`end_time = now`) |
-| Session is killed/restarted | Close old span, create new span on restart |
+| Session is killed/restarted | Close old span, create new span on restart (new session ID) |
 | Task handoff | Close old session's span, new session creates its own |
-| Daemon restart with resume | Reopen spans for resumed sessions |
+| Daemon restart | Persisted spans survive restart. Open spans for sessions marked `is_running = false` are force-closed during startup reconciliation. Sessions that resume get new spans (they get new session IDs from Claude Code). |
 
 ### Migration of Consumer Sites
 
@@ -117,20 +133,35 @@ Key consumer mappings (non-exhaustive, covers the critical paths):
 
 ### Snapshot Changes
 
-`SnapshotReviewerState` fields change:
+`SnapshotReviewerState` keeps its full shape — only the data source changes (spans replace `pr_reviewers`). This minimizes changes in `rules.rs` decision functions.
 
 ```rust
 pub struct SnapshotReviewerState {
     /// Active reviewer names (derived from active spans with running sessions).
     pub active_reviewers: HashSet<String>,
+    /// Coworkers in reviewing workflow phase — REMOVED.
+    /// No longer needed: the 10-minute timeout that this field guarded against
+    /// is replaced by is_running checks on active spans. A running reviewer's
+    /// span stays open; a dead reviewer's span is closed by session shutdown.
+    // pub reviewing_phase_coworkers: HashSet<String>,  // REMOVED
     /// Reviewer name → PR number (from active reviewer spans).
     pub reviewer_pr_assignments: HashMap<String, u64>,
-    /// PR number → restart count (from task_restart_count).
+    /// Placeholder comment IDs — data source changes from pr_reviewers to
+    /// task_placeholder_comment_id map. Shape unchanged.
+    pub reviewer_in_progress_comment_ids: HashMap<u64, u64>,
+    /// PRs verified as reviewed — unchanged, sourced from reviewed_prs cache.
+    pub reviewed_prs: HashSet<u64>,
+    /// Count of open PRs needing review — unchanged, computed from GitHub API.
+    pub prs_needing_review: usize,
+    /// PR number → restart count — data source changes from pr_reviewers to
+    /// task_restart_count map. Shape unchanged.
     pub reviewer_restart_counts: HashMap<u64, u32>,
+    /// Escalation tracking — unchanged, sourced from persistent state.
+    pub reviewer_escalations_posted: HashSet<u64>,
 }
 ```
 
-The struct shape stays the same — only the data source changes (spans instead of `pr_reviewers`). This minimizes changes in `rules.rs` decision functions.
+**`reviewing_phase_coworkers` removal rationale:** This field was a defense-in-depth guard against the 10-minute `is_assigned()` timeout — it protected reviewers whose assignment had "expired" but whose session was still running. With the new model, `pr_has_active_reviewer()` checks `SessionRecord.is_running` directly, so the timeout-based race condition no longer exists. The guard is unnecessary.
 
 ### `is_assigned` Replacement
 
@@ -153,9 +184,10 @@ This is more accurate — a reviewer running for 30 minutes is still "assigned",
 ### GC Strategy
 
 Closed spans (with `end_time`) are retained for historical queries but cleaned up by `apply_gc()`:
-- Spans older than 7 days with `end_time` set are removed
+- Spans older than 48 hours with `end_time` set are removed (sessions are minutes-to-hours, so 48h provides ample history without unbounded growth)
 - Spans for tasks that no longer exist are removed
 - Open spans for sessions that no longer exist are force-closed and then subject to normal GC
+- Cap: if total spans exceed 500, oldest closed spans are pruned first
 
 ### Effect Changes
 
@@ -167,7 +199,7 @@ Closed spans (with `end_time`) are retained for historical queries but cleaned u
 
 ### Backward Compatibility
 
-Deserialization: `pr_reviewers` and `task_reviewer_metadata` fields get `#[serde(default)]` (already have it), so existing `daemon-state.json` files will deserialize with empty defaults after the structs are removed. The old data is simply ignored — no migration needed since active reviewer assignments are transient (10-minute timeout means they expire naturally).
+Deserialization: `DaemonPersistentState` does NOT use `#[serde(deny_unknown_fields)]`, so removing struct fields is safe — serde ignores unknown keys by default. Both `pr_reviewers` (in `GitHubState`) and `task_reviewer_metadata` already have `#[serde(default)]`. After the structs are removed, old JSON with these fields will deserialize cleanly — unknown fields are silently dropped. No explicit migration is needed since active reviewer assignments are transient (10-minute timeout means they expire naturally before the next daemon restart).
 
 ## Scope
 
