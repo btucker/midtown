@@ -61,7 +61,7 @@ function avatarLetter(name) {
 let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead);
 let displayName = $derived(msg.from);
 let displayColor = $derived(
-	getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName)
+	getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName),
 );
 // For click navigation, always use msg.from (the actual session name) so
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
