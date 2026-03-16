@@ -386,11 +386,10 @@ pub enum Effect {
         /// Passed through to `GitHubState` for stuck reviewer backoff tracking.
         restart_count: u32,
         /// Claude session ID for the reviewer, if known.
-        /// Initially `None` for optimistic assignments (before spawn completes);
-        /// backfilled by `backfill_reviewer_session_ids()` during subsequent poll ticks.
+        /// Initially `None` for optimistic assignments (before spawn completes).
         reviewer_session_id: Option<String>,
-        /// Review task ID, if known. Used to populate `task_reviewer_metadata`
-        /// so the new task-centric model can find reviewer state by task ID.
+        /// Review task ID, if known. Used to create a TaskSessionSpan
+        /// so the task-centric model can find reviewer state by task ID.
         task_id: Option<String>,
     },
     /// Remove a reviewer assignment for a specific PR.
@@ -1893,47 +1892,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::AssignReviewer {
                 pr_number,
                 reviewer_name,
-                source,
+                source: _,
                 restart_count,
                 reviewer_session_id,
                 task_id,
             } => {
                 let mut ps = state.persistent_state.lock().await;
-                if restart_count > 0 {
-                    ps.github.assign_reviewer_with_restart_count(
-                        pr_number,
-                        &reviewer_name,
-                        source,
-                        restart_count,
-                    );
-                } else {
-                    ps.github.assign_reviewer(pr_number, &reviewer_name, source);
-                }
-                // Set the session ID if provided (assign_reviewer* methods don't take it yet)
-                if let Some(ref sid) = reviewer_session_id
-                    && let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number)
-                {
-                    assignment.reviewer_session_id = Some(sid.clone());
-                }
-                // Populate task_reviewer_metadata so the task-centric model can find
-                // reviewer state by task ID without going through pr_reviewers.
                 if let Some(ref tid) = task_id {
-                    ps.task_reviewer_metadata
-                        .entry(tid.clone())
-                        .and_modify(|existing| {
-                            // Update fields but preserve placeholder_comment_id
-                            existing.restart_count = restart_count;
-                            existing.reviewer_session_id = reviewer_session_id.clone();
-                        })
-                        .or_insert(crate::daemon::state::TaskReviewerMetadata {
-                            pr_number,
-                            placeholder_comment_id: None,
-                            restart_count,
-                            reviewer_session_id: reviewer_session_id.clone(),
-                        });
-                }
-                // Dual-write: also create a TaskSessionSpan
-                if let Some(ref tid) = task_id {
+                    ps.close_spans_for_task(tid);
                     ps.create_span(
                         tid,
                         &reviewer_name,
@@ -1941,6 +1907,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         reviewer_session_id.as_deref().unwrap_or(""),
                     );
                     ps.task_pr_number.insert(tid.clone(), pr_number);
+                    if restart_count > 0 {
+                        ps.task_restart_count.insert(tid.clone(), restart_count);
+                    }
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save daemon-state.json: {}", e);
@@ -1948,21 +1917,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RemoveReviewerAssignment { pr_number } => {
                 let mut ps = state.persistent_state.lock().await;
-                if let Some(assignment) = ps.github.remove_assignment(pr_number) {
-                    debug!(
-                        "Removed reviewer assignment for PR #{} (was assigned to {})",
-                        pr_number, assignment.reviewer
-                    );
-                    // Dual-write: close any open spans for this PR's reviewer task
-                    let task_ids_to_close: Vec<String> = ps
-                        .task_session_spans
-                        .iter()
-                        .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
-                        .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-                        .map(|s| s.task_id.clone())
-                        .collect();
-                    for task_id in task_ids_to_close {
-                        ps.close_spans_for_task(&task_id);
+                let task_ids: Vec<String> = ps
+                    .active_reviewer_spans()
+                    .iter()
+                    .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+                    .map(|s| s.task_id.clone())
+                    .collect();
+                if task_ids.is_empty() {
+                    debug!("No reviewer spans to close for PR #{}", pr_number);
+                } else {
+                    for tid in &task_ids {
+                        debug!("Closing reviewer span for PR #{} (task {})", pr_number, tid);
+                        ps.close_spans_for_task(tid);
                     }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
@@ -1970,8 +1936,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             e
                         );
                     }
-                } else {
-                    debug!("No reviewer assignment to remove for PR #{}", pr_number);
                 }
             }
             Effect::CreateTaskSessionSpan {
@@ -3997,25 +3961,22 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 
 /// Look up an existing placeholder comment ID for a PR using the 3-tier lookup:
 ///
-/// 1. **Persistent state** — `task_reviewer_metadata` (preferred) or `PrReviewerAssignment.placeholder_comment_id` (fallback)
+/// 1. **Persistent state** — `task_placeholder_comment_id` (via active reviewer spans)
 /// 2. **In-memory cache** — `reviewer_placeholder_cache` (TTL-based)
 /// 3. **GitHub API fallback** — `pr_in_progress_placeholder_comment_id` via `spawn_blocking`
 ///
 /// This reuses the same lookup infrastructure as `collect_world_snapshot` in
 /// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    // Tier 1: Check stored placeholder_comment_id.
-    // Prefer task_reviewer_metadata; fall back to pr_reviewers.
+    // Tier 1: Check stored task_placeholder_comment_id.
     {
         let ps = state.persistent_state.lock().await;
-        let id = super::state::task_reviewer_metadata_for_pr(&ps, pr_number)
-            .and_then(|m| m.placeholder_comment_id)
-            .or_else(|| {
-                ps.github
-                    .pr_reviewers
-                    .get(&pr_number)
-                    .and_then(|a| a.placeholder_comment_id)
-            });
+        // Find the task ID for this PR from active reviewer spans
+        let id = ps
+            .active_reviewer_spans()
+            .iter()
+            .find(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+            .and_then(|s| ps.task_placeholder_comment_id.get(&s.task_id).copied());
         if let Some(id) = id {
             return Some(id);
         }
@@ -4181,19 +4142,20 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID on the reviewer assignment and in task_reviewer_metadata.
+        // Store the comment ID in task_placeholder_comment_id for the reviewer task.
         // Serialize under the lock, then write to disk after releasing it
         // to avoid blocking the tokio runtime with file I/O.
         let serialized = {
             let mut ps = state.persistent_state.lock().await;
-            if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
-                assignment.placeholder_comment_id = Some(comment_id);
-            }
-            // Also update task_reviewer_metadata for any review task tied to this PR.
-            for meta in ps.task_reviewer_metadata.values_mut() {
-                if meta.pr_number == pr_number {
-                    meta.placeholder_comment_id = Some(comment_id);
-                }
+            // Find the reviewer task for this PR and store the placeholder comment ID.
+            let task_ids: Vec<String> = ps
+                .active_reviewer_spans()
+                .iter()
+                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+                .map(|s| s.task_id.clone())
+                .collect();
+            for tid in task_ids {
+                ps.task_placeholder_comment_id.insert(tid, comment_id);
             }
             serde_json::to_string_pretty(&*ps).ok()
         };
