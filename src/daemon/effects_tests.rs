@@ -3252,7 +3252,7 @@ fn link_pr_to_session_backfills_branch_on_session_record() {
 }
 
 // ============================================================================
-// lookup_existing_placeholder — task_reviewer_metadata tier-1 path
+// lookup_existing_placeholder — task_placeholder_comment_id path
 // ============================================================================
 
 /// Verify that `post_pr_comment` reuses a placeholder stored in

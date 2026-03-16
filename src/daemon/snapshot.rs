@@ -1593,7 +1593,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// - The process health map shows the agent as alive.
 ///
 /// This replaces the old `compute_active_reviewers_with_health` that read from
-/// `GitHubState::pr_reviewers` + process health. The span-based approach uses
+/// `GitHubState` assignment tracking + process health. The span-based approach uses
 /// `SessionRecord.is_running` directly, eliminating the assignment timeout race
 /// that required the grace window.
 pub(crate) fn compute_active_reviewers_from_spans(
