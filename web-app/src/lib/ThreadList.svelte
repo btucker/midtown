@@ -51,17 +51,13 @@ function handleDismiss(e, threadId) {
 <div class="thread-list" data-testid="thread-list">
   {#each channelThreads as thread}
     {@const hasUnread = thread.unread > 0}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
+    <button
       class="thread-row"
       class:unread={hasUnread}
-      role="button"
-      tabindex="0"
       data-testid="sidebar-thread-row"
       data-thread-id={thread.id}
       title={thread.fullText}
       onclick={() => handleClick(thread)}
-      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleClick(thread) }}
     >
       <span class="accent-line" class:accent-unread={hasUnread}></span>
       <div class="thread-content">
@@ -70,15 +66,17 @@ function handleDismiss(e, threadId) {
           <span class="unread-badge" data-testid="sidebar-thread-unread-badge">{thread.unread}</span>
         {/if}
       </div>
-      <button
+      <span
         class="dismiss-btn"
+        role="button"
+        tabindex="-1"
         data-testid="sidebar-thread-dismiss"
         title="Stop tracking this thread"
         onclick={(e) => handleDismiss(e, thread.id)}
       >
         <X size={10} />
-      </button>
-    </div>
+      </span>
+    </button>
   {/each}
 </div>
 
@@ -95,6 +93,7 @@ function handleDismiss(e, threadId) {
     align-items: center;
     gap: 6px;
     padding: 3px 6px 3px 0;
+    width: 100%;
     border: none;
     background: transparent;
     cursor: pointer;
