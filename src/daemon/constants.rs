@@ -49,10 +49,6 @@ pub const PR_REVIEW_DELAY_SECS: u64 = 45;
 /// truly authoritative while still recovering from missed events.
 pub const PR_REVIEW_DELAY_SCRIPT_SECS: u64 = 300;
 
-/// How long a review assignment is valid before it can be reassigned (10 minutes).
-/// Re-exported from github_state for use by the in-memory tracker.
-pub use crate::github_state::PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS;
-
 // ---------------------------------------------------------------------------
 // Internal timing constants
 // ---------------------------------------------------------------------------
