@@ -328,30 +328,28 @@ function handleKeyDown(event) {
     </div>
     <div class="needs-attention-list">
       {#each completedThreads as thread}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
+        <button
           class="completed-thread-row"
-          role="button"
-          tabindex="0"
           title={thread.fullText}
           data-testid="needs-attention-thread"
           onclick={() => handleCompletedThreadClick(thread)}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleCompletedThreadClick(thread) }}
         >
           <span class="completed-check-icon"><Check size={10} /></span>
           <div class="completed-thread-content">
             <span class="completed-thread-subject">{thread.subject}</span>
             <span class="completed-thread-channel">#{thread.channelName}</span>
           </div>
-          <button
+          <span
             class="completed-dismiss-btn"
+            role="button"
+            tabindex="-1"
             title="Dismiss"
             data-testid="needs-attention-dismiss"
             onclick={(e) => handleCompletedThreadDismiss(e, thread.id)}
           >
             <X size={10} />
-          </button>
-        </div>
+          </span>
+        </button>
       {/each}
     </div>
   {/if}
@@ -546,6 +544,7 @@ function handleKeyDown(event) {
     align-items: center;
     gap: 6px;
     padding: 3px 6px 3px 0;
+    width: 100%;
     border: none;
     background: transparent;
     cursor: pointer;
