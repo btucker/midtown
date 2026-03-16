@@ -101,20 +101,27 @@ Currently, mention messages are formatted through two separate codepaths:
 
 Both call `ThreadContext::reply_instructions()` for thread context, but only when the mention is in a thread. Top-level mentions get no instructions at all. Additionally, `reply_instructions()` includes "IMPORTANT: Keep text output brief or omit it — text output auto-posts as a top-level message" which only applies to leads/forks, not to task workers receiving mentions.
 
-After consolidation, all mentions go through a single formatting path that produces context-dependent instructions:
+After consolidation, all mentions go through a single formatting path that produces context-dependent instructions based on two axes: **location** (thread vs top-level) and **session type** (fork, channel lead, or task worker).
 
-**In a thread** (mention has `thread_parent_id`):
+**Location-dependent instructions:**
+
+*In a thread* (mention has `thread_parent_id`):
 - Thread reply command: `midtown channel post "..." --thread <id> --channel <ch>`
 - Thread read command: `midtown channel read --last 15 --thread <id> --channel <ch>`
-- For leads/forks only: output suppression warning (stdout auto-posts to channel)
 
-**Top-level** (mention is not in a thread):
+*Top-level* (mention is not in a thread):
 - Channel context: `midtown channel read --last 15 --channel <ch>` so the recipient can see what's been discussed
 - Channel post command: `midtown channel post "..." --channel <ch>`
 - Guidance: prefer replying in a thread (to keep the channel organized) unless there's already a relevant top-level discussion in progress
-- For leads/forks only: output suppression warning
 
-The "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()` and instead added only when the target is a lead/fork session.
+**Session-type-dependent output behavior note:**
+
+The agent needs to understand what happens to its text output (stdout), since this varies by session type:
+- **Fork**: "Your text output is automatically posted to the thread. Use `midtown channel post` only if you need to post to a different thread or channel."
+- **Channel lead**: "Your text output is automatically posted to the channel as a top-level message. Use `midtown channel post` with `--thread` to reply in a specific thread instead."
+- **Task worker**: "Your text output is not automatically posted to any channel. Use `midtown channel post` to share messages." (This is the common case for mention routing.)
+
+The current "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()`. Instead, the output behavior note is dynamically set based on the target session's type (`coworker_type` from `SessionRecord` or agent type from dispatch).
 
 ### Delivery via `TaskPrompt`
 
