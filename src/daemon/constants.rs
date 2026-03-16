@@ -228,6 +228,12 @@ pub(super) const NOTE_REVIEW_CHECK_INTERVAL: Duration = Duration::from_secs(3600
 /// a fresh nudge once the cooldown expires.
 pub(super) const MERGE_REBASE_NUDGE_COOLDOWN: Duration = Duration::from_secs(600);
 
+/// How long a merged PR number is considered "already processed" for rebase nudges (24h).
+/// Once all coworkers have been nudged about a specific PR merge, we record the PR number
+/// so it's not treated as "new" on subsequent ticks. Must outlive the merged PR cache
+/// (`MERGED_PRS_FETCH_INTERVAL_SECS` = 5min) by a wide margin.
+pub(super) const MERGE_REBASE_PR_PROCESSED_COOLDOWN: Duration = Duration::from_secs(86400);
+
 /// How far back (in seconds) to consider a rebase "recent" (30 minutes).
 ///
 /// Used for both the reflog lookback window in `collect_rebase_regression_input`

@@ -40,6 +40,19 @@ fn nudges_coworkers_with_open_prs_when_pr_merges() {
         })
         .collect();
     assert_eq!(cooldown_keys.len(), 2);
+
+    // Merged PR numbers should be marked as processed
+    let processed_pr_keys: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::RecordCooldown { category, key } if category == "merge_rebase_pr_processed" => {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(processed_pr_keys.len(), 1);
+    assert!(processed_pr_keys.contains(&"100".to_string()));
 }
 
 #[test]
@@ -178,4 +191,73 @@ fn nudge_message_contains_rebase_guidance() {
         message.contains("stale versions"),
         "should warn about stale context"
     );
+}
+
+#[test]
+fn skips_already_processed_merged_prs() {
+    let mut snap = minimal_snapshot_for_test();
+    // PR #100 merged but was already processed on a prior tick
+    snap.pr.merged_pr_numbers.insert(100);
+    snap.rebase_nudge_processed_prs.insert(100);
+    snap.pr
+        .coworkers_with_open_prs
+        .insert("lexington".to_string());
+    snap.name_session_map
+        .insert("lexington".to_string(), "session-1".to_string());
+
+    let effects = collect_merge_rebase_nudge_effects(&snap);
+
+    // No nudges — the only merged PR was already processed
+    assert!(
+        effects.is_empty(),
+        "should not nudge for already-processed merged PRs"
+    );
+}
+
+#[test]
+fn only_nudges_for_new_merged_prs_not_processed_ones() {
+    let mut snap = minimal_snapshot_for_test();
+    // PR #100 was already processed, PR #200 is new
+    snap.pr.merged_pr_numbers.insert(100);
+    snap.pr.merged_pr_numbers.insert(200);
+    snap.rebase_nudge_processed_prs.insert(100);
+    snap.pr
+        .coworkers_with_open_prs
+        .insert("lexington".to_string());
+    snap.name_session_map
+        .insert("lexington".to_string(), "session-1".to_string());
+
+    let effects = collect_merge_rebase_nudge_effects(&snap);
+
+    let nudge_messages: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::NudgeCoworkerByName { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(nudge_messages.len(), 1);
+    // Message should mention only the new PR, not the processed one
+    assert!(
+        nudge_messages[0].contains("#200"),
+        "should mention new PR #200"
+    );
+    assert!(
+        !nudge_messages[0].contains("#100"),
+        "should not mention already-processed PR #100"
+    );
+
+    // Only PR #200 should be marked as processed (not #100 again)
+    let processed_pr_keys: Vec<String> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::RecordCooldown { category, key } if category == "merge_rebase_pr_processed" => {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(processed_pr_keys.len(), 1);
+    assert_eq!(processed_pr_keys[0], "200");
 }

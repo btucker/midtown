@@ -488,6 +488,12 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub merge_rebase_nudge_cooldown_names: HashSet<String>,
 
+    /// Merged PR numbers that have already triggered rebase nudges.
+    /// Pre-evaluated from `state.cooldowns` (category `"merge_rebase_pr_processed"`)
+    /// so `collect_merge_rebase_nudge_effects` only nudges for newly merged PRs.
+    #[serde(default)]
+    pub rebase_nudge_processed_prs: HashSet<u64>,
+
     /// Coworkers recently warned about post-rebase regressions.
     /// Pre-evaluated from `state.cooldowns` (category `"rebase_regression"`)
     /// so `check_for_rebase_regressions` can skip already-warned coworkers.
@@ -1279,6 +1285,25 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // Pre-evaluate which merged PR numbers have already triggered rebase nudges.
+    // Prevents the infinite rebase loop: without this, `gh pr list --state merged`
+    // returns the same 10 PRs every fetch, and coworkers get re-nudged after each
+    // cooldown expiry for merges they already rebased onto.
+    let rebase_nudge_processed_prs: HashSet<u64> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        merged_pr_numbers
+            .iter()
+            .filter(|pr_num| {
+                !cooldowns.check(
+                    "merge_rebase_pr_processed",
+                    &pr_num.to_string(),
+                    crate::daemon::constants::MERGE_REBASE_PR_PROCESSED_COOLDOWN,
+                )
+            })
+            .copied()
+            .collect()
+    };
+
     // Pre-evaluate rebase regression cooldowns for all coworkers with open PRs
     let rebase_regression_cooldown_names: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -1532,6 +1557,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         spawn_failure_cooldown_names,
         note_staleness_cooldown_channels,
         merge_rebase_nudge_cooldown_names,
+        rebase_nudge_processed_prs,
         rebase_regression_cooldown_names,
         stale_channel_lead_worktrees,
         lead_worktree_freshness_cooldown_channels,
@@ -1610,6 +1636,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         spawn_failure_cooldown_names: HashSet::new(),
         note_staleness_cooldown_channels: HashSet::new(),
         merge_rebase_nudge_cooldown_names: HashSet::new(),
+        rebase_nudge_processed_prs: HashSet::new(),
         rebase_regression_cooldown_names: HashSet::new(),
         stale_channel_lead_worktrees: HashSet::new(),
         lead_worktree_freshness_cooldown_channels: HashSet::new(),

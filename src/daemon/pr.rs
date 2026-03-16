@@ -4434,12 +4434,29 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         return vec![];
     }
 
+    // Only nudge for PRs that haven't already been processed. Without this filter,
+    // `gh pr list --state merged --limit 10` returns the same PRs every fetch,
+    // causing coworkers to be re-nudged every cooldown cycle for old merges.
+    let new_merged_prs: Vec<u64> = {
+        let mut prs: Vec<u64> = snap
+            .pr
+            .merged_pr_numbers
+            .iter()
+            .copied()
+            .filter(|pr_num| !snap.rebase_nudge_processed_prs.contains(pr_num))
+            .collect();
+        prs.sort_unstable();
+        prs
+    };
+
+    if new_merged_prs.is_empty() {
+        return vec![];
+    }
+
     let mut effects = Vec::new();
 
     // Build a human-readable list of merged PR numbers for the nudge message
-    let mut merged_prs: Vec<u64> = snap.pr.merged_pr_numbers.iter().copied().collect();
-    merged_prs.sort_unstable();
-    let pr_list = merged_prs
+    let pr_list = new_merged_prs
         .iter()
         .map(|n| format!("#{}", n))
         .collect::<Vec<_>>()
@@ -4487,6 +4504,15 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         effects.push(Effect::RecordCooldown {
             category: "merge_rebase_nudge".to_string(),
             key: coworker_name.clone(),
+        });
+    }
+
+    // Mark these merged PR numbers as processed so they won't trigger nudges
+    // on subsequent ticks when `gh pr list --state merged` returns the same PRs.
+    for pr_num in &new_merged_prs {
+        effects.push(Effect::RecordCooldown {
+            category: "merge_rebase_pr_processed".to_string(),
+            key: pr_num.to_string(),
         });
     }
 
