@@ -414,6 +414,7 @@ fn test_gc_caps_at_500() {
     );
 }
 
+
 #[test]
 fn test_gc_cap_keeps_newest_and_open_spans() {
     let mut ps = DaemonPersistentState::default();

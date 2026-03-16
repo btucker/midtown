@@ -70,6 +70,27 @@ pub struct TaskSessionSpan {
     pub end_time: Option<DateTime<Utc>>,
 }
 
+/// A temporal record of a session working on a task.
+///
+/// Tracks the time span during which a specific session was assigned to a task.
+/// Replaces the dual pr_reviewers/task_reviewer_metadata model with a single
+/// source of truth. Open spans (end_time = None) represent active assignments.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSessionSpan {
+    /// Task ID this span belongs to.
+    pub task_id: String,
+    /// Coworker name at the time of this span.
+    pub agent_name: String,
+    /// Role: "dev", "reviewer", or "channel-lead".
+    pub agent_type: String,
+    /// Claude Code session ID.
+    pub session_id: String,
+    /// When the session started working on this task.
+    pub start_time: DateTime<Utc>,
+    /// When the session stopped (None = still active).
+    pub end_time: Option<DateTime<Utc>>,
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
