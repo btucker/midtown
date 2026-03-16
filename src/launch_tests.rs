@@ -43,6 +43,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -315,6 +316,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -349,6 +351,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -552,5 +555,46 @@ fn test_channel_lead_append_prompt_includes_domain_context() {
             .contains("Auth module handles JWT tokens"),
         "Append prompt must include domain_context for --agent path. Got: {}",
         &headless.system_prompt[..headless.system_prompt.len().min(500)]
+    );
+}
+
+/// agent_name_override should take precedence over role.agent_name() in to_headless_config.
+#[test]
+fn test_agent_name_override_in_headless_config() {
+    let mut config = LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        SessionMode::ResumeSession("session-123".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+
+    let headless = config.to_headless_config(&test_paths("test-repo", "test-repo"));
+
+    assert_eq!(
+        headless.agent_name.as_deref(),
+        Some("midtown-code-reviewer"),
+        "agent_name_override should override the role's default agent name"
+    );
+}
+
+/// Without agent_name_override, the role's default agent name is used.
+#[test]
+fn test_default_agent_name_without_override() {
+    let config = LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        SessionMode::ResumeSession("session-123".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+
+    let headless = config.to_headless_config(&test_paths("test-repo", "test-repo"));
+
+    assert_eq!(
+        headless.agent_name.as_deref(),
+        Some("midtown-code-author"),
+        "Without override, coworker role should use midtown-code-author agent"
     );
 }

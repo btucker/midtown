@@ -18,6 +18,7 @@ fn make_spawn(name: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     })
 }
 
@@ -91,6 +92,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -116,6 +118,7 @@ fn make_assign_and_spawn(name: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
     Effect::AssignAndSpawn {
         task_id: "1".to_string(),
@@ -181,6 +184,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let config2 = config1.clone();
@@ -292,6 +296,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let config_york = LaunchConfig {
@@ -310,6 +315,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     // Orphan recovery spawns amsterdam for task 123
@@ -431,6 +437,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
     config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
 
@@ -450,6 +457,7 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
+        agent_name_override: None,
     };
 
     let spawn_session = Effect::SpawnSession {

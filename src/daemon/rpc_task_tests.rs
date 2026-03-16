@@ -902,3 +902,350 @@ fn test_task_prompt_strips_id_prefixes() {
     assert_eq!(strip("42"), "42");
     assert_eq!(strip("!100"), "100");
 }
+
+// ── task.handoff tests ───────────────────────────────────────────────────────
+
+/// Handoff builds a resume LaunchConfig with the correct agent_name_override.
+#[test]
+fn test_task_handoff_config_uses_agent_override() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None, // no initial prompt — handoff just swaps the agent
+        Some("42".to_string()),
+    );
+    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+
+    assert_eq!(
+        config.agent_name_override.as_deref(),
+        Some("midtown-code-reviewer")
+    );
+    assert!(
+        matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == "session-abc")
+    );
+    assert_eq!(config.initial_prompt, None);
+    assert_eq!(config.task_id.as_deref(), Some("42"));
+}
+
+/// Handoff applies task model configuration to the resumed session.
+#[test]
+fn test_task_handoff_applies_task_model() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+
+    let mut task_model = HashMap::new();
+    task_model.insert("42".to_string(), "claude/opus".to_string());
+    config.apply_task_model(&task_model, "42");
+
+    assert_eq!(config.model, "opus");
+    assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
+    // Agent override should be independent of model
+    assert_eq!(
+        config.agent_name_override.as_deref(),
+        Some("midtown-code-reviewer")
+    );
+}
+
+/// Handoff resolves coworker name from preferred_name, current_name, or task owner.
+#[test]
+fn test_task_handoff_name_resolution() {
+    // Replicate the name resolution logic from handle_task_handoff
+    fn resolve_name<'a>(
+        preferred: Option<&'a str>,
+        current: Option<&'a str>,
+        owner: Option<&'a str>,
+    ) -> &'a str {
+        preferred.or(current).or(owner).unwrap_or("unknown")
+    }
+
+    assert_eq!(
+        resolve_name(Some("park"), Some("madison"), Some("lexington")),
+        "park"
+    );
+    assert_eq!(
+        resolve_name(None, Some("madison"), Some("lexington")),
+        "madison"
+    );
+    assert_eq!(resolve_name(None, None, Some("lexington")), "lexington");
+    assert_eq!(resolve_name(None, None, None), "unknown");
+}
+
+/// Handoff sets working directory from session record when available.
+#[test]
+fn test_task_handoff_sets_working_dir() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+
+    // Simulate the working_dir assignment from handle_task_handoff
+    let recorded_dir = "/Users/test/.midtown/projects/test/worktrees/park";
+    if !recorded_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(recorded_dir));
+    }
+
+    assert_eq!(
+        config.working_dir,
+        Some(std::path::PathBuf::from(
+            "/Users/test/.midtown/projects/test/worktrees/park"
+        ))
+    );
+}
+
+/// Handoff skips working_dir assignment when session record has empty working_dir.
+#[test]
+fn test_task_handoff_skips_empty_working_dir() {
+    let mut config = crate::launch::LaunchConfig::coworker(
+        "park".to_string(),
+        "test-repo".to_string(),
+        crate::launch::SessionMode::ResumeSession("session-abc".to_string()),
+        None,
+        Some("42".to_string()),
+    );
+
+    let recorded_dir = "";
+    if !recorded_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(recorded_dir));
+    }
+
+    assert_eq!(config.working_dir, None);
+}
+
+/// Task ID prefix stripping also works in the handoff path.
+#[test]
+fn test_task_handoff_strips_id_prefixes() {
+    fn strip(id: &str) -> &str {
+        id.strip_prefix('#')
+            .or_else(|| id.strip_prefix('!'))
+            .unwrap_or(id)
+    }
+    assert_eq!(strip("!42"), "42");
+    assert_eq!(strip("#42"), "42");
+    assert_eq!(strip("42"), "42");
+}
+
+// ── handle_task_handoff async tests ──────────────────────────────────────────
+//
+// These require a minimal DaemonState to exercise the async handler's
+// error paths (task not found, session not found).
+
+fn make_test_state(
+    repo_name: &str,
+) -> (
+    super::super::DaemonState,
+    tempfile::TempDir,
+    crate::paths::TestMidtownBaseDirGuard,
+) {
+    use std::process::Command;
+
+    let midtown_dir = tempfile::tempdir().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let project_dir = tempfile::tempdir().expect("project temp dir");
+    Command::new("git")
+        .args(["init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git init");
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config email");
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git config name");
+    Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "init"])
+        .current_dir(project_dir.path())
+        .output()
+        .expect("git commit");
+
+    let wm = crate::worktree::WorktreeManager::new(project_dir.path().to_path_buf()).expect("wm");
+    let cm = crate::coworker::CoworkerManager::new(wm);
+    let channel_router = crate::ChannelRouter::new(project_dir.path(), "midtown");
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let state = super::super::DaemonState::new(
+        "/tmp/rpc-task-test.sock".into(),
+        cm,
+        crate::paths::ProjectPaths::with_project_name(repo_name, repo_name),
+        vec![project_dir.path().to_path_buf()],
+        channel_router,
+        None,
+        10,
+        None,
+        "main".to_string(),
+        shutdown_tx,
+    )
+    .expect("daemon state");
+
+    (state, project_dir, _guard)
+}
+
+/// handle_task_handoff returns an error when the task ID does not exist.
+#[tokio::test]
+async fn test_handle_task_handoff_task_not_found() {
+    let (state, _dir, _guard) = make_test_state("handoff-test");
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(1),
+        "nonexistent-999",
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    let json = serde_json::to_value(&response).expect("serialize");
+    let error = json.get("error").expect("should have error");
+    let message = error.get("message").expect("error message");
+    assert!(
+        message.as_str().unwrap().contains("not found"),
+        "expected 'not found' in error, got: {}",
+        message
+    );
+}
+
+/// handle_task_handoff strips ! and # prefixes from task IDs before lookup.
+#[tokio::test]
+async fn test_handle_task_handoff_strips_prefix_in_handler() {
+    let (state, _dir, _guard) = make_test_state("handoff-strip-test");
+    // Both !999 and #999 should resolve to "999" and return "not found"
+    // (not a parse error or panic)
+    for prefix_id in ["!999", "#999"] {
+        let response = handle_task_handoff(
+            crate::rpc::RequestId::Number(1),
+            prefix_id,
+            "midtown-code-reviewer",
+            None,
+            "lead",
+            &state,
+        )
+        .await;
+
+        let json = serde_json::to_value(&response).expect("serialize");
+        let error = json.get("error").expect("should have error");
+        let message = error
+            .get("message")
+            .expect("error message")
+            .as_str()
+            .unwrap();
+        assert!(
+            message.contains("not found"),
+            "prefix '{}' should strip to '999' and return not found, got: {}",
+            prefix_id,
+            message
+        );
+    }
+}
+
+/// handle_task_handoff returns "no session found" when the task exists
+/// but no session has been assigned to it.
+#[tokio::test]
+async fn test_handle_task_handoff_no_session_found() {
+    let (state, _dir, _guard) = make_test_state("handoff-nosess-test");
+
+    // Create a real task in the test repo's task storage
+    let task_id = crate::tasks::create_task_for_repo(
+        "Test handoff task",
+        "description",
+        "Testing handoff task",
+        "park",
+        "handoff-nosess-test",
+        None,
+        None,
+        None,
+    )
+    .expect("create task");
+
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(2),
+        &task_id,
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    let json = serde_json::to_value(&response).expect("serialize");
+    let error = json.get("error").expect("should have error");
+    let message = error
+        .get("message")
+        .expect("error message")
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("No session found"),
+        "expected 'No session found', got: {}",
+        message
+    );
+}
+
+/// handle_task_handoff succeeds (updates agent type) when a session mapping
+/// exists in task_to_session but the session record is missing from persistent
+/// state. Main's implementation gracefully proceeds — it updates task_agent_type
+/// and returns success without requiring the session record for the no-message path.
+#[tokio::test]
+async fn test_handle_task_handoff_session_exists_but_no_record() {
+    let (state, _dir, _guard) = make_test_state("handoff-norec-test");
+
+    // Create a real task
+    let task_id = crate::tasks::create_task_for_repo(
+        "Test handoff no record",
+        "description",
+        "Testing handoff",
+        "park",
+        "handoff-norec-test",
+        None,
+        None,
+        None,
+    )
+    .expect("create task");
+
+    // Insert a fake session mapping (task → session) without a corresponding
+    // session record in persistent state
+    let fake_session_id = "fake-session-abc-123";
+    state
+        .task_to_session
+        .lock()
+        .unwrap()
+        .insert(task_id.clone(), fake_session_id.to_string());
+
+    let response = handle_task_handoff(
+        crate::rpc::RequestId::Number(3),
+        &task_id,
+        "midtown-code-reviewer",
+        None,
+        "lead",
+        &state,
+    )
+    .await;
+
+    // With no message, handle_task_handoff updates task_agent_type and returns
+    // success even without a session record (graceful degradation).
+    let json = serde_json::to_value(&response).expect("serialize");
+    let result = json.get("result").expect("should have result");
+    let message = result
+        .get("message")
+        .expect("result message")
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("agent type changed"),
+        "expected 'agent type changed' in result, got: {}",
+        message
+    );
+}
