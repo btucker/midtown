@@ -121,7 +121,11 @@ The agent needs to understand what happens to its text output (stdout), since th
 - **Channel lead**: "Your text output is automatically posted to the channel as a top-level message. Use `midtown channel post` with `--thread` to reply in a specific thread instead."
 - **Task worker**: "Your text output is not automatically posted to any channel. Use `midtown channel post` to share messages." (This is the common case for mention routing.)
 
-The current "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()`. Instead, the output behavior note is dynamically set based on the target session's type (`coworker_type` from `SessionRecord` or agent type from dispatch).
+**Acknowledge-first instruction:**
+
+All mention instructions include: "Acknowledge this mention immediately with a brief reply before spending time on it — the person who mentioned you is waiting to know you saw it."
+
+The current "IMPORTANT: Keep text output brief" line is removed from `ThreadContext::reply_instructions()`. Instead, the output behavior note and acknowledge-first instruction are dynamically set based on the target session's type (`coworker_type` from `SessionRecord` or agent type from dispatch).
 
 ### Delivery via `TaskPrompt`
 
