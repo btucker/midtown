@@ -431,20 +431,17 @@ fn test_clear_reviewer_assignment() {
     // and filesystem paths. The save/load behavior is covered by other tests.
 
     let mut state = DaemonPersistentState::default();
-    state.github.assign_reviewer(
-        42,
-        "amsterdam",
-        crate::github_state::AssignmentSource::Webhook,
-    );
+    state.create_span("task-42", "amsterdam", "reviewer", "sess-1");
+    state.task_pr_number.insert("task-42".to_string(), 42);
 
-    // Verify the assignment exists before clearing
-    assert_eq!(state.github.get_reviewer(42), Some("amsterdam"));
+    // Verify the span exists before clearing
+    assert!(state.active_reviewer_for_pr(42).is_some());
 
     // Clear existing assignment - should return true
     // (Note: save will fail in tests without proper setup, but that's OK -
     // we're testing the removal logic, not file I/O)
     assert!(state.clear_reviewer_assignment("amsterdam", "test-repo"));
-    assert_eq!(state.github.get_reviewer(42), None);
+    assert!(state.active_reviewer_for_pr(42).is_none());
 
     // Try to clear again - should return false (no assignment)
     assert!(!state.clear_reviewer_assignment("amsterdam", "test-repo"));

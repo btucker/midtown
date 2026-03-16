@@ -1020,14 +1020,11 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
         });
     assert!(inserted, "reviewer coworker should be inserted");
 
-    // Assign the reviewer to a PR but do NOT mark the review as completed
+    // Create reviewer span for a PR but do NOT mark the review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            reviewer_name,
-            crate::github_state::AssignmentSource::Webhook,
-        );
+        ps.create_span("task-43", reviewer_name, "reviewer", "");
+        ps.task_pr_number.insert("task-43".to_string(), pr_number);
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
 

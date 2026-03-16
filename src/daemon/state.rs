@@ -737,22 +737,27 @@ impl DaemonPersistentState {
     /// This helper is used by both RPC handlers (coworker.break) and Effect handlers
     /// (ClearOrphanedReviewerAssignments) to avoid duplicating the cleanup logic.
     pub fn clear_reviewer_assignment(&mut self, reviewer_name: &str, repo: &str) -> bool {
-        if let Some(assignment) = self.github.remove_assignment_by_reviewer(reviewer_name) {
-            tracing::info!(
-                "Cleared reviewer assignment for {} (was reviewing PR #{})",
-                reviewer_name,
-                assignment.pr_number
-            );
-            if let Err(e) = self.save_for_repo(repo) {
-                tracing::warn!(
-                    "Failed to save persistent state after clearing reviewer assignment: {}",
-                    e
-                );
-            }
-            true
-        } else {
-            false
+        // Find active reviewer spans for this agent name and close them.
+        let task_ids: Vec<String> = self
+            .active_reviewer_spans()
+            .iter()
+            .filter(|s| s.agent_name == reviewer_name)
+            .map(|s| s.task_id.clone())
+            .collect();
+        if task_ids.is_empty() {
+            return false;
         }
+        for tid in &task_ids {
+            tracing::info!("Cleared reviewer span for {} (task {})", reviewer_name, tid);
+            self.close_spans_for_task(tid);
+        }
+        if let Err(e) = self.save_for_repo(repo) {
+            tracing::warn!(
+                "Failed to save persistent state after clearing reviewer assignment: {}",
+                e
+            );
+        }
+        true
     }
 
     /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
@@ -854,6 +859,10 @@ pub fn pr_to_task_map_from_sessions(
 /// exist for the same PR (e.g., completed review task + new review task),
 /// returns the one with the highest task ID (most recent) to avoid reading
 /// stale `restart_count` or `placeholder_comment_id` from a prior review cycle.
+///
+/// Note: Production code now uses spans instead of task_reviewer_metadata.
+/// This function is retained for legacy tests only.
+#[cfg(test)]
 pub fn task_reviewer_metadata_for_pr(
     ps: &DaemonPersistentState,
     pr_number: u64,

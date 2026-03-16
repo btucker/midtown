@@ -1250,7 +1250,9 @@ impl DaemonState {
         let (cached, assigned_reviewer) = {
             let ps = self.persistent_state.lock().await;
             let cached = ps.github.has_cached_review(pr_number);
-            let reviewer = ps.github.get_reviewer(pr_number).map(|r| r.to_string());
+            let reviewer = ps
+                .active_reviewer_for_pr(pr_number)
+                .map(|s| s.agent_name.clone());
             (cached, reviewer)
         };
         let has_review =
@@ -2730,34 +2732,28 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
             info.profile = Some(coworker.profile.clone());
 
             // Determine coworker type and assignment based on current_task and PR assignment
-            // Check if this coworker is assigned as a reviewer
-            let persistent = state.persistent_state.lock().await;
-            let is_reviewer = persistent
-                .github
-                .pr_reviewers
-                .values()
-                .any(|assignment| assignment.reviewer == coworker.name);
-            drop(persistent);
-
-            if is_reviewer {
-                // Reviewer coworker
-                info.coworker_type = Some("reviewer".to_string());
-
-                // Look up PR assignment from persistent state
+            // Check if this coworker is assigned as a reviewer via active spans
+            let is_reviewer = {
                 let persistent = state.persistent_state.lock().await;
-                if let Some(assignment) = persistent
-                    .github
-                    .pr_reviewers
-                    .values()
-                    .find(|assignment| assignment.reviewer == coworker.name)
-                {
-                    let pr_num = assignment.pr_number;
-                    info.pr_number = Some(pr_num);
-                    info.purpose = format!("reviewer for PR #{}", pr_num);
+                let reviewer_span = persistent
+                    .active_reviewer_spans()
+                    .into_iter()
+                    .find(|s| s.agent_name == coworker.name)
+                    .map(|s| (s.task_id.clone(),));
+                if let Some((task_id,)) = reviewer_span {
+                    info.coworker_type = Some("reviewer".to_string());
+                    if let Some(&pr_num) = persistent.task_pr_number.get(&task_id) {
+                        info.pr_number = Some(pr_num);
+                        info.purpose = format!("reviewer for PR #{}", pr_num);
+                    } else {
+                        info.purpose = "reviewer (unassigned)".to_string();
+                    }
+                    true
                 } else {
-                    info.purpose = "reviewer (unassigned)".to_string();
+                    false
                 }
-            } else {
+            };
+            if !is_reviewer {
                 // Regular dev coworker
                 info.coworker_type = Some("dev".to_string());
                 if let Some(task_str) = &coworker.current_task {
@@ -3761,7 +3757,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 if let Some(pr_number) = webhook_event.reviewed_pr {
                     let assigned_reviewer = {
                         let ps = state.persistent_state.lock().await;
-                        ps.github.get_reviewer(pr_number).map(|r| r.to_string())
+                        ps.active_reviewer_for_pr(pr_number)
+                            .map(|s| s.agent_name.clone())
                     };
 
                     let author_matches = match (&webhook_event.review_author, &assigned_reviewer) {
