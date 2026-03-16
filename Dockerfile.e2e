@@ -100,7 +100,6 @@ COPY --from=builder --chown=testuser:testuser /app/src ./src
 COPY --from=builder --chown=testuser:testuser /app/agents ./agents
 COPY --from=builder --chown=testuser:testuser /app/tests ./tests
 COPY --from=builder --chown=testuser:testuser /app/scripts ./scripts
-COPY --from=builder --chown=testuser:testuser /app/midtown-types ./midtown-types
 COPY --from=builder --chown=testuser:testuser /app/install.sh ./install.sh
 
 USER testuser
