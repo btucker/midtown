@@ -621,6 +621,24 @@ impl DaemonClient {
         self.send("task.prompt", Some(params))
     }
 
+    pub fn task_handoff(
+        &self,
+        id: &str,
+        agent: &str,
+        message: Option<&str>,
+    ) -> Result<Response, String> {
+        let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
+        let mut params = serde_json::json!({
+            "id": id,
+            "agent": agent,
+            "from": from
+        });
+        if let Some(msg) = message {
+            params["message"] = serde_json::json!(msg);
+        }
+        self.send("task.handoff", Some(params))
+    }
+
     // Session commands (attach/detach headless coworkers)
 
     /// Request attaching to a headless coworker session.

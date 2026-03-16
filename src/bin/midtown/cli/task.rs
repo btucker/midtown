@@ -103,6 +103,18 @@ pub enum TaskCommand {
         #[arg(long)]
         model: Option<String>,
     },
+    /// Swap the agent type on a task's session (preserving conversation history)
+    Handoff {
+        /// Task ID
+        #[arg(long)]
+        id: String,
+        /// Agent definition name (e.g., midtown-code-reviewer)
+        #[arg(long)]
+        agent: String,
+        /// Optional message to deliver after the handoff
+        #[arg(long)]
+        message: Option<String>,
+    },
 }
 
 /// Handle task subcommands that don't require the daemon (list, view).
@@ -171,6 +183,9 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         TaskCommand::Request { description } => client.task_request(description),
         TaskCommand::Prompt { id, message, model } => {
             client.task_prompt(id, message, model.as_deref())
+        }
+        TaskCommand::Handoff { id, agent, message } => {
+            client.task_handoff(id, agent, message.as_deref())
         }
         TaskCommand::List { all } => handle_list(*all),
         TaskCommand::View { id } => handle_view(id),
@@ -257,6 +272,9 @@ fn handle_view(id: &str) -> Result<Response, String> {
         }
         if let Some(parent) = result.get("parent").and_then(|v| v.as_str()) {
             output.push_str(&format!("Parent:   !{}\n", parent));
+        }
+        if let Some(agent_type) = result.get("agent_type").and_then(|v| v.as_str()) {
+            output.push_str(&format!("Agent:    {}\n", agent_type));
         }
     }
     // Silently ignore errors - daemon might not be running or metadata might not exist

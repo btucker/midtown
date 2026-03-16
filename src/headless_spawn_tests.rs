@@ -538,3 +538,47 @@ fn test_resume_session_includes_agent_name() {
         "Resume session should NOT include --append-system-prompt"
     );
 }
+
+/// Task handoff scenario: resume a session with a different agent name.
+/// This validates the core mechanism: `spawn_coworker` overrides `agent_name`
+/// from `task_agent_type` in persistent state, and the CLI arg builder emits
+/// `--resume <id> --agent <new-agent>`.
+#[test]
+fn test_resume_session_with_handoff_agent_name() {
+    let config = HeadlessConfig {
+        model: "opus".to_string(),
+        system_prompt: String::new(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: Some("session-789".to_string()),
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+        disallowed_tools: vec![],
+        // Simulates spawn_coworker overriding agent_name from task_agent_type
+        agent_name: Some("midtown-code-reviewer".to_string()),
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Should have --resume with the session ID
+    assert!(args.iter().any(|a| a == "--resume"));
+    let resume_idx = args.iter().position(|a| a == "--resume").unwrap();
+    assert_eq!(args[resume_idx + 1], "session-789");
+
+    // Should have --agent with the handoff agent name
+    let agent_idx = args.iter().position(|a| a == "--agent").unwrap();
+    assert_eq!(
+        args[agent_idx + 1],
+        "midtown-code-reviewer",
+        "Handoff should pass the new agent name on resume"
+    );
+}
