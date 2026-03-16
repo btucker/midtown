@@ -3637,10 +3637,10 @@ fn json_review_rejects_bot_comment_when_reviewer_assigned() {
     });
 
     // Without assigned reviewer: should NOT match (no review signature)
-    assert!(!json_has_completed_review(&json, None));
+    assert!(!json_has_completed_review(&json, None, None));
 
     // With assigned reviewer: should NOT match
-    assert!(!json_has_completed_review(&json, Some("pleasant")));
+    assert!(!json_has_completed_review(&json, Some("pleasant"), None));
 }
 
 /// A review by the assigned reviewer should be accepted.
@@ -3656,7 +3656,7 @@ fn json_review_accepts_assigned_reviewer_comment() {
         ]
     });
 
-    assert!(json_has_completed_review(&json, Some("pleasant")));
+    assert!(json_has_completed_review(&json, Some("pleasant"), None));
 }
 
 /// A review by a DIFFERENT coworker should be rejected when an assigned reviewer exists.
@@ -3673,7 +3673,7 @@ fn json_review_rejects_wrong_coworker_comment() {
     });
 
     assert!(
-        !json_has_completed_review(&json, Some("pleasant")),
+        !json_has_completed_review(&json, Some("pleasant"), None),
         "Review by broadway should not satisfy the gate when pleasant is assigned"
     );
 }
@@ -3691,7 +3691,7 @@ fn json_review_accepts_any_review_when_no_reviewer_assigned() {
         ]
     });
 
-    assert!(json_has_completed_review(&json, None));
+    assert!(json_has_completed_review(&json, None, None));
 }
 
 /// Formal GitHub reviews (APPROVED state) by the assigned reviewer should be accepted.
@@ -3708,7 +3708,7 @@ fn json_review_accepts_formal_review_by_assigned_reviewer() {
         "comments": []
     });
 
-    assert!(json_has_completed_review(&json, Some("pleasant")));
+    assert!(json_has_completed_review(&json, Some("pleasant"), None));
 }
 
 /// Formal reviews without midtown frontmatter should NOT be accepted
@@ -3728,13 +3728,13 @@ fn json_review_rejects_formal_review_without_attribution() {
 
     // With assigned reviewer: reject (no author attribution in empty body)
     assert!(
-        !json_has_completed_review(&json, Some("pleasant")),
+        !json_has_completed_review(&json, Some("pleasant"), None),
         "Formal review from bot without frontmatter should be rejected when reviewer assigned"
     );
 
     // Without assigned reviewer: accept (backward compat)
     assert!(
-        json_has_completed_review(&json, None),
+        json_has_completed_review(&json, None, None),
         "Formal review should be accepted when no reviewer is assigned"
     );
 }
@@ -3756,7 +3756,7 @@ fn json_review_accepts_bodyless_approved_when_reviewer_assigned() {
     });
 
     assert!(
-        json_has_completed_review(&json, Some("pleasant")),
+        json_has_completed_review(&json, Some("pleasant"), None),
         "APPROVED with empty body should be accepted — strong state, not a bot"
     );
 }
@@ -3776,7 +3776,7 @@ fn json_review_accepts_bodyless_changes_requested_when_reviewer_assigned() {
     });
 
     assert!(
-        json_has_completed_review(&json, Some("pleasant")),
+        json_has_completed_review(&json, Some("pleasant"), None),
         "CHANGES_REQUESTED with empty body should be accepted — strong state"
     );
 }
@@ -3796,7 +3796,7 @@ fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
     });
 
     assert!(
-        !json_has_completed_review(&json, Some("pleasant")),
+        !json_has_completed_review(&json, Some("pleasant"), None),
         "COMMENTED with empty body should be rejected — weak state, likely a bot"
     );
 }
@@ -5091,7 +5091,7 @@ fn test_extract_placeholder_comment_id_skips_null_body_comments() {
     let json = serde_json::json!({
         "comments": [
             {
-                "body": "Review in progress by amsterdam",
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
             },
             {
@@ -5118,7 +5118,7 @@ fn test_extract_placeholder_comment_id_skips_missing_body_comments() {
     let json = serde_json::json!({
         "comments": [
             {
-                "body": "Review in progress by park",
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/10#issuecomment-999999"
             },
             {
@@ -5136,21 +5136,21 @@ fn test_extract_placeholder_comment_id_finds_last_placeholder() {
     let json = serde_json::json!({
         "comments": [
             {
-                "body": "Review in progress by amsterdam",
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
             },
             {
-                "body": "<!-- midtown: amsterdam -->\n## Code Review by amsterdam\nLGTM",
+                "body": "<!-- midtown session:abc task:100 type:review -->\n## Code Review by amsterdam\nLGTM",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
             },
             {
-                "body": "Review in progress by broadway",
+                "body": "<!-- midtown task:101 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-333333"
             }
         ]
     });
 
-    // Should find the last (most recent) placeholder, which is broadway's
+    // Should find the last (most recent) placeholder
     let result = super::extract_placeholder_comment_id(&json);
     assert_eq!(result, Some(333333));
 }
@@ -5162,18 +5162,18 @@ fn test_extract_placeholder_comment_id_skips_null_url_comments() {
     let json = serde_json::json!({
         "comments": [
             {
-                "body": "Review in progress by park",
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-555555"
             },
             {
-                "body": "Review in progress by broadway",
+                "body": "<!-- midtown task:101 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": null
             }
         ]
     });
 
-    // broadway's placeholder (later in array, encountered first in reverse) has null url.
-    // Should skip it and find park's placeholder instead.
+    // Later placeholder (encountered first in reverse) has null url.
+    // Should skip it and find earlier placeholder instead.
     let result = super::extract_placeholder_comment_id(&json);
     assert_eq!(
         result,
@@ -5187,11 +5187,11 @@ fn test_extract_placeholder_comment_id_skips_missing_url_comments() {
     let json = serde_json::json!({
         "comments": [
             {
-                "body": "Review in progress by park",
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...",
                 "url": "https://github.com/owner/repo/pull/42#issuecomment-666666"
             },
             {
-                "body": "Review in progress by broadway"
+                "body": "<!-- midtown task:101 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress..."
             }
         ]
     });

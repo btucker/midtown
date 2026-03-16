@@ -2973,6 +2973,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 pub(super) fn pr_has_completed_review_uncached(
     pr_number: u64,
     assigned_reviewer: Option<&str>,
+    assigned_session_id: Option<&str>,
 ) -> bool {
     let output = std::process::Command::new("gh")
         .args([
@@ -2995,7 +2996,7 @@ pub(super) fn pr_has_completed_review_uncached(
                 }
             };
 
-            json_has_completed_review(&json, assigned_reviewer)
+            json_has_completed_review(&json, assigned_reviewer, assigned_session_id)
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3022,6 +3023,7 @@ pub(super) fn pr_has_completed_review_uncached(
 pub(super) fn json_has_completed_review(
     json: &serde_json::Value,
     assigned_reviewer: Option<&str>,
+    assigned_session_id: Option<&str>,
 ) -> bool {
     // Check formal reviews first (Codex / GitHub-native review flow).
     if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
@@ -3055,7 +3057,7 @@ pub(super) fn json_has_completed_review(
                     .as_deref()
                     .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
 
-                if review_author_matches(body, assigned_reviewer)
+                if review_author_matches(body, assigned_reviewer, assigned_session_id)
                     || (is_strong_state && assigned_reviewer.is_some())
                 {
                     return true;
@@ -3069,7 +3071,7 @@ pub(super) fn json_has_completed_review(
         for comment in comments {
             if let Some(body) = comment.get("body").and_then(|b| b.as_str())
                 && text_contains_review_signature(body)
-                && review_author_matches(body, assigned_reviewer)
+                && review_author_matches(body, assigned_reviewer, assigned_session_id)
             {
                 return true;
             }
@@ -3152,9 +3154,7 @@ pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> 
 /// Returns the comment database ID if found, or None if no placeholder exists
 /// or if the review has already been completed.
 ///
-/// The placeholder is identified by:
-/// - Contains "Review in progress by" (from the reviewer template)
-/// - Does NOT contain "<!-- midtown:" (not yet updated with final review)
+/// The placeholder is identified by structured frontmatter `type:review-placeholder`.
 pub(super) fn pr_in_progress_placeholder_comment_id(pr_number: u64) -> Option<u64> {
     let output = std::process::Command::new("gh")
         .args(["pr", "view", &pr_number.to_string(), "--json", "comments"])
@@ -3177,21 +3177,19 @@ pub(super) fn pr_in_progress_placeholder_comment_id(pr_number: u64) -> Option<u6
 fn extract_placeholder_comment_id(json: &serde_json::Value) -> Option<u64> {
     let comments = json.get("comments")?.as_array()?;
 
-    // Find the last placeholder comment: contains "Review in progress by"
-    // but NOT the midtown frontmatter (which marks the review as completed)
+    // Find the last placeholder comment via structured frontmatter
     for comment in comments.iter().rev() {
         let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
-        if body.contains("Review in progress by") && !body.contains("<!-- midtown:") {
-            // Extract numeric ID from URL like:
-            // https://github.com/owner/repo/pull/123#issuecomment-456789
-            if let Some(id) = comment
+        let is_placeholder =
+            crate::daemon::helpers::parse_frontmatter(body).is_some_and(|fm| fm.is_placeholder());
+        if is_placeholder
+            && let Some(id) = comment
                 .get("url")
                 .and_then(|u| u.as_str())
                 .and_then(|url| url.split("issuecomment-").nth(1))
                 .and_then(|id_str| id_str.parse::<u64>().ok())
-            {
-                return Some(id);
-            }
+        {
+            return Some(id);
         }
     }
     None

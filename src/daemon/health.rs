@@ -1083,14 +1083,19 @@ fn build_reviewer_respawn_effects(
             snap.repo_owner.as_deref().unwrap_or("unknown"),
             snap.project_name
         );
+        let task_id = snap.pr.pr_task_associations.get(&pr_number);
+        let frontmatter = match task_id {
+            Some(tid) => format!("<!-- midtown task:{tid} type:review-status -->"),
+            None => "<!-- midtown type:review-status -->".to_string(),
+        };
         let abandoned_body = format!(
-            "<!-- midtown: midtown -->\n\n\
+            "{frontmatter}\n\n\
              ## Review Status\n\n\
-             ⚠️ Previous reviewer `{}` {} \
+             ⚠️ Previous reviewer {} \
              (attempt {}/{}).\n\
              A replacement reviewer has been assigned.\n\n\
              🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-            name, abandoned_reason, new_restart_count, MAX_REVIEWER_RESTARTS
+            abandoned_reason, new_restart_count, MAX_REVIEWER_RESTARTS
         );
         effects.push(Effect::UpdatePrComment {
             comment_id,

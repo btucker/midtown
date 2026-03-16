@@ -2200,11 +2200,11 @@ fn dispatch_unowned_pending_tasks(
                     pr_number,
                     reviewer_name: coworker_name.clone(),
                     body: format!(
-                        "<!-- midtown-placeholder -->\n## Review Status\n\n\
-                             🔍 Review in progress by {}...\n\n---\n\
+                        "{}\n## Review Status\n\n\
+                             🔍 Review in progress...\n\n---\n\
                              > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
                              🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                        coworker_name
+                        crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
                     ),
                 },
             ];

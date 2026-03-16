@@ -1556,7 +1556,7 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
     let effects = vec![Effect::PostPrComment {
         pr_number,
         reviewer_name: "park".to_string(),
-        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by park..."
+        body: "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress by park..."
             .to_string(),
     }];
     execute_effects(effects, &state).await;
@@ -1629,7 +1629,8 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     let effects = vec![Effect::PostPrComment {
         pr_number,
         reviewer_name: "madison".to_string(),
-        body: "<!-- midtown-placeholder -->\nReview in progress...".to_string(),
+        body: "<!-- midtown task:100 type:review-placeholder -->\nReview in progress..."
+            .to_string(),
     }];
     execute_effects(effects, &state).await;
 
@@ -1716,7 +1717,7 @@ fi
     let effects = vec![Effect::PostPrComment {
         pr_number,
         reviewer_name: "riverside".to_string(),
-        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside..."
+        body: "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside..."
             .to_string(),
     }];
     execute_effects(effects, &state).await;
@@ -1804,7 +1805,7 @@ echo "$@" >> "{log}"
 if echo "$@" | grep -q "repo view"; then
   echo 'test/repo'
 elif echo "$@" | grep -q "pr view.*--json comments"; then
-  echo '{{"comments": [{{"body": "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by pleasant...", "url": "https://github.com/test/repo/pull/88#issuecomment-{existing_comment_id}"}}]}}'
+  echo '{{"comments": [{{"body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress by pleasant...", "url": "https://github.com/test/repo/pull/88#issuecomment-{existing_comment_id}"}}]}}'
 elif echo "$@" | grep -q "PATCH"; then
   echo '{{"id": {existing_comment_id}}}'
 elif echo "$@" | grep -q "pr comment"; then
@@ -1830,7 +1831,7 @@ fi
         pr_number,
         reviewer_name: "madison".to_string(),
         body:
-            "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by madison..."
+            "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress by madison..."
                 .to_string(),
     }];
     execute_effects(effects, &state).await;
@@ -3319,7 +3320,7 @@ fi
     let effects = vec![Effect::PostPrComment {
         pr_number,
         reviewer_name: "lexington".to_string(),
-        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by lexington..."
+        body: "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress by lexington..."
             .to_string(),
     }];
     execute_effects(effects, &state).await;

@@ -394,8 +394,19 @@ fn parse_merged_prs(
         .unwrap_or_default()
 }
 
-/// Extract coworker name from PR body frontmatter (<!-- midtown: name -->).
+/// Extract coworker identity from PR body frontmatter.
+///
+/// Handles both formats:
+/// - New: `<!-- midtown session:{id} ... -->` — returns the session ID
+/// - Legacy: `<!-- midtown: name -->` — returns the coworker name
 fn extract_coworker_from_pr_body(body: &str) -> Option<String> {
+    // Try new structured frontmatter first
+    if let Some(fm) = super::helpers::parse_frontmatter(body)
+        && let Some(session_id) = fm.session_id
+    {
+        return Some(session_id);
+    }
+    // Fall back to legacy format
     let marker = "midtown:";
     let marker_pos = body.find(marker)?;
     let before = &body[..marker_pos];
@@ -405,6 +416,13 @@ fn extract_coworker_from_pr_body(body: &str) -> Option<String> {
     let after_marker = &body[marker_pos + marker.len()..];
     let end = after_marker.find("-->")?;
     let name = after_marker[..end].trim();
+    // Skip structured frontmatter tokens
+    if name
+        .split_whitespace()
+        .any(|t| t.starts_with("session:") || t.starts_with("task:") || t.starts_with("type:"))
+    {
+        return None;
+    }
     if name.is_empty() {
         None
     } else {
@@ -412,19 +430,33 @@ fn extract_coworker_from_pr_body(body: &str) -> Option<String> {
     }
 }
 
-/// Extract reviewer name and timestamp from PR comments.
+/// Extract reviewer identity and timestamp from PR comments.
+///
+/// Returns a session ID (new format) or coworker name (legacy) for the reviewer.
 fn extract_reviewer_from_pr_comments(
     comments: &[serde_json::Value],
 ) -> (Option<String>, Option<String>) {
     for comment in comments {
         let body = comment.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Check new structured frontmatter first
+        if let Some(fm) = super::helpers::parse_frontmatter(body)
+            && fm.is_review()
+            && let Some(id) = fm.session_id.or(fm.task_id)
+        {
+            let created_at = comment
+                .get("createdAt")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            return (Some(id), created_at);
+        }
+
+        // Legacy: look for "Code Review" content
         if !body.contains("Code Review") && !body.contains("Code review") {
             continue;
         }
 
-        // Try frontmatter first
         let reviewer = extract_coworker_from_pr_body(body).or_else(|| {
-            // Fall back to "Code Review by {name}" header
             for line in body.lines() {
                 let trimmed = line.trim().trim_start_matches('#').trim();
                 if let Some(rest) = trimmed
@@ -1026,14 +1058,20 @@ pub(super) async fn handle_pr_review_post(
 ) -> Response {
     info!("Review post requested for PR #{}", pr_number);
 
-    // Step 1: Look up the reviewer name and placeholder comment ID via spans
-    let (reviewer_name, placeholder_comment_id) = {
+    // Step 1: Look up the reviewer assignment via spans (session ID, task ID, name, placeholder)
+    let (reviewer_session_id, reviewer_task_id, reviewer_name, placeholder_comment_id) = {
         let ps = state.persistent_state.lock().await;
         match ps.active_reviewer_for_pr(pr_number) {
             Some(span) => {
+                let session_id = if span.session_id.is_empty() {
+                    None
+                } else {
+                    Some(span.session_id.clone())
+                };
+                let task_id = Some(span.task_id.clone());
                 let name = span.agent_name.clone();
                 let comment_id = ps.task_placeholder_comment_id.get(&span.task_id).copied();
-                (name, comment_id)
+                (session_id, task_id, name, comment_id)
             }
             None => {
                 return Response::error(
@@ -1078,9 +1116,28 @@ pub(super) async fn handle_pr_review_post(
     };
 
     // Step 3: Construct the final body with frontmatter and footer
+    //
+    // When session ID is missing (e.g., backfill hasn't run yet), fall back to
+    // including the reviewer name so review author matching can still attribute it.
+    let frontmatter = match (&reviewer_session_id, &reviewer_task_id) {
+        (Some(sid), Some(tid)) => super::helpers::format_review_frontmatter(sid, tid),
+        (Some(sid), None) => {
+            format!("<!-- midtown session:{sid} type:review -->")
+        }
+        (None, Some(tid)) => {
+            // No session ID — include reviewer name as legacy fallback for attribution
+            format!(
+                "<!-- midtown task:{tid} type:review -->\n<!-- midtown: {} -->",
+                reviewer_name
+            )
+        }
+        (None, None) => {
+            // No session or task ID — use legacy name-only frontmatter
+            format!("<!-- midtown: {} -->", reviewer_name)
+        }
+    };
     let final_body = format!(
-        "<!-- midtown: {} -->\n\n{}\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-        reviewer_name, body
+        "{frontmatter}\n\n{body}\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
     );
 
     // Step 4: Execute UpdatePrComment effect
