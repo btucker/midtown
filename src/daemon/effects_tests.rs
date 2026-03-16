@@ -3262,33 +3262,6 @@ fn link_pr_to_session_backfills_branch_on_session_record() {
     );
 }
 
-#[test]
-fn store_pr_author_session_does_not_overwrite_existing_branch() {
-    let mut ps = crate::daemon::state::DaemonPersistentState::default();
-    let session = crate::daemon::state::SessionRecord {
-        session_id: "session-abc".to_string(),
-        task_id: Some("42".to_string()),
-        branch: Some("existing-branch".to_string()), // Already has a branch
-        ..Default::default()
-    };
-    ps.sessions.insert("session-abc".to_string(), session);
-
-    // Simulate backfill — should NOT overwrite
-    let branch = "feature-branch".to_string();
-    let session_id = "session-abc";
-    if let Some(record) = ps.sessions.get_mut(session_id)
-        && record.branch.is_none()
-    {
-        record.branch = Some(branch.clone());
-    }
-
-    // Should keep the original branch
-    assert_eq!(
-        ps.sessions.get("session-abc").unwrap().branch,
-        Some("existing-branch".to_string())
-    );
-}
-
 // ============================================================================
 // lookup_existing_placeholder — task_reviewer_metadata tier-1 path
 // ============================================================================
