@@ -42,7 +42,6 @@ use constants::*;
 pub use constants::{
     DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
-    PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS,
 };
 pub use state::DaemonPersistentState;
 pub use trackers::{

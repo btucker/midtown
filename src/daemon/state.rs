@@ -49,23 +49,6 @@ impl GcResult {
     }
 }
 
-/// Reviewer metadata for a review task, persisted in `DaemonPersistentState`.
-///
-/// Keyed by review task ID in `task_reviewer_metadata`. Consolidates the
-/// per-reviewer fields that were previously spread across multiple HashMaps
-/// (`task_placeholder_comment_id`, `task_restart_count`) and `GitHubState`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskReviewerMetadata {
-    /// PR number being reviewed.
-    pub pr_number: u64,
-    /// GitHub comment ID for the "Review in progress..." placeholder, if posted.
-    pub placeholder_comment_id: Option<u64>,
-    /// Number of times the reviewer session has been restarted (for backoff).
-    pub restart_count: u32,
-    /// Claude Code session ID of the active reviewer session, if any.
-    pub reviewer_session_id: Option<String>,
-}
-
 /// A temporal record of a session working on a task.
 ///
 /// Tracks the time span during which a specific session was assigned to a task.
@@ -289,11 +272,6 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_restart_count: HashMap<String, u32>,
 
-    /// Reviewer metadata keyed by review task ID.
-    /// Follows the same pattern as task_channel, task_model, task_parent.
-    #[serde(default)]
-    pub task_reviewer_metadata: HashMap<String, TaskReviewerMetadata>,
-
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -405,8 +383,7 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
-                    state.github.pr_reviewers.len(),
+                    "Loaded daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
                     state.worktree_registry.len(),
@@ -444,8 +421,7 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} PR reviewers, {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
-            self.github.pr_reviewers.len(),
+            "Saved daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
             self.worktree_registry.len(),
@@ -496,7 +472,6 @@ impl DaemonPersistentState {
             self.task_agent_type.remove(task_id);
             self.task_placeholder_comment_id.remove(task_id);
             self.task_restart_count.remove(task_id);
-            self.task_reviewer_metadata.remove(task_id);
             self.task_pr_number.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
@@ -676,7 +651,6 @@ impl DaemonPersistentState {
             task_agent_type: HashMap::new(),
             task_placeholder_comment_id: HashMap::new(),
             task_restart_count: HashMap::new(),
-            task_reviewer_metadata: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
@@ -735,7 +709,8 @@ impl DaemonPersistentState {
     ///
     /// Returns true if an assignment was cleared, false if the coworker had no assignment.
     /// This helper is used by both RPC handlers (coworker.break) and Effect handlers
-    /// (ClearOrphanedReviewerAssignments) to avoid duplicating the cleanup logic.
+    /// Used by both RPC handlers (coworker.break) and Effect handlers to avoid
+    /// duplicating the cleanup logic.
     pub fn clear_reviewer_assignment(&mut self, reviewer_name: &str, repo: &str) -> bool {
         // Find active reviewer spans for this agent name and close them.
         let task_ids: Vec<String> = self
@@ -850,28 +825,6 @@ pub fn pr_to_task_map_from_sessions(
             Some((pr, task.clone()))
         })
         .collect()
-}
-
-/// Find `TaskReviewerMetadata` by PR number.
-///
-/// Since `task_reviewer_metadata` is keyed by task ID, this performs a linear
-/// scan to find the entry matching the given PR number. When multiple entries
-/// exist for the same PR (e.g., completed review task + new review task),
-/// returns the one with the highest task ID (most recent) to avoid reading
-/// stale `restart_count` or `placeholder_comment_id` from a prior review cycle.
-///
-/// Note: Production code now uses spans instead of task_reviewer_metadata.
-/// This function is retained for legacy tests only.
-#[cfg(test)]
-pub fn task_reviewer_metadata_for_pr(
-    ps: &DaemonPersistentState,
-    pr_number: u64,
-) -> Option<&TaskReviewerMetadata> {
-    ps.task_reviewer_metadata
-        .iter()
-        .filter(|(_, m)| m.pr_number == pr_number)
-        .max_by_key(|(task_id, _)| task_id.parse::<u64>().unwrap_or(0))
-        .map(|(_, m)| m)
 }
 
 /// Derive a `task_id → pr_number` map from session records.
