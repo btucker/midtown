@@ -40,16 +40,17 @@ const DEFAULT_OPS_CHANNEL_LEAD_PROMPT: &str = include_str!("../agents/ops-channe
 // ── Layer 1 agent definition files (Claude Code agent format with YAML frontmatter) ──
 
 /// Code author agent definition — role identity for coworkers that implement features.
-const AGENT_DEF_CODE_AUTHOR: &str = include_str!("../.claude/agents/midtown-code-author.md");
+const AGENT_DEF_CODE_AUTHOR: &str = include_str!("../agents/definitions/midtown-code-author.md");
 
 /// Code reviewer agent definition — role identity for PR reviewers.
-const AGENT_DEF_CODE_REVIEWER: &str = include_str!("../.claude/agents/midtown-code-reviewer.md");
+const AGENT_DEF_CODE_REVIEWER: &str =
+    include_str!("../agents/definitions/midtown-code-reviewer.md");
 
 /// Project lead agent definition — role identity for the human-facing lead.
-const AGENT_DEF_PROJECT_LEAD: &str = include_str!("../.claude/agents/midtown-project-lead.md");
+const AGENT_DEF_PROJECT_LEAD: &str = include_str!("../agents/definitions/midtown-project-lead.md");
 
 /// Channel lead agent definition — role identity for domain-specific channel leads.
-const AGENT_DEF_CHANNEL_LEAD: &str = include_str!("../.claude/agents/midtown-channel-lead.md");
+const AGENT_DEF_CHANNEL_LEAD: &str = include_str!("../agents/definitions/midtown-channel-lead.md");
 
 // ── Three-layer architecture ─────────────────────────────────────
 

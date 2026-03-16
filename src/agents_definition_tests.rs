@@ -6,19 +6,19 @@ use crate::agent_definition::parse_agent_content;
 const DEFINITIONS: &[(&str, &str)] = &[
     (
         "midtown-code-author",
-        include_str!("../.claude/agents/midtown-code-author.md"),
+        include_str!("../agents/definitions/midtown-code-author.md"),
     ),
     (
         "midtown-code-reviewer",
-        include_str!("../.claude/agents/midtown-code-reviewer.md"),
+        include_str!("../agents/definitions/midtown-code-reviewer.md"),
     ),
     (
         "midtown-project-lead",
-        include_str!("../.claude/agents/midtown-project-lead.md"),
+        include_str!("../agents/definitions/midtown-project-lead.md"),
     ),
     (
         "midtown-channel-lead",
-        include_str!("../.claude/agents/midtown-channel-lead.md"),
+        include_str!("../agents/definitions/midtown-channel-lead.md"),
     ),
 ];
 
@@ -106,7 +106,7 @@ fn all_definitions_have_substantive_content() {
 
 #[test]
 fn code_author_contains_role_keywords() {
-    let content = include_str!("../.claude/agents/midtown-code-author.md");
+    let content = include_str!("../agents/definitions/midtown-code-author.md");
     let path = Path::new("midtown-code-author.md");
     let def = parse_agent_content(content, path).unwrap();
 
@@ -122,7 +122,7 @@ fn code_author_contains_role_keywords() {
 
 #[test]
 fn code_reviewer_contains_role_keywords() {
-    let content = include_str!("../.claude/agents/midtown-code-reviewer.md");
+    let content = include_str!("../agents/definitions/midtown-code-reviewer.md");
     let path = Path::new("midtown-code-reviewer.md");
     let def = parse_agent_content(content, path).unwrap();
 
@@ -138,7 +138,7 @@ fn code_reviewer_contains_role_keywords() {
 
 #[test]
 fn project_lead_contains_role_keywords() {
-    let content = include_str!("../.claude/agents/midtown-project-lead.md");
+    let content = include_str!("../agents/definitions/midtown-project-lead.md");
     let path = Path::new("midtown-project-lead.md");
     let def = parse_agent_content(content, path).unwrap();
 
@@ -154,7 +154,7 @@ fn project_lead_contains_role_keywords() {
 
 #[test]
 fn channel_lead_contains_role_keywords() {
-    let content = include_str!("../.claude/agents/midtown-channel-lead.md");
+    let content = include_str!("../agents/definitions/midtown-channel-lead.md");
     let path = Path::new("midtown-channel-lead.md");
     let def = parse_agent_content(content, path).unwrap();
 

@@ -795,6 +795,7 @@ async fn decide_and_build_pr_issue_effects(
         review_content.unwrap_or("")
     );
 
+    // Extract all decision context from persistent state in one lock
     let (mut pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
         (
@@ -803,8 +804,10 @@ async fn decide_and_build_pr_issue_effects(
         )
     };
 
+    // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
     pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
+    // Decide action using handoff-aware decision function (matches webhook path)
     let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
     let action = decide_pr_action(
         owner,
@@ -828,8 +831,8 @@ async fn decide_and_build_pr_issue_effects(
         action_name,
         effects: &new_effects,
         ctx: &pr_ctx,
-        owner_is_active: active_coworkers.contains(&owner.to_string()),
-        owner_is_idle: idle_coworkers.contains(&owner.to_string()),
+        owner_is_active: active_coworkers.iter().any(|s| s == owner),
+        owner_is_idle: idle_coworkers.iter().any(|s| s == owner),
         at_dev_limit,
         source: "polling",
     });
