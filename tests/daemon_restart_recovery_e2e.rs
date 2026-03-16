@@ -1,7 +1,7 @@
 //! E2E tests for daemon restart recovery.
 //!
 //! These tests verify that DaemonPersistentState correctly preserves:
-//! 1. Reviewer assignments (github.pr_reviewers)
+//! 1. Task session spans (reviewer assignments)
 //! 2. Session records (sessions)
 //!
 //! The tests use actual daemon types to verify that state correctly round-trips
@@ -11,93 +11,10 @@
 //! Note: Task assignment restoration is tested separately in
 //! task_assignment_persistence_test.rs using a captured snapshot.
 
-use chrono::Utc;
 use midtown::daemon::{DaemonPersistentState, SessionRecord};
-use midtown::github_state::{AssignmentSource, GitHubState, PrReviewerAssignment};
 use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
-
-/// Test that reviewer assignments are preserved across daemon restarts.
-///
-/// Regression test for the bug captured in:
-/// - snapshot-review-spawn-lost-after-restart-20260216-235656.json
-/// - snapshot-review-spawn-lost-after-restart-20260217-001806.json
-/// - snapshot-review-spawn-lost-after-restart-20260217-003046.json
-///
-/// Reviewer assignments are stored in daemon-state.json (github.pr_reviewers)
-/// and must survive daemon restarts to prevent duplicate reviewer spawns.
-#[test]
-fn test_reviewer_assignments_preserved_after_restart() {
-    // Create temporary test environment
-    let temp_dir = TempDir::new().unwrap();
-    let state_dir = temp_dir.path();
-    fs::create_dir_all(state_dir).unwrap();
-
-    // Create DaemonPersistentState with reviewer assignments using actual types
-    let now = Utc::now();
-    let mut github_state = GitHubState::default();
-    github_state.pr_reviewers.insert(
-        42,
-        PrReviewerAssignment {
-            pr_number: 42,
-            reviewer: "park".to_string(),
-            reviewer_session_id: Some("session-park-456".to_string()),
-            assigned_at: now,
-            source: AssignmentSource::Webhook,
-            webhook_event_id: None,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        },
-    );
-    github_state.pr_reviewers.insert(
-        43,
-        PrReviewerAssignment {
-            pr_number: 43,
-            reviewer: "madison".to_string(),
-            reviewer_session_id: Some("session-madison-789".to_string()),
-            assigned_at: now,
-            source: AssignmentSource::PollingFallback,
-            webhook_event_id: None,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        },
-    );
-
-    let state = DaemonPersistentState {
-        github: github_state,
-        ..Default::default()
-    };
-
-    // Save state to disk
-    let state_file = state_dir.join("daemon-state.json");
-    fs::write(&state_file, serde_json::to_string_pretty(&state).unwrap()).unwrap();
-
-    // Simulate restart: load state from disk using actual types
-    let loaded_state_json = fs::read_to_string(&state_file).unwrap();
-    let loaded_state: DaemonPersistentState = serde_json::from_str(&loaded_state_json).unwrap();
-
-    // Verify reviewer assignments are preserved with type-safe access
-    assert_eq!(
-        loaded_state.github.pr_reviewers.len(),
-        2,
-        "Should preserve 2 reviewer assignments"
-    );
-    assert_eq!(
-        loaded_state.github.get_reviewer(42),
-        Some("park"),
-        "PR #42 reviewer should be park"
-    );
-    assert_eq!(
-        loaded_state.github.get_reviewer(43),
-        Some("madison"),
-        "PR #43 reviewer should be madison"
-    );
-
-    // Verify serde attributes are respected (restart_count defaults to 0)
-    let pr42_assignment = loaded_state.github.pr_reviewers.get(&42).unwrap();
-    assert_eq!(pr42_assignment.restart_count, 0);
-}
 
 /// Test that session records are preserved across daemon restarts.
 ///
@@ -185,7 +102,7 @@ fn test_sessions_preserved_after_restart() {
 /// Test that persistent state correctly deserializes and can be used to prevent duplicate spawns.
 ///
 /// After restart, the daemon should recognize:
-/// - Reviewers in pr_reviewers → no spawn needed
+/// - Active reviewer spans → no spawn needed
 /// - Sessions in sessions → resume, not spawn fresh
 ///
 /// This test verifies DaemonPersistentState correctly round-trips through disk
@@ -197,38 +114,16 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     let state_dir = temp_dir.path();
     fs::create_dir_all(state_dir).unwrap();
 
-    // Create DaemonPersistentState with reviewer assignments and session records
-    let now = Utc::now();
-    let mut github_state = GitHubState::default();
-    github_state.pr_reviewers.insert(
-        42,
-        PrReviewerAssignment {
-            pr_number: 42,
-            reviewer: "park".to_string(),
-            reviewer_session_id: Some("session-park-456".to_string()),
-            assigned_at: now,
-            source: AssignmentSource::Webhook,
-            webhook_event_id: None,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        },
-    );
-    github_state.pr_reviewers.insert(
-        43,
-        PrReviewerAssignment {
-            pr_number: 43,
-            reviewer: "madison".to_string(),
-            reviewer_session_id: Some("session-madison-789".to_string()),
-            assigned_at: now,
-            source: AssignmentSource::PollingFallback,
-            webhook_event_id: None,
-            restart_count: 0,
-            placeholder_comment_id: None,
-        },
-    );
+    // Create DaemonPersistentState with reviewer spans and session records
+    let mut state = DaemonPersistentState::default();
 
-    let mut sessions = HashMap::new();
-    sessions.insert(
+    // Create reviewer spans
+    state.create_span("review-42", "park", "reviewer", "session-park-456");
+    state.task_pr_number.insert("review-42".to_string(), 42);
+    state.create_span("review-43", "madison", "reviewer", "session-madison-789");
+    state.task_pr_number.insert("review-43".to_string(), 43);
+
+    state.sessions.insert(
         "session-amsterdam-123".to_string(),
         SessionRecord {
             session_id: "session-amsterdam-123".to_string(),
@@ -244,7 +139,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             ..Default::default()
         },
     );
-    sessions.insert(
+    state.sessions.insert(
         "session-park-456".to_string(),
         SessionRecord {
             session_id: "session-park-456".to_string(),
@@ -261,12 +156,23 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             ..Default::default()
         },
     );
-
-    let state = DaemonPersistentState {
-        github: github_state,
-        sessions,
-        ..Default::default()
-    };
+    state.sessions.insert(
+        "session-madison-789".to_string(),
+        SessionRecord {
+            session_id: "session-madison-789".to_string(),
+            current_name: Some("madison".to_string()),
+            preferred_name: Some("madison".to_string()),
+            coworker_type: "reviewer".to_string(),
+            is_reviewer: true,
+            pr_number: Some(43),
+            purpose: "reviewer for PR #43".to_string(),
+            pid: Some(12347),
+            profile: Some("test@example.com".to_string()),
+            resume_on_startup: true,
+            is_running: true,
+            ..Default::default()
+        },
+    );
 
     // Save state to disk
     let state_file = state_dir.join("daemon-state.json");
@@ -276,20 +182,21 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     let loaded_state_json = fs::read_to_string(&state_file).unwrap();
     let loaded_state: DaemonPersistentState = serde_json::from_str(&loaded_state_json).unwrap();
 
-    // Verify reviewer assignments are available for dispatch logic
-    assert_eq!(
-        loaded_state.github.pr_reviewers.len(),
-        2,
-        "Should have 2 reviewer assignments"
+    // Verify reviewer spans are available for dispatch logic
+    assert!(
+        loaded_state.pr_has_active_reviewer(42),
+        "PR #42 should have active reviewer span"
     );
-    assert_eq!(loaded_state.github.get_reviewer(42), Some("park"));
-    assert_eq!(loaded_state.github.get_reviewer(43), Some("madison"));
+    assert!(
+        loaded_state.pr_has_active_reviewer(43),
+        "PR #43 should have active reviewer span"
+    );
 
     // Verify session records are available for recovery
     assert_eq!(
         loaded_state.sessions.len(),
-        2,
-        "Should have 2 session records"
+        3,
+        "Should have 3 session records"
     );
 
     // Identify sessions marked for auto-resume
@@ -302,9 +209,10 @@ fn test_persistent_state_prevents_duplicate_spawns() {
 
     assert_eq!(
         recovering_names.len(),
-        2,
-        "Should identify 2 sessions to auto-resume"
+        3,
+        "Should identify 3 sessions to auto-resume"
     );
     assert!(recovering_names.contains(&"amsterdam".to_string()));
     assert!(recovering_names.contains(&"park".to_string()));
+    assert!(recovering_names.contains(&"madison".to_string()));
 }

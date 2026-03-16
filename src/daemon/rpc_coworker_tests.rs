@@ -920,14 +920,11 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
         });
     assert!(inserted, "reviewer coworker should be inserted");
 
-    // Assign the reviewer to a PR in persistent state
+    // Create a reviewer span and mark review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.assign_reviewer(
-            pr_number,
-            reviewer_name,
-            crate::github_state::AssignmentSource::Webhook,
-        );
+        ps.create_span("review-42", reviewer_name, "reviewer", "sess-rev-42");
+        ps.task_pr_number.insert("review-42".to_string(), pr_number);
         // Mark the review as completed (simulates webhook having arrived)
         ps.github.mark_reviewed_pr(pr_number);
     }

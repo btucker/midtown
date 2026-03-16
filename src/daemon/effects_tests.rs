@@ -1648,7 +1648,7 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
 }
 
 /// Verify that when a placeholder comment ID is already stored on the
-/// `PrReviewerAssignment` (from a previous reviewer cycle), `post_pr_comment`
+/// task metadata (from a previous reviewer cycle), `post_pr_comment`
 /// edits the existing comment (PATCH) instead of creating a new one.
 ///
 /// Uses the 3-tier lookup: tier 1 (persistent state) returns the stored ID,

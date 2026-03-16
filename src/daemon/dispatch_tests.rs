@@ -5591,13 +5591,13 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
             on_success
         );
 
-        // Should include AssignReviewer for backward compat
-        let has_assign_reviewer = on_success
+        // Should include CreateTaskSessionSpan for reviewer
+        let has_create_span = on_success
             .iter()
-            .any(|e| matches!(e, Effect::AssignReviewer { pr_number: 42, .. }));
+            .any(|e| matches!(e, Effect::CreateTaskSessionSpan { pr_number: Some(42), agent_type, .. } if agent_type == "reviewer"));
         assert!(
-            has_assign_reviewer,
-            "Reviewer dispatch should include AssignReviewer. on_success: {:#?}",
+            has_create_span,
+            "Reviewer dispatch should include CreateTaskSessionSpan. on_success: {:#?}",
             on_success
         );
     }
@@ -5794,11 +5794,10 @@ fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
     );
 }
 
-/// AssignReviewer must appear before PostPrComment in the on_success callback
-/// list so that post_pr_comment() can store the placeholder_comment_id in the
-/// pr_reviewers entry that AssignReviewer creates.
+/// CreateTaskSessionSpan must appear before PostPrComment in the on_success callback
+/// list so that the span exists when post_pr_comment() stores the placeholder_comment_id.
 #[test]
-fn test_reviewer_assign_reviewer_before_post_pr_comment() {
+fn test_reviewer_create_span_before_post_pr_comment() {
     use crate::tasks::{Task, TaskStatus};
 
     let review_task = Task {
@@ -5844,21 +5843,21 @@ fn test_reviewer_assign_reviewer_before_post_pr_comment() {
         })
         .expect("Reviewer task should produce AssignAndSpawn");
 
-    let assign_pos = on_success
+    let span_pos = on_success
         .iter()
-        .position(|e| matches!(e, Effect::AssignReviewer { .. }))
-        .expect("on_success should contain AssignReviewer");
+        .position(|e| matches!(e, Effect::CreateTaskSessionSpan { agent_type, .. } if agent_type == "reviewer"))
+        .expect("on_success should contain CreateTaskSessionSpan");
     let post_pos = on_success
         .iter()
         .position(|e| matches!(e, Effect::PostPrComment { .. }))
         .expect("on_success should contain PostPrComment");
 
     assert!(
-        assign_pos < post_pos,
-        "AssignReviewer (pos {}) must come before PostPrComment (pos {}) \
-         so that pr_reviewers entry exists when placeholder_comment_id is stored. \
+        span_pos < post_pos,
+        "CreateTaskSessionSpan (pos {}) must come before PostPrComment (pos {}) \
+         so that the span exists when placeholder_comment_id is stored. \
          on_success: {:#?}",
-        assign_pos,
+        span_pos,
         post_pos,
         on_success
     );

@@ -124,7 +124,7 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
         &active_names,
         &state,
         &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
+        true, // is_polling_fallback
         &std::collections::HashMap::new(),
     )
     .await;
