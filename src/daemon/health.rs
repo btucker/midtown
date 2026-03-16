@@ -1175,6 +1175,7 @@ fn build_reviewer_respawn_effects(
             agent_type: "reviewer".to_string(),
             session_id: String::new(),
             pr_number: Some(pr_number),
+            restart_count: new_restart_count,
         },
     ];
 
