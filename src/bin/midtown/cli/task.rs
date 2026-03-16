@@ -71,6 +71,9 @@ pub enum TaskCommand {
         /// Set explicit PR number associated with this task
         #[arg(long)]
         pr: Option<u64>,
+        /// Path to an implementation plan file (recommended: ~/.midtown/projects/<project>/plans/)
+        #[arg(long)]
+        plan: Option<String>,
     },
     /// Mark a task as done
     Done {
@@ -168,6 +171,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             channel,
             model,
             pr,
+            plan,
         } => client.task_update(
             id,
             owner.as_deref(),
@@ -177,6 +181,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             channel.as_deref(),
             model.as_deref(),
             *pr,
+            plan.as_deref(),
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),
