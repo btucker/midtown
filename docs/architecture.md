@@ -440,9 +440,9 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 
 When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate and three gates before enabling auto-merge:
 
-**Pre-gate — Reviewer active**: Checks `get_reviewer(pr_number)` for raw assignment presence in `pr_reviewers`. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Uses non-expiring assignment presence (not the 600s timeout from `is_assigned()`), so long-running reviews are never bypassed. The assignment is only removed when the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
+**Pre-gate — Reviewer active**: Checks `pr_has_active_reviewer(pr_number)` which queries `task_session_spans` for an open span whose task maps to this PR. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Long-running reviews are never bypassed because the span remains open until the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
 
-1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set. A PR is only marked as reviewed when the **assigned reviewer** posts the review — bot comments, unrelated coworkers, and other noise are filtered out via `review_author_matches()` (body-based identity extraction from `<!-- midtown: name -->` frontmatter or review signatures). Formal reviews with strong states (APPROVED / CHANGES_REQUESTED) are accepted even with empty bodies since these are deliberate human actions. The `WebhookEvent.review_author` field carries the extracted identity for the webhook path; the polling path passes `assigned_reviewer` from `pr_reviewers` to `pr_has_completed_review_uncached()`. When no reviewer is assigned, any valid review is accepted (backward-compatible).
+1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set. A PR is only marked as reviewed when the **assigned reviewer** posts the review — bot comments, unrelated coworkers, and other noise are filtered out via `review_author_matches()` (body-based identity extraction from `<!-- midtown: name -->` frontmatter or review signatures). Formal reviews with strong states (APPROVED / CHANGES_REQUESTED) are accepted even with empty bodies since these are deliberate human actions. The `WebhookEvent.review_author` field carries the extracted identity for the webhook path; the polling path calls `active_reviewer_for_pr(pr_number)` on `DaemonPersistentState` to find the current reviewer from open `task_session_spans`. When no reviewer is assigned, any valid review is accepted (backward-compatible).
 
 2. **Gate 2 — CI passing**: Checks `statusCheckRollup` from `gh pr view` and also verifies `reviewDecision != "CHANGES_REQUESTED"`. The PR must be in `OPEN` state (merged/closed PRs are rejected before gate checks).
 
@@ -458,7 +458,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Proactive auto-merge** (`Effect::AutoMergePr`): The stuck-PR polling path in `pr.rs` emits `AutoMergePr` when `is_auto_mergeable()` returns true (approved + CI green + no conflicts + all checks complete) AND no active daemon-assigned reviewer. This proactively enables GitHub's auto-merge queue for merge-ready PRs without requiring a coworker to call `midtown pr merge`. Uses `StuckConditionType::AutoMerge` for deduplication (independent of the `MergeReady` nudge, which fires after a delay as a fallback). Both `MergePr` and `AutoMergePr` call the same `auto_merge_pr()` function.
 
-**Pre-gate — Reviewer active**: Before the three gates, the RPC handler checks `get_reviewer(pr_number)`. If a reviewer coworker is still assigned, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
+**Pre-gate — Reviewer active**: Before the three gates, the RPC handler calls `pr_has_active_reviewer(pr_number)` on `DaemonPersistentState`. If an open `TaskSessionSpan` for a reviewer session maps to this PR, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
 
 **Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the reviewer check in `action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), both the workflow event AND inline effects are suppressed — no nudge is sent and no cooldown is recorded. The `Approved` nudge cooldown (if any prior one existed) is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
 
@@ -985,6 +985,40 @@ Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task
 - **Reviewer follow-up resume** (`pr.rs`, `handle_pr_comment_activity`): From `pr_to_task_map()`
 - **Daemon recovery** (`dispatch.rs`): From the recovery task ID
 
+## TaskSessionSpan — Temporal Session Tracking
+
+`TaskSessionSpan` is the single source of truth for which session is actively working on a task. It replaces the former `pr_reviewers` / `task_reviewer_metadata` dual model.
+
+**Structure** (defined in `src/daemon/state.rs`):
+
+```
+TaskSessionSpan {
+    task_id:    String,              // task this span belongs to
+    agent_name: String,              // coworker name at spawn time
+    agent_type: String,              // "dev", "reviewer", or "channel-lead"
+    session_id: String,              // Claude Code session ID
+    start_time: DateTime<Utc>,
+    end_time:   Option<DateTime<Utc>>,  // None = still active
+}
+```
+
+**Storage**: `task_session_spans: Vec<TaskSessionSpan>` on `DaemonPersistentState`. Open spans (`end_time = None`) represent active assignments; closed spans are retained for history and pruned when the list exceeds 500 entries or spans are older than `worktree_cleanup_retention_hours`.
+
+**Query helpers** on `DaemonPersistentState`:
+- `active_span_for_task(task_id)` — returns the open span for a task, if any
+- `active_reviewer_for_pr(pr_number)` — finds an open reviewer span whose task maps to this PR via `task_pr_number`
+- `pr_has_active_reviewer(pr_number)` — boolean wrapper around `active_reviewer_for_pr`
+- `active_reviewer_spans()` — all open reviewer spans (used for health monitoring)
+
+**Reviewer-specific per-task metadata** lives in separate maps on `DaemonPersistentState` (keyed by task ID, not PR number):
+- `task_placeholder_comment_id: HashMap<String, u64>` — GitHub comment ID of the "Review in progress" placeholder
+- `task_restart_count: HashMap<String, u32>` — how many times the reviewer was restarted for this task
+- `task_pr_number: HashMap<String, u64>` — maps task ID to PR number (set at task creation, used by `active_reviewer_for_pr`)
+
+**Effects**:
+- `Effect::CreateTaskSessionSpan { task_id, agent_name, agent_type, session_id }` — opens a new span
+- `Effect::CloseTaskSessionSpan { task_id, session_id }` — sets `end_time` on the matching open span
+
 ## Reviewer Health and Stuck Detection
 
 Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).
@@ -997,12 +1031,12 @@ Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon
 
 The daemon owns the full lifecycle of placeholder comments — both posting and updating. This avoids prompt-compliance issues (e.g., some Claude models escape `!` characters, producing `<\!--` which breaks tag matching).
 
-**Posting**: When a reviewer spawns, `collect_reviewer_effects_with_source()` chains an `Effect::PostPrComment` in the `on_success` callback of `SpawnCoworkerWithCallbacks`. The effect first checks for an existing placeholder via `lookup_existing_placeholder()` (which reuses the same 3-tier resolution described below). If found, it edits the existing comment via `gh api --method PATCH`; otherwise, it creates a new comment via `gh pr comment` and parses the comment ID from the stdout URL. Either way, the comment ID is stored on `PrReviewerAssignment.placeholder_comment_id` and cached in `reviewer_placeholder_cache`.
+**Posting**: When a reviewer spawns, `collect_reviewer_effects_with_source()` chains an `Effect::PostPrComment` in the `on_success` callback of `SpawnCoworkerWithCallbacks`. The effect first checks for an existing placeholder via `lookup_existing_placeholder()` (which reuses the same 3-tier resolution described below). If found, it edits the existing comment via `gh api --method PATCH`; otherwise, it creates a new comment via `gh pr comment` and parses the comment ID from the stdout URL. Either way, the comment ID is stored in `task_placeholder_comment_id` (keyed by task ID) on `DaemonPersistentState` and cached in `reviewer_placeholder_cache`.
 
 **Updating with review findings**: The reviewer agent calls `midtown pr review post --pr <N> --body-file <path>` when its review is complete. The `pr.review-post` RPC handler wraps the body with `<!-- midtown: <name> -->` frontmatter and the Midtown footer, then patches the comment via `gh api --method PATCH`. Errors are surfaced to the caller so the reviewer agent can retry.
 
 **Three-tier placeholder ID resolution**: When the daemon needs a placeholder comment ID (for snapshot collection or review posting), it checks in order:
-1. `PrReviewerAssignment.placeholder_comment_id` (stored when the daemon posted it)
+1. `task_placeholder_comment_id[task_id]` on `DaemonPersistentState` (stored when the daemon posted it)
 2. `reviewer_placeholder_cache` (TTL: 120s, populated by prior lookups)
 3. `pr_in_progress_placeholder_comment_id()` API call (fallback for comments posted before this feature)
 
@@ -1012,7 +1046,7 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 
 **WorldSnapshot fields** (reviewer fields are in the `reviewer: SnapshotReviewerState` sub-struct):
 - `reviewer.reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
-- `reviewer.reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR.
+- `reviewer.reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR. Derived from `task_restart_count` (keyed by task ID) via `task_pr_number` during snapshot collection.
 - `reviewer.reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
 - `recently_recovered_session_ids: HashSet<String>` — (top-level) Session IDs for which a recovery was recently attempted and succeeded. Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed by session ID) so decision functions stay pure. Used by both `dispatch_via_sessions` (Path 1) and `spawn_for_pending_tasks` (Path 2) to skip re-recovery when a session dies quickly after being recovered, preventing log spam on every 5s tick.
 - `pr_protected_tasks: HashSet<String>` — (top-level) Task IDs that should not be spawned or recovered due to PR status or task completion. Pre-computed from `all_tasks` during `collect_world_snapshot()` via `is_task_pr_protected()`. Checks (in order): (1) task completed → always protected; (2) merged PR (via `tasks_with_open_prs` or `task.pr` in merged cache) → always protected regardless of session state (prevents recovery-loops); (3) owner not in `active_names` → not protected by open PRs (allows dispatch of pending tasks or tasks whose owner went away); (4) task has an open PR (via `tasks_with_open_prs`); (5) GitHub PR title pattern match (via `github_open_pr_task_ids`). Dispatch functions use `snap.pr_protected_tasks.contains()` instead of per-call-site guard functions.
@@ -1021,7 +1055,7 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 - `reviewer_placeholder_cache: Mutex<HashMap<u64, (Option<u64>, Instant)>>` — Cache for `pr_in_progress_placeholder_comment_id()` lookups. Maps PR number to `(comment_id_or_none, checked_at)`. Both positive and negative entries expire after `PLACEHOLDER_CACHE_TTL_SECS` (120s). Cleared when `mark_reviewed_pr()` is called to ensure freshness after a review is posted.
 
 **Effects:**
-- `Effect::PostPrComment { pr_number, reviewer_name, body }` — Posts or reuses a placeholder comment on a PR. Uses `lookup_existing_placeholder()` (3-tier resolution) to check for an existing placeholder; if found, edits it via `gh api --method PATCH`, otherwise creates a new one via `gh pr comment`. Stores the comment ID on `PrReviewerAssignment.placeholder_comment_id`. Chained as an `on_success` callback when spawning a reviewer.
+- `Effect::PostPrComment { pr_number, reviewer_name, body }` — Posts or reuses a placeholder comment on a PR. Uses `lookup_existing_placeholder()` (3-tier resolution) to check for an existing placeholder; if found, edits it via `gh api --method PATCH`, otherwise creates a new one via `gh pr comment`. Stores the comment ID in `task_placeholder_comment_id` on `DaemonPersistentState`. Chained as an `on_success` callback when spawning a reviewer.
 - `Effect::UpdatePrComment { comment_id, repo_full_name, new_body }` — Patches an existing GitHub issue comment via `gh api --method PATCH`. Used to update stale "Review in progress" placeholder comments when a reviewer is restarted due to being stuck or dead, and by `pr.review-post` to replace the placeholder with final review findings.
 
 ## Reminders
