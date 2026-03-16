@@ -2186,16 +2186,14 @@ fn dispatch_unowned_pending_tasks(
                     message: format!("─── Reviewing PR #{} ───", pr_number),
                     channel: Some(format!("dm-{}", coworker_name)),
                 },
-                // AssignReviewer must come before PostPrComment so the
-                // pr_reviewers entry exists when post_pr_comment() stores
-                // the placeholder_comment_id.
-                effects::Effect::AssignReviewer {
-                    pr_number,
-                    reviewer_name: coworker_name.clone(),
-                    source: crate::github_state::AssignmentSource::PollingFallback,
-                    restart_count: 0,
-                    reviewer_session_id: None,
-                    task_id: Some(task.id.clone()),
+                // CreateTaskSessionSpan must come before PostPrComment so the
+                // span exists when post_pr_comment() stores the placeholder_comment_id.
+                effects::Effect::CreateTaskSessionSpan {
+                    task_id: task.id.clone(),
+                    agent_name: coworker_name.clone(),
+                    agent_type: "reviewer".to_string(),
+                    session_id: String::new(),
+                    pr_number: Some(pr_number),
                 },
                 effects::Effect::PostPrComment {
                     pr_number,

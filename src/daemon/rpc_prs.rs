@@ -608,9 +608,7 @@ pub(super) async fn handle_pr_review(
     let snap = super::snapshot::collect_world_snapshot(state).await;
 
     // Call the shared reviewer selection logic.
-    // We use AssignmentSource::Manual which:
-    //   - bypasses the webhook-deference guard (only active for PollingFallback)
-    //   - is recorded in the assignment for observability
+    // is_polling_fallback=false bypasses the webhook-deference guard (only active for polling).
     // We pass the branch_owners_map so task-based branches (e.g. "task-42-...")
     // can be resolved to their author — preserving the self-review guard.
     let effects = super::pr::collect_reviewer_effects_with_source(
@@ -619,7 +617,7 @@ pub(super) async fn handle_pr_review(
         &snap.coworkers.active_names,
         state,
         &[pr_json],
-        crate::github_state::AssignmentSource::Manual,
+        false,                             // not polling fallback
         &std::collections::HashMap::new(), // RPC path: spawning reviewers, not nudging authors
     )
     .await;
@@ -637,12 +635,21 @@ pub(super) async fn handle_pr_review(
         );
     }
 
-    // Extract the reviewer name from the AssignReviewer effect for the response message.
+    // Extract the reviewer name from the CreateTaskSessionSpan effect for the response message.
     let reviewer_name = effects
         .iter()
         .find_map(|e| {
-            if let super::effects::Effect::AssignReviewer { reviewer_name, .. } = e {
-                Some(reviewer_name.clone())
+            if let super::effects::Effect::CreateTaskSessionSpan {
+                agent_name,
+                agent_type,
+                ..
+            } = e
+            {
+                if agent_type == "reviewer" {
+                    Some(agent_name.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -1007,7 +1014,7 @@ async fn fetch_pr_for_merge(
 ///
 /// Called by the reviewer agent via `midtown pr review post --pr <N> --body-file <path>`.
 /// The daemon:
-/// 1. Looks up the placeholder comment ID from the `PrReviewerAssignment`
+/// 1. Looks up the placeholder comment ID from task metadata
 /// 2. Falls back to API lookup via `pr_in_progress_placeholder_comment_id()` if needed
 /// 3. Constructs the final body with frontmatter and footer
 /// 4. Updates the comment via `UpdatePrComment` effect
