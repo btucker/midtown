@@ -64,7 +64,6 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         },
         reviewer: snapshot::SnapshotReviewerState {
             active_reviewers: HashSet::new(),
-            reviewing_phase_coworkers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewer_in_progress_comment_ids: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -235,7 +234,6 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         },
         reviewer: snapshot::SnapshotReviewerState {
             active_reviewers: HashSet::new(),
-            reviewing_phase_coworkers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewer_in_progress_comment_ids: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -441,7 +439,6 @@ fn test_check_for_usage_limits_with_reset_time() {
         },
         reviewer: snapshot::SnapshotReviewerState {
             active_reviewers: HashSet::new(),
-            reviewing_phase_coworkers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewer_in_progress_comment_ids: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -566,7 +563,6 @@ fn test_check_for_usage_limits_already_scheduled() {
         },
         reviewer: snapshot::SnapshotReviewerState {
             active_reviewers: HashSet::new(),
-            reviewing_phase_coworkers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewer_in_progress_comment_ids: HashMap::new(),
             reviewed_prs: HashSet::new(),
@@ -726,7 +722,6 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         },
         reviewer: snapshot::SnapshotReviewerState {
             active_reviewers: HashSet::new(),
-            reviewing_phase_coworkers: HashSet::new(),
             reviewer_pr_assignments: HashMap::new(),
             reviewer_in_progress_comment_ids: HashMap::new(),
             reviewed_prs: HashSet::new(),
