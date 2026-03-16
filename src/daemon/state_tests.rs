@@ -1304,6 +1304,110 @@ fn apply_gc_combined_operations() {
     assert!(!state.task_channel.contains_key("old-task"));
 }
 
+/// Verify that `apply_gc` removes `task_reviewer_metadata` entries for tasks
+/// that are passed in the orphaned_task_ids list.
+#[test]
+fn apply_gc_prunes_task_reviewer_metadata() {
+    let mut state = DaemonPersistentState::default();
+
+    // Insert orphaned reviewer metadata
+    state.task_reviewer_metadata.insert(
+        "orphan-review".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 55,
+            placeholder_comment_id: Some(9001),
+            restart_count: 1,
+            reviewer_session_id: Some("sess-old".to_string()),
+        },
+    );
+    // Insert a live task's metadata that should be preserved
+    state.task_reviewer_metadata.insert(
+        "live-review".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 66,
+            placeholder_comment_id: Some(9002),
+            restart_count: 0,
+            reviewer_session_id: Some("sess-live".to_string()),
+        },
+    );
+
+    let result = state.apply_gc(&[], &["orphan-review".to_string()]);
+
+    assert_eq!(result.orphaned_tasks_pruned, 1);
+    assert!(
+        !state.task_reviewer_metadata.contains_key("orphan-review"),
+        "orphaned task_reviewer_metadata entry should be pruned"
+    );
+    assert!(
+        state.task_reviewer_metadata.contains_key("live-review"),
+        "live task_reviewer_metadata entry should be preserved"
+    );
+}
+
+/// Verify that re-assigning a reviewer (respawn, restart_count > 0) preserves
+/// the `placeholder_comment_id` that was backfilled by the `PostPrComment` handler.
+#[test]
+fn assign_reviewer_respawn_preserves_placeholder_comment_id() {
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "review-42".to_string();
+    let pr_number: u64 = 42;
+
+    // Initial assignment (restart_count = 0, no placeholder yet)
+    ps.task_reviewer_metadata
+        .entry(task_id.clone())
+        .and_modify(|existing| {
+            existing.restart_count = 0;
+            existing.reviewer_session_id = Some("sess-1".to_string());
+        })
+        .or_insert(TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: Some("sess-1".to_string()),
+        });
+
+    // Simulate PostPrComment backfilling the placeholder comment ID
+    for meta in ps.task_reviewer_metadata.values_mut() {
+        if meta.pr_number == pr_number {
+            meta.placeholder_comment_id = Some(7777);
+        }
+    }
+
+    // Respawn: re-assign with restart_count = 1, new session ID
+    let restart_count: u32 = 1;
+    let reviewer_session_id: Option<String> = Some("sess-2".to_string());
+    ps.task_reviewer_metadata
+        .entry(task_id.clone())
+        .and_modify(|existing| {
+            existing.restart_count = restart_count;
+            existing.reviewer_session_id = reviewer_session_id.clone();
+        })
+        .or_insert(TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count,
+            reviewer_session_id: reviewer_session_id.clone(),
+        });
+
+    let meta = ps
+        .task_reviewer_metadata
+        .get(&task_id)
+        .expect("task_reviewer_metadata should contain entry after respawn");
+
+    assert_eq!(meta.pr_number, pr_number);
+    assert_eq!(meta.restart_count, 1, "restart_count should be updated");
+    assert_eq!(
+        meta.reviewer_session_id,
+        Some("sess-2".to_string()),
+        "reviewer_session_id should be updated"
+    );
+    assert_eq!(
+        meta.placeholder_comment_id,
+        Some(7777),
+        "placeholder_comment_id should be preserved across respawn"
+    );
+}
+
 // ── channel_workflows tests ───────────────────────────────────────────
 
 #[test]

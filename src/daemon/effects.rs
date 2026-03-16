@@ -1894,15 +1894,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Populate task_reviewer_metadata so the task-centric model can find
                 // reviewer state by task ID without going through pr_reviewers.
                 if let Some(ref tid) = task_id {
-                    ps.task_reviewer_metadata.insert(
-                        tid.clone(),
-                        crate::daemon::state::TaskReviewerMetadata {
+                    ps.task_reviewer_metadata
+                        .entry(tid.clone())
+                        .and_modify(|existing| {
+                            // Update fields but preserve placeholder_comment_id
+                            existing.restart_count = restart_count;
+                            existing.reviewer_session_id = reviewer_session_id.clone();
+                        })
+                        .or_insert(crate::daemon::state::TaskReviewerMetadata {
                             pr_number,
                             placeholder_comment_id: None,
                             restart_count,
                             reviewer_session_id: reviewer_session_id.clone(),
-                        },
-                    );
+                        });
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save daemon-state.json: {}", e);

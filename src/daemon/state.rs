@@ -465,6 +465,7 @@ impl DaemonPersistentState {
             self.task_agent_type.remove(task_id);
             self.task_placeholder_comment_id.remove(task_id);
             self.task_restart_count.remove(task_id);
+            self.task_reviewer_metadata.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
 
