@@ -171,8 +171,6 @@ pub struct CiCheckPassed {
 pub struct PrReviewStateChange {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from body frontmatter)
-    pub owner_coworker: Option<String>,
     /// The reviewer who submitted the review
     pub reviewer: String,
     /// Whether the review was approved or requested changes
@@ -194,8 +192,6 @@ pub enum ReviewState {
 pub struct PrCiFailure {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from body frontmatter)
-    pub owner_coworker: Option<String>,
     /// Name of the failed check
     pub check_name: String,
     /// Head branch name (for owner resolution via branch prefix)
@@ -244,8 +240,6 @@ pub enum CommentNode {
 pub struct PrActivity {
     /// PR number
     pub pr_number: u64,
-    /// The coworker who owns the PR (from body frontmatter)
-    pub owner_coworker: Option<String>,
     /// The PR branch name (used to detect lead/* branches)
     pub branch: Option<String>,
     /// The actor who triggered the event (coworker name or GitHub username)
@@ -861,13 +855,11 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
     let review_state_change = match event.review.state.to_lowercase().as_str() {
         "approved" => Some(PrReviewStateChange {
             pr_number: event.pull_request.number,
-            owner_coworker: coworker.map(|s| s.to_string()),
             reviewer: event.review.user.login.clone(),
             state: ReviewState::Approved,
         }),
         "changes_requested" => Some(PrReviewStateChange {
             pr_number: event.pull_request.number,
-            owner_coworker: coworker.map(|s| s.to_string()),
             reviewer: event.review.user.login.clone(),
             state: ReviewState::ChangesRequested,
         }),
@@ -885,7 +877,6 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
     Ok(Some(WebhookEvent {
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
-            owner_coworker: coworker.map(|s| s.to_string()),
             branch: branch.map(|s| s.to_string()),
             actor: event.review.user.login,
             comment_node: Some(CommentNode::Review {
@@ -981,11 +972,10 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     };
 
     // For issue_comment, the payload doesn't include the PR branch,
-    // so owner_coworker and branch are None. The daemon will look them up asynchronously.
+    // so branch is None. The daemon will look it up asynchronously.
     Ok(Some(WebhookEvent {
         pr_activity: Some(PrActivity {
             pr_number: event.issue.number,
-            owner_coworker: None,
             branch: None,
             actor: commenter,
             comment_node: Some(CommentNode::IssueComment(event.comment.id)),
@@ -1083,7 +1073,6 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     Ok(Some(WebhookEvent {
         pr_activity: Some(PrActivity {
             pr_number: event.pull_request.number,
-            owner_coworker: coworker.map(|s| s.to_string()),
             branch: branch.map(|s| s.to_string()),
             actor: commenter,
             comment_node: Some(CommentNode::ReviewComment(event.comment.id)),
@@ -1205,7 +1194,6 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
             .and_then(|cs| cs.pull_requests.first())
             .map(|pr| PrCiFailure {
                 pr_number: pr.number,
-                owner_coworker: coworker.map(|s| s.to_string()),
                 check_name: event.check_run.name.clone(),
                 head_ref: branch.map(|s| s.to_string()),
             })

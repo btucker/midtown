@@ -521,7 +521,6 @@ fn test_handle_review_comment_with_frontmatter_attribution() {
     // PR activity should identify madison as owner
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 77);
-    assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
     assert_eq!(activity.actor, "reviewer");
     assert!(matches!(
         activity.comment_node,
@@ -810,10 +809,9 @@ fn test_handle_review_comment_with_coworker_signature() {
         "@madison lexington left review comment on PR #77: Consider using a match here."
     );
     assert_eq!(event.message.from, "github");
-    // PR activity should identify madison as owner and lexington as actor
+    // PR activity should identify lexington as actor
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 77);
-    assert_eq!(activity.owner_coworker.as_deref(), Some("madison"));
     assert_eq!(activity.actor, "lexington");
 }
 
@@ -899,7 +897,6 @@ fn test_review_approved_produces_state_change() {
         .unwrap();
     let change = event.review_state_change.unwrap();
     assert_eq!(change.pr_number, 42);
-    assert_eq!(change.owner_coworker.as_deref(), Some("broadway"));
     assert_eq!(change.reviewer, "reviewer_bot");
     assert_eq!(change.state, ReviewState::Approved);
     // CI failure should be None for review events
@@ -928,7 +925,6 @@ fn test_review_changes_requested_produces_state_change() {
         .unwrap();
     let change = event.review_state_change.unwrap();
     assert_eq!(change.pr_number, 55);
-    assert_eq!(change.owner_coworker.as_deref(), Some("columbus"));
     assert_eq!(change.reviewer, "reviewer_bot");
     assert_eq!(change.state, ReviewState::ChangesRequested);
 }
@@ -980,7 +976,6 @@ fn test_check_run_failure_on_pr_produces_ci_failure() {
     let event = handle_check_run(payload.as_bytes()).unwrap().unwrap();
     let failure = event.pr_ci_failure.unwrap();
     assert_eq!(failure.pr_number, 99);
-    assert_eq!(failure.owner_coworker, None);
     assert_eq!(failure.check_name, "Build");
     // Should NOT flag as default-branch CI failure
     assert!(event.ci_failed_on_default_branch.is_none());
