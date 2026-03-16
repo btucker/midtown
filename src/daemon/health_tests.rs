@@ -3195,3 +3195,185 @@ fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
         "should clean up abandoned task worktree"
     );
 }
+
+// ── build_reviewer_respawn_effects task_id lookup ────────────────────────────
+
+/// Verify that `build_reviewer_respawn_effects` sets `task_id: Some(...)` on the
+/// `AssignReviewer` effect when `all_tasks` contains a matching review task for
+/// the PR being respawned.
+///
+/// This exercises the `snap.all_tasks.iter().find(...)` path in health.rs that
+/// looks up the review task ID for the `task_reviewer_metadata` model.
+#[test]
+fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+    use crate::tasks::{Task, TaskStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 77u64;
+    let review_task_id = "300";
+
+    // Dead reviewer
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "broadway".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(5),
+        current_task: None,
+        session_id: Some("sess-rev-300".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+    snap.health.headless_process_health.insert(
+        "broadway".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(now - chrono::Duration::minutes(2)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: Some(1),
+        },
+    );
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("broadway".to_string(), pr_number);
+    snap.name_session_map
+        .insert("broadway".to_string(), "sess-rev-300".to_string());
+
+    // Add a review task matching this PR
+    snap.all_tasks.push(Task {
+        id: review_task_id.to_string(),
+        subject: "Review PR #77".to_string(),
+        status: TaskStatus::InProgress,
+        owner: Some("broadway".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(pr_number),
+        created_at: None,
+    });
+    snap.task_agent_type_map.insert(
+        review_task_id.to_string(),
+        "midtown-code-reviewer".to_string(),
+    );
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    // AssignReviewer is nested in SpawnCoworkerWithCallbacks.on_success
+    let assign_reviewer_task_id = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+            on_success.iter().find_map(|inner| {
+                if let Effect::AssignReviewer { task_id, .. } = inner {
+                    Some(task_id.clone())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        assign_reviewer_task_id.is_some(),
+        "expected an AssignReviewer effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
+        effects
+    );
+    assert_eq!(
+        assign_reviewer_task_id.unwrap(),
+        Some(review_task_id.to_string()),
+        "AssignReviewer.task_id should be Some when a matching review task exists in all_tasks"
+    );
+}
+
+/// Verify that `build_reviewer_respawn_effects` sets `task_id: None` on the
+/// `AssignReviewer` effect when no matching review task exists in `all_tasks`.
+///
+/// This covers the fallback path when the review task hasn't been created yet
+/// (legacy flow) or when no task matched the PR + agent-type filter.
+#[test]
+fn build_reviewer_respawn_task_id_is_none_when_no_matching_task() {
+    use crate::coworker::{Coworker, CoworkerStatus};
+
+    let now = chrono::Utc::now();
+    let mut snap = empty_snap();
+    snap.now_utc = now;
+
+    let pr_number = 88u64;
+
+    // Dead reviewer
+    snap.coworkers.active_coworkers.push(Coworker {
+        slot_id: uuid::Uuid::new_v4().to_string(),
+        name: "riverside".to_string(),
+        status: CoworkerStatus::Running,
+        working_dir: "/tmp/test".to_string(),
+        started_at: now - chrono::Duration::minutes(5),
+        current_task: None,
+        session_id: Some("sess-rev-88".to_string()),
+        model: "sonnet".to_string(),
+        provider: crate::auth::AuthProvider::Claude,
+        profile: crate::auth::DEFAULT_PROFILE.to_string(),
+    });
+    snap.health.headless_process_health.insert(
+        "riverside".to_string(),
+        snapshot::ProcessHealth {
+            is_alive: false,
+            last_event_at: Some(now - chrono::Duration::minutes(2)),
+            has_usage_limit: false,
+            usage_limit_reset_at: None,
+            has_api_error: false,
+            has_auth_error: false,
+            has_running_subagent: false,
+            has_pending_tool: false,
+            has_tool_name_conflict: false,
+            has_pending_api_call: false,
+            exit_code: Some(1),
+        },
+    );
+    snap.reviewer
+        .reviewer_pr_assignments
+        .insert("riverside".to_string(), pr_number);
+    snap.name_session_map
+        .insert("riverside".to_string(), "sess-rev-88".to_string());
+
+    // No tasks in all_tasks — the None path
+
+    let effects = check_and_restart_dead_reviewers(&snap);
+
+    // AssignReviewer is nested in SpawnCoworkerWithCallbacks.on_success
+    let assign_reviewer_task_id = effects.iter().find_map(|e| {
+        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+            on_success.iter().find_map(|inner| {
+                if let Effect::AssignReviewer { task_id, .. } = inner {
+                    Some(task_id.clone())
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        assign_reviewer_task_id.is_some(),
+        "expected an AssignReviewer effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
+        effects
+    );
+    assert_eq!(
+        assign_reviewer_task_id.unwrap(),
+        None,
+        "AssignReviewer.task_id should be None when no matching review task exists in all_tasks"
+    );
+}

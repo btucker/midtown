@@ -3288,3 +3288,108 @@ fn store_pr_author_session_does_not_overwrite_existing_branch() {
         Some("existing-branch".to_string())
     );
 }
+
+// ============================================================================
+// lookup_existing_placeholder — task_reviewer_metadata tier-1 path
+// ============================================================================
+
+/// Verify that `post_pr_comment` reuses a placeholder stored in
+/// `task_reviewer_metadata` even when `pr_reviewers` has no `placeholder_comment_id`.
+///
+/// This covers the tier-1 lookup path in `lookup_existing_placeholder` that
+/// prefers `task_reviewer_metadata` over `pr_reviewers`. Before this path was
+/// added, only `PrReviewerAssignment.placeholder_comment_id` was checked, causing
+/// the task-centric model to miss stored placeholder IDs.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_reuses_placeholder_from_task_reviewer_metadata() {
+    use crate::daemon::state::TaskReviewerMetadata;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-task-reviewer-meta");
+
+    let pr_number = 66u64;
+    let existing_comment_id = 77777u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        // Reviewer assignment exists but has NO placeholder_comment_id —
+        // simulates the task-centric path where pr_reviewers is legacy.
+        ps.github
+            .assign_reviewer(pr_number, "lexington", AssignmentSource::Webhook);
+        // placeholder_comment_id is intentionally NOT set on the assignment.
+
+        // Populate task_reviewer_metadata with the placeholder — this is the
+        // preferred tier-1 source when a review task is tracked.
+        ps.task_reviewer_metadata.insert(
+            "review-task-66".to_string(),
+            TaskReviewerMetadata {
+                pr_number,
+                placeholder_comment_id: Some(existing_comment_id),
+                restart_count: 1,
+                reviewer_session_id: Some("sess-lex-1".to_string()),
+            },
+        );
+    }
+
+    // Mock `gh` to accept the PATCH and log all calls.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let log_file = temp_dir.path().join("gh_calls.log");
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    std::fs::write(
+        &mock_gh_script,
+        format!(
+            r#"#!/bin/bash
+echo "$@" >> "{log}"
+if echo "$@" | grep -q "repo view"; then
+  echo 'test/repo'
+elif echo "$@" | grep -q "PATCH"; then
+  echo '{{"id": {existing_comment_id}}}'
+elif echo "$@" | grep -q "pr comment"; then
+  echo 'https://github.com/test/repo/pull/66#issuecomment-99998'
+fi
+"#,
+            log = log_file.display(),
+            existing_comment_id = existing_comment_id,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "lexington".to_string(),
+        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by lexington..."
+            .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Verify: the PATCH endpoint was called (editing existing comment, not creating new)
+    let log_contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+    assert!(
+        log_contents.contains("PATCH"),
+        "Should have called gh api --method PATCH to edit the placeholder from task_reviewer_metadata, got: {}",
+        log_contents,
+    );
+    assert!(
+        !log_contents.contains("pr comment"),
+        "Should NOT have called `gh pr comment` when task_reviewer_metadata has a placeholder, got: {}",
+        log_contents,
+    );
+}

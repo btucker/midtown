@@ -1603,3 +1603,74 @@ fn test_task_reviewer_metadata_optional_fields() {
     assert_eq!(meta.restart_count, 0);
     assert_eq!(meta.reviewer_session_id, None);
 }
+
+/// Verify that `task_reviewer_metadata_for_pr` returns `None` when no entries
+/// exist for the given PR.
+#[test]
+fn task_reviewer_metadata_for_pr_returns_none_when_absent() {
+    let ps = DaemonPersistentState::default();
+    let result = task_reviewer_metadata_for_pr(&ps, 99);
+    assert!(
+        result.is_none(),
+        "should return None when no metadata exists for PR"
+    );
+}
+
+/// Verify that `task_reviewer_metadata_for_pr` returns the entry with the
+/// highest task ID when multiple entries exist for the same PR number.
+///
+/// This is the deterministic selection rule: when a review task is replaced
+/// (e.g., after a review cycle completes and a new one begins), the entry with
+/// the highest task ID represents the most recent review assignment.
+#[test]
+fn task_reviewer_metadata_for_pr_returns_highest_task_id() {
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 42;
+
+    // Older review cycle — task ID 10
+    ps.task_reviewer_metadata.insert(
+        "10".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: Some(1000),
+            restart_count: 2,
+            reviewer_session_id: Some("sess-old".to_string()),
+        },
+    );
+
+    // Newer review cycle — task ID 20 (higher → should be preferred)
+    ps.task_reviewer_metadata.insert(
+        "20".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: Some(2000),
+            restart_count: 0,
+            reviewer_session_id: Some("sess-new".to_string()),
+        },
+    );
+
+    // Unrelated PR — should not affect selection
+    ps.task_reviewer_metadata.insert(
+        "15".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 99,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: None,
+        },
+    );
+
+    let meta = task_reviewer_metadata_for_pr(&ps, pr_number).expect("should find metadata for PR");
+
+    assert_eq!(
+        meta.placeholder_comment_id,
+        Some(2000),
+        "should return the entry with task ID 20 (highest), not task ID 10"
+    );
+    assert_eq!(
+        meta.reviewer_session_id,
+        Some("sess-new".to_string()),
+        "should return the most recent reviewer session"
+    );
+    assert_eq!(meta.restart_count, 0);
+}
