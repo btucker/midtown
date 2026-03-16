@@ -3563,65 +3563,53 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     );
 }
 
-/// A coworker in Reviewing phase with no assignment (cleared) should NOT
-/// block PrApproved for any specific PR — without PR-specific evidence,
-/// suppressing would incorrectly gate unrelated PRs.
+/// A coworker with no assignment should NOT block PrApproved — without PR-specific
+/// evidence, suppressing would incorrectly gate unrelated PRs.
 #[test]
-fn augment_reviewer_ignores_reviewing_phase_without_assignment() {
+fn augment_reviewer_no_assignment_does_not_flag_active() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // Coworker "lexington" is in Reviewing phase,
-    // but the reviewer_pr_assignments has been cleared.
-    let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewing_phase_coworkers
-        .insert("lexington".to_string());
     // reviewer_pr_assignments is empty — no PR-specific evidence
+    let snap = super::super::snapshot::minimal_snapshot_for_test();
 
     ctx.augment_reviewer_from_snapshot(pr_number, &snap);
 
     assert!(
         !ctx.has_active_reviewer,
-        "Should NOT flag active reviewer when coworker has no assignment (would block all PRs)"
+        "Should NOT flag active reviewer when there is no assignment"
     );
 }
 
-/// Bug !1907 issue 1 (inverse): augment_reviewer_from_snapshot also catches the
-/// case where the assignment exists but the coworker hasn't entered Reviewing phase.
+/// augment_reviewer_from_snapshot flags an active reviewer when an assignment exists.
 #[test]
-fn augment_reviewer_catches_assignment_without_reviewing_phase() {
+fn augment_reviewer_catches_assignment() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // Assignment exists for "lexington" → PR 42, but they aren't in
-    // reviewing_phase_coworkers yet (e.g., just started, haven't set workflow phase).
+    // Assignment exists for "lexington" → PR 42.
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
     snap.reviewer
         .reviewer_pr_assignments
         .insert("lexington".to_string(), pr_number);
-    // reviewing_phase_coworkers is empty
 
     ctx.augment_reviewer_from_snapshot(pr_number, &snap);
 
     assert!(
         ctx.has_active_reviewer,
-        "Should flag active reviewer when assignment exists even without Reviewing phase"
+        "Should flag active reviewer when assignment exists"
     );
 }
 
-/// Bug !1907 issue 1: augment_reviewer_from_snapshot should NOT flag active
-/// reviewer when a coworker is in Reviewing phase for a DIFFERENT PR.
+/// augment_reviewer_from_snapshot should NOT flag active reviewer when the
+/// assignment is for a DIFFERENT PR.
 #[test]
-fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
+fn augment_reviewer_ignores_assignment_for_different_pr() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // "lexington" is reviewing PR 99, not PR 42
+    // "lexington" is assigned to PR 99, not PR 42
     let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewing_phase_coworkers
-        .insert("lexington".to_string());
     snap.reviewer
         .reviewer_pr_assignments
         .insert("lexington".to_string(), 99);
@@ -3630,7 +3618,7 @@ fn augment_reviewer_ignores_reviewing_phase_for_different_pr() {
 
     assert!(
         !ctx.has_active_reviewer,
-        "Should NOT flag active reviewer when coworker is reviewing a different PR"
+        "Should NOT flag active reviewer when assignment is for a different PR"
     );
 }
 

@@ -140,14 +140,9 @@ impl PrContext {
 
     /// Defense-in-depth: check snapshot signals for an active reviewer.
     ///
-    /// Uses OR logic to catch two independent edge cases:
-    /// 1. Coworker in Reviewing phase with a matching assignment for this PR
-    /// 2. Assignment exists (in snapshot) but coworker hasn't entered Reviewing phase yet
-    ///
-    /// Either signal independently indicates the reviewer is still working.
-    /// A coworker in Reviewing phase with no assignment (cleared) or an
-    /// assignment to a *different* PR does not count — without PR-specific
-    /// evidence we cannot suppress PrApproved for an unrelated PR.
+    /// Checks if any coworker has an assignment to this PR in the snapshot.
+    /// The span-based model populates `reviewer_pr_assignments` from open spans
+    /// so dead reviewers (process exited but span open) are still included.
     fn augment_reviewer_from_snapshot(
         &mut self,
         pr_number: u64,
@@ -157,19 +152,16 @@ impl PrContext {
             return; // Already flagged via get_reviewer()
         }
 
-        // Signal A: any coworker assigned to this PR in the snapshot
+        // Check if any coworker is assigned to this PR in the snapshot.
+        // reviewer_pr_assignments is built from open reviewer spans so it
+        // includes both running and recently-dead reviewers.
         let has_snapshot_assignment = snap
             .reviewer
             .reviewer_pr_assignments
             .iter()
             .any(|(_, &assigned_pr)| assigned_pr == pr_number);
 
-        // Signal B: any coworker in Reviewing phase assigned to this PR
-        let has_reviewing_phase = snap.reviewer.reviewing_phase_coworkers.iter().any(|name| {
-            snap.reviewer.reviewer_pr_assignments.get(name).copied() == Some(pr_number)
-        });
-
-        self.has_active_reviewer = has_snapshot_assignment || has_reviewing_phase;
+        self.has_active_reviewer = has_snapshot_assignment;
     }
 }
 
@@ -767,7 +759,7 @@ async fn decide_and_build_pr_issue_effects(
         )
     };
 
-    // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
+    // Defense-in-depth: check reviewer_pr_assignments from snapshot (span-based).
     pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
     // Decide action using handoff-aware decision function (matches webhook path)

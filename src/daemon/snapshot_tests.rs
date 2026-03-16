@@ -362,26 +362,29 @@ fn test_snapshot_session_health_map_populated() {
 
 /// Regression test: reviewer_pr_assignments must include dead reviewers.
 ///
-/// Previously, assignments were built by iterating `active_coworkers` and
-/// looking up each in `persistent_state.github.pr_reviewers`. When a reviewer's
-/// process died it was removed from `active_coworkers`, so its entry was dropped
-/// from `reviewer_pr_assignments`. This caused `decide_dead_reviewer_respawns`
-/// to never fire, leaving dead reviewers with unposted reviews undetected.
-///
-/// The fix builds assignments directly from `pr_reviewers`, which persists
-/// across coworker lifecycle changes.
+/// With the span-based model, open reviewer spans (end_time = None) persist even
+/// when the reviewer's process has exited. This allows `decide_dead_reviewer_respawns`
+/// to detect and respawn reviewers that died before posting their review.
 #[test]
 fn reviewer_pr_assignments_includes_dead_reviewers() {
-    use crate::github_state::{AssignmentSource, GitHubState};
+    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
 
-    let mut github = GitHubState::default();
-    // Reviewer "riverside" is assigned to PR 1352 in persistent state.
-    github.assign_reviewer(1352, "riverside", AssignmentSource::PollingFallback);
+    let mut ps = DaemonPersistentState::default();
+    // Reviewer "riverside" has an open span for task "review-42" → PR 1352.
+    ps.task_session_spans.push(TaskSessionSpan {
+        task_id: "review-42".to_string(),
+        agent_name: "riverside".to_string(),
+        agent_type: "reviewer".to_string(),
+        session_id: "sess-riverside".to_string(),
+        start_time: chrono::Utc::now(),
+        end_time: None, // open span — reviewer is/was active
+    });
+    ps.task_pr_number.insert("review-42".to_string(), 1352_u64);
 
-    // No active_coworkers — riverside has died (its process exited).
-    // The old code filtered through active_coworkers, so riverside was absent.
-    // The new code reads pr_reviewers directly.
-    let assignments = super::build_reviewer_pr_assignments(&github);
+    // No active process (riverside has died — is_running=false, health absent).
+    let process_health: HashMap<String, ProcessHealth> = HashMap::new();
+
+    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
 
     assert!(
         assignments.contains_key("riverside"),
@@ -392,219 +395,159 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
         assignments["riverside"], 1352,
         "assignment should map reviewer to the correct PR number"
     );
-}
 
-/// `build_reviewer_pr_assignments` must include ALL assignments, even expired ones,
-/// so that `decide_dead_reviewer_respawns` can detect and respawn dead reviewers.
-///
-/// `active_reviewers()` (display/logging) still applies the timeout filter, but
-/// the snapshot-level assignments must not drop entries based on age.
-#[test]
-fn build_reviewer_pr_assignments_excludes_expired_entries() {
-    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
-
-    let mut github = GitHubState::default();
-    // Assign reviewer for PR 100 with a fresh timestamp (non-expired).
-    github.assign_reviewer(100, "riverside", AssignmentSource::PollingFallback);
-
-    // Assign reviewer for PR 200 with an expired timestamp.
-    github.assign_reviewer(200, "broadway", AssignmentSource::PollingFallback);
-    // Backdate broadway's assignment past the timeout.
-    if let Some(assignment) = github.pr_reviewers.get_mut(&200) {
-        assignment.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 1);
-    }
-
-    let assignments = super::build_reviewer_pr_assignments(&github);
-    let active = github.active_reviewers();
-
-    // Fresh assignment must appear in both.
+    // compute_active_reviewers_from_spans: riverside not active (is_running=false, not alive)
+    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
     assert!(
-        assignments.contains_key("riverside"),
-        "non-expired reviewer 'riverside' must appear in build_reviewer_pr_assignments"
-    );
-    assert!(
-        active.contains("riverside"),
-        "non-expired reviewer 'riverside' must appear in active_reviewers"
-    );
-
-    // active_reviewers() still excludes expired entries (used for display/logging).
-    assert!(
-        !active.contains("broadway"),
-        "expired reviewer 'broadway' must NOT appear in active_reviewers"
-    );
-
-    // build_reviewer_pr_assignments includes expired entries so that
-    // decide_dead_reviewer_respawns can detect and respawn dead reviewers whose
-    // assignment timed out before respawn could run.
-    assert!(
-        assignments.contains_key("broadway"),
-        "expired reviewer 'broadway' MUST appear in build_reviewer_pr_assignments \
-         so decide_dead_reviewer_respawns can find and respawn them"
+        !active.contains("riverside"),
+        "dead reviewer 'riverside' must NOT appear in active_reviewers when is_running=false and not alive"
     );
 }
 
-/// Issue 2: A dead reviewer with an expired assignment must still be detectable
-/// by decide_dead_reviewer_respawns via reviewer_pr_assignments.
-///
-/// Regression test for: reviewer assignment dropped when PR flagged as orphaned.
-/// When a reviewer dies after the 10-minute assignment timeout window,
-/// build_reviewer_pr_assignments used to exclude their assignment (timeout filter),
-/// so decide_dead_reviewer_respawns could never match them and the review was lost.
+/// compute_active_reviewers_from_spans: reviewer with is_running=true appears in active set.
 #[test]
-fn test_build_reviewer_pr_assignments_includes_expired_for_dead_reviewer_respawn() {
-    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
+fn active_reviewer_with_running_session_in_active_set() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
 
-    let mut github = GitHubState::default();
-    github.assign_reviewer(1515, "park", AssignmentSource::PollingFallback);
-    // Backdate park's assignment well past the timeout (simulating a long review or
-    // a reviewer that died without the timestamp being refreshed).
-    if let Some(assignment) = github.pr_reviewers.get_mut(&1515) {
-        assignment.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 * 2);
-    }
+    let mut ps = DaemonPersistentState::default();
+    ps.task_session_spans.push(TaskSessionSpan {
+        task_id: "review-100".to_string(),
+        agent_name: "amsterdam".to_string(),
+        agent_type: "reviewer".to_string(),
+        session_id: "sess-amsterdam".to_string(),
+        start_time: chrono::Utc::now(),
+        end_time: None,
+    });
+    ps.task_pr_number.insert("review-100".to_string(), 1553_u64);
 
-    let assignments = super::build_reviewer_pr_assignments(&github);
-
-    // park must appear so that decide_dead_reviewer_respawns can detect and respawn them.
-    assert!(
-        assignments.contains_key("park"),
-        "park's expired assignment must appear in reviewer_pr_assignments \
-         so decide_dead_reviewer_respawns can respawn the dead reviewer"
-    );
-    assert_eq!(assignments["park"], 1515);
-}
-
-/// When a reviewer has two entries (stale + fresh for different PRs), the most recently
-/// assigned entry must win — the result must be deterministic regardless of HashMap
-/// iteration order.
-#[test]
-fn test_build_reviewer_pr_assignments_prefers_newest_when_duplicate_reviewer() {
-    use crate::github_state::{AssignmentSource, GitHubState};
-
-    let mut github = GitHubState::default();
-    // Assign park to PR 1515 with a stale timestamp.
-    github.assign_reviewer(1515, "park", AssignmentSource::PollingFallback);
-    if let Some(a) = github.pr_reviewers.get_mut(&1515) {
-        a.assigned_at = chrono::Utc::now() - chrono::Duration::seconds(3600);
-    }
-    // Assign park again to PR 1520 with a fresh timestamp (newer).
-    github.assign_reviewer(1520, "park", AssignmentSource::PollingFallback);
-
-    let assignments = super::build_reviewer_pr_assignments(&github);
-
-    assert_eq!(
-        assignments.get("park"),
-        Some(&1520),
-        "should keep the most recently assigned PR (1520), not the stale one (1515)"
-    );
-}
-
-/// Regression test for !1818: An alive reviewer whose assignment has expired must still
-/// appear in the snapshot's `active_reviewers` set, preventing idle-shutdown.
-///
-/// Bug: `active_reviewers()` filters by the 600-second timeout. When SessionMonitorTick
-/// fires before PrPollTick refreshes the timestamp, the reviewer is unprotected.
-/// Fix: `compute_active_reviewers_with_health` includes alive reviewers even when their
-/// assignment has expired.
-#[test]
-fn alive_reviewer_with_expired_assignment_protected_from_idle_shutdown() {
-    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
-    use std::collections::HashMap;
-
-    let mut github = GitHubState::default();
-    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
-    // Expire the assignment by 15s — within the 30s grace window that covers the
-    // race between SessionMonitorTick and PrPollTick.
-    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
-        a.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 15);
-    }
-
-    // active_reviewers() (old path) does NOT include amsterdam — assignment expired.
-    assert!(
-        !github.active_reviewers().contains("amsterdam"),
-        "active_reviewers() must exclude expired assignments"
-    );
-
-    // Simulate amsterdam's process being alive in headless_process_health.
-    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
-    process_health.insert(
-        "amsterdam".to_string(),
-        ProcessHealth {
-            is_alive: true,
+    // Session record shows is_running = true
+    ps.sessions.insert(
+        "sess-amsterdam".to_string(),
+        SessionRecord {
+            session_id: "sess-amsterdam".to_string(),
+            is_running: true,
             ..Default::default()
         },
     );
 
-    // The augmented function must include amsterdam — alive within the grace window.
-    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    let process_health: HashMap<String, ProcessHealth> = HashMap::new();
+    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
+
     assert!(
         active.contains("amsterdam"),
-        "compute_active_reviewers_with_health must include alive reviewers \
-         within the grace window even when their assignment has just expired (bug !1818 regression)"
+        "reviewer with is_running=true must appear in active_reviewers"
     );
 }
 
-/// An alive session with a TRULY STALE assignment (well past the grace window) must NOT
-/// be kept in active_reviewers. This prevents a coworker name reused for a different
-/// task from being incorrectly protected by a historical reviewer assignment.
+/// compute_active_reviewers_from_spans: reviewer alive in process_health appears even
+/// if SessionRecord.is_running is false (process alive but session not yet updated).
 #[test]
-fn alive_coworker_with_truly_stale_assignment_not_protected() {
-    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
-    use std::collections::HashMap;
+fn active_reviewer_alive_in_process_health_in_active_set() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
 
-    let mut github = GitHubState::default();
-    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
-    // Backdate far past the grace window (120s = 4 poll cycles past the timeout).
-    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
-        a.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 120);
-    }
+    let mut ps = DaemonPersistentState::default();
+    ps.task_session_spans.push(TaskSessionSpan {
+        task_id: "review-200".to_string(),
+        agent_name: "broadway".to_string(),
+        agent_type: "reviewer".to_string(),
+        session_id: "sess-broadway".to_string(),
+        start_time: chrono::Utc::now(),
+        end_time: None,
+    });
+    ps.task_pr_number.insert("review-200".to_string(), 2000_u64);
 
-    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
+    // Session record shows is_running = false (stale), but process is alive
+    ps.sessions.insert(
+        "sess-broadway".to_string(),
+        SessionRecord {
+            session_id: "sess-broadway".to_string(),
+            is_running: false,
+            ..Default::default()
+        },
+    );
+
+    let mut process_health = HashMap::new();
     process_health.insert(
-        "amsterdam".to_string(),
+        "broadway".to_string(),
         ProcessHealth {
             is_alive: true,
             ..Default::default()
         },
     );
 
-    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
+
     assert!(
-        !active.contains("amsterdam"),
-        "truly stale assignments must NOT protect an alive session — \
-         prevents false positives when a coworker name is reused"
+        active.contains("broadway"),
+        "reviewer alive in process_health must appear in active_reviewers even if is_running=false"
     );
 }
 
-/// Dead reviewers (is_alive=false) must NOT be added by compute_active_reviewers_with_health.
+/// Dead reviewers (is_alive=false AND is_running=false) must NOT appear in active_reviewers.
 #[test]
-fn dead_reviewer_with_expired_assignment_not_in_active_reviewers() {
-    use crate::github_state::{AssignmentSource, GitHubState, PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS};
-    use std::collections::HashMap;
+fn dead_reviewer_not_in_active_reviewers() {
+    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
 
-    let mut github = GitHubState::default();
-    github.assign_reviewer(1553, "amsterdam", AssignmentSource::Webhook);
-    if let Some(a) = github.pr_reviewers.get_mut(&1553) {
-        a.assigned_at = chrono::Utc::now()
-            - chrono::Duration::seconds(PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS as i64 + 15);
-    }
+    let mut ps = DaemonPersistentState::default();
+    ps.task_session_spans.push(TaskSessionSpan {
+        task_id: "review-300".to_string(),
+        agent_name: "amsterdam".to_string(),
+        agent_type: "reviewer".to_string(),
+        session_id: "sess-amsterdam".to_string(),
+        start_time: chrono::Utc::now(),
+        end_time: None, // span still open (not yet closed)
+    });
+    ps.task_pr_number.insert("review-300".to_string(), 3000_u64);
 
-    let mut process_health: HashMap<String, ProcessHealth> = HashMap::new();
-    process_health.insert(
-        "amsterdam".to_string(),
-        ProcessHealth {
-            is_alive: false, // dead — shut down or never started
+    // Session shows not running
+    ps.sessions.insert(
+        "sess-amsterdam".to_string(),
+        SessionRecord {
+            session_id: "sess-amsterdam".to_string(),
+            is_running: false,
             ..Default::default()
         },
     );
 
-    let active = super::compute_active_reviewers_with_health(&github, &process_health);
+    // Process is dead
+    let mut process_health = HashMap::new();
+    process_health.insert(
+        "amsterdam".to_string(),
+        ProcessHealth {
+            is_alive: false,
+            ..Default::default()
+        },
+    );
+
+    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
     assert!(
         !active.contains("amsterdam"),
-        "dead reviewers must NOT be protected by compute_active_reviewers_with_health"
+        "dead reviewers must NOT appear in active_reviewers"
+    );
+}
+
+/// build_reviewer_pr_assignments_from_spans excludes closed spans.
+#[test]
+fn build_reviewer_pr_assignments_excludes_closed_spans() {
+    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
+
+    let mut ps = DaemonPersistentState::default();
+    // Closed span — review is done
+    ps.task_session_spans.push(TaskSessionSpan {
+        task_id: "review-400".to_string(),
+        agent_name: "park".to_string(),
+        agent_type: "reviewer".to_string(),
+        session_id: "sess-park".to_string(),
+        start_time: chrono::Utc::now() - chrono::Duration::hours(1),
+        end_time: Some(chrono::Utc::now()), // closed span
+    });
+    ps.task_pr_number.insert("review-400".to_string(), 4000_u64);
+
+    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
+
+    assert!(
+        !assignments.contains_key("park"),
+        "closed spans must NOT appear in reviewer_pr_assignments"
     );
 }
 
@@ -721,177 +664,110 @@ fn find_session_for_task_returns_none_when_session_id_stale() {
     assert!(snap.find_session_for_task("42").is_none());
 }
 
-// ── restart_counts merge logic ────────────────────────────────────────────────
+// ── reviewer_restart_counts from task_restart_count ──────────────────────────
 //
-// These tests exercise the same merge logic used in `collect_world_snapshot` to
-// build `reviewer_restart_counts`. The logic is: start from `pr_reviewers`, then
-// let `task_reviewer_metadata` overwrite/add entries (task-centric model takes
-// precedence).
+// These tests verify the span-based logic used in `collect_world_snapshot` to
+// build `reviewer_restart_counts`. The logic reads from `task_restart_count`
+// (task-centric) and maps to PR numbers via `task_pr_number`.
 
-/// Verify that `task_reviewer_metadata` restart_counts override `pr_reviewers`
-/// when both have entries for the same PR.
+/// Verify that `reviewer_restart_counts` is populated from `task_restart_count`
+/// via `task_pr_number` mapping.
 #[test]
-fn reviewer_restart_counts_task_metadata_takes_precedence_over_pr_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, TaskReviewerMetadata};
-    use crate::github_state::AssignmentSource;
+fn reviewer_restart_counts_from_task_restart_count() {
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
     let pr_number: u64 = 10;
+    let task_id = "review-task-10";
 
-    // pr_reviewers has restart_count = 1 (stale/legacy value)
-    ps.github
-        .assign_reviewer(pr_number, "lexington", AssignmentSource::Webhook);
-    ps.github.assign_reviewer_with_restart_count(
-        pr_number,
-        "lexington",
-        AssignmentSource::Webhook,
-        1,
-    );
+    ps.task_pr_number.insert(task_id.to_string(), pr_number);
+    ps.task_restart_count.insert(task_id.to_string(), 3);
 
-    // task_reviewer_metadata has restart_count = 3 (authoritative value)
-    ps.task_reviewer_metadata.insert(
-        "review-task-10".to_string(),
-        TaskReviewerMetadata {
-            pr_number,
-            placeholder_comment_id: None,
-            restart_count: 3,
-            reviewer_session_id: None,
-        },
-    );
-
-    // Replicate the merge logic from collect_world_snapshot
-    let mut counts: HashMap<u64, u32> = ps
-        .github
-        .pr_reviewers
+    // Replicate the logic from collect_world_snapshot
+    let counts: HashMap<u64, u32> = ps
+        .task_restart_count
         .iter()
-        .filter(|(_, a)| a.restart_count > 0)
-        .map(|(pr, a)| (*pr, a.restart_count))
+        .filter_map(|(tid, &count)| ps.task_pr_number.get(tid).map(|&pr| (pr, count)))
         .collect();
-    for meta in ps.task_reviewer_metadata.values() {
-        if meta.restart_count > 0 {
-            counts.insert(meta.pr_number, meta.restart_count);
-        }
-    }
 
     assert_eq!(
         counts.get(&pr_number),
         Some(&3),
-        "task_reviewer_metadata restart_count (3) should override pr_reviewers (1)"
+        "restart_count (3) should be read from task_restart_count via task_pr_number"
     );
 }
 
-/// Verify that `restart_counts` is populated from `pr_reviewers` when
-/// `task_reviewer_metadata` has no entry for the PR (legacy fallback).
+/// Verify that `reviewer_restart_counts` is empty when no task_restart_count entries exist.
 #[test]
-fn reviewer_restart_counts_falls_back_to_pr_reviewers_when_no_task_metadata() {
+fn reviewer_restart_counts_empty_when_no_task_restart_count() {
     use crate::daemon::state::DaemonPersistentState;
-    use crate::github_state::AssignmentSource;
 
     let mut ps = DaemonPersistentState::default();
-    let pr_number: u64 = 20;
+    ps.task_pr_number
+        .insert("review-task-20".to_string(), 20_u64);
+    // No task_restart_count entry — restart_count defaults to 0
 
-    // Only pr_reviewers has data — no task_reviewer_metadata entry
-    ps.github.assign_reviewer_with_restart_count(
-        pr_number,
-        "broadway",
-        AssignmentSource::Webhook,
-        2,
-    );
-
-    let mut counts: HashMap<u64, u32> = ps
-        .github
-        .pr_reviewers
+    let counts: HashMap<u64, u32> = ps
+        .task_restart_count
         .iter()
-        .filter(|(_, a)| a.restart_count > 0)
-        .map(|(pr, a)| (*pr, a.restart_count))
+        .filter_map(|(tid, &count)| ps.task_pr_number.get(tid).map(|&pr| (pr, count)))
         .collect();
-    for meta in ps.task_reviewer_metadata.values() {
-        if meta.restart_count > 0 {
-            counts.insert(meta.pr_number, meta.restart_count);
-        }
-    }
 
-    assert_eq!(
-        counts.get(&pr_number),
-        Some(&2),
-        "should fall back to pr_reviewers restart_count when no task_reviewer_metadata entry exists"
+    assert!(
+        counts.is_empty(),
+        "restart_counts should be empty when no task_restart_count entries exist"
     );
 }
 
-/// Verify that `stored_placeholder_ids` uses `task_reviewer_metadata` as the
-/// preferred source over `pr_reviewers.placeholder_comment_id`.
+// ── stored_placeholder_ids from task_placeholder_comment_id ──────────────────
+
+/// Verify that `stored_placeholder_ids` reads from `task_placeholder_comment_id`
+/// via `task_pr_number` reverse lookup.
 #[test]
-fn stored_placeholder_ids_prefers_task_reviewer_metadata_over_pr_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, TaskReviewerMetadata};
-    use crate::github_state::AssignmentSource;
+fn stored_placeholder_ids_from_task_placeholder_comment_id() {
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
     let pr_number: u64 = 30;
+    let task_id = "review-task-30";
 
-    // pr_reviewers has an older placeholder (legacy)
-    ps.github
-        .assign_reviewer(pr_number, "park", AssignmentSource::Webhook);
-    if let Some(a) = ps.github.pr_reviewers.get_mut(&pr_number) {
-        a.placeholder_comment_id = Some(1111);
-    }
-
-    // task_reviewer_metadata has the newer placeholder (preferred)
-    ps.task_reviewer_metadata.insert(
-        "review-task-30".to_string(),
-        TaskReviewerMetadata {
-            pr_number,
-            placeholder_comment_id: Some(2222),
-            restart_count: 0,
-            reviewer_session_id: None,
-        },
-    );
+    ps.task_pr_number.insert(task_id.to_string(), pr_number);
+    ps.task_placeholder_comment_id
+        .insert(task_id.to_string(), 2222);
 
     // Replicate the stored_placeholder_ids logic from collect_world_snapshot
-    let id = crate::daemon::state::task_reviewer_metadata_for_pr(&ps, pr_number)
-        .and_then(|m| m.placeholder_comment_id)
-        .or_else(|| {
-            ps.github
-                .pr_reviewers
-                .get(&pr_number)
-                .and_then(|a| a.placeholder_comment_id)
-        });
+    let id = ps
+        .task_pr_number
+        .iter()
+        .find(|&(_, &p)| p == pr_number)
+        .and_then(|(tid, _)| ps.task_placeholder_comment_id.get(tid))
+        .copied();
 
     assert_eq!(
         id,
         Some(2222),
-        "task_reviewer_metadata placeholder (2222) should take precedence over pr_reviewers (1111)"
+        "placeholder comment ID (2222) should be read from task_placeholder_comment_id"
     );
 }
 
-/// Verify that `stored_placeholder_ids` falls back to `pr_reviewers` when
-/// `task_reviewer_metadata` has no entry for the PR.
+/// Verify that `stored_placeholder_ids` returns None when no entry exists.
 #[test]
-fn stored_placeholder_ids_falls_back_to_pr_reviewers_when_no_task_metadata() {
+fn stored_placeholder_ids_none_when_no_task_entry() {
     use crate::daemon::state::DaemonPersistentState;
-    use crate::github_state::AssignmentSource;
 
-    let mut ps = DaemonPersistentState::default();
+    let ps = DaemonPersistentState::default();
     let pr_number: u64 = 40;
+    // No task_pr_number entry for this PR
 
-    // Only pr_reviewers has the placeholder — no task_reviewer_metadata entry
-    ps.github
-        .assign_reviewer(pr_number, "madison", AssignmentSource::Webhook);
-    if let Some(a) = ps.github.pr_reviewers.get_mut(&pr_number) {
-        a.placeholder_comment_id = Some(3333);
-    }
-
-    let id = crate::daemon::state::task_reviewer_metadata_for_pr(&ps, pr_number)
-        .and_then(|m| m.placeholder_comment_id)
-        .or_else(|| {
-            ps.github
-                .pr_reviewers
-                .get(&pr_number)
-                .and_then(|a| a.placeholder_comment_id)
-        });
+    let id = ps
+        .task_pr_number
+        .iter()
+        .find(|&(_, &p)| p == pr_number)
+        .and_then(|(tid, _)| ps.task_placeholder_comment_id.get(tid))
+        .copied();
 
     assert_eq!(
-        id,
-        Some(3333),
-        "should fall back to pr_reviewers placeholder when no task_reviewer_metadata exists"
+        id, None,
+        "should return None when no task_placeholder_comment_id entry exists"
     );
 }
