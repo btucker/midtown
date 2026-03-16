@@ -1920,6 +1920,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             reviewer_session_id: reviewer_session_id.clone(),
                         });
                 }
+                // Dual-write: also create a TaskSessionSpan
+                if let Some(ref tid) = task_id {
+                    ps.create_span(
+                        tid,
+                        &reviewer_name,
+                        "reviewer",
+                        reviewer_session_id.as_deref().unwrap_or(""),
+                    );
+                    ps.task_pr_number.insert(tid.clone(), pr_number);
+                }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save daemon-state.json: {}", e);
                 }
@@ -1931,6 +1941,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Removed reviewer assignment for PR #{} (was assigned to {})",
                         pr_number, assignment.reviewer
                     );
+                    // Dual-write: close any open spans for this PR's reviewer task
+                    let task_ids_to_close: Vec<String> = ps
+                        .task_session_spans
+                        .iter()
+                        .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
+                        .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
+                        .map(|s| s.task_id.clone())
+                        .collect();
+                    for task_id in task_ids_to_close {
+                        ps.close_spans_for_task(&task_id);
+                    }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save daemon-state.json after removing assignment: {}",
