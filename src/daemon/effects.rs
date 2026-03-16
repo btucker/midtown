@@ -773,6 +773,9 @@ pub enum Effect {
         session_id: String,
         /// For reviewer tasks: the PR number being reviewed.
         pr_number: Option<u64>,
+        /// How many times this reviewer has been restarted for this PR.
+        /// Persisted to `task_restart_count` for stuck reviewer backoff.
+        restart_count: u32,
     },
     /// Close a task session span (session stopping work on a task).
     CloseTaskSessionSpan { session_id: String, task_id: String },
@@ -1873,11 +1876,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 agent_type,
                 session_id,
                 pr_number,
+                restart_count,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 ps.create_span(&task_id, &agent_name, &agent_type, &session_id);
                 if let Some(pr) = pr_number {
                     ps.task_pr_number.insert(task_id.clone(), pr);
+                }
+                if restart_count > 0 {
+                    ps.task_restart_count.insert(task_id.clone(), restart_count);
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(

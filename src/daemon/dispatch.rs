@@ -2194,6 +2194,7 @@ fn dispatch_unowned_pending_tasks(
                     agent_type: "reviewer".to_string(),
                     session_id: String::new(),
                     pr_number: Some(pr_number),
+                    restart_count: 0,
                 },
                 effects::Effect::PostPrComment {
                     pr_number,
