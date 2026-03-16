@@ -110,6 +110,7 @@ The Project Lead is just a Claude Code session, but it's been booted with a [spe
 | `midtown task create <subject> [...]` | Create a task (see [CLI reference](docs/cli.md) for all options) |
 | `midtown task list` | List tasks |
 | `midtown task view <id>` | View task details |
+| `midtown task handoff --id <N> --agent <type>` | Swap agent type on a task's session (preserves conversation history) |
 | `midtown notes list [--channel <name>] [--stale]` | List channel notes with staleness status |
 | `midtown notes review <path>` | Mark a note as reviewed (stamps `reviewed_at` in frontmatter) |
 | `midtown pr list` | List pull requests |
