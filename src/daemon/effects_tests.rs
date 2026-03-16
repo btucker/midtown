@@ -3366,3 +3366,177 @@ fi
         log_contents,
     );
 }
+
+// ── refresh_channel_lead_worktree tests ─────────────────────────────────
+
+/// Create a temporary git repo with one commit and return its path.
+fn create_temp_git_repo() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_path = dir.path().to_path_buf();
+
+    Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    // Create initial commit
+    std::fs::write(repo_path.join("file.txt"), "initial").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    (dir, repo_path)
+}
+
+#[tokio::test]
+async fn test_refresh_channel_lead_worktree_updates_to_origin() {
+    let (_dir, repo_path) = create_temp_git_repo();
+
+    // Create a detached worktree
+    let worktree_path = repo_path.join("worktrees").join("ops");
+    std::fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+    let output = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "--detach",
+            worktree_path.to_str().unwrap(),
+            "HEAD",
+        ])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Failed to create worktree");
+
+    // Record the worktree's current HEAD
+    let old_head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Make a new commit in the main repo
+    std::fs::write(repo_path.join("file.txt"), "updated").unwrap();
+    Command::new("git")
+        .args(["add", "."])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["commit", "-m", "second commit"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    let new_head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_ne!(old_head, new_head, "New commit should have different SHA");
+
+    // Simulate "origin/main" by creating a bare clone as origin.
+    let origin_tmpdir = tempfile::tempdir().unwrap();
+    let origin_dir = origin_tmpdir.path().join("origin.git");
+    let output = Command::new("git")
+        .args([
+            "clone",
+            "--bare",
+            repo_path.to_str().unwrap(),
+            origin_dir.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Failed to create bare clone: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Add origin remote to the main repo (worktree shares the git config)
+    Command::new("git")
+        .args(["remote", "add", "origin", origin_dir.to_str().unwrap()])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["fetch", "origin"])
+        .current_dir(&repo_path)
+        .output()
+        .unwrap();
+
+    // Verify the worktree is still at the old HEAD
+    let wt_head_before = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(
+        wt_head_before, old_head,
+        "Worktree should still be at old HEAD"
+    );
+
+    // Run the refresh
+    super::refresh_channel_lead_worktree(&worktree_path, "main").await;
+
+    // Verify the worktree is now at origin/main
+    let wt_head_after = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&worktree_path)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(
+        wt_head_after, new_head,
+        "Worktree should be updated to origin/main"
+    );
+}
+
+#[tokio::test]
+async fn test_refresh_channel_lead_worktree_nonexistent_path() {
+    // Should be a no-op (not panic) when the worktree doesn't exist
+    let path = std::path::PathBuf::from("/tmp/nonexistent-worktree-test-12345");
+    super::refresh_channel_lead_worktree(&path, "main").await;
+    // No panic = success
+}

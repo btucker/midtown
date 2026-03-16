@@ -2927,6 +2927,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::RespawnChannelLead { channel_name } => {
+                // Refresh the worktree to origin/<default_branch> BEFORE spawning.
+                // This prevents crash loops caused by stale worktree contents —
+                // if old code crashes the lead on startup, spawning into the same
+                // stale worktree would repeat the crash indefinitely.
+                let worktree_path =
+                    crate::paths::worktrees_dir_for_repo(state.paths.dir_key()).join(&channel_name);
+                refresh_channel_lead_worktree(&worktree_path, &state.default_branch).await;
+
                 let base_dir = state.paths.base_dir().to_path_buf();
                 let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
                 let dir_key = state.paths.dir_key().to_string();
@@ -3461,6 +3469,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         wf_state_summary,
                     )
                     .await;
+
+                    // Refresh the worktree before spawning/resuming to prevent
+                    // stale code from crashing the channel lead on startup.
+                    let worktree_path = crate::paths::worktrees_dir_for_repo(state.paths.dir_key())
+                        .join(&channel_name);
+                    refresh_channel_lead_worktree(&worktree_path, &state.default_branch).await;
 
                     match (session_id.as_deref(), can_resume_channel_lead) {
                         (Some(id), true) => {
@@ -4896,6 +4910,71 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
         },
     };
     Box::pin(execute_effects(vec![nudge_effect], state)).await;
+}
+
+/// Refresh a channel lead worktree to `origin/<default_branch>`.
+///
+/// Runs `git checkout --detach origin/<branch>` in the worktree directory.
+/// The `git fetch` is already done by snapshot collection
+/// (`collect_stale_channel_lead_worktrees`), so we only need the checkout.
+///
+/// This is called BEFORE spawning the channel lead to prevent crash loops
+/// caused by stale worktree contents. If the refresh fails (e.g., worktree
+/// doesn't exist yet), we log and continue — `create_detached_worktree` in
+/// `prepare_spawn` will create a fresh one from `origin/<branch>` anyway.
+async fn refresh_channel_lead_worktree(worktree_path: &std::path::Path, default_branch: &str) {
+    if !worktree_path.exists() {
+        debug!(
+            "Channel lead worktree does not exist yet at {}, skipping refresh",
+            worktree_path.display()
+        );
+        return;
+    }
+
+    let origin_ref = format!("origin/{}", default_branch);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tokio::process::Command::new("git")
+            .args(["checkout", "--detach", &origin_ref])
+            .current_dir(worktree_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(output)) if output.status.success() => {
+            info!(
+                "Refreshed channel lead worktree at {} to {}",
+                worktree_path.display(),
+                origin_ref
+            );
+        }
+        Ok(Ok(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(
+                "Failed to refresh channel lead worktree at {} to {}: {}",
+                worktree_path.display(),
+                origin_ref,
+                stderr.trim()
+            );
+        }
+        Ok(Err(e)) => {
+            warn!(
+                "Failed to run git checkout in channel lead worktree at {}: {}",
+                worktree_path.display(),
+                e
+            );
+        }
+        Err(_) => {
+            warn!(
+                "Timed out refreshing channel lead worktree at {}",
+                worktree_path.display()
+            );
+        }
+    }
 }
 
 #[path = "effects_tests.rs"]
