@@ -200,11 +200,15 @@ async fn test_reconcile_catches_no_handle_sessions() {
     // This simulates the inconsistent state where a session handle is lost
     insert_test_session(&sm, "madison", SessionStatus::Running).await;
 
-    let stopped = sm.reconcile_process_health().await;
+    let (stopped, stderr_map) = sm.reconcile_process_health().await;
     assert_eq!(
         stopped,
         vec!["madison"],
         "Should detect handle-less Running session"
+    );
+    assert!(
+        stderr_map.is_empty(),
+        "No stderr expected for handle-less session"
     );
 
     // Verify the session is now marked as Stopped
@@ -221,7 +225,7 @@ async fn test_reconcile_skips_already_stopped() {
 
     insert_test_session(&sm, "park", SessionStatus::Stopped).await;
 
-    let stopped = sm.reconcile_process_health().await;
+    let (stopped, _stderr_map) = sm.reconcile_process_health().await;
     assert!(
         stopped.is_empty(),
         "Should not flag already-stopped sessions"
@@ -231,7 +235,7 @@ async fn test_reconcile_skips_already_stopped() {
 #[tokio::test]
 async fn test_reconcile_empty() {
     let sm = SessionManager::new("test-repo".to_string());
-    let stopped = sm.reconcile_process_health().await;
+    let (stopped, _stderr_map) = sm.reconcile_process_health().await;
     assert!(stopped.is_empty());
 }
 
