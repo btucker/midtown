@@ -709,7 +709,7 @@ pub fn update_task_fields_for_repo(
 /// Clear a task's owner without changing its status.
 ///
 /// Used when a coworker goes idle after opening a PR — the task stays in_progress
-/// (linked to the PR via PrAuthorSession) but the coworker name is freed for new work.
+/// (linked to the PR via SessionRecord) but the coworker name is freed for new work.
 pub fn unassign_task_for_repo(task_id: &str, dir_key: &str) -> Result<(), String> {
     use fs2::FileExt;
 

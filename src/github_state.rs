@@ -42,14 +42,6 @@ pub struct GitHubState {
     #[serde(default)]
     pub pr_last_webhook_event: HashMap<u64, DateTime<Utc>>,
 
-    /// Map of PR number -> author session info for PR handoff.
-    ///
-    /// When a coworker opens a PR, we store their Claude session ID so that
-    /// any other coworker can resume work on that PR with full context.
-    /// This enables PR continuity when the original author is unavailable.
-    #[serde(default)]
-    pub pr_author_sessions: HashMap<u64, PrAuthorSession>,
-
     /// GitHub API rate limit state (GraphQL and REST quotas).
     /// Fetched periodically to enable adaptive throttling when quotas run low.
     #[serde(default)]
@@ -141,26 +133,6 @@ pub struct PrReviewerAssignment {
     pub placeholder_comment_id: Option<u64>,
 }
 
-/// Tracks the Claude session associated with a PR author.
-///
-/// When a coworker opens a PR, we store their session ID so that any other
-/// coworker can later resume work on that PR with full context preserved.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PrAuthorSession {
-    /// The Claude session ID (UUID) used when the PR was created.
-    pub session_id: String,
-    /// The git branch name for this PR.
-    pub branch: String,
-    /// The coworker who originally authored the PR.
-    pub original_author: String,
-    /// When this session was recorded.
-    pub stored_at: DateTime<Utc>,
-    /// The task ID associated with this PR (extracted from [Midtown !XXX] in PR title).
-    /// Used to prevent auto-completion of tasks until the PR merges.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-}
-
 /// Info about an external (fork/cross-repo) PR that is blocked from daemon processing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalPrInfo {
@@ -179,25 +151,6 @@ pub struct ExternalPrInfo {
 
 fn default_assignment_source() -> AssignmentSource {
     AssignmentSource::PollingFallback
-}
-
-/// Extract task ID from a PR title in the format "[Midtown !XXX]".
-///
-/// Returns the task ID as a string (e.g., "42") if found, otherwise None.
-fn extract_task_id_from_title(title: &str) -> Option<String> {
-    // Look for pattern "[Midtown !NNN]" - case insensitive
-    let lower = title.to_lowercase();
-    if let Some(start) = lower.find("[midtown !") {
-        let after_marker = &title[start + 10..]; // Skip "[midtown !"
-        if let Some(end) = after_marker.find(']') {
-            let num_str = after_marker[..end].trim();
-            // Validate it's all digits
-            if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit()) {
-                return Some(num_str.to_string());
-            }
-        }
-    }
-    None
 }
 
 impl GitHubState {
@@ -589,83 +542,10 @@ impl GitHubState {
         self.pr_last_webhook_event
             .retain(|pr, _| open_set.contains(pr));
 
-        // Clean up PR author sessions for closed PRs
-        self.pr_author_sessions
-            .retain(|pr, _| open_set.contains(pr));
-
         // NOTE: cleanup_closed_external_prs is NOT called here because
         // cleanup_closed_prs receives a filtered list (external PRs already removed).
         // External PR cleanup is called separately with the unfiltered PR list
         // in evaluate_open_prs.
-    }
-
-    /// Store the Claude session ID for a PR author.
-    ///
-    /// Called when a coworker opens a PR, so that any other coworker can later
-    /// resume work on that PR with the original session context. Also extracts
-    /// the task ID from the PR title if present (format: "[Midtown !XXX]").
-    pub fn store_pr_author_session(
-        &mut self,
-        pr_number: u64,
-        session_id: &str,
-        branch: &str,
-        author: &str,
-        title: &str,
-    ) {
-        let task_id = extract_task_id_from_title(title);
-        debug!(
-            "Storing author session for PR #{}: session={}, branch={}, author={}, task_id={:?}",
-            pr_number, session_id, branch, author, task_id
-        );
-        self.pr_author_sessions.insert(
-            pr_number,
-            PrAuthorSession {
-                session_id: session_id.to_string(),
-                branch: branch.to_string(),
-                original_author: author.to_string(),
-                stored_at: Utc::now(),
-                task_id,
-            },
-        );
-    }
-
-    /// Get the stored author session for a PR.
-    ///
-    /// Returns the session ID and branch info if available, allowing another
-    /// coworker to resume work on this PR with full context.
-    pub fn get_pr_author_session(&self, pr_number: u64) -> Option<&PrAuthorSession> {
-        self.pr_author_sessions.get(&pr_number)
-    }
-
-    /// Remove the stored author session for a PR (e.g., when PR is merged/closed).
-    pub fn remove_pr_author_session(&mut self, pr_number: u64) -> Option<PrAuthorSession> {
-        self.pr_author_sessions.remove(&pr_number)
-    }
-
-    /// Maps PR number → task ID for all author sessions that have a task ID.
-    pub fn pr_to_task_map(&self) -> HashMap<u64, String> {
-        self.pr_author_sessions
-            .iter()
-            .filter_map(|(pr_number, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (*pr_number, task_id.clone()))
-            })
-            .collect()
-    }
-
-    /// Maps task ID → PR number for all author sessions that have a task ID.
-    pub fn task_to_pr_map(&self) -> HashMap<String, u64> {
-        self.pr_author_sessions
-            .iter()
-            .filter_map(|(pr_number, session)| {
-                session
-                    .task_id
-                    .as_ref()
-                    .map(|task_id| (task_id.clone(), *pr_number))
-            })
-            .collect()
     }
 
     /// Record a review comment ID for a PR.

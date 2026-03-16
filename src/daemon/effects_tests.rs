@@ -394,144 +394,6 @@ fn test_dedup_quadruple_nudge_scenario() {
 }
 
 #[tokio::test]
-async fn test_complete_task_cleans_up_pr_author_sessions() {
-    use crate::daemon::state::DaemonPersistentState;
-    use crate::github_state::PrAuthorSession;
-    use chrono::Utc;
-    use std::collections::HashMap;
-
-    let mut persistent_state = DaemonPersistentState::default();
-
-    // Set up pr_author_sessions with entries for different tasks
-    let mut pr_sessions = HashMap::new();
-    pr_sessions.insert(
-        1001,
-        PrAuthorSession {
-            session_id: "session-abc".to_string(),
-            branch: "vernon/fix-task-42".to_string(),
-            original_author: "vernon".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("42".to_string()),
-        },
-    );
-    pr_sessions.insert(
-        1002,
-        PrAuthorSession {
-            session_id: "session-def".to_string(),
-            branch: "park/feature-task-99".to_string(),
-            original_author: "park".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("99".to_string()),
-        },
-    );
-    pr_sessions.insert(
-        1003,
-        PrAuthorSession {
-            session_id: "session-ghi".to_string(),
-            branch: "madison/another-task-42".to_string(),
-            original_author: "madison".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("42".to_string()),
-        },
-    );
-    pr_sessions.insert(
-        1004,
-        PrAuthorSession {
-            session_id: "session-jkl".to_string(),
-            branch: "broadway/no-task".to_string(),
-            original_author: "broadway".to_string(),
-            stored_at: Utc::now(),
-            task_id: None,
-        },
-    );
-    persistent_state.github.pr_author_sessions = pr_sessions;
-
-    let completed_task_id = "42";
-    persistent_state
-        .github
-        .pr_author_sessions
-        .retain(|_, session| session.task_id.as_deref() != Some(completed_task_id));
-
-    assert!(
-        !persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1001)
-    );
-    assert!(
-        persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1002)
-    );
-    assert!(
-        !persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1003)
-    );
-    assert!(
-        persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1004)
-    );
-    assert_eq!(persistent_state.github.pr_author_sessions.len(), 2);
-}
-
-#[tokio::test]
-async fn test_cleanup_merged_worktree_removes_pr_author_session() {
-    use crate::daemon::state::DaemonPersistentState;
-    use crate::github_state::PrAuthorSession;
-    use chrono::Utc;
-    use std::collections::HashMap;
-
-    let mut persistent_state = DaemonPersistentState::default();
-    let mut pr_sessions = HashMap::new();
-    pr_sessions.insert(
-        1001,
-        PrAuthorSession {
-            session_id: "session-abc".to_string(),
-            branch: "vernon/fix-bug".to_string(),
-            original_author: "vernon".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("42".to_string()),
-        },
-    );
-    pr_sessions.insert(
-        1002,
-        PrAuthorSession {
-            session_id: "session-def".to_string(),
-            branch: "park/feature".to_string(),
-            original_author: "park".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("99".to_string()),
-        },
-    );
-    persistent_state.github.pr_author_sessions = pr_sessions;
-
-    let merged_pr_number = 1001;
-    persistent_state
-        .github
-        .pr_author_sessions
-        .remove(&merged_pr_number);
-
-    assert!(
-        !persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1001)
-    );
-    assert!(
-        persistent_state
-            .github
-            .pr_author_sessions
-            .contains_key(&1002)
-    );
-    assert_eq!(persistent_state.github.pr_author_sessions.len(), 1);
-}
-
-#[tokio::test]
 async fn test_execute_effects_cleanup_merged_worktree_removes_registry_entry_and_posts_ops_message()
 {
     use chrono::Utc;
@@ -897,44 +759,6 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     assert_eq!(pool.available_count(), 3);
     assert!(name_to_session.is_empty());
     assert!(session_to_name.is_empty());
-}
-
-#[tokio::test]
-async fn test_cleanup_merged_worktree_saves_when_only_pr_session_removed() {
-    use crate::daemon::state::DaemonPersistentState;
-    use crate::github_state::PrAuthorSession;
-    use chrono::Utc;
-    use std::collections::HashMap;
-    use tempfile::tempdir;
-
-    let midtown_dir = tempdir().unwrap();
-    let _midtown_guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
-    let repo_name = "test-repo";
-
-    let mut persistent_state = DaemonPersistentState::default();
-    let mut pr_sessions = HashMap::new();
-    pr_sessions.insert(
-        2001,
-        PrAuthorSession {
-            session_id: "stale-session".to_string(),
-            branch: "old-branch".to_string(),
-            original_author: "columbus".to_string(),
-            stored_at: Utc::now(),
-            task_id: Some("123".to_string()),
-        },
-    );
-    persistent_state.github.pr_author_sessions = pr_sessions;
-    persistent_state.save_for_repo(repo_name).unwrap();
-
-    let loaded_before = DaemonPersistentState::load_for_repo(repo_name).unwrap();
-    assert!(loaded_before.github.pr_author_sessions.contains_key(&2001));
-
-    let pr_session_removed = persistent_state.github.pr_author_sessions.remove(&2001);
-    assert!(pr_session_removed.is_some());
-    persistent_state.save_for_repo(repo_name).unwrap();
-
-    let loaded_after = DaemonPersistentState::load_for_repo(repo_name).unwrap();
-    assert!(!loaded_after.github.pr_author_sessions.contains_key(&2001));
 }
 
 #[test]
@@ -3367,7 +3191,7 @@ async fn test_record_task_assignment_fixes_insight_routing() {
 }
 
 #[test]
-fn store_pr_author_session_backfills_pr_number_on_session_record() {
+fn link_pr_to_session_backfills_pr_number_on_session_record() {
     let mut ps = crate::daemon::state::DaemonPersistentState::default();
     let session = crate::daemon::state::SessionRecord {
         session_id: "session-abc".to_string(),
@@ -3376,7 +3200,7 @@ fn store_pr_author_session_backfills_pr_number_on_session_record() {
     };
     ps.sessions.insert("session-abc".to_string(), session);
 
-    // Simulate what StorePrAuthorSession handler does:
+    // Simulate what LinkPrToSession handler does:
     let pr_number: u64 = 100;
     let session_id = "session-abc";
     if let Some(record) = ps.sessions.get_mut(session_id)
@@ -3389,7 +3213,7 @@ fn store_pr_author_session_backfills_pr_number_on_session_record() {
 }
 
 #[test]
-fn store_pr_author_session_does_not_overwrite_existing_pr_number() {
+fn link_pr_to_session_does_not_overwrite_existing_pr_number() {
     let mut ps = crate::daemon::state::DaemonPersistentState::default();
     let session = crate::daemon::state::SessionRecord {
         session_id: "session-abc".to_string(),
@@ -3410,4 +3234,162 @@ fn store_pr_author_session_does_not_overwrite_existing_pr_number() {
 
     // Should keep the original PR number
     assert_eq!(ps.sessions.get("session-abc").unwrap().pr_number, Some(50));
+}
+
+#[test]
+fn link_pr_to_session_backfills_branch_on_session_record() {
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let session = crate::daemon::state::SessionRecord {
+        session_id: "session-abc".to_string(),
+        task_id: Some("42".to_string()),
+        branch: None,
+        ..Default::default()
+    };
+    ps.sessions.insert("session-abc".to_string(), session);
+
+    // Simulate what LinkPrToSession handler does:
+    let branch = "feature-branch".to_string();
+    let session_id = "session-abc";
+    if let Some(record) = ps.sessions.get_mut(session_id)
+        && record.branch.is_none()
+    {
+        record.branch = Some(branch.clone());
+    }
+
+    assert_eq!(
+        ps.sessions.get("session-abc").unwrap().branch,
+        Some("feature-branch".to_string())
+    );
+}
+
+#[test]
+fn store_pr_author_session_does_not_overwrite_existing_branch() {
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let session = crate::daemon::state::SessionRecord {
+        session_id: "session-abc".to_string(),
+        task_id: Some("42".to_string()),
+        branch: Some("existing-branch".to_string()), // Already has a branch
+        ..Default::default()
+    };
+    ps.sessions.insert("session-abc".to_string(), session);
+
+    // Simulate backfill — should NOT overwrite
+    let branch = "feature-branch".to_string();
+    let session_id = "session-abc";
+    if let Some(record) = ps.sessions.get_mut(session_id)
+        && record.branch.is_none()
+    {
+        record.branch = Some(branch.clone());
+    }
+
+    // Should keep the original branch
+    assert_eq!(
+        ps.sessions.get("session-abc").unwrap().branch,
+        Some("existing-branch".to_string())
+    );
+}
+
+// ============================================================================
+// lookup_existing_placeholder — task_reviewer_metadata tier-1 path
+// ============================================================================
+
+/// Verify that `post_pr_comment` reuses a placeholder stored in
+/// `task_reviewer_metadata` even when `pr_reviewers` has no `placeholder_comment_id`.
+///
+/// This covers the tier-1 lookup path in `lookup_existing_placeholder` that
+/// prefers `task_reviewer_metadata` over `pr_reviewers`. Before this path was
+/// added, only `PrReviewerAssignment.placeholder_comment_id` was checked, causing
+/// the task-centric model to miss stored placeholder IDs.
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await.
+#[tokio::test]
+async fn test_post_pr_comment_reuses_placeholder_from_task_reviewer_metadata() {
+    use crate::daemon::state::TaskReviewerMetadata;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _path_guard = crate::daemon::PATH_LOCK.lock().unwrap();
+
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-task-reviewer-meta");
+
+    let pr_number = 66u64;
+    let existing_comment_id = 77777u64;
+    {
+        let mut ps = state.persistent_state.lock().await;
+        // Reviewer assignment exists but has NO placeholder_comment_id —
+        // simulates the task-centric path where pr_reviewers is legacy.
+        ps.github
+            .assign_reviewer(pr_number, "lexington", AssignmentSource::Webhook);
+        // placeholder_comment_id is intentionally NOT set on the assignment.
+
+        // Populate task_reviewer_metadata with the placeholder — this is the
+        // preferred tier-1 source when a review task is tracked.
+        ps.task_reviewer_metadata.insert(
+            "review-task-66".to_string(),
+            TaskReviewerMetadata {
+                pr_number,
+                placeholder_comment_id: Some(existing_comment_id),
+                restart_count: 1,
+                reviewer_session_id: Some("sess-lex-1".to_string()),
+            },
+        );
+    }
+
+    // Mock `gh` to accept the PATCH and log all calls.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let log_file = temp_dir.path().join("gh_calls.log");
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    std::fs::write(
+        &mock_gh_script,
+        format!(
+            r#"#!/bin/bash
+echo "$@" >> "{log}"
+if echo "$@" | grep -q "repo view"; then
+  echo 'test/repo'
+elif echo "$@" | grep -q "PATCH"; then
+  echo '{{"id": {existing_comment_id}}}'
+elif echo "$@" | grep -q "pr comment"; then
+  echo 'https://github.com/test/repo/pull/66#issuecomment-99998'
+fi
+"#,
+            log = log_file.display(),
+            existing_comment_id = existing_comment_id,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
+    let effects = vec![Effect::PostPrComment {
+        pr_number,
+        reviewer_name: "lexington".to_string(),
+        body: "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by lexington..."
+            .to_string(),
+    }];
+    execute_effects(effects, &state).await;
+
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
+
+    // Verify: the PATCH endpoint was called (editing existing comment, not creating new)
+    let log_contents = std::fs::read_to_string(&log_file).unwrap_or_default();
+    assert!(
+        log_contents.contains("PATCH"),
+        "Should have called gh api --method PATCH to edit the placeholder from task_reviewer_metadata, got: {}",
+        log_contents,
+    );
+    assert!(
+        !log_contents.contains("pr comment"),
+        "Should NOT have called `gh pr comment` when task_reviewer_metadata has a placeholder, got: {}",
+        log_contents,
+    );
 }

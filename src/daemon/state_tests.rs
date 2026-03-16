@@ -2,6 +2,159 @@ use super::*;
 use tempfile::tempdir;
 
 #[test]
+fn test_pr_to_task_map_from_sessions() {
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "sess1".to_string(),
+        SessionRecord {
+            session_id: "sess1".to_string(),
+            pr_number: Some(42),
+            task_id: Some("7".to_string()),
+            ..Default::default()
+        },
+    );
+    sessions.insert(
+        "sess2".to_string(),
+        SessionRecord {
+            session_id: "sess2".to_string(),
+            pr_number: None, // no PR — should be excluded
+            task_id: Some("8".to_string()),
+            ..Default::default()
+        },
+    );
+    let map = pr_to_task_map_from_sessions(&sessions);
+    assert_eq!(map.get(&42), Some(&"7".to_string()));
+    assert_eq!(map.len(), 1);
+}
+
+#[test]
+fn test_task_to_pr_map_from_sessions() {
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "sess1".to_string(),
+        SessionRecord {
+            session_id: "sess1".to_string(),
+            pr_number: Some(42),
+            task_id: Some("7".to_string()),
+            ..Default::default()
+        },
+    );
+    sessions.insert(
+        "sess2".to_string(),
+        SessionRecord {
+            session_id: "sess2".to_string(),
+            pr_number: Some(99),
+            task_id: None, // no task — should be excluded
+            ..Default::default()
+        },
+    );
+    let map = task_to_pr_map_from_sessions(&sessions);
+    assert_eq!(map.get("7"), Some(&42u64));
+    assert_eq!(map.len(), 1);
+}
+
+/// Verify that the `AssignReviewer` effect handler logic correctly populates
+/// `task_reviewer_metadata` when a `task_id` is provided.
+///
+/// This test exercises the exact insert logic from the handler to confirm that
+/// `pr_number`, `restart_count`, and `reviewer_session_id` are all preserved.
+#[test]
+fn test_assign_reviewer_populates_task_reviewer_metadata() {
+    let mut ps = DaemonPersistentState::default();
+
+    // Simulate AssignReviewer effect handler logic for a fresh reviewer (restart_count = 0).
+    let pr_number: u64 = 42;
+    let task_id = "review-99".to_string();
+    let reviewer_session_id: Option<String> = Some("sess-abc123".to_string());
+    let restart_count: u32 = 0;
+
+    ps.task_reviewer_metadata.insert(
+        task_id.clone(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count,
+            reviewer_session_id: reviewer_session_id.clone(),
+        },
+    );
+
+    let meta = ps
+        .task_reviewer_metadata
+        .get(&task_id)
+        .expect("task_reviewer_metadata should contain an entry for task_id");
+
+    assert_eq!(meta.pr_number, 42);
+    assert_eq!(meta.restart_count, 0);
+    assert_eq!(meta.reviewer_session_id, reviewer_session_id);
+    assert_eq!(meta.placeholder_comment_id, None);
+}
+
+/// Verify that `task_reviewer_metadata` correctly tracks restart counts
+/// and that `placeholder_comment_id` can be backfilled separately.
+#[test]
+fn test_assign_reviewer_with_restart_count_and_placeholder_backfill() {
+    let mut ps = DaemonPersistentState::default();
+
+    let pr_number: u64 = 77;
+    let task_id = "review-77".to_string();
+    let restart_count: u32 = 2;
+
+    // Simulate initial AssignReviewer with restart count (no session_id yet).
+    ps.task_reviewer_metadata.insert(
+        task_id.clone(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count,
+            reviewer_session_id: None,
+        },
+    );
+
+    // Simulate placeholder_comment_id backfill (from PostPrComment handler).
+    for meta in ps.task_reviewer_metadata.values_mut() {
+        if meta.pr_number == pr_number {
+            meta.placeholder_comment_id = Some(12345);
+        }
+    }
+
+    let meta = ps
+        .task_reviewer_metadata
+        .get(&task_id)
+        .expect("task_reviewer_metadata should contain an entry for task_id");
+
+    assert_eq!(meta.pr_number, 77);
+    assert_eq!(meta.restart_count, 2);
+    assert_eq!(meta.reviewer_session_id, None);
+    assert_eq!(meta.placeholder_comment_id, Some(12345));
+}
+
+/// Verify that when `task_id` is `None`, `task_reviewer_metadata` is NOT populated
+/// (health.rs respawn path when no reviewer task exists yet).
+#[test]
+fn test_assign_reviewer_without_task_id_skips_metadata() {
+    let mut ps = DaemonPersistentState::default();
+
+    // Simulate the None-task_id path: no insert should happen.
+    let task_id: Option<String> = None;
+    if let Some(ref tid) = task_id {
+        ps.task_reviewer_metadata.insert(
+            tid.clone(),
+            TaskReviewerMetadata {
+                pr_number: 99,
+                placeholder_comment_id: None,
+                restart_count: 0,
+                reviewer_session_id: None,
+            },
+        );
+    }
+
+    assert!(
+        ps.task_reviewer_metadata.is_empty(),
+        "task_reviewer_metadata should remain empty when task_id is None"
+    );
+}
+
+#[test]
 fn test_default_state() {
     let state = DaemonPersistentState::default();
     assert!(state.github.pr_reviewers.is_empty());
@@ -1151,6 +1304,110 @@ fn apply_gc_combined_operations() {
     assert!(!state.task_channel.contains_key("old-task"));
 }
 
+/// Verify that `apply_gc` removes `task_reviewer_metadata` entries for tasks
+/// that are passed in the orphaned_task_ids list.
+#[test]
+fn apply_gc_prunes_task_reviewer_metadata() {
+    let mut state = DaemonPersistentState::default();
+
+    // Insert orphaned reviewer metadata
+    state.task_reviewer_metadata.insert(
+        "orphan-review".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 55,
+            placeholder_comment_id: Some(9001),
+            restart_count: 1,
+            reviewer_session_id: Some("sess-old".to_string()),
+        },
+    );
+    // Insert a live task's metadata that should be preserved
+    state.task_reviewer_metadata.insert(
+        "live-review".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 66,
+            placeholder_comment_id: Some(9002),
+            restart_count: 0,
+            reviewer_session_id: Some("sess-live".to_string()),
+        },
+    );
+
+    let result = state.apply_gc(&[], &["orphan-review".to_string()]);
+
+    assert_eq!(result.orphaned_tasks_pruned, 1);
+    assert!(
+        !state.task_reviewer_metadata.contains_key("orphan-review"),
+        "orphaned task_reviewer_metadata entry should be pruned"
+    );
+    assert!(
+        state.task_reviewer_metadata.contains_key("live-review"),
+        "live task_reviewer_metadata entry should be preserved"
+    );
+}
+
+/// Verify that re-assigning a reviewer (respawn, restart_count > 0) preserves
+/// the `placeholder_comment_id` that was backfilled by the `PostPrComment` handler.
+#[test]
+fn assign_reviewer_respawn_preserves_placeholder_comment_id() {
+    let mut ps = DaemonPersistentState::default();
+    let task_id = "review-42".to_string();
+    let pr_number: u64 = 42;
+
+    // Initial assignment (restart_count = 0, no placeholder yet)
+    ps.task_reviewer_metadata
+        .entry(task_id.clone())
+        .and_modify(|existing| {
+            existing.restart_count = 0;
+            existing.reviewer_session_id = Some("sess-1".to_string());
+        })
+        .or_insert(TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: Some("sess-1".to_string()),
+        });
+
+    // Simulate PostPrComment backfilling the placeholder comment ID
+    for meta in ps.task_reviewer_metadata.values_mut() {
+        if meta.pr_number == pr_number {
+            meta.placeholder_comment_id = Some(7777);
+        }
+    }
+
+    // Respawn: re-assign with restart_count = 1, new session ID
+    let restart_count: u32 = 1;
+    let reviewer_session_id: Option<String> = Some("sess-2".to_string());
+    ps.task_reviewer_metadata
+        .entry(task_id.clone())
+        .and_modify(|existing| {
+            existing.restart_count = restart_count;
+            existing.reviewer_session_id = reviewer_session_id.clone();
+        })
+        .or_insert(TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count,
+            reviewer_session_id: reviewer_session_id.clone(),
+        });
+
+    let meta = ps
+        .task_reviewer_metadata
+        .get(&task_id)
+        .expect("task_reviewer_metadata should contain entry after respawn");
+
+    assert_eq!(meta.pr_number, pr_number);
+    assert_eq!(meta.restart_count, 1, "restart_count should be updated");
+    assert_eq!(
+        meta.reviewer_session_id,
+        Some("sess-2".to_string()),
+        "reviewer_session_id should be updated"
+    );
+    assert_eq!(
+        meta.placeholder_comment_id,
+        Some(7777),
+        "placeholder_comment_id should be preserved across respawn"
+    );
+}
+
 // ── channel_workflows tests ───────────────────────────────────────────
 
 #[test]
@@ -1285,4 +1542,135 @@ fn test_task_parent_default_empty() {
         state.task_parent.is_empty(),
         "task_parent should default to empty for old state files"
     );
+}
+
+// ── task_reviewer_metadata tests ─────────────────────────────────────────────
+
+#[test]
+fn test_task_reviewer_metadata_roundtrip() {
+    let mut state = DaemonPersistentState::default();
+    state.task_reviewer_metadata.insert(
+        "42".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 99,
+            placeholder_comment_id: Some(12345),
+            restart_count: 2,
+            reviewer_session_id: Some("sess-abc".to_string()),
+        },
+    );
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    let meta = loaded.task_reviewer_metadata.get("42").unwrap();
+    assert_eq!(meta.pr_number, 99);
+    assert_eq!(meta.placeholder_comment_id, Some(12345));
+    assert_eq!(meta.restart_count, 2);
+    assert_eq!(meta.reviewer_session_id, Some("sess-abc".to_string()));
+}
+
+#[test]
+fn test_task_reviewer_metadata_default_empty_for_old_state() {
+    // Verifies that #[serde(default)] allows loading old state files without the field.
+    let json = r#"{}"#;
+    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(
+        state.task_reviewer_metadata.is_empty(),
+        "task_reviewer_metadata should default to empty for old state files"
+    );
+}
+
+#[test]
+fn test_task_reviewer_metadata_optional_fields() {
+    // Verify that optional fields (placeholder_comment_id, reviewer_session_id) can be None.
+    let mut state = DaemonPersistentState::default();
+    state.task_reviewer_metadata.insert(
+        "7".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 55,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: None,
+        },
+    );
+
+    let json = serde_json::to_string_pretty(&state).unwrap();
+    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+
+    let meta = loaded.task_reviewer_metadata.get("7").unwrap();
+    assert_eq!(meta.pr_number, 55);
+    assert_eq!(meta.placeholder_comment_id, None);
+    assert_eq!(meta.restart_count, 0);
+    assert_eq!(meta.reviewer_session_id, None);
+}
+
+/// Verify that `task_reviewer_metadata_for_pr` returns `None` when no entries
+/// exist for the given PR.
+#[test]
+fn task_reviewer_metadata_for_pr_returns_none_when_absent() {
+    let ps = DaemonPersistentState::default();
+    let result = task_reviewer_metadata_for_pr(&ps, 99);
+    assert!(
+        result.is_none(),
+        "should return None when no metadata exists for PR"
+    );
+}
+
+/// Verify that `task_reviewer_metadata_for_pr` returns the entry with the
+/// highest task ID when multiple entries exist for the same PR number.
+///
+/// This is the deterministic selection rule: when a review task is replaced
+/// (e.g., after a review cycle completes and a new one begins), the entry with
+/// the highest task ID represents the most recent review assignment.
+#[test]
+fn task_reviewer_metadata_for_pr_returns_highest_task_id() {
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 42;
+
+    // Older review cycle — task ID 10
+    ps.task_reviewer_metadata.insert(
+        "10".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: Some(1000),
+            restart_count: 2,
+            reviewer_session_id: Some("sess-old".to_string()),
+        },
+    );
+
+    // Newer review cycle — task ID 20 (higher → should be preferred)
+    ps.task_reviewer_metadata.insert(
+        "20".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: Some(2000),
+            restart_count: 0,
+            reviewer_session_id: Some("sess-new".to_string()),
+        },
+    );
+
+    // Unrelated PR — should not affect selection
+    ps.task_reviewer_metadata.insert(
+        "15".to_string(),
+        TaskReviewerMetadata {
+            pr_number: 99,
+            placeholder_comment_id: None,
+            restart_count: 0,
+            reviewer_session_id: None,
+        },
+    );
+
+    let meta = task_reviewer_metadata_for_pr(&ps, pr_number).expect("should find metadata for PR");
+
+    assert_eq!(
+        meta.placeholder_comment_id,
+        Some(2000),
+        "should return the entry with task ID 20 (highest), not task ID 10"
+    );
+    assert_eq!(
+        meta.reviewer_session_id,
+        Some("sess-new".to_string()),
+        "should return the most recent reviewer session"
+    );
+    assert_eq!(meta.restart_count, 0);
 }

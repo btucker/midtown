@@ -720,3 +720,178 @@ fn find_session_for_task_returns_none_when_session_id_stale() {
     );
     assert!(snap.find_session_for_task("42").is_none());
 }
+
+// ── restart_counts merge logic ────────────────────────────────────────────────
+//
+// These tests exercise the same merge logic used in `collect_world_snapshot` to
+// build `reviewer_restart_counts`. The logic is: start from `pr_reviewers`, then
+// let `task_reviewer_metadata` overwrite/add entries (task-centric model takes
+// precedence).
+
+/// Verify that `task_reviewer_metadata` restart_counts override `pr_reviewers`
+/// when both have entries for the same PR.
+#[test]
+fn reviewer_restart_counts_task_metadata_takes_precedence_over_pr_reviewers() {
+    use crate::daemon::state::{DaemonPersistentState, TaskReviewerMetadata};
+    use crate::github_state::AssignmentSource;
+
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 10;
+
+    // pr_reviewers has restart_count = 1 (stale/legacy value)
+    ps.github
+        .assign_reviewer(pr_number, "lexington", AssignmentSource::Webhook);
+    ps.github.assign_reviewer_with_restart_count(
+        pr_number,
+        "lexington",
+        AssignmentSource::Webhook,
+        1,
+    );
+
+    // task_reviewer_metadata has restart_count = 3 (authoritative value)
+    ps.task_reviewer_metadata.insert(
+        "review-task-10".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: None,
+            restart_count: 3,
+            reviewer_session_id: None,
+        },
+    );
+
+    // Replicate the merge logic from collect_world_snapshot
+    let mut counts: HashMap<u64, u32> = ps
+        .github
+        .pr_reviewers
+        .iter()
+        .filter(|(_, a)| a.restart_count > 0)
+        .map(|(pr, a)| (*pr, a.restart_count))
+        .collect();
+    for meta in ps.task_reviewer_metadata.values() {
+        if meta.restart_count > 0 {
+            counts.insert(meta.pr_number, meta.restart_count);
+        }
+    }
+
+    assert_eq!(
+        counts.get(&pr_number),
+        Some(&3),
+        "task_reviewer_metadata restart_count (3) should override pr_reviewers (1)"
+    );
+}
+
+/// Verify that `restart_counts` is populated from `pr_reviewers` when
+/// `task_reviewer_metadata` has no entry for the PR (legacy fallback).
+#[test]
+fn reviewer_restart_counts_falls_back_to_pr_reviewers_when_no_task_metadata() {
+    use crate::daemon::state::DaemonPersistentState;
+    use crate::github_state::AssignmentSource;
+
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 20;
+
+    // Only pr_reviewers has data — no task_reviewer_metadata entry
+    ps.github.assign_reviewer_with_restart_count(
+        pr_number,
+        "broadway",
+        AssignmentSource::Webhook,
+        2,
+    );
+
+    let mut counts: HashMap<u64, u32> = ps
+        .github
+        .pr_reviewers
+        .iter()
+        .filter(|(_, a)| a.restart_count > 0)
+        .map(|(pr, a)| (*pr, a.restart_count))
+        .collect();
+    for meta in ps.task_reviewer_metadata.values() {
+        if meta.restart_count > 0 {
+            counts.insert(meta.pr_number, meta.restart_count);
+        }
+    }
+
+    assert_eq!(
+        counts.get(&pr_number),
+        Some(&2),
+        "should fall back to pr_reviewers restart_count when no task_reviewer_metadata entry exists"
+    );
+}
+
+/// Verify that `stored_placeholder_ids` uses `task_reviewer_metadata` as the
+/// preferred source over `pr_reviewers.placeholder_comment_id`.
+#[test]
+fn stored_placeholder_ids_prefers_task_reviewer_metadata_over_pr_reviewers() {
+    use crate::daemon::state::{DaemonPersistentState, TaskReviewerMetadata};
+    use crate::github_state::AssignmentSource;
+
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 30;
+
+    // pr_reviewers has an older placeholder (legacy)
+    ps.github
+        .assign_reviewer(pr_number, "park", AssignmentSource::Webhook);
+    if let Some(a) = ps.github.pr_reviewers.get_mut(&pr_number) {
+        a.placeholder_comment_id = Some(1111);
+    }
+
+    // task_reviewer_metadata has the newer placeholder (preferred)
+    ps.task_reviewer_metadata.insert(
+        "review-task-30".to_string(),
+        TaskReviewerMetadata {
+            pr_number,
+            placeholder_comment_id: Some(2222),
+            restart_count: 0,
+            reviewer_session_id: None,
+        },
+    );
+
+    // Replicate the stored_placeholder_ids logic from collect_world_snapshot
+    let id = crate::daemon::state::task_reviewer_metadata_for_pr(&ps, pr_number)
+        .and_then(|m| m.placeholder_comment_id)
+        .or_else(|| {
+            ps.github
+                .pr_reviewers
+                .get(&pr_number)
+                .and_then(|a| a.placeholder_comment_id)
+        });
+
+    assert_eq!(
+        id,
+        Some(2222),
+        "task_reviewer_metadata placeholder (2222) should take precedence over pr_reviewers (1111)"
+    );
+}
+
+/// Verify that `stored_placeholder_ids` falls back to `pr_reviewers` when
+/// `task_reviewer_metadata` has no entry for the PR.
+#[test]
+fn stored_placeholder_ids_falls_back_to_pr_reviewers_when_no_task_metadata() {
+    use crate::daemon::state::DaemonPersistentState;
+    use crate::github_state::AssignmentSource;
+
+    let mut ps = DaemonPersistentState::default();
+    let pr_number: u64 = 40;
+
+    // Only pr_reviewers has the placeholder — no task_reviewer_metadata entry
+    ps.github
+        .assign_reviewer(pr_number, "madison", AssignmentSource::Webhook);
+    if let Some(a) = ps.github.pr_reviewers.get_mut(&pr_number) {
+        a.placeholder_comment_id = Some(3333);
+    }
+
+    let id = crate::daemon::state::task_reviewer_metadata_for_pr(&ps, pr_number)
+        .and_then(|m| m.placeholder_comment_id)
+        .or_else(|| {
+            ps.github
+                .pr_reviewers
+                .get(&pr_number)
+                .and_then(|a| a.placeholder_comment_id)
+        });
+
+    assert_eq!(
+        id,
+        Some(3333),
+        "should fall back to pr_reviewers placeholder when no task_reviewer_metadata exists"
+    );
+}

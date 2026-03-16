@@ -2195,6 +2195,7 @@ fn dispatch_unowned_pending_tasks(
                     source: crate::github_state::AssignmentSource::PollingFallback,
                     restart_count: 0,
                     reviewer_session_id: None,
+                    task_id: Some(task.id.clone()),
                 },
                 effects::Effect::PostPrComment {
                     pr_number,
@@ -2582,8 +2583,8 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
         // Only consider tasks WITHOUT an associated open PR
         // (tasks with PRs are handled by reconcile_tasks_in_review)
-        // Check both sources: pr_author_sessions (tasks_with_open_prs) and GitHub API
-        // (github_open_pr_task_ids). After a daemon restart, pr_author_sessions is empty
+        // Check both sources: SessionRecord (tasks_with_open_prs) and GitHub API
+        // (github_open_pr_task_ids). After a daemon restart, SessionRecord data may be stale
         // but github_open_pr_task_ids is repopulated from the GitHub API — tasks must be
         // protected from reset even when only the GitHub source has them.
         // NOTE: This guard must fire before the ownerless check so that ownerless tasks

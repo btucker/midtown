@@ -389,6 +389,9 @@ pub enum Effect {
         /// Initially `None` for optimistic assignments (before spawn completes);
         /// backfilled by `backfill_reviewer_session_ids()` during subsequent poll ticks.
         reviewer_session_id: Option<String>,
+        /// Review task ID, if known. Used to populate `task_reviewer_metadata`
+        /// so the new task-centric model can find reviewer state by task ID.
+        task_id: Option<String>,
     },
     /// Remove a reviewer assignment for a specific PR.
     ///
@@ -429,12 +432,11 @@ pub enum Effect {
         repo_full_name: String,
         new_body: String,
     },
-    /// Store a PR author's session ID for potential handoff.
+    /// Link a PR to its session record and worktree.
     ///
-    /// When a coworker opens a PR, we store their session ID so any other
-    /// coworker can later resume work on that PR with full context preserved.
-    /// Also extracts and stores the task ID from the PR title.
-    StorePrAuthorSession {
+    /// When a coworker opens a PR, backfill `pr_number` and `branch` on the
+    /// SessionRecord and link the PR to the worktree by branch name.
+    LinkPrToSession {
         pr_number: u64,
         session_id: String,
         branch: String,
@@ -581,7 +583,7 @@ pub enum Effect {
     /// Clear a task's owner without changing its status.
     ///
     /// Used when a coworker opens a PR and goes idle — the task stays in_progress
-    /// (linked to the PR via PrAuthorSession) but the coworker name is freed.
+    /// (linked to the PR via SessionRecord) but the coworker name is freed.
     UnassignTask { task_id: String, dir_key: String },
     /// Reset an abandoned task back to pending.
     ///
@@ -1870,6 +1872,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 source,
                 restart_count,
                 reviewer_session_id,
+                task_id,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 if restart_count > 0 {
@@ -1883,10 +1886,27 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     ps.github.assign_reviewer(pr_number, &reviewer_name, source);
                 }
                 // Set the session ID if provided (assign_reviewer* methods don't take it yet)
-                if let Some(sid) = reviewer_session_id
+                if let Some(ref sid) = reviewer_session_id
                     && let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number)
                 {
-                    assignment.reviewer_session_id = Some(sid);
+                    assignment.reviewer_session_id = Some(sid.clone());
+                }
+                // Populate task_reviewer_metadata so the task-centric model can find
+                // reviewer state by task ID without going through pr_reviewers.
+                if let Some(ref tid) = task_id {
+                    ps.task_reviewer_metadata
+                        .entry(tid.clone())
+                        .and_modify(|existing| {
+                            // Update fields but preserve placeholder_comment_id
+                            existing.restart_count = restart_count;
+                            existing.reviewer_session_id = reviewer_session_id.clone();
+                        })
+                        .or_insert(crate::daemon::state::TaskReviewerMetadata {
+                            pr_number,
+                            placeholder_comment_id: None,
+                            restart_count,
+                            reviewer_session_id: reviewer_session_id.clone(),
+                        });
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save daemon-state.json: {}", e);
@@ -1981,17 +2001,15 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::StorePrAuthorSession {
+            Effect::LinkPrToSession {
                 pr_number,
                 session_id,
                 branch,
                 author,
-                title,
+                title: _,
             } => {
                 let mut ps = state.persistent_state.lock().await;
                 // Backfill pr_number on the SessionRecord (if it exists).
-                // This makes the PR→session link derivable from sessions,
-                // reducing reliance on pr_author_sessions for task-linked PRs.
                 if let Some(record) = ps.sessions.get_mut(&session_id)
                     && record.pr_number.is_none()
                 {
@@ -2001,10 +2019,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         pr_number, session_id, record.task_id
                     );
                 }
-                // Still write to pr_author_sessions for backward compatibility
-                // (non-task PRs and legacy code paths still read from it).
-                ps.github
-                    .store_pr_author_session(pr_number, &session_id, &branch, &author, &title);
+                // Backfill SessionRecord.branch from PR head_ref (often None at spawn time).
+                if let Some(record) = ps.sessions.get_mut(&session_id)
+                    && record.branch.is_none()
+                {
+                    record.branch = Some(branch.clone());
+                    debug!(
+                        "Backfilled branch={} on SessionRecord {} (task={:?})",
+                        branch, session_id, record.task_id
+                    );
+                }
                 // Link the PR to the worktree by matching branch name.
                 // Use get_by_branch instead of get_by_coworker because coworkers can have
                 // multiple worktrees (one per task), and we need to match the exact branch.
@@ -2017,10 +2041,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to persist PR author session: {}", e);
+                    warn!("Failed to persist PR→session link: {}", e);
                 } else {
                     info!(
-                        "Stored author session for PR #{}: session={}, author={}",
+                        "Linked PR #{} to session {} (author={})",
                         pr_number, session_id, author
                     );
                 }
@@ -2030,18 +2054,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
-                    // Mark worktree as completed (for time-based cleanup) and clean up pr_author_sessions
+                    // Mark worktree as completed (for time-based cleanup)
                     {
                         let mut ps = state.persistent_state.lock().await;
                         if let Some(wt_id) = ps.worktree_registry.find_worktree_by_task(&task_id) {
                             ps.worktree_registry
                                 .mark_completed(&wt_id, chrono::Utc::now());
                         }
-                        // Clean up pr_author_sessions for this task to prevent stale state
-                        ps.github
-                            .pr_author_sessions
-                            .retain(|_, session| session.task_id.as_deref() != Some(&task_id));
-                        // Save both mutations in a single write
                         if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save task completion state: {}", e);
                         }
@@ -2211,14 +2230,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CleanupMergedWorktree { pr_number, branch } => {
-                // Remove from registry and clean up pr_author_sessions
+                // Remove from registry
                 let removed = {
                     let mut ps = state.persistent_state.lock().await;
                     let removed = ps.worktree_registry.cleanup_for_merged_pr(pr_number);
-                    // Also clean up pr_author_sessions for this PR (defense-in-depth)
-                    let pr_session_removed = ps.github.pr_author_sessions.remove(&pr_number);
-                    // Save if either worktree or pr_author_session was removed
-                    if (removed.is_some() || pr_session_removed.is_some())
+                    if removed.is_some()
                         && let Err(e) = ps.save_for_repo(state.paths.dir_key())
                     {
                         warn!("Failed to save daemon state after worktree cleanup: {}", e);
@@ -3878,19 +3894,26 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 
 /// Look up an existing placeholder comment ID for a PR using the 3-tier lookup:
 ///
-/// 1. **Persistent state** — `PrReviewerAssignment.placeholder_comment_id`
+/// 1. **Persistent state** — `task_reviewer_metadata` (preferred) or `PrReviewerAssignment.placeholder_comment_id` (fallback)
 /// 2. **In-memory cache** — `reviewer_placeholder_cache` (TTL-based)
 /// 3. **GitHub API fallback** — `pr_in_progress_placeholder_comment_id` via `spawn_blocking`
 ///
 /// This reuses the same lookup infrastructure as `collect_world_snapshot` in
 /// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    // Tier 1: Check stored placeholder_comment_id from the assignment
+    // Tier 1: Check stored placeholder_comment_id.
+    // Prefer task_reviewer_metadata; fall back to pr_reviewers.
     {
         let ps = state.persistent_state.lock().await;
-        if let Some(assignment) = ps.github.pr_reviewers.get(&pr_number)
-            && let Some(id) = assignment.placeholder_comment_id
-        {
+        let id = super::state::task_reviewer_metadata_for_pr(&ps, pr_number)
+            .and_then(|m| m.placeholder_comment_id)
+            .or_else(|| {
+                ps.github
+                    .pr_reviewers
+                    .get(&pr_number)
+                    .and_then(|a| a.placeholder_comment_id)
+            });
+        if let Some(id) = id {
             return Some(id);
         }
     }
@@ -4055,13 +4078,19 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID on the reviewer assignment.
+        // Store the comment ID on the reviewer assignment and in task_reviewer_metadata.
         // Serialize under the lock, then write to disk after releasing it
         // to avoid blocking the tokio runtime with file I/O.
         let serialized = {
             let mut ps = state.persistent_state.lock().await;
             if let Some(assignment) = ps.github.pr_reviewers.get_mut(&pr_number) {
                 assignment.placeholder_comment_id = Some(comment_id);
+            }
+            // Also update task_reviewer_metadata for any review task tied to this PR.
+            for meta in ps.task_reviewer_metadata.values_mut() {
+                if meta.pr_number == pr_number {
+                    meta.placeholder_comment_id = Some(comment_id);
+                }
             }
             serde_json::to_string_pretty(&*ps).ok()
         };

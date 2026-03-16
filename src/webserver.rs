@@ -183,7 +183,25 @@ fn discover_projects() -> Vec<ProjectInfo> {
         });
     }
 
-    projects
+    // Deduplicate by name, preferring Running over Stopped.
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut deduped: Vec<ProjectInfo> = Vec::new();
+    for project in projects {
+        match seen.get(&project.name) {
+            Some(&idx) => {
+                if matches!(project.status, ProjectStatus::Running)
+                    && matches!(deduped[idx].status, ProjectStatus::Stopped)
+                {
+                    deduped[idx] = project;
+                }
+            }
+            None => {
+                seen.insert(project.name.clone(), deduped.len());
+                deduped.push(project);
+            }
+        }
+    }
+    deduped
 }
 
 /// Check if a PID file is locked (indicating daemon is running).

@@ -19,7 +19,7 @@ use midtown::daemon::helpers::{
 };
 
 // Decision functions
-use midtown::rules::{PrAction, decide_pr_issue_action_with_handoff};
+use midtown::rules::{PrAction, PrActionContext, decide_pr_action};
 
 // We test the pure helper functions that the polling path uses.
 // These are the same functions webhooks use, proving functional equivalence.
@@ -312,13 +312,13 @@ fn polling_nudges_active_owner() {
     let active_coworkers = vec!["amsterdam".to_string(), "york".to_string()];
     let message = "PR #42 - CI failed: please investigate";
 
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         "amsterdam",
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         message,
+        PrActionContext::PrIssue,
     );
 
     assert!(
@@ -337,13 +337,13 @@ fn polling_spawns_inactive_owner() {
     let active_coworkers = vec!["york".to_string()]; // amsterdam is NOT active
     let message = "PR #42 - CI failed: please investigate";
 
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         "amsterdam",
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         message,
+        PrActionContext::PrIssue,
     );
 
     assert!(
@@ -363,13 +363,13 @@ fn polling_respects_dev_limit() {
     let message = "PR #42 - CI failed: please investigate";
 
     // at_dev_limit = true
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         "amsterdam",
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         true,              // at dev limit
-        None,
         message,
+        PrActionContext::PrIssue,
     );
 
     assert!(
@@ -429,13 +429,13 @@ fn polling_handles_issues_when_webhooks_degraded() {
     assert!(tracker.should_nudge(42, PrIssueType::CiFailed));
 
     // Decision function returns correct action
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         "amsterdam",
         &active_coworkers,
         &active_coworkers, // all active coworkers are idle
         false,
-        None,
         "PR #42 - CI failed",
+        PrActionContext::PrIssue,
     );
     assert!(matches!(action, PrAction::NudgeOwner { .. }));
 

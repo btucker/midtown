@@ -549,7 +549,6 @@ pub fn get_issue_action(issue_type: PrIssueType) -> &'static str {
         PrIssueType::Approved => {
             "approved with CI green — please merge (use --auto if checks pending)"
         }
-        PrIssueType::NeedsReview => "calling in reviewer",
         PrIssueType::ReviewComment => "please address review feedback and merge if appropriate",
         PrIssueType::ReviewComplete => {
             "review is complete — please address feedback and merge if appropriate"

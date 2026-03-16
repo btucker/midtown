@@ -319,7 +319,6 @@ fn test_pr_issue_type_display() {
         "changes requested"
     );
     assert_eq!(PrIssueType::Approved.to_string(), "approved");
-    assert_eq!(PrIssueType::NeedsReview.to_string(), "needs review");
     assert_eq!(PrIssueType::ReviewComment.to_string(), "review comment");
     assert_eq!(PrIssueType::ReviewComplete.to_string(), "review complete");
     assert_eq!(
@@ -525,10 +524,6 @@ fn test_get_issue_action() {
         "approved with CI green — please merge (use --auto if checks pending)"
     );
     assert_eq!(
-        get_issue_action(PrIssueType::NeedsReview),
-        "calling in reviewer"
-    );
-    assert_eq!(
         get_issue_action(PrIssueType::ReviewComment),
         "please address review feedback and merge if appropriate"
     );
@@ -626,10 +621,6 @@ fn test_stuck_condition_type_display() {
     assert_eq!(
         StuckConditionType::SilentCoworker.to_string(),
         "silent coworker"
-    );
-    assert_eq!(
-        StuckConditionType::ReviewBacklog.to_string(),
-        "review backlog"
     );
 }
 
@@ -1585,31 +1576,6 @@ fn make_cleanup_test_state() -> (
     )
     .expect("daemon state");
     (state, temp_dir, _guard)
-}
-
-#[test]
-fn stuck_task_restart_attempts_enforce_rolling_cap() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-    let window = std::time::Duration::from_secs(15 * 60);
-
-    let (allowed1, prior1) = state.record_stuck_task_restart_attempt("42", 3, window);
-    let (allowed2, prior2) = state.record_stuck_task_restart_attempt("42", 3, window);
-    let (allowed3, prior3) = state.record_stuck_task_restart_attempt("42", 3, window);
-    let (allowed4, prior4) = state.record_stuck_task_restart_attempt("42", 3, window);
-
-    assert!(allowed1);
-    assert!(allowed2);
-    assert!(allowed3);
-    assert!(!allowed4, "4th restart in-window should be blocked");
-    assert_eq!(prior1, 0);
-    assert_eq!(prior2, 1);
-    assert_eq!(prior3, 2);
-    assert_eq!(prior4, 3);
-
-    // Different task IDs should have independent restart windows.
-    let (other_allowed, other_prior) = state.record_stuck_task_restart_attempt("99", 3, window);
-    assert!(other_allowed);
-    assert_eq!(other_prior, 0);
 }
 
 #[tokio::test]

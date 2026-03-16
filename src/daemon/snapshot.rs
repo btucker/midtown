@@ -184,19 +184,19 @@ pub struct SnapshotPrState {
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
-    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from pr_author_sessions)
-    /// by catching cases where pr_author_sessions is stale after a daemon restart but the
+    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from SessionRecord)
+    /// by catching cases where SessionRecord is stale after a daemon restart but the
     /// PR title contains `[Midtown !{task_id}]`. Used by:
     /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
     /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
     ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
     #[serde(default)]
     pub github_open_pr_task_ids: HashMap<String, u64>,
-    /// Task IDs that have associated open PRs (from PrAuthorSession).
+    /// Task IDs that have associated open PRs (from SessionRecord).
     /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
     /// tasks whose PR is open but whose owner is no longer active.
     pub tasks_with_open_prs: HashMap<String, u64>,
-    /// PR numbers with associated task IDs (from PrAuthorSession).
+    /// PR numbers with associated task IDs (from SessionRecord).
     /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
     /// when PRs are closed without merging.
     #[serde(deserialize_with = "u64_key_map::deserialize")]
@@ -701,19 +701,6 @@ impl WorldSnapshot {
         None
     }
 
-    /// Build a [`crate::rules::StuckExemptions`] view from this snapshot.
-    ///
-    /// Centralises the four-field construction used by every stuck-detection
-    /// call site (`decide_stuck_coworker_restarts`, `decide_stuck_reviewer_restarts`).
-    pub(crate) fn stuck_exemptions(&self) -> crate::rules::StuckExemptions<'_> {
-        crate::rules::StuckExemptions {
-            usage_limited: &self.health.usage_limited_coworkers,
-            api_error: &self.health.api_error_coworkers,
-            auth_error: &self.health.auth_error_coworkers,
-            attached: &self.coworkers.attached_coworkers,
-        }
-    }
-
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
@@ -918,7 +905,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // Derive task→PR mapping from open_prs_data PR titles for orphan recovery.
-    // This catches tasks with open PRs even when pr_author_sessions is stale after restart.
+    // This catches tasks with open PRs even when SessionRecord data is stale after restart.
     let github_open_pr_task_ids: HashMap<String, u64> = open_prs_data
         .iter()
         .filter_map(|pr| {
@@ -936,10 +923,12 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(_, _, owner)| owner.to_lowercase())
         .collect();
 
-    // ── PR author sessions (task → PR mapping) ────────────────────────
+    // ── PR↔task mapping (from SessionRecord) ──────────────────────────
     let (tasks_with_open_prs, pr_task_associations) = {
         let ps = state.persistent_state.lock().await;
-        (ps.github.task_to_pr_map(), ps.github.pr_to_task_map())
+        let tasks_with_open_prs = super::state::task_to_pr_map_from_sessions(&ps.sessions);
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        (tasks_with_open_prs, pr_task_associations)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
@@ -951,14 +940,24 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         // This is required for decide_dead_reviewer_respawns to detect and
         // respawn reviewers whose processes have exited without posting a review.
         let assignments = build_reviewer_pr_assignments(&ps.github);
-        // Collect PR → restart_count for stuck reviewer backoff
-        let restart_counts: HashMap<u64, u32> = ps
-            .github
-            .pr_reviewers
-            .iter()
-            .filter(|(_, a)| a.restart_count > 0)
-            .map(|(pr, a)| (*pr, a.restart_count))
-            .collect();
+        // Collect PR → restart_count for stuck reviewer backoff.
+        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
+        let restart_counts: HashMap<u64, u32> = {
+            let mut counts: HashMap<u64, u32> = ps
+                .github
+                .pr_reviewers
+                .iter()
+                .filter(|(_, a)| a.restart_count > 0)
+                .map(|(pr, a)| (*pr, a.restart_count))
+                .collect();
+            // task_reviewer_metadata takes precedence over pr_reviewers
+            for meta in ps.task_reviewer_metadata.values() {
+                if meta.restart_count > 0 {
+                    counts.insert(meta.pr_number, meta.restart_count);
+                }
+            }
+            counts
+        };
         (reviewers, assignments, restart_counts)
     };
 
@@ -1012,16 +1011,22 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
-        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition)
+        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition).
+        // Prefer task_reviewer_metadata (task-centric); fall back to pr_reviewers.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
-                .filter_map(|&pr| {
-                    ps.github
-                        .pr_reviewers
-                        .get(&pr)
-                        .map(|a| (pr, a.placeholder_comment_id))
+                .map(|&pr| {
+                    let id = super::state::task_reviewer_metadata_for_pr(&ps, pr)
+                        .and_then(|m| m.placeholder_comment_id)
+                        .or_else(|| {
+                            ps.github
+                                .pr_reviewers
+                                .get(&pr)
+                                .and_then(|a| a.placeholder_comment_id)
+                        });
+                    (pr, id)
                 })
                 .collect()
         };

@@ -1356,8 +1356,6 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
     PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1369,31 +1367,10 @@ fn make_pr_context_empty() -> PrContext {
     PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
     }
-}
-
-/// Helper: extract RecordTaskAssignment effects from SpawnCoworkerWithCallbacks on_success.
-fn extract_record_task_assignments(effects: &[Effect]) -> Vec<(&str, &str)> {
-    effects
-        .iter()
-        .filter_map(|e| match e {
-            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => Some(on_success),
-            _ => None,
-        })
-        .flat_map(|on_success| {
-            on_success.iter().filter_map(|e| match e {
-                Effect::RecordTaskAssignment { coworker, task_id } => {
-                    Some((coworker.as_str(), task_id.as_str()))
-                }
-                _ => None,
-            })
-        })
-        .collect()
 }
 
 /// Task-linked SpawnOwner produces TaskPrompt (task prompt handles session delivery).
@@ -1424,9 +1401,9 @@ fn action_to_effects_spawn_owner_with_task_produces_task_prompt() {
     );
 }
 
-/// Task-less SpawnOwner spawns/resumes the coworker session directly.
+/// Task-less SpawnOwner posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1442,12 +1419,17 @@ fn action_to_effects_spawn_owner_without_task_produces_spawn_coworker() {
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner without task should post to ops channel for manual review. Effects: {:#?}",
         effects
     );
 }
@@ -1487,9 +1469,9 @@ fn action_to_effects_comment_spawn_owner_with_task_produces_task_prompt() {
     }
 }
 
-/// Task-less SpawnOwner for ReviewComment spawns/resumes the coworker session.
+/// Task-less SpawnOwner for ReviewComment posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_comment_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1505,71 +1487,18 @@ fn action_to_effects_comment_spawn_owner_without_task_produces_spawn_coworker() 
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner (comment) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner (comment) without task should post to ops channel for manual review. Effects: {:#?}",
         effects
-    );
-}
-
-/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects includes
-/// RecordTaskAssignment when pr_task_associations has an entry for the PR.
-#[test]
-fn handoff_effects_include_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    let ctx = make_pr_context_with_task(77, "300");
-
-    let effects = handoff_to_coworker_effects(
-        "madison",
-        "york",
-        77,
-        "york/fix-auth",
-        "session-123".to_string(),
-        "Taking over PR",
-        "resuming their session",
-        "Fix auth",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let assignments = extract_record_task_assignments(&effects);
-    assert_eq!(
-        assignments.len(),
-        1,
-        "handoff should include RecordTaskAssignment"
-    );
-    assert_eq!(assignments[0], ("madison", "300"));
-}
-
-/// Cross-tick spawn dedup (!1377): handoff_to_coworker_effects does NOT include
-/// RecordTaskAssignment when no task association exists.
-#[test]
-fn handoff_effects_no_record_without_task_association() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    let ctx = make_pr_context_empty();
-
-    let effects = handoff_to_coworker_effects(
-        "madison",
-        "york",
-        77,
-        "york/fix-auth",
-        "session-123".to_string(),
-        "Taking over PR",
-        "resuming their session",
-        "Fix auth",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let assignments = extract_record_task_assignments(&effects);
-    assert!(
-        assignments.is_empty(),
-        "handoff should NOT include RecordTaskAssignment without task association"
     );
 }
 
@@ -1609,9 +1538,9 @@ fn action_to_effects_review_complete_spawn_owner_with_task_produces_task_prompt(
     }
 }
 
-/// Task-less SpawnOwner for ReviewComplete spawns/resumes the coworker session.
+/// Task-less SpawnOwner for ReviewComplete posts to ops channel for manual investigation.
 #[test]
-fn action_to_effects_review_complete_spawn_owner_without_task_produces_spawn_coworker() {
+fn action_to_effects_review_complete_spawn_owner_without_task_produces_ops_post() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let ctx = make_pr_context_empty();
 
@@ -1627,12 +1556,17 @@ fn action_to_effects_review_complete_spawn_owner_without_task_produces_spawn_cow
         &ctx,
     );
 
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+    let has_ops_post = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::PostToChannel { channel: Some(ch), message, .. }
+            if ch == crate::daemon::constants::OPS_CHANNEL
+                && message.contains("no task linked")
+        )
+    });
     assert!(
-        has_spawn,
-        "SpawnOwner (review_complete) without task should produce SpawnCoworkerWithCallbacks. Effects: {:#?}",
+        has_ops_post,
+        "SpawnOwner (review_complete) without task should post to ops channel for manual review. Effects: {:#?}",
         effects
     );
 }
@@ -1689,8 +1623,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     let ctx = PrContext {
         pr_task_associations,
         task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1718,62 +1650,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     );
 }
 
-/// Bug !1377: handoff_to_coworker_effects was missing RecordTaskAssignment in on_success.
-#[test]
-fn handoff_to_coworker_effects_includes_record_task_assignment() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let mut pr_task_associations = HashMap::new();
-    pr_task_associations.insert(789, "17".to_string());
-
-    let ctx = PrContext {
-        pr_task_associations,
-        task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
-        has_active_reviewer: false,
-        channel_workflows: HashMap::new(),
-        lead_driven_channels: std::collections::HashSet::new(),
-    };
-
-    let effects = handoff_to_coworker_effects(
-        "york",
-        "broadway",
-        789,
-        "york/task-17-fix",
-        "test-session-id".to_string(),
-        "Handoff message",
-        "context",
-        "Refactor module [Midtown !17]",
-        PrIssueType::ReviewComment,
-        &state,
-        &ctx,
-    );
-
-    let spawn_effect = effects
-        .iter()
-        .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnCoworkerWithCallbacks");
-
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "york" && task_id == "17"
-        )
-    });
-    assert!(
-        has_record,
-        "handoff_to_coworker_effects on_success must include RecordTaskAssignment for cross-tick dedup"
-    );
-}
-
 /// Bug: Active coworker's PR is incorrectly marked as orphaned when its worktree is missing.
 ///
 /// Scenario (from snapshot snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json):
@@ -1798,6 +1674,7 @@ fn handoff_to_coworker_effects_includes_record_task_assignment() {
 /// The fixture serves as documentation of the exact production scenario that triggered
 /// the bug.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
     use super::super::snapshot::WorldSnapshot;
 
@@ -1838,6 +1715,36 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         "reviewDecision": "",
     });
 
+    // Acquire lock to prevent parallel tests from interfering with PATH mocking
+    let _path_guard = PATH_LOCK.lock().unwrap();
+
+    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
+    // Without this mock, the test makes a real API call and fails once PR #1246
+    // has a Claude review posted (is_pr_reviewed returns true → continue → no effects).
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_gh_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&mock_gh_dir).unwrap();
+    let mock_gh_script = mock_gh_dir.join("gh");
+
+    #[cfg(unix)]
+    {
+        std::fs::write(
+            &mock_gh_script,
+            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            format!("{}:{}", mock_gh_dir.display(), original_path),
+        );
+    }
+
     let (state, _tmp, _guard) = make_test_state("midtown");
 
     // Populate branch_owners so coworker_from_branch resolves "park" from the branch.
@@ -1859,6 +1766,12 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         &std::collections::HashMap::new(),
     )
     .await;
+
+    // Restore PATH and release lock
+    unsafe {
+        std::env::set_var("PATH", original_path);
+    }
+    drop(_path_guard);
 
     // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
     // Expected: Should spawn a reviewer (park is active and can address feedback)
@@ -2226,15 +2139,19 @@ async fn test_poll_prs_session_based_owner_resolution() {
         .lock()
         .unwrap()
         .insert("madison".to_string(), "sess-abc".to_string());
-    // Populate persistent_state with pr_author_session so PrContext gets the task association
+    // Populate persistent_state with session record so PrContext gets the task association
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            42,
-            "sess-abc",
-            "lexington/fix-auth",
-            "madison",
-            "Fix authentication bug [Midtown !123]",
+        ps.sessions.insert(
+            "sess-abc".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-abc".to_string(),
+                task_id: Some("123".to_string()),
+                pr_number: Some(42),
+                branch: Some("lexington/fix-auth".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
+            },
         );
     }
 
@@ -3204,8 +3121,6 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
     PrContext {
         pr_task_associations,
         task_channel,
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3525,66 +3440,6 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     );
 }
 
-#[tokio::test]
-async fn test_review_complete_uses_pr_author_session_owner_when_branch_owner_unknown() {
-    use std::collections::{HashMap, HashSet};
-    let pr_number = 2043u64;
-    let pr = json!({
-        "number": pr_number,
-        "headRefName": "reviewer/task-2043-svelte-fix",
-        "title": "feat: ReviewComplete owner fallback path".to_string(),
-        "isDraft": false,
-        "createdAt": "2026-01-01T00:00:00Z",
-        "state": "OPEN",
-    });
-
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "sess-2043",
-            "reviewer/task-2043-svelte-fix",
-            "park",
-            "feat: ReviewComplete owner fallback [Midtown !2043]",
-        );
-        ps.task_channel
-            .insert("2043".to_string(), "daemon-core".to_string());
-        ps.github.mark_reviewed_pr(pr_number);
-        ps.github.add_review_comment_id(pr_number, 1);
-    }
-
-    let branch_owners: std::collections::HashMap<String, String> = HashMap::new();
-    let registry = crate::worktree_registry::WorktreeRegistry::new();
-    let active_names = HashSet::new();
-
-    let effects = collect_reviewer_effects_with_source(
-        &branch_owners,
-        &registry,
-        &active_names,
-        &state,
-        &[pr],
-        crate::github_state::AssignmentSource::PollingFallback,
-        &HashMap::new(),
-    )
-    .await;
-
-    // With task-linked PR, expect TaskPrompt (or fallback nudge/spawn for task-less PRs)
-    let has_task_prompt_or_nudge = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::TaskPrompt { .. }
-                | Effect::NudgeSessionWithCallbacks { .. }
-                | Effect::SpawnCoworkerWithCallbacks { .. }
-        )
-    });
-    assert!(
-        has_task_prompt_or_nudge,
-        "Expected coworker-directed action (TaskPrompt or nudge/spawn) via author session for PR #2043, got: {:#?}",
-        effects
-    );
-}
-
 /// !2109: When all in-memory owner resolution strategies fail but the PR body
 /// contains `<!-- midtown: name -->` frontmatter, the review-complete notification
 /// should route to the coworker, not fall back to @user.
@@ -3605,7 +3460,7 @@ async fn test_review_complete_uses_pr_body_frontmatter_when_other_strategies_fai
     let (state, _tmp, _guard) = make_test_state("test-repo");
     {
         let mut ps = state.persistent_state.lock().await;
-        // No pr_author_sessions, no session records, no task associations
+        // No session records, no task associations
         // Only the PR body frontmatter identifies the owner
         ps.github.mark_reviewed_pr(pr_number);
         ps.github.add_review_comment_id(pr_number, 1);
@@ -3688,59 +3543,6 @@ fn fallback_inline_effects_without_workflow() {
             crate::workflow::WorkflowEvent::PrApproved { pr_number: 42, .. }
         ),
         "Event should be PrApproved for PR #42"
-    );
-}
-
-/// !2003: HandoffToCoworker effects are preserved even when a workflow event exists.
-///
-/// When the action is HandoffToCoworker (idle coworker available for session handoff),
-/// the script-authoritative early return is skipped because rpc.nudge_coworker()
-/// cannot replicate handoff behavior (spawning assignee, task reassignment).
-/// The handoff effects should fire alongside the workflow event.
-#[test]
-fn handoff_to_coworker_preserved_with_workflow_channel() {
-    let (state, _tmp, _guard) = make_test_state("test-repo");
-
-    let ctx = make_pr_context_with_channel(42, "100", "daemon-core");
-
-    let effects = action_to_effects(
-        crate::rules::PrAction::HandoffToCoworker {
-            assignee: "lexington".to_string(),
-            original_author: "broadway".to_string(),
-            pr_number: 42,
-            branch: "broadway/fix-auth".to_string(),
-            session_id: "sess-123".to_string(),
-            message: "PR #42 — changes requested".to_string(),
-        },
-        42,
-        "Fix auth",
-        PrIssueType::ChangesRequested,
-        &state,
-        &ctx,
-    );
-
-    // Should have SpawnCoworkerWithCallbacks (the handoff effect)
-    let has_spawn = effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
-    assert!(
-        has_spawn,
-        "HandoffToCoworker should produce SpawnCoworkerWithCallbacks even with workflow channel"
-    );
-
-    // Should also have the workflow event
-    let workflow_events = extract_workflow_events(&effects);
-    assert_eq!(
-        workflow_events.len(),
-        1,
-        "Workflow event should be emitted alongside handoff effects"
-    );
-    assert!(
-        matches!(
-            workflow_events[0],
-            crate::workflow::WorkflowEvent::PrChangesRequested { pr_number: 42, .. }
-        ),
-        "Event should be PrChangesRequested for PR #42"
     );
 }
 
@@ -4287,12 +4089,16 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
     // Set up PR → task → channel routing and install workflow script
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "session-1",
-            "lexington/some-feature",
-            "lexington",
-            &format!("feat: some feature [Midtown !{task_id}]"),
+        ps.sessions.insert(
+            "session-1".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "session-1".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lexington/some-feature".to_string()),
+                preferred_name: Some("lexington".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
@@ -4364,12 +4170,16 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
     // Set up PR → task → channel routing but NO workflow script
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "session-1",
-            "lexington/some-feature",
-            "lexington",
-            &format!("feat: some feature [Midtown !{task_id}]"),
+        ps.sessions.insert(
+            "session-1".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "session-1".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lexington/some-feature".to_string()),
+                preferred_name: Some("lexington".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel.to_string());
@@ -4415,7 +4225,7 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
 
 /// Reviewers should inherit the topic channel of the PR's associated task.
 ///
-/// When a PR has an associated task (via pr_author_sessions → task_id) and that
+/// When a PR has an associated task (via SessionRecord → task_id) and that
 /// task has a channel mapping (task_channel), the reviewer's LaunchConfig.channel
 /// must be set to that channel so MIDTOWN_CHANNEL routes their posts correctly.
 #[tokio::test]
@@ -4449,12 +4259,16 @@ async fn test_reviewer_spawn_inherits_task_channel() {
     // Set up the PR → task → channel chain in persistent state
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.store_pr_author_session(
-            pr_number,
-            "test-session-id",
-            "madison/auth-feature",
-            "madison",
-            &format!("feat: Add auth endpoint [Midtown !{}]", task_id),
+        ps.sessions.insert(
+            "test-session-id".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "test-session-id".to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("madison/auth-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
+            },
         );
         ps.task_channel
             .insert(task_id.to_string(), channel_name.to_string());
@@ -4691,7 +4505,6 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_polling_defers_to_workflow_script_with_longer_delay() {
-    use crate::github_state::PrAuthorSession;
     use crate::worktree_registry::WorktreeRegistry;
     use chrono::Utc;
 
@@ -4733,14 +4546,15 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
     // Set up task association: PR #100 → task "42" → channel "proj-test"
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.pr_author_sessions.insert(
-            100,
-            PrAuthorSession {
+        ps.sessions.insert(
+            "sess-1".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "sess-1".to_string(),
-                branch: "madison/task-42-feature".to_string(),
-                original_author: "madison".to_string(),
-                stored_at: Utc::now(),
                 task_id: Some("42".to_string()),
+                pr_number: Some(100),
+                branch: Some("madison/task-42-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
             },
         );
         ps.task_channel
@@ -4794,9 +4608,7 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_polling_uses_normal_delay_without_workflow_script() {
-    use crate::github_state::PrAuthorSession;
     use crate::worktree_registry::WorktreeRegistry;
-    use chrono::Utc;
 
     let _path_guard = PATH_LOCK.lock().unwrap();
 
@@ -4832,14 +4644,15 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
     // Set up task association: PR #101 → task "43" → channel "proj-test"
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.github.pr_author_sessions.insert(
-            101,
-            PrAuthorSession {
+        ps.sessions.insert(
+            "sess-2".to_string(),
+            crate::daemon::state::SessionRecord {
                 session_id: "sess-2".to_string(),
-                branch: "madison/task-43-feature".to_string(),
-                original_author: "madison".to_string(),
-                stored_at: Utc::now(),
                 task_id: Some("43".to_string()),
+                pr_number: Some(101),
+                branch: Some("madison/task-43-feature".to_string()),
+                preferred_name: Some("madison".to_string()),
+                ..Default::default()
             },
         );
         ps.task_channel
@@ -4848,7 +4661,7 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
     }
 
     // PR created 60 seconds ago — passes normal 45s delay.
-    let created_at = (Utc::now() - chrono::Duration::seconds(60))
+    let created_at = (chrono::Utc::now() - chrono::Duration::seconds(60))
         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let pr = json!({
         "number": 101,
@@ -4903,8 +4716,6 @@ fn log_pr_decision_writes_valid_jsonl() {
     let ctx = PrContext {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4950,7 +4761,6 @@ fn log_pr_decision_writes_valid_jsonl() {
     assert_eq!(entry["owner_idle"], false);
     assert_eq!(entry["at_dev_limit"], false);
     assert_eq!(entry["has_active_reviewer"], false);
-    assert_eq!(entry["has_session_context"], false);
     assert_eq!(entry["task_id"], "7");
     assert_eq!(entry["channel"], "installer");
     assert_eq!(entry["action"], "NudgeOwner");
@@ -4975,8 +4785,6 @@ fn log_pr_decision_appends_multiple_entries() {
     let ctx = PrContext {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
-        session_context: None,
-        task_session_id: None,
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5038,16 +4846,20 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.github.mark_reviewed_pr(pr_number);
-        // Store a PR author session that resolves the owner to "columbus".
+        // Store a session record that resolves the owner to "columbus".
         // This simulates the scenario where task metadata links the PR to
         // a coworker, causing the owner resolution chain to find "columbus"
         // even though it's a lead/* (user-authored) branch.
-        ps.github.store_pr_author_session(
-            pr_number,
-            "sess-1834",
-            "lead/essay",
-            "columbus",
-            "feat: Add essay [Midtown !1834]",
+        ps.sessions.insert(
+            "sess-1834".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-1834".to_string(),
+                task_id: Some("1834".to_string()),
+                pr_number: Some(pr_number),
+                branch: Some("lead/essay".to_string()),
+                preferred_name: Some("columbus".to_string()),
+                ..Default::default()
+            },
         );
     }
 
@@ -5619,105 +5431,4 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
          chosen names must be accumulated across loop iterations",
         reviewer_names
     );
-}
-
-#[test]
-fn pr_context_session_context_from_session_record() {
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    // Store a session record with task_id and pr_number
-    let session = super::super::state::SessionRecord {
-        session_id: "session-from-record".to_string(),
-        task_id: Some("42".to_string()),
-        pr_number: Some(100),
-        branch: Some("task-42-feature".to_string()),
-        preferred_name: Some("lexington".to_string()),
-        ..Default::default()
-    };
-    ps.sessions
-        .insert("session-from-record".to_string(), session);
-
-    // Also store a pr_author_session with DIFFERENT data (to verify we prefer SessionRecord).
-    // Use a title with [Midtown !42] so that pr_to_task_map() picks up the association.
-    ps.github.store_pr_author_session(
-        100,
-        "session-from-author",
-        "old-branch",
-        "oldauthor",
-        "Feature [Midtown !42]",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 100);
-
-    // session_context should come from SessionRecord, not pr_author_sessions
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-    assert_eq!(sc.session_id, "session-from-record");
-    assert_eq!(sc.branch, "task-42-feature");
-    assert_eq!(sc.original_author, "lexington");
-    // task_session_id should also be set
-    assert_eq!(ctx.task_session_id, Some("session-from-record".to_string()));
-}
-
-#[test]
-fn pr_context_session_context_branch_fallback_to_author_session() {
-    // When SessionRecord.branch is None (common — it's never backfilled in prod),
-    // fall back to pr_author_sessions for the branch to avoid empty checkout commands.
-    let mut ps = super::super::state::DaemonPersistentState::default();
-
-    let session = super::super::state::SessionRecord {
-        session_id: "session-no-branch".to_string(),
-        task_id: Some("42".to_string()),
-        preferred_name: Some("lexington".to_string()),
-        branch: None, // Not set — common in prod
-        ..Default::default()
-    };
-    ps.sessions.insert("session-no-branch".to_string(), session);
-
-    // pr_author_sessions has the real branch
-    ps.github.store_pr_author_session(
-        100,
-        "session-no-branch",
-        "lexington/task-42-feature",
-        "lexington",
-        "Feature [Midtown !42]",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 100);
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-
-    // session_id and author from SessionRecord, branch from pr_author_sessions
-    assert_eq!(sc.session_id, "session-no-branch");
-    assert_eq!(sc.branch, "lexington/task-42-feature");
-    assert_eq!(sc.original_author, "lexington");
-}
-
-#[test]
-fn pr_context_session_context_fallback_to_author_session() {
-    let mut ps = super::super::state::DaemonPersistentState::default();
-    ps.github.store_pr_author_session(
-        200,
-        "session-from-author",
-        "feature-branch",
-        "park",
-        "Manual PR",
-    );
-
-    let ctx = super::PrContext::from_persistent_state(&ps, 200);
-
-    // session_context should come from pr_author_sessions (fallback)
-    let sc = ctx
-        .session_context
-        .as_ref()
-        .expect("should have session_context");
-    assert_eq!(sc.session_id, "session-from-author");
-    assert_eq!(sc.branch, "feature-branch");
-    assert_eq!(sc.original_author, "park");
-    // No task_session_id (no task association)
-    assert!(ctx.task_session_id.is_none());
 }

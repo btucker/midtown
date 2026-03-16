@@ -26,8 +26,6 @@ pub enum PrIssueType {
     ChangesRequested,
     /// PR is approved and ready to merge
     Approved,
-    /// PR needs code review (no Claude review comment yet)
-    NeedsReview,
     /// PR has review comments from non-owners
     ReviewComment,
     /// PR review is complete (Claude review posted), author should act
@@ -43,7 +41,6 @@ impl std::fmt::Display for PrIssueType {
             PrIssueType::CiFailed => write!(f, "CI failed"),
             PrIssueType::ChangesRequested => write!(f, "changes requested"),
             PrIssueType::Approved => write!(f, "approved"),
-            PrIssueType::NeedsReview => write!(f, "needs review"),
             PrIssueType::ReviewComment => write!(f, "review comment"),
             PrIssueType::ReviewComplete => write!(f, "review complete"),
             PrIssueType::GreenWithFeedback => write!(f, "CI green with feedback"),
@@ -167,8 +164,6 @@ pub enum StuckConditionType {
     MergeReady,
     /// Coworker claimed a task but no channel activity
     SilentCoworker,
-    /// More PRs need review than the daemon can assign reviewers to
-    ReviewBacklog,
     /// Auto-merge has been attempted for a merge-ready PR
     AutoMerge,
 }
@@ -180,7 +175,6 @@ impl std::fmt::Display for StuckConditionType {
             StuckConditionType::UnresolvedFeedback => write!(f, "unresolved feedback"),
             StuckConditionType::MergeReady => write!(f, "merge-ready but not merged"),
             StuckConditionType::SilentCoworker => write!(f, "silent coworker"),
-            StuckConditionType::ReviewBacklog => write!(f, "review backlog"),
             StuckConditionType::AutoMerge => write!(f, "auto-merge attempted"),
         }
     }

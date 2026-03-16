@@ -1,9 +1,9 @@
 // Integration test for orphan recovery checking pr_task_associations
 //
 // Bug: should_recover_task() only checks task.pr (explicit PR field) but doesn't
-// check pr_task_associations (the task-to-PR mapping from PrAuthorSession).
+// check pr_task_associations (the task-to-PR mapping from SessionRecord).
 //
-// Scenario: A coworker opens PR #1000 for task !42. The PrAuthorSession tracks this
+// Scenario: A coworker opens PR #1000 for task !42. The SessionRecord tracks this
 // as pr_task_associations[1000] = "42". The task.pr field may or may not be set yet.
 // The coworker crashes. Orphan recovery should NOT spawn a new coworker because
 // the task already has an open PR tracked via pr_task_associations.
@@ -139,7 +139,7 @@ fn test_should_recover_task_with_no_pr_anywhere() {
 #[test]
 fn test_should_recover_task_when_pr_task_associations_stale_but_pr_merged() {
     // Scenario: Task !42 is in pr_task_associations (pointing to PR #1000),
-    // BUT PR #1000 is actually merged. This can happen if pr_author_sessions
+    // BUT PR #1000 is actually merged. This can happen if SessionRecord
     // cleanup is async and hasn't run yet, leaving a stale entry.
     //
     // Expected: Recovery should NOT proceed. Merged PRs always protect the task

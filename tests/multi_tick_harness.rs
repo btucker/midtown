@@ -52,11 +52,10 @@ use midtown::tasks::{Task, TaskStatus};
 /// are skipped:
 ///
 /// ### SessionMonitorTick
-/// - Called: `check_and_shutdown_idle_coworkers`, `check_and_restart_stuck_reviewers`,
-///   `check_and_restart_dead_reviewers`, `check_for_usage_limits`,
+/// - Called: `check_and_restart_dead_reviewers`, `check_for_usage_limits`,
 ///   `maybe_nudge_usage_limit_expiry`, `check_and_restart_tool_name_conflicts`
 /// - Skipped (needs DaemonState): `check_and_handle_auth_errors`,
-///   `check_and_restart_stuck_coworkers`, `check_and_nudge_api_errors`
+///   `check_and_nudge_api_errors`
 ///
 /// ### TaskDispatchTick
 /// - Called: `reset_orphaned_tasks`, `check_for_duplicate_task_workers`,
@@ -271,12 +270,6 @@ impl MultiTickHarness {
         let effects = match event {
             DaemonEvent::SessionMonitorTick => {
                 let mut effects = Vec::new();
-                effects.extend(midtown::daemon::check_and_shutdown_idle_coworkers(
-                    &self.snapshot,
-                ));
-                effects.extend(midtown::daemon::check_and_restart_stuck_reviewers(
-                    &self.snapshot,
-                ));
                 effects.extend(midtown::daemon::check_and_restart_dead_reviewers(
                     &self.snapshot,
                 ));

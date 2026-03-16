@@ -1355,18 +1355,14 @@ fn snapshot_preconditions_for_zero_coworker_dispatch() {
 /// the daemon should nudge them rather than trying to spawn a new session.
 ///
 /// Bug: The daemon logged "call-in failed" for PR #708 notifications targeting
-/// pleasant because `decide_pr_issue_action_with_handoff` and
-/// `decide_pr_comment_action_with_handoff` returned `SpawnOwner` for active-but-busy
+/// pleasant because `decide_pr_action` returned `SpawnOwner` for active-but-busy
 /// coworkers. Spawning fails when the coworker already has a session.
 ///
 /// Snapshot: captured while pleasant was active and working, but the daemon was
 /// trying to spawn (not nudge) for review-complete and CI-green notifications.
 #[test]
 fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
-    use midtown::rules::{
-        PrAction, decide_pr_comment_action_with_handoff, decide_pr_issue_action_with_handoff,
-        decide_review_complete_action,
-    };
+    use midtown::rules::{PrAction, PrActionContext, decide_pr_action};
 
     let fixture = include_str!(
         "fixtures/snapshot/snapshot-call-in-failed-and-false-recovery-20260206-053201.json"
@@ -1408,13 +1404,13 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
     assert!(!is_at_dev_limit);
 
     // Test 1: PR issue action (CI green / review feedback) — should nudge, not spawn
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         "pleasant",
         &active_coworkers,
         &idle_coworkers,
         is_at_dev_limit,
-        None, // pleasant had empty session_id in snapshot
         "CI is green — please address review feedback and merge",
+        PrActionContext::PrIssue,
     );
     assert!(
         matches!(action, PrAction::NudgeOwner { .. }),
@@ -1423,14 +1419,15 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
     );
 
     // Test 2: PR comment action (review complete) — should nudge, not spawn
-    let action = decide_pr_comment_action_with_handoff(
+    let action = decide_pr_action(
         "pleasant",
-        "reviewer",
         &active_coworkers,
         &idle_coworkers,
         is_at_dev_limit,
-        None,
         "review is complete — please address feedback",
+        PrActionContext::PrComment {
+            actor: "reviewer".to_string(),
+        },
     );
     assert!(
         matches!(action, PrAction::NudgeOwner { .. }),
@@ -1439,12 +1436,13 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
     );
 
     // Test 3: Review complete action — should nudge, not spawn
-    let action = decide_review_complete_action(
+    let action = decide_pr_action(
         "pleasant",
         &active_coworkers,
         &idle_coworkers,
         is_at_dev_limit,
         "review complete — please address feedback and merge",
+        PrActionContext::ReviewComplete,
     );
     assert!(
         matches!(action, PrAction::NudgeOwner { .. }),

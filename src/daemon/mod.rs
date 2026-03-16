@@ -71,8 +71,7 @@ pub use dispatch::{
 pub use events::DaemonEvent;
 #[doc(hidden)]
 pub use health::{
-    check_and_restart_dead_reviewers, check_and_restart_stuck_reviewers,
-    check_and_restart_tool_name_conflicts, check_and_shutdown_idle_coworkers,
+    check_and_restart_dead_reviewers, check_and_restart_tool_name_conflicts,
     check_for_usage_limits, detect_stale_attached_sessions, ensure_lead_alive,
     maybe_nudge_usage_limit_expiry,
 };
@@ -562,11 +561,6 @@ pub(crate) struct DaemonState {
     /// Resets on daemon restart, which is acceptable — at worst the lead gets one
     /// extra nudge after a restart if the PR is still orphaned.
     orphaned_pr_lead_nudges_sent: std::sync::Mutex<HashSet<u64>>,
-    /// Rolling restart history for stuck task workers, keyed by task ID.
-    ///
-    /// Used as a circuit breaker for repeated stuck restarts. We track timestamps
-    /// in a sliding window so runaway restart loops are paused and escalated.
-    stuck_task_restart_history: std::sync::Mutex<HashMap<String, VecDeque<std::time::Instant>>>,
     /// In-memory deduplication for reviewer `[Review Note]` channel messages.
     ///
     /// Tracks (reviewer, PR number) → timestamp of first note. When a reviewer
@@ -804,39 +798,6 @@ impl DaemonState {
     fn record_coworker_stop_time(&self, name: &str) {
         let mut stop_times = self.coworker_stop_times.write().unwrap();
         stop_times.insert(name.to_lowercase(), chrono::Utc::now());
-    }
-
-    /// Record a stuck-restart attempt for a task and enforce a rolling cap.
-    ///
-    /// Returns `(allowed, prior_count_in_window)`.
-    /// - `allowed=true`: caller may proceed with restart; attempt is recorded.
-    /// - `allowed=false`: cap reached; caller should pause auto-restarts and escalate.
-    pub(crate) fn record_stuck_task_restart_attempt(
-        &self,
-        task_id: &str,
-        max_restarts: u32,
-        window: std::time::Duration,
-    ) -> (bool, u32) {
-        let now = std::time::Instant::now();
-        let mut history = self.stuck_task_restart_history.lock().unwrap();
-        history.retain(|_, attempts| {
-            while attempts
-                .front()
-                .is_some_and(|t| now.duration_since(*t) > window)
-            {
-                attempts.pop_front();
-            }
-            !attempts.is_empty()
-        });
-        let attempts = history.entry(task_id.to_string()).or_default();
-
-        let prior_count = attempts.len() as u32;
-        if prior_count >= max_restarts {
-            return (false, prior_count);
-        }
-
-        attempts.push_back(now);
-        (true, prior_count)
     }
 
     /// Clear the lead's stop time so `ensure_lead_alive()` respawns on the next tick.
@@ -1475,7 +1436,6 @@ impl DaemonState {
             insight_hashes: std::sync::Mutex::new(HashSet::new()),
             reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             orphaned_pr_lead_nudges_sent: std::sync::Mutex::new(HashSet::new()),
-            stuck_task_restart_history: std::sync::Mutex::new(HashMap::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             fork_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             worktree_freshness_cache: std::sync::Mutex::new(None),
@@ -3587,7 +3547,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // Store author session for PR handoff (allows any coworker to resume the PR)
                     if let Some(ref author) = pr_opened.author_coworker {
                         if let Some(session_id) = state.coworkers.get_session_id(author) {
-                            pr_effects.push(effects::Effect::StorePrAuthorSession {
+                            pr_effects.push(effects::Effect::LinkPrToSession {
                                 pr_number: pr_opened.pr_number,
                                 session_id,
                                 branch: pr_opened.branch.clone(),

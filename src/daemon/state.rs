@@ -49,6 +49,23 @@ impl GcResult {
     }
 }
 
+/// Reviewer metadata for a review task, persisted in `DaemonPersistentState`.
+///
+/// Keyed by review task ID in `task_reviewer_metadata`. Consolidates the
+/// per-reviewer fields that were previously spread across multiple HashMaps
+/// (`task_placeholder_comment_id`, `task_restart_count`) and `GitHubState`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskReviewerMetadata {
+    /// PR number being reviewed.
+    pub pr_number: u64,
+    /// GitHub comment ID for the "Review in progress..." placeholder, if posted.
+    pub placeholder_comment_id: Option<u64>,
+    /// Number of times the reviewer session has been restarted (for backoff).
+    pub restart_count: u32,
+    /// Claude Code session ID of the active reviewer session, if any.
+    pub reviewer_session_id: Option<String>,
+}
+
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -251,6 +268,11 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub task_restart_count: HashMap<String, u32>,
 
+    /// Reviewer metadata keyed by review task ID.
+    /// Follows the same pattern as task_channel, task_model, task_parent.
+    #[serde(default)]
+    pub task_reviewer_metadata: HashMap<String, TaskReviewerMetadata>,
+
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -443,6 +465,7 @@ impl DaemonPersistentState {
             self.task_agent_type.remove(task_id);
             self.task_placeholder_comment_id.remove(task_id);
             self.task_restart_count.remove(task_id);
+            self.task_reviewer_metadata.remove(task_id);
             result.orphaned_tasks_pruned += 1;
         }
 
@@ -502,6 +525,7 @@ impl DaemonPersistentState {
             task_agent_type: HashMap::new(),
             task_placeholder_comment_id: HashMap::new(),
             task_restart_count: HashMap::new(),
+            task_reviewer_metadata: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
@@ -651,6 +675,58 @@ impl DaemonPersistentState {
 
         (workflow_state, files_to_delete)
     }
+}
+
+/// Derive a `pr_number → task_id` map from session records.
+///
+/// Only sessions that have both `pr_number` and `task_id` set are included.
+/// Used as the primary source for PR↔task mapping in the task-centric model.
+pub fn pr_to_task_map_from_sessions(
+    sessions: &HashMap<String, SessionRecord>,
+) -> HashMap<u64, String> {
+    sessions
+        .values()
+        .filter_map(|s| {
+            let pr = s.pr_number?;
+            let task = s.task_id.as_ref()?;
+            Some((pr, task.clone()))
+        })
+        .collect()
+}
+
+/// Find `TaskReviewerMetadata` by PR number.
+///
+/// Since `task_reviewer_metadata` is keyed by task ID, this performs a linear
+/// scan to find the entry matching the given PR number. When multiple entries
+/// exist for the same PR (e.g., completed review task + new review task),
+/// returns the one with the highest task ID (most recent) to avoid reading
+/// stale `restart_count` or `placeholder_comment_id` from a prior review cycle.
+pub fn task_reviewer_metadata_for_pr(
+    ps: &DaemonPersistentState,
+    pr_number: u64,
+) -> Option<&TaskReviewerMetadata> {
+    ps.task_reviewer_metadata
+        .iter()
+        .filter(|(_, m)| m.pr_number == pr_number)
+        .max_by_key(|(task_id, _)| task_id.parse::<u64>().unwrap_or(0))
+        .map(|(_, m)| m)
+}
+
+/// Derive a `task_id → pr_number` map from session records.
+///
+/// Only sessions that have both `pr_number` and `task_id` set are included.
+/// Used as the primary source for task↔PR mapping in the task-centric model.
+pub fn task_to_pr_map_from_sessions(
+    sessions: &HashMap<String, SessionRecord>,
+) -> HashMap<String, u64> {
+    sessions
+        .values()
+        .filter_map(|s| {
+            let pr = s.pr_number?;
+            let task = s.task_id.as_ref()?;
+            Some((task.clone(), pr))
+        })
+        .collect()
 }
 
 #[path = "state_tests.rs"]

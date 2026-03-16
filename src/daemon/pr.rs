@@ -12,8 +12,6 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info, warn};
 
-use crate::daemon_messages;
-
 use super::DaemonState;
 use super::constants::*;
 use super::effects::Effect;
@@ -72,10 +70,6 @@ struct PrContext {
     /// Channel routing: PR number → task ID → channel name
     pr_task_associations: HashMap<u64, String>,
     task_channel: HashMap<String, String>,
-    /// Session context for the target PR (if the PR has a stored author session)
-    session_context: Option<crate::rules::PrSessionContext>,
-    /// Task-linked session ID for resume (PR → task → session lookup)
-    task_session_id: Option<String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
     /// Used to suppress both `PrApproved` workflow events AND inline nudge effects
     /// while a reviewer is still working, so the contract remains:
@@ -96,48 +90,7 @@ impl PrContext {
     /// channel routing data (shared across all PRs) and session context
     /// (specific to `pr_number`) in a single pass.
     fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
-        let pr_task_associations = ps.github.pr_to_task_map();
-
-        // Session-centric resume: PR → task → session
-        let task_session_id = pr_task_associations.get(&pr_number).and_then(|task_id| {
-            ps.sessions
-                .values()
-                .find(|s| s.task_id.as_deref() == Some(task_id))
-                .map(|s| s.session_id.clone())
-        });
-
-        // Build session_context: prefer SessionRecord for task-linked PRs,
-        // fall back to pr_author_sessions for non-task PRs (legacy).
-        let pr_author_session = ps.github.get_pr_author_session(pr_number);
-        let session_context = if let Some(ref sid) = task_session_id {
-            // Task-linked: derive PrSessionContext from SessionRecord.
-            // Fall back to pr_author_sessions for branch (SessionRecord.branch
-            // is often None because it's not backfilled during spawn).
-            ps.sessions
-                .get(sid)
-                .map(|s| crate::rules::PrSessionContext {
-                    session_id: s.session_id.clone(),
-                    branch: s
-                        .branch
-                        .clone()
-                        .or_else(|| pr_author_session.as_ref().map(|a| a.branch.clone()))
-                        .unwrap_or_default(),
-                    original_author: s
-                        .preferred_name
-                        .clone()
-                        .or_else(|| s.current_name.clone())
-                        .unwrap_or_default(),
-                    pr_number,
-                })
-        } else {
-            // Non-task: fall back to pr_author_sessions (legacy)
-            pr_author_session.map(|s| crate::rules::PrSessionContext {
-                session_id: s.session_id.clone(),
-                branch: s.branch.clone(),
-                original_author: s.original_author.clone(),
-                pr_number,
-            })
-        };
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
         // Gate check: reviewer assigned in github-state (raw presence, no timeout).
         // Uses get_reviewer() like the RPC merge gate (!1896) so the workflow event
@@ -152,8 +105,6 @@ impl PrContext {
         Self {
             pr_task_associations,
             task_channel: ps.task_channel.clone(),
-            session_context,
-            task_session_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -167,10 +118,8 @@ impl PrContext {
     /// finished. Do NOT use this for `PrIssueType::Approved` code paths.
     fn routing_only(ps: &super::state::DaemonPersistentState) -> Self {
         Self {
-            pr_task_associations: ps.github.pr_to_task_map(),
+            pr_task_associations: super::state::pr_to_task_map_from_sessions(&ps.sessions),
             task_channel: ps.task_channel.clone(),
-            session_context: None,
-            task_session_id: None,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -221,26 +170,6 @@ impl PrContext {
         });
 
         self.has_active_reviewer = has_snapshot_assignment || has_reviewing_phase;
-    }
-}
-
-/// Add RecordTaskAssignment to on_success for cross-tick spawn deduplication.
-///
-/// When spawning a coworker for a PR that's associated with a task, we must include
-/// RecordTaskAssignment in the on_success callback so mark_in_flight_spawns_from_effects()
-/// can track the spawn and prevent task dispatch from double-spawning the same task
-/// in the next tick. See bug !1377.
-fn add_task_assignment_to_on_success(
-    on_success: &mut Vec<Effect>,
-    pr_number: u64,
-    coworker: &str,
-    ctx: &PrContext,
-) {
-    if let Some(task_id) = ctx.pr_task_associations.get(&pr_number) {
-        on_success.push(Effect::RecordTaskAssignment {
-            coworker: coworker.to_string(),
-            task_id: task_id.clone(),
-        });
     }
 }
 
@@ -567,7 +496,7 @@ async fn resolve_pr_owner_from_state(
 
     let owner = {
         let ps = state.persistent_state.lock().await;
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
         let session_task_map: HashMap<String, String> = ps
             .sessions
@@ -705,6 +634,21 @@ async fn cleanup_pr_tracking_state(
             .collect();
         ps.github
             .backfill_reviewer_session_ids(&reviewer_session_map);
+        // Also backfill task_reviewer_metadata.reviewer_session_id from pr_reviewers
+        // for any entry that was created before the session ID was known.
+        let pr_session_ids: Vec<(u64, String)> = ps
+            .github
+            .pr_reviewers
+            .iter()
+            .filter_map(|(&pr, a)| a.reviewer_session_id.as_ref().map(|sid| (pr, sid.clone())))
+            .collect();
+        for (pr_number, sid) in pr_session_ids {
+            for meta in ps.task_reviewer_metadata.values_mut() {
+                if meta.pr_number == pr_number && meta.reviewer_session_id.is_none() {
+                    meta.reviewer_session_id = Some(sid.clone());
+                }
+            }
+        }
         ps.github.cleanup_stale_webhook_events();
     }
     {
@@ -840,7 +784,7 @@ async fn decide_and_build_pr_issue_effects(
     active_coworkers: &[String],
     idle_coworkers: &[String],
 ) -> Vec<Effect> {
-    use crate::rules::decide_pr_issue_action_with_handoff;
+    use crate::rules::{PrActionContext, decide_pr_action};
 
     let message = format!(
         "PR #{} ({}) - {}: {}{}",
@@ -851,6 +795,7 @@ async fn decide_and_build_pr_issue_effects(
         review_content.unwrap_or("")
     );
 
+    // Extract all decision context from persistent state in one lock
     let (mut pr_ctx, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
         (
@@ -859,16 +804,18 @@ async fn decide_and_build_pr_issue_effects(
         )
     };
 
+    // Defense-in-depth: also check reviewing_phase_coworkers from snapshot.
     pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
+    // Decide action using handoff-aware decision function (matches webhook path)
     let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let action = decide_pr_issue_action_with_handoff(
+    let action = decide_pr_action(
         owner,
         active_coworkers,
         idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &message,
+        PrActionContext::PrIssue,
     );
 
     let action_name = pr_action_name(&action);
@@ -884,8 +831,8 @@ async fn decide_and_build_pr_issue_effects(
         action_name,
         effects: &new_effects,
         ctx: &pr_ctx,
-        owner_is_active: active_coworkers.contains(&owner.to_string()),
-        owner_is_idle: idle_coworkers.contains(&owner.to_string()),
+        owner_is_active: active_coworkers.iter().any(|s| s == owner),
+        owner_is_idle: idle_coworkers.iter().any(|s| s == owner),
         at_dev_limit,
         source: "polling",
     });
@@ -1505,7 +1452,7 @@ async fn collect_green_with_feedback_effects(
 /// Build the workflow event for a PR issue type (if task-linked with a channel).
 ///
 /// Returns the appropriate `WorkflowEvent` variant for the issue type, or `None`
-/// for issue types without workflow event counterparts (ReviewComment, NeedsReview).
+/// for issue types without workflow event counterparts (ReviewComment).
 /// `ReviewComplete` maps to `ReviewerComplete` when called from review-complete context.
 fn build_workflow_event(
     issue_type: PrIssueType,
@@ -1551,7 +1498,7 @@ fn build_workflow_event(
             pr_number,
         }),
         // These issue types don't have workflow event counterparts.
-        PrIssueType::ReviewComment | PrIssueType::NeedsReview => None,
+        PrIssueType::ReviewComment => None,
     }
 }
 
@@ -1575,7 +1522,7 @@ fn action_to_effects(
     pr_number: u64,
     title: &str,
     issue_type: PrIssueType,
-    state: &DaemonState,
+    _state: &DaemonState,
     ctx: &PrContext,
 ) -> Vec<Effect> {
     use crate::rules::PrAction;
@@ -1599,21 +1546,13 @@ fn action_to_effects(
     // event, the script/lead is authoritative: emit only cooldown tracking +
     // the event. The script handles nudging via rpc.nudge_coworker(); in
     // lead-driven mode, the EmitWorkflowEvent handler relays to the channel lead.
-    //
-    // HandoffToCoworker is excluded for workflow scripts (involves spawning a
-    // different coworker with session context and task reassignment, which
-    // rpc.nudge_coworker() cannot replicate). In lead-driven mode, however,
-    // ALL actions including HandoffToCoworker are gated — the lead manages
-    // the full lifecycle.
     if let Some(ref event) = workflow_event {
-        let is_handoff = matches!(action, PrAction::HandoffToCoworker { .. });
         let has_workflow = channel
             .as_ref()
             .is_some_and(|ch| ctx.channel_workflows.contains_key(ch));
         let is_lead_driven = ctx.is_lead_driven(pr_number);
 
-        // Lead-driven gates everything; workflow scripts gate non-handoff actions.
-        if is_lead_driven || (has_workflow && !is_handoff) {
+        if is_lead_driven || has_workflow {
             // Authoritative — emit cooldown tracking + event only.
             // This fires even for Skip actions so the state machine stays in sync.
             return vec![
@@ -1669,70 +1608,20 @@ fn action_to_effects(
                 },
             ]
         }
-        // Task-less PRs: nudge if running, spawn if stopped.
-        PrAction::NudgeOwner { owner, message } => {
-            vec![Effect::nudge_session_with_callbacks(
-                state.session_id_for_name(&owner),
-                message,
-                vec![Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                }],
-            )]
-        }
-        PrAction::SpawnOwner { owner, message } => {
-            let session_mode = match &ctx.task_session_id {
-                Some(sid) => crate::launch::SessionMode::ResumeSession(sid.clone()),
-                None => crate::launch::SessionMode::Resume,
-            };
-            let config = crate::launch::LaunchConfig::coworker(
-                owner.clone(),
-                state.paths.dir_key().to_string(),
-                session_mode,
-                Some(message),
-                ctx.pr_task_associations.get(&pr_number).cloned(),
-            );
-
-            let mut on_success = vec![
-                Effect::BroadcastCoworkerUpdate {
-                    name: owner.clone(),
-                    status: "running".to_string(),
-                    current_task: Some(format!("working on PR #{}", pr_number)),
-                },
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: daemon_messages::called_in_pr_issue(
-                        &owner,
-                        &issue_type.to_string(),
-                        pr_number,
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
-                Effect::RecordPrNudge {
-                    pr_number,
-                    issue_type,
-                },
-            ];
-
-            add_task_assignment_to_on_success(&mut on_success, pr_number, &owner, ctx);
-
-            let on_failure = vec![
+        // Task-less PRs: post to ops for manual investigation.
+        // All coworker PRs should have tasks; reaching here indicates a
+        // data gap (e.g., daemon restart lost session records).
+        PrAction::NudgeOwner { owner, message: _ } | PrAction::SpawnOwner { owner, message: _ } => {
+            vec![
                 Effect::PostToChannel {
                     sender: "midtown".to_string(),
                     message: format!(
-                        "PR #{} ({}) owned by {} - {}: {} (call-in failed)",
+                        "PR #{} ({}) owned by {} \u{2014} {}: {} (no task linked, posting for manual review)",
                         pr_number,
                         truncate_str(title, 40),
                         owner,
                         issue_type,
-                        get_issue_action(issue_type)
+                        get_issue_action(issue_type),
                     ),
                     channel: Some(OPS_CHANNEL.to_string()),
                     auto_output: false,
@@ -1747,35 +1636,8 @@ fn action_to_effects(
                     pr_number,
                     issue_type,
                 },
-            ];
-
-            vec![Effect::SpawnCoworkerWithCallbacks {
-                config,
-                on_success,
-                on_failure,
-            }]
+            ]
         }
-        // HandoffToCoworker: keep existing behavior (Phase 5 will eliminate via task handoff).
-        PrAction::HandoffToCoworker {
-            assignee,
-            original_author,
-            pr_number,
-            branch,
-            session_id,
-            message,
-        } => handoff_to_coworker_effects(
-            &assignee,
-            &original_author,
-            pr_number,
-            &branch,
-            session_id,
-            &message,
-            "resuming their session for full context",
-            title,
-            issue_type,
-            state,
-            ctx,
-        ),
         PrAction::PostToChannel { message } => {
             vec![
                 Effect::PostToChannel {
@@ -1895,7 +1757,7 @@ async fn collect_stuck_condition_effects(
             .collect();
         let channel_lead_names = ps.channel_lead_names();
         let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
         let lead_driven_channels = ps.lead_driven_channels.clone();
@@ -2663,16 +2525,16 @@ async fn collect_comment_notification_effects(
             continue;
         }
 
-        // Decide action using handoff-aware decision function (preserves session
-        // resume and idle-coworker handoff capabilities)
-        let action = crate::rules::decide_pr_comment_action_with_handoff(
+        // Decide action using handoff-aware decision function
+        let action = crate::rules::decide_pr_action(
             &owner,
-            "reviewer", // Generic actor since we don't know the specific commenter from polling
             active_coworkers,
             idle_coworkers,
             state.is_at_dev_limit(&channel_lead_names),
-            pr_ctx.session_context.as_ref(),
             &nudge_msg,
+            crate::rules::PrActionContext::PrComment {
+                actor: "reviewer".to_string(), // Generic actor since we don't know the specific commenter from polling
+            },
         );
 
         effects.extend(action_to_effects(
@@ -2701,99 +2563,6 @@ async fn collect_comment_notification_effects(
     effects
 }
 
-/// Build effects for handing off a PR to a different coworker.
-///
-/// Shared helper that consolidates the HandoffToCoworker effect-building logic
-/// used by `action_to_effects`. The only variation is the `context_suffix`
-/// that describes why the handoff is happening (e.g., "resuming their session for
-/// full context" or "to address review feedback").
-#[allow(clippy::too_many_arguments)]
-fn handoff_to_coworker_effects(
-    assignee: &str,
-    original_author: &str,
-    pr_number: u64,
-    branch: &str,
-    session_id: String,
-    message: &str,
-    context_suffix: &str,
-    title: &str,
-    issue_type: PrIssueType,
-    state: &DaemonState,
-    ctx: &PrContext,
-) -> Vec<Effect> {
-    // Look up topic channel for this PR's task (falls back to main if not found)
-    let mut config = crate::launch::LaunchConfig::pr_handoff(
-        assignee.to_string(),
-        state.paths.dir_key().to_string(),
-        session_id,
-        pr_number,
-        branch,
-        original_author,
-    );
-    // Pass the PR's linked task ID so the handoff coworker knows its task
-    config.task_id = ctx.pr_task_associations.get(&pr_number).cloned();
-
-    let mut on_success = vec![
-        Effect::BroadcastCoworkerUpdate {
-            name: assignee.to_string(),
-            status: "running".to_string(),
-            current_task: Some(format!("working on PR #{}", pr_number)),
-        },
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "{} is taking over PR #{} from {} ({})",
-                assignee, pr_number, original_author, context_suffix
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
-        Effect::RecordPrNudge {
-            pr_number,
-            issue_type,
-        },
-    ];
-
-    add_task_assignment_to_on_success(&mut on_success, pr_number, assignee, ctx);
-
-    let on_failure = vec![
-        Effect::PostToChannel {
-            sender: "midtown".to_string(),
-            message: format!(
-                "Failed to hand off PR #{} ({}) to {} - {}",
-                pr_number,
-                truncate_str(title, 40),
-                assignee,
-                message
-            ),
-            channel: Some(OPS_CHANNEL.to_string()),
-            auto_output: false,
-            message_type: None,
-            nudge_type: None,
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        },
-        Effect::RecordPrNudge {
-            pr_number,
-            issue_type,
-        },
-    ];
-
-    vec![Effect::SpawnCoworkerWithCallbacks {
-        config,
-        on_success,
-        on_failure,
-    }]
-}
-
 /// Collect effects for spawning reviewers for PRs that need code review.
 ///
 /// Identifies PRs that need review (not drafts, old enough, no completed review,
@@ -2816,6 +2585,211 @@ async fn collect_reviewer_effects(
         pre_fetched_review_content,
     )
     .await
+}
+
+/// Handle the review-complete path for a single PR.
+///
+/// Returns `Some(effects)` if the PR has a completed review (effects may be empty
+/// if the nudge was already sent), or `None` if the PR is NOT reviewed and the
+/// caller should proceed to reviewer spawning.
+#[allow(clippy::too_many_arguments)]
+async fn collect_review_complete_effects(
+    pr_number: u64,
+    pr: &serde_json::Value,
+    state: &DaemonState,
+    all_tasks: &[crate::tasks::Task],
+    pr_task_associations: &HashMap<u64, String>,
+    session_task_map: &HashMap<String, String>,
+    sessions: &HashMap<String, super::state::SessionRecord>,
+    is_at_dev_limit: bool,
+    active_coworkers: &[String],
+    idle_coworkers: &[String],
+    branch_owners: &std::collections::HashMap<String, String>,
+    pre_fetched_review_content: &HashMap<u64, String>,
+    pr_ctx: &PrContext,
+) -> Option<Vec<Effect>> {
+    if !state.is_pr_reviewed(pr_number).await {
+        return None;
+    }
+
+    let pf = PrFields::from_json(pr);
+    let title = pf.title;
+    let mut effects = Vec::new();
+
+    debug!("PR #{} already has a completed review", pr_number);
+
+    // Clear the reviewer assignment now that the review is complete.
+    // This allows the reviewer to be sent on break, freeing up coworker slots.
+    // Previously we only cleared when the reviewer had shut down, but that left
+    // idle reviewers stuck with assignments preventing break dispatch.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        if ps.github.is_assigned(pr_number) {
+            debug!(
+                "PR #{} review completed, freeing reviewer assignment",
+                pr_number
+            );
+            ps.github.remove_assignment(pr_number);
+            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                warn!("Failed to save daemon-state.json: {}", e);
+            }
+        }
+    }
+
+    // Clear any Approved nudge cooldown so the next tick re-evaluates PrApproved.
+    // When the reviewer was active, pr_action_to_effects suppressed both the
+    // workflow event AND inline effects (!1902, !2003). If a prior approval
+    // recorded a cooldown before the reviewer started, clear it here so the
+    // workflow script's PrApproved event can fire on the next tick.
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        if tracker.has_nudge(pr_number, PrIssueType::Approved) {
+            debug!(
+                "PR #{} reviewer cleared, resetting Approved nudge cooldown for PrApproved re-evaluation",
+                pr_number
+            );
+            tracker.clear_nudge(pr_number, PrIssueType::Approved);
+        }
+    }
+
+    // Bug !2124: For user-authored PRs (lead/* branches), skip coworker
+    // owner resolution entirely. The owner resolution chain can resolve
+    // to a coworker via task metadata, causing the daemon to spawn a
+    // coworker who sees a clean review, goes idle, and loops every
+    // cooldown period. Only the user can act on their own PRs.
+    //
+    // Bug !2137: For lead branches, use has_nudge() (one-shot) instead
+    // of should_nudge() (cooldown-based). The user can't act on the PR
+    // from within a Claude session, so re-nudging every 10 minutes is
+    // spam. Notify exactly once.
+    if is_lead_branch(pf.head_ref) {
+        let already_nudged = {
+            let tracker = state.pr_issue_tracker.lock().await;
+            tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
+        };
+        if already_nudged {
+            return Some(effects);
+        }
+
+        let review_suffix = pre_fetched_review_content
+            .get(&pr_number)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let nudge_msg = format!(
+            "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+            pr_number,
+            truncate_str(title, 40),
+            review_suffix
+        );
+        let channel = pr_ctx.get_channel(pr_number);
+        let user_msg = format!("@user {}", nudge_msg);
+        effects.push(Effect::PostToChannel {
+            sender: "midtown".to_string(),
+            message: user_msg,
+            channel,
+            auto_output: false,
+            message_type: None,
+            nudge_type: None,
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+        });
+        effects.push(Effect::RecordPermanentPrNudge {
+            pr_number,
+            issue_type: PrIssueType::ReviewComplete,
+        });
+        return Some(effects);
+    }
+
+    // Coworker PRs: one-shot nudging (same as lead-branch PRs)
+    let already_nudged = {
+        let tracker = state.pr_issue_tracker.lock().await;
+        tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
+    };
+    if already_nudged {
+        return Some(effects);
+    }
+    let review_suffix = pre_fetched_review_content
+        .get(&pr_number)
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let nudge_msg = format!(
+        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+        pr_number,
+        truncate_str(title, 40),
+        review_suffix
+    );
+
+    let owner =
+        resolve_pr_owner_from_session(pr_number, pr_task_associations, session_task_map, sessions)
+            .or_else(|| {
+                resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, all_tasks)
+            })
+            .or_else(|| coworker_from_branch(pf.head_ref, branch_owners))
+            .or_else(|| {
+                // Crash-resilient fallback: parse <!-- midtown: name --> from the PR
+                // body. This survives daemon restarts and auth storms since the
+                // frontmatter lives on GitHub, not in daemon memory.
+                resolve_pr_owner_from_body(pf.body())
+            })
+            .or_else(|| {
+                // Last resort: use daemon's pr_task_associations mapping (survives
+                // cases where the task owner was unassigned but the task still exists).
+                pr_task_associations.get(&pr_number).and_then(|task_id| {
+                    all_tasks
+                        .iter()
+                        .find(|t| t.id == *task_id)
+                        .and_then(|t| t.owner.clone())
+                })
+            });
+
+    if let Some(owner) = owner {
+        let action = crate::rules::decide_pr_action(
+            &owner,
+            active_coworkers,
+            idle_coworkers,
+            is_at_dev_limit,
+            &nudge_msg,
+            crate::rules::PrActionContext::ReviewComplete,
+        );
+
+        effects.extend(action_to_effects(
+            action,
+            pr_number,
+            title,
+            PrIssueType::ReviewComplete,
+            state,
+            pr_ctx,
+        ));
+        effects.push(Effect::RecordPermanentPrNudge {
+            pr_number,
+            issue_type: PrIssueType::ReviewComplete,
+        });
+        return Some(effects);
+    }
+
+    let channel = pr_ctx.get_channel(pr_number);
+    // No coworker owns this PR — @mention the user so they see it
+    let user_msg = format!("@user {}", nudge_msg);
+    effects.push(Effect::PostToChannel {
+        sender: "midtown".to_string(),
+        message: user_msg,
+        channel,
+        auto_output: false,
+        message_type: None,
+        nudge_type: None,
+        tool_data: None,
+        provider: None,
+        tool_use_id: None,
+        parent_tool_use_id: None,
+    });
+    effects.push(Effect::RecordPermanentPrNudge {
+        pr_number,
+        issue_type: PrIssueType::ReviewComplete,
+    });
+
+    Some(effects)
 }
 
 pub(crate) async fn collect_reviewer_effects_with_source(
@@ -2856,11 +2830,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         session_task_map,
         sessions,
         is_at_dev_limit,
-        pr_author_names,
+        task_channel,
+        channel_workflow_channels,
+        pr_last_webhook_event,
     ) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
-        let pr_task_associations = ps.github.pr_to_task_map();
+        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let session_task_map: HashMap<String, String> = ps
             .sessions
             .iter()
@@ -2875,13 +2851,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         let pr_ctx = PrContext::routing_only(&ps);
         let channel_lead_names = ps.channel_lead_names();
         let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-        // PR author fallback: maps PR# → original author name from stored author sessions.
-        let pr_author_names: HashMap<u64, String> = ps
-            .github
-            .pr_author_sessions
-            .iter()
-            .map(|(pr, s)| (*pr, s.original_author.clone()))
-            .collect();
+        let task_channel = ps.task_channel.clone();
+        let channel_workflow_channels: std::collections::HashSet<String> =
+            ps.channel_workflows.keys().cloned().collect();
+        let pr_last_webhook_event = ps.github.pr_last_webhook_event.clone();
 
         (
             pr_ctx,
@@ -2890,7 +2863,9 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             session_task_map,
             sessions,
             is_at_dev_limit,
-            pr_author_names,
+            task_channel,
+            channel_workflow_channels,
+            pr_last_webhook_event,
         )
     };
 
@@ -2900,8 +2875,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         if pr_number == 0 {
             continue;
         }
-
-        let title = pf.title;
 
         // Skip draft PRs
         let is_draft = pf.is_draft;
@@ -2927,13 +2900,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // so polling should only act as a safety net for missed webhooks — not
         // race with the workflow.
         let review_delay = if source == crate::github_state::AssignmentSource::PollingFallback {
-            let has_workflow = {
-                let ps = state.persistent_state.lock().await;
-                pr_task_associations
-                    .get(&pr_number)
-                    .and_then(|task_id| ps.task_channel.get(task_id).cloned())
-                    .is_some_and(|channel| ps.channel_workflows.contains_key(&channel))
-            };
+            let has_workflow = pr_task_associations
+                .get(&pr_number)
+                .and_then(|task_id| task_channel.get(task_id))
+                .is_some_and(|channel| channel_workflow_channels.contains(channel));
 
             if has_workflow {
                 PR_REVIEW_DELAY_SCRIPT_SECS
@@ -2958,11 +2928,13 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         // This prevents polling from spawning a duplicate reviewer when the
         // webhook already triggered reviewer spawning via the workflow script.
         if source == crate::github_state::AssignmentSource::PollingFallback {
-            let ps = state.persistent_state.lock().await;
-            if ps
-                .github
-                .webhook_recently_handled(pr_number, review_delay as i64 * 2)
-            {
+            let window_secs = review_delay as i64 * 2;
+            let webhook_recently_handled =
+                pr_last_webhook_event.get(&pr_number).is_some_and(|ts| {
+                    let elapsed = chrono::Utc::now().signed_duration_since(*ts);
+                    elapsed < chrono::Duration::seconds(window_secs)
+                });
+            if webhook_recently_handled {
                 debug!(
                     "PR #{} was recently handled by webhook, polling defers",
                     pr_number
@@ -2972,189 +2944,24 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         }
 
         // Check if PR already has a completed review.
-        if state.is_pr_reviewed(pr_number).await {
-            debug!("PR #{} already has a completed review", pr_number);
-
-            // Clear the reviewer assignment now that the review is complete.
-            // This allows the reviewer to be sent on break, freeing up coworker slots.
-            // Previously we only cleared when the reviewer had shut down, but that left
-            // idle reviewers stuck with assignments preventing break dispatch.
-            {
-                let mut ps = state.persistent_state.lock().await;
-                if ps.github.is_assigned(pr_number) {
-                    debug!(
-                        "PR #{} review completed, freeing reviewer assignment",
-                        pr_number
-                    );
-                    ps.github.remove_assignment(pr_number);
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!("Failed to save daemon-state.json: {}", e);
-                    }
-                }
-            }
-
-            // Clear any Approved nudge cooldown so the next tick re-evaluates PrApproved.
-            // When the reviewer was active, pr_action_to_effects suppressed both the
-            // workflow event AND inline effects (!1902, !2003). If a prior approval
-            // recorded a cooldown before the reviewer started, clear it here so the
-            // workflow script's PrApproved event can fire on the next tick.
-            {
-                let mut tracker = state.pr_issue_tracker.lock().await;
-                if tracker.has_nudge(pr_number, PrIssueType::Approved) {
-                    debug!(
-                        "PR #{} reviewer cleared, resetting Approved nudge cooldown for PrApproved re-evaluation",
-                        pr_number
-                    );
-                    tracker.clear_nudge(pr_number, PrIssueType::Approved);
-                }
-            }
-
-            // Bug !2124: For user-authored PRs (lead/* branches), skip coworker
-            // owner resolution entirely. The owner resolution chain can resolve
-            // to a coworker via task metadata, causing the daemon to spawn a
-            // coworker who sees a clean review, goes idle, and loops every
-            // cooldown period. Only the user can act on their own PRs.
-            //
-            // Bug !2137: For lead branches, use has_nudge() (one-shot) instead
-            // of should_nudge() (cooldown-based). The user can't act on the PR
-            // from within a Claude session, so re-nudging every 10 minutes is
-            // spam. Notify exactly once.
-            if is_lead_branch(pf.head_ref) {
-                let already_nudged = {
-                    let tracker = state.pr_issue_tracker.lock().await;
-                    tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
-                };
-                if already_nudged {
-                    continue;
-                }
-
-                let review_suffix = pre_fetched_review_content
-                    .get(&pr_number)
-                    .map(|s| s.as_str())
-                    .unwrap_or("");
-                let nudge_msg = format!(
-                    "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-                    pr_number,
-                    truncate_str(title, 40),
-                    review_suffix
-                );
-                let channel = pr_ctx.get_channel(pr_number);
-                let user_msg = format!("@user {}", nudge_msg);
-                effects.push(Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: user_msg,
-                    channel,
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                });
-                effects.push(Effect::RecordPermanentPrNudge {
-                    pr_number,
-                    issue_type: PrIssueType::ReviewComplete,
-                });
-                continue;
-            }
-
-            // Coworker PRs: one-shot nudging (same as lead-branch PRs)
-            let already_nudged = {
-                let tracker = state.pr_issue_tracker.lock().await;
-                tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
-            };
-            if already_nudged {
-                continue;
-            }
-            let review_suffix = pre_fetched_review_content
-                .get(&pr_number)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let nudge_msg = format!(
-                "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-                pr_number,
-                truncate_str(title, 40),
-                review_suffix
-            );
-
-            let owner = resolve_pr_owner_from_session(
-                pr_number,
-                &pr_task_associations,
-                &session_task_map,
-                &sessions,
-            )
-            .or_else(|| {
-                resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, &all_tasks)
-            })
-            .or_else(|| coworker_from_branch(pf.head_ref, branch_owners))
-            .or_else(|| {
-                // Fallback: check pr_author_sessions for the original PR creator.
-                // This covers cases where the session record is gone but we stored
-                // who created the PR.
-                pr_author_names.get(&pr_number).cloned()
-            })
-            .or_else(|| {
-                // Crash-resilient fallback: parse <!-- midtown: name --> from the PR
-                // body. This survives daemon restarts and auth storms since the
-                // frontmatter lives on GitHub, not in daemon memory.
-                resolve_pr_owner_from_body(pf.body())
-            })
-            .or_else(|| {
-                // Last resort: use daemon's pr_task_associations mapping (survives
-                // cases where the task owner was unassigned but the task still exists).
-                pr_task_associations.get(&pr_number).and_then(|task_id| {
-                    all_tasks
-                        .iter()
-                        .find(|t| t.id == *task_id)
-                        .and_then(|t| t.owner.clone())
-                })
-            });
-
-            if let Some(owner) = owner {
-                let action = crate::rules::decide_review_complete_action(
-                    &owner,
-                    &active_coworkers,
-                    &idle_coworkers,
-                    is_at_dev_limit,
-                    &nudge_msg,
-                );
-
-                effects.extend(action_to_effects(
-                    action,
-                    pr_number,
-                    title,
-                    PrIssueType::ReviewComplete,
-                    state,
-                    &pr_ctx,
-                ));
-                effects.push(Effect::RecordPermanentPrNudge {
-                    pr_number,
-                    issue_type: PrIssueType::ReviewComplete,
-                });
-                continue;
-            }
-
-            let channel = pr_ctx.get_channel(pr_number);
-            // No coworker owns this PR — @mention the user so they see it
-            let user_msg = format!("@user {}", nudge_msg);
-            effects.push(Effect::PostToChannel {
-                sender: "midtown".to_string(),
-                message: user_msg,
-                channel,
-                auto_output: false,
-                message_type: None,
-                nudge_type: None,
-                tool_data: None,
-                provider: None,
-                tool_use_id: None,
-                parent_tool_use_id: None,
-            });
-            effects.push(Effect::RecordPermanentPrNudge {
-                pr_number,
-                issue_type: PrIssueType::ReviewComplete,
-            });
-
+        if let Some(review_effects) = collect_review_complete_effects(
+            pr_number,
+            pr,
+            state,
+            &all_tasks,
+            &pr_task_associations,
+            &session_task_map,
+            &sessions,
+            is_at_dev_limit,
+            &active_coworkers,
+            &idle_coworkers,
+            branch_owners,
+            pre_fetched_review_content,
+            &pr_ctx,
+        )
+        .await
+        {
+            effects.extend(review_effects);
             continue;
         }
 
@@ -3164,23 +2971,6 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                 pr_number, review_mode
             );
             continue;
-        }
-
-        // Check if already assigned for review (legacy) or has a review task.
-        {
-            let ps = state.persistent_state.lock().await;
-            // Legacy: check pr_reviewers for backward compatibility during transition
-            if ps.github.is_assigned(pr_number) {
-                if let Some(reviewer_name) = ps.github.get_reviewer(pr_number) {
-                    debug!(
-                        "PR #{} already assigned to active reviewer {}",
-                        pr_number, reviewer_name
-                    );
-                } else {
-                    debug!("PR #{} has assignment but no reviewer name", pr_number);
-                }
-                continue;
-            }
         }
 
         // Check if a review task already exists for this PR (task-based dedup).
@@ -3713,10 +3503,9 @@ pub(super) async fn handle_pr_comment_nudge(
     // Check if this PR is linked to a task, and handle based on task status.
     if let Some((task_id, channel_lead_names)) = {
         let ps = state.persistent_state.lock().await;
-        ps.github
-            .pr_author_sessions
+        let pr_task_map = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        pr_task_map
             .get(&pr_number)
-            .and_then(|session| session.task_id.as_ref())
             .cloned()
             .map(|tid| (tid, ps.channel_lead_names()))
     } && let Some(task) = crate::tasks::read_task(&task_id)
@@ -3840,7 +3629,9 @@ pub(super) async fn handle_pr_comment_nudge(
         let (reviewer_info, task_id) = {
             let ps = state.persistent_state.lock().await;
             let reviewer = ps.github.pr_reviewers.get(&pr_number).cloned();
-            let tid = ps.github.pr_to_task_map().get(&pr_number).cloned();
+            let tid = super::state::pr_to_task_map_from_sessions(&ps.sessions)
+                .get(&pr_number)
+                .cloned();
             (reviewer, tid)
         };
 
@@ -3956,14 +3747,15 @@ pub(super) async fn handle_pr_comment_nudge(
 
     // Decide action using pure decision function with handoff support
     let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let action = crate::rules::decide_pr_comment_action_with_handoff(
+    let action = crate::rules::decide_pr_action(
         &owner,
-        &activity.actor,
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
+        crate::rules::PrActionContext::PrComment {
+            actor: activity.actor.clone(),
+        },
     );
 
     let action_name = pr_action_name(&action);
@@ -4126,13 +3918,13 @@ pub(super) async fn handle_webhook_review_state_change(
     };
 
     let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let action = crate::rules::decide_pr_issue_action_with_handoff(
+    let action = crate::rules::decide_pr_action(
         &owner,
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
+        crate::rules::PrActionContext::PrIssue,
     );
 
     let action_name = pr_action_name(&action);
@@ -4230,13 +4022,13 @@ pub(super) async fn handle_webhook_ci_failure(
     };
 
     let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
-    let action = crate::rules::decide_pr_issue_action_with_handoff(
+    let action = crate::rules::decide_pr_action(
         &owner,
         &active_coworkers,
         &idle_coworkers,
         at_dev_limit,
-        pr_ctx.session_context.as_ref(),
         &nudge_msg,
+        crate::rules::PrActionContext::PrIssue,
     );
 
     let action_name = pr_action_name(&action);
@@ -4809,7 +4601,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ClearOrphanedReviewerAssignments { .. } => "ClearOrphanedReviewerAssignments",
         Effect::RerunWorkflow { .. } => "RerunWorkflow",
         Effect::UpdatePrComment { .. } => "UpdatePrComment",
-        Effect::StorePrAuthorSession { .. } => "StorePrAuthorSession",
+        Effect::LinkPrToSession { .. } => "LinkPrToSession",
         Effect::CompleteTask { .. } => "CompleteTask",
         Effect::ClearBlockedBy { .. } => "ClearBlockedBy",
         Effect::SetTaskPr { .. } => "SetTaskPr",
@@ -4895,7 +4687,6 @@ fn log_pr_decision(entry: &PrDecisionEntry<'_>) {
         "owner_idle": entry.owner_is_idle,
         "at_dev_limit": entry.at_dev_limit,
         "has_active_reviewer": entry.ctx.has_active_reviewer,
-        "has_session_context": entry.ctx.session_context.is_some(),
         "task_id": task_id,
         "channel": channel,
         "action": entry.action_name,
@@ -4921,7 +4712,6 @@ fn pr_action_name(action: &crate::rules::PrAction) -> &'static str {
     match action {
         crate::rules::PrAction::NudgeOwner { .. } => "NudgeOwner",
         crate::rules::PrAction::SpawnOwner { .. } => "SpawnOwner",
-        crate::rules::PrAction::HandoffToCoworker { .. } => "HandoffToCoworker",
         crate::rules::PrAction::PostToChannel { .. } => "PostToChannel",
         crate::rules::PrAction::Skip { .. } => "Skip",
     }

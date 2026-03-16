@@ -505,7 +505,7 @@ Old paths (`~/.midtown/worktrees/<repo>/` and `~/.midtown/coworkers/<repo>/`) ar
 
 Tasks complete through two paths depending on whether they produce a PR:
 
-1. **PR tasks** (most common): The coworker opens a PR and reports `midtown state idle`. The daemon auto-completes the task when the PR merges, via webhook or polling fallback. The task stays `in_progress` until merge — `task_has_open_pr()` in `rpc_coworker.rs` checks both `pr_author_sessions` (in-memory) and the `task.pr` field on disk (survives daemon restarts). When using the disk fallback, the PR state is verified via `gh pr view` since `task.pr` is never cleared when a PR is closed — without this check, a closed/superseded PR would incorrectly block task completion.
+1. **PR tasks** (most common): The coworker opens a PR and reports `midtown state idle`. The daemon auto-completes the task when the PR merges, via webhook or polling fallback. The task stays `in_progress` until merge — `task_has_open_pr()` in `rpc_coworker.rs` checks `SessionRecord.pr_number` (primary, in-memory) and the `task.pr` field on disk (secondary, survives daemon restarts). When using the disk fallback, the PR state is verified via `gh pr view` since `task.pr` is never cleared when a PR is closed — without this check, a closed/superseded PR would incorrectly block task completion.
 
 2. **No-PR tasks** (ops, release management, investigations): The coworker reports `midtown state completed`. Since no PR exists, the daemon completes the task directly on disk (same as `task.done` RPC), clears `blocked_by` dependencies, and marks the worktree as completed. This avoids the respawn loop that occurs when a task stays `in_progress` with no PR — dispatch would repeatedly recover and respawn the coworker.
 
@@ -770,7 +770,7 @@ Two RPC methods in `rpc_workflow.rs` provide access:
 Effect gating for lead-driven channels spans three decision modules:
 
 - **Dispatch** (`dispatch.rs`): `dispatch_via_sessions_inner`, `dispatch_owned_pending_tasks`, and `dispatch_unowned_pending_tasks` skip coworker spawning/nudging for tasks in lead-driven channels. Merged-PR auto-complete runs *before* the lead-driven check so task lifecycle cleanup still works.
-- **PR actions** (`pr.rs`): `action_to_effects` replaces inline effects (NudgeOwner, SpawnOwner, HandoffToCoworker) with `RecordPrNudge` + `EmitWorkflowEvent` when the PR's channel is lead-driven. For task-linked PRs, `NudgeOwner` and `SpawnOwner` are collapsed into `Effect::TaskPrompt` — `deliver_task_prompt` handles nudge-if-running / resume-if-stopped internally. Reviewer spawning is gated in `collect_reviewer_effects_with_source`. Stuck-condition scenarios (`collect_stuck_condition_effects`) skip PRs in lead-driven channels entirely.
+- **PR actions** (`pr.rs`): `action_to_effects` replaces inline effects (NudgeOwner, SpawnOwner) with `RecordPrNudge` + `EmitWorkflowEvent` when the PR's channel is lead-driven. For task-linked PRs, `NudgeOwner` and `SpawnOwner` are collapsed into `Effect::TaskPrompt` — `deliver_task_prompt` handles nudge-if-running / resume-if-stopped internally. Reviewer spawning is gated in `collect_reviewer_effects_with_source`. Stuck-condition scenarios (`collect_stuck_condition_effects`) skip PRs in lead-driven channels entirely.
 - **Effect execution** (`effects.rs`): `EmitWorkflowEvent` dispatches to either the workflow plugin daemon (when a script exists) or posts a human-readable @mention to the channel lead (lead-driven mode). The `PrContext::lead_driven_channels` field provides the lookup for all PR-related gating via `is_lead_driven(pr_number)`.
 
 ### Plugin Daemon (Unix Socket IPC)
@@ -985,15 +985,6 @@ Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task
 
 Reviewers are headless Claude Code sessions assigned to specific PRs. The daemon monitors them for stuck conditions (alive but unresponsive) and dead conditions (process exited before posting a review).
 
-### Stuck Detection
-
-`check_and_restart_stuck_reviewers()` in `health.rs` calls `decide_stuck_reviewer_restarts()` (pure, in `rules.rs`) each `SessionMonitorTick`. A reviewer is considered stuck if it is alive but has emitted no stream events for the stuck threshold duration. The threshold varies per PR:
-
-- **Standard threshold** (`REVIEWER_STUCK_DURATION` = 300s): Used when the reviewer has not posted a placeholder comment.
-- **Shorter threshold** (`REVIEWER_PLACEHOLDER_STUCK_DURATION` = 120s): Used when the reviewer has posted a "Review in progress" placeholder comment. Since the placeholder proves the reviewer started the review, a shorter timeout applies to recover faster.
-
-After `MAX_REVIEWER_RESTARTS` attempts per PR, an escalation warning is posted to the ops channel and the lead is nudged. The escalation threshold also uses the per-PR effective duration (shorter for placeholder PRs).
-
 ### Dead Reviewer Detection
 
 `check_and_restart_dead_reviewers()` detects reviewers whose process has exited (is_alive = false) without posting a review. This catches natural exits (max turns, context window full) before the review is complete. Dead reviewers are respawned up to `MAX_REVIEWER_RESTARTS` times.
@@ -1016,7 +1007,7 @@ Placeholder comments include a `<!-- midtown-placeholder -->` HTML tag. This tag
 When a reviewer is restarted (stuck or dead) and had previously posted a placeholder, the daemon patches the comment via `Effect::UpdatePrComment` to indicate the reviewer timed out and a replacement was assigned. This keeps the PR timeline informative.
 
 **WorldSnapshot fields** (reviewer fields are in the `reviewer: SnapshotReviewerState` sub-struct):
-- `reviewer.reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by `decide_stuck_reviewer_restarts` to select the shorter stuck threshold for placeholder PRs, and by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
+- `reviewer.reviewer_in_progress_comment_ids: HashMap<u64, u64>` — Maps PR number to the GitHub comment ID of a dangling "Review in progress" placeholder comment. Collected during `collect_world_snapshot()` using `reviewer_placeholder_cache` (TTL: 120s for all entries, both positive and negative). Used by health functions to emit `UpdatePrComment` effects marking abandoned placeholders.
 - `reviewer.reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR.
 - `reviewer.reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
 - `recently_recovered_session_ids: HashSet<String>` — (top-level) Session IDs for which a recovery was recently attempted and succeeded. Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed by session ID) so decision functions stay pure. Used by both `dispatch_via_sessions` (Path 1) and `spawn_for_pending_tasks` (Path 2) to skip re-recovery when a session dies quickly after being recovered, preventing log spam on every 5s tick.
@@ -1046,17 +1037,6 @@ midtown channel remind cancel <id>
 
 Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.
 
-## Idle Shutdown Protections
-
-`check_and_shutdown_idle_coworkers()` (in `src/daemon/health.rs`) runs every `SessionMonitorTick` and hands a `rules::IdleShutdownContext` the information it needs to decide which sessions can safely be stopped. The context bundles a number of protection sets built in `collect_world_snapshot()`:
-
-- `busy_coworkers`, `pending_task_owners`, and `coworkers_with_unblocked_deps` keep coworkers alive while they have active work or downstream dependents.
-- `pr.coworkers_with_open_prs` stay running until CI passes and review feedback (if any) is handled.
-- `reviewer.active_reviewers` keep their review assignment while `PR_REVIEW_ASSIGNMENT_TIMEOUT_SECS` (30 min) has not elapsed.
-- `health.usage_limited_coworkers`, `health.api_error_coworkers`, and `health.auth_error_coworkers` are preserved so recovery flows (limit reset, retry, re-auth) can finish.
-- `health.coworkers_with_active_tools` comes from `ProcessHealth` in-flight markers (`has_pending_tool`, `has_running_subagent`, or `has_pending_api_call`). Tool calls, Task subagents, and fresh pending API turns are treated as critical sections — shutting down mid-turn would drop the result. `has_pending_api_call` is freshness-bounded (uses `last_event_at`/startup time) so stale sessions are still eligible for cleanup.
-
-Only coworkers that fall outside all of these protection sets, are older than `MINIMUM_COWORKER_LIFETIME` (90 seconds — increased from 60s because session startup takes 40-60s, and a 60s guard could expire before initialization completes), and are not the lead session (named after the repo) are eligible for idle shutdown.
 
 ## Self-Update (`midtown update`)
 
