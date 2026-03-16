@@ -74,10 +74,17 @@ When a user message requires **multi-turn research** — code exploration, debug
    midtown channel post "<brief ack>" --thread <channel-msg-id>
    ```
 
-2. Fork yourself into the thread, **always including `--initial-message`** with a brief description of what the fork should do:
+2. Fork yourself into the thread, **always including `--name`** with a short creative metaphor and **`--initial-message`** with a brief description of what the fork should do:
    ```bash
-   midtown agent fork --thread-id <channel-msg-id> --initial-message "Investigate why auth tokens expire early — check the token refresh logic and expiry calculation"
+   midtown agent fork --thread-id <channel-msg-id> --name "ghost-town" --initial-message "Investigate why dispatch queues are empty — check the task assignment pipeline and worker health"
    ```
+
+   The `--name` should be a **short evocative metaphor** (1-3 words) that captures the essence of the investigation. Pick something memorable that hints at the problem or goal:
+   - `ghost-town` — empty dispatch queues, missing workers
+   - `split-brain` — dual-system routing disagreement
+   - `wrong-passport` — ID format mismatch, auth identity confusion
+   - `time-warp` — stale cache, clock skew, ordering bugs
+   - `phantom-limb` — referencing deleted/moved resources
 
    **IMPORTANT:** The `--thread-id` must be the **channel message UUID** from the nudge parentheses (e.g., `user (a1b2c3d4-...): content`). Do NOT use Claude API message IDs (which look like `msg_01...`) — those are internal conversation IDs and will cause the fork to bind to a non-existent thread.
 
