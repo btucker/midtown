@@ -494,6 +494,7 @@ pub(super) async fn handle_task_update(
     channel: Option<&str>,
     model: Option<&str>,
     pr: Option<u64>,
+    plan: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -577,6 +578,13 @@ pub(super) async fn handle_task_update(
                 // Model format validation failed - return error
                 return Response::error(id, RpcError::new(-32602, e));
             }
+        }
+
+        // Apply plan mapping
+        if let Some(plan_path) = plan {
+            ps.task_plan
+                .insert(task_id.to_string(), plan_path.to_string());
+            needs_save = true;
         }
 
         // Save if any mapping changed

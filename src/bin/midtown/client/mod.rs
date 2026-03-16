@@ -549,6 +549,7 @@ impl DaemonClient {
         channel: Option<&str>,
         model: Option<&str>,
         pr: Option<u64>,
+        plan: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
         if let Some(o) = owner {
@@ -571,6 +572,9 @@ impl DaemonClient {
         }
         if let Some(pr_num) = pr {
             params["pr"] = serde_json::json!(pr_num);
+        }
+        if let Some(p) = plan {
+            params["plan"] = serde_json::json!(p);
         }
         self.send("task.update", Some(params))
     }
