@@ -1056,6 +1056,8 @@ impl DaemonState {
                     record.current_name = None;
                     changed = true;
                 }
+                // Close any open task-session spans for the exiting session.
+                ps.close_spans_for_session(&session_id);
             }
 
             if clear_worktree_binding {
@@ -2777,6 +2779,15 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
         let name_to_session = state.name_to_session.lock().unwrap().clone();
         let mut running_count = 0usize;
 
+        // Collect sessions that are currently marked running before we reset them.
+        // Any that remain false after re-marking will need their spans closed.
+        let previously_running: Vec<String> = persistent
+            .sessions
+            .values()
+            .filter(|r| r.is_running)
+            .map(|r| r.session_id.clone())
+            .collect();
+
         // Mark all existing session records as not running by default.
         // Running sessions will be re-marked below.
         for record in persistent.sessions.values_mut() {
@@ -2806,6 +2817,17 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                 if info.initial_prompt.is_some() {
                     record.initial_prompt = info.initial_prompt.clone();
                 }
+            }
+        }
+
+        // Close spans for sessions that were running but are no longer found alive.
+        for session_id in &previously_running {
+            if persistent
+                .sessions
+                .get(session_id)
+                .is_some_and(|r| !r.is_running)
+            {
+                persistent.close_spans_for_session(session_id);
             }
         }
 
