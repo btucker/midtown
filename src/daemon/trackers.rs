@@ -68,9 +68,14 @@ impl PrIssueTracker {
         Self::default()
     }
 
-    /// Check if we should nudge for this issue (not nudged recently)
+    /// Check if we should nudge for this issue (not nudged recently).
+    /// Permanent one-shot nudges always return false — they fire exactly once.
     pub fn should_nudge(&self, pr_number: u64, issue_type: PrIssueType) -> bool {
-        match self.nudged.get(&(pr_number, issue_type)) {
+        let key = (pr_number, issue_type);
+        if self.permanent.contains(&key) {
+            return false;
+        }
+        match self.nudged.get(&key) {
             Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(PR_NUDGE_COOLDOWN_SECS),
             None => true,
         }
@@ -79,13 +84,18 @@ impl PrIssueTracker {
     /// Check if we should nudge for this issue using a custom cooldown duration.
     /// Used for orphaned PRs which need a longer suppression window since there's
     /// no active coworker to address the issue.
+    /// Permanent one-shot nudges always return false.
     pub fn should_nudge_with_cooldown(
         &self,
         pr_number: u64,
         issue_type: PrIssueType,
         cooldown_secs: u64,
     ) -> bool {
-        match self.nudged.get(&(pr_number, issue_type)) {
+        let key = (pr_number, issue_type);
+        if self.permanent.contains(&key) {
+            return false;
+        }
+        match self.nudged.get(&key) {
             Some(last_nudge) => last_nudge.elapsed() >= Duration::from_secs(cooldown_secs),
             None => true,
         }
@@ -96,10 +106,14 @@ impl PrIssueTracker {
         self.nudged.insert((pr_number, issue_type), Instant::now());
     }
 
-    /// Clear a specific nudge entry (e.g., when retrying after coworker death)
+    /// Clear a specific nudge cooldown entry (e.g., when retrying after coworker death).
+    /// Preserves permanent one-shot entries — those represent notifications that
+    /// should never re-fire (bug !2377).
     pub fn clear_nudge(&mut self, pr_number: u64, issue_type: PrIssueType) {
-        self.nudged.remove(&(pr_number, issue_type));
-        self.permanent.remove(&(pr_number, issue_type));
+        let key = (pr_number, issue_type);
+        if !self.permanent.contains(&key) {
+            self.nudged.remove(&key);
+        }
     }
 
     /// Check if a nudge has been recorded for this issue (including permanent entries)

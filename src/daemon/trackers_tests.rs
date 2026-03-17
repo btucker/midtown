@@ -639,8 +639,10 @@ fn permanent_nudge_serialization_roundtrip() {
     assert_eq!(deserialized[1], (99, PrIssueType::ReviewComplete));
 }
 
+/// Bug !2377: clear_nudge preserves permanent entries — they represent one-shot
+/// notifications that should never re-fire. Only cooldown entries are cleared.
 #[test]
-fn permanent_nudge_clear_removes_from_set() {
+fn permanent_nudge_survives_clear_nudge() {
     let mut tracker = PrIssueTracker::new();
     tracker.record_permanent_nudge(42, PrIssueType::ReviewComplete);
 
@@ -649,8 +651,30 @@ fn permanent_nudge_clear_removes_from_set() {
 
     tracker.clear_nudge(42, PrIssueType::ReviewComplete);
 
-    assert!(!tracker.has_nudge(42, PrIssueType::ReviewComplete));
-    assert!(tracker.permanent_nudges().is_empty());
+    // Permanent entry preserved — nudge must not re-fire
+    assert!(tracker.has_nudge(42, PrIssueType::ReviewComplete));
+    assert_eq!(tracker.permanent_nudges().len(), 1);
+    assert!(
+        !tracker.should_nudge(42, PrIssueType::ReviewComplete),
+        "should_nudge must return false for permanent entries"
+    );
+}
+
+/// Non-permanent nudges are fully cleared by clear_nudge.
+#[test]
+fn regular_nudge_cleared_by_clear_nudge() {
+    let mut tracker = PrIssueTracker::new();
+    tracker.record_nudge(42, PrIssueType::GreenWithFeedback);
+
+    assert!(tracker.has_nudge(42, PrIssueType::GreenWithFeedback));
+
+    tracker.clear_nudge(42, PrIssueType::GreenWithFeedback);
+
+    assert!(!tracker.has_nudge(42, PrIssueType::GreenWithFeedback));
+    assert!(
+        tracker.should_nudge(42, PrIssueType::GreenWithFeedback),
+        "should_nudge must return true after clearing non-permanent entry"
+    );
 }
 
 #[test]
