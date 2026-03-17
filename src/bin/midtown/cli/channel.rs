@@ -9,6 +9,19 @@ pub enum RemindCommand {
     AllWorkMerged {
         /// Message to display when the reminder fires
         message: String,
+        /// Repeat policy: -1 = indefinite, 0 = once (default), N = N additional fires
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        repeat: i32,
+    },
+    /// Set a reminder on a cron schedule (UTC)
+    Cron {
+        /// Cron expression (e.g., "0 9 * * MON" for every Monday 9am UTC)
+        cron_expr: String,
+        /// Message to display when the reminder fires
+        message: String,
+        /// Repeat policy: -1 = indefinite (default for cron), 0 = once, N = N additional fires
+        #[arg(long, default_value = "-1", allow_hyphen_values = true)]
+        repeat: i32,
     },
     /// List active reminders
     List,
@@ -93,6 +106,10 @@ pub enum ChannelCommand {
 #[cfg(test)]
 mod tests;
 
+#[path = "channel_remind_tests.rs"]
+#[cfg(test)]
+mod remind_tests;
+
 pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
         ChannelCommand::Post {
@@ -149,9 +166,14 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
 
 fn handle_remind(cmd: &RemindCommand, client: &DaemonClient) -> Result<Response, String> {
     match cmd {
-        RemindCommand::AllWorkMerged { message } => {
-            client.reminder_create("all-work-merged", message)
+        RemindCommand::AllWorkMerged { message, repeat } => {
+            client.reminder_create("all-work-merged", message, None, *repeat)
         }
+        RemindCommand::Cron {
+            cron_expr,
+            message,
+            repeat,
+        } => client.reminder_create("cron-utc", message, Some(cron_expr.as_str()), *repeat),
         RemindCommand::List => client.reminder_list(),
         RemindCommand::Cancel { id } => client.reminder_cancel(id),
     }

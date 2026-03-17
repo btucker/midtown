@@ -4415,6 +4415,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::SpawnCoworkerWithCallbacks { .. } => "SpawnCoworkerWithCallbacks",
         Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
         Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
+        Effect::AdvanceCronEvalTimestamps { .. } => "AdvanceCronEvalTimestamps",
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
         Effect::RecordPermanentPrNudge { .. } => "RecordPermanentPrNudge",
         Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",

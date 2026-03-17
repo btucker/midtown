@@ -68,6 +68,7 @@ fn test_save_and_load_roundtrip() {
     state.reminders.add(
         crate::reminders::ReminderTrigger::AllWorkMerged,
         "Deploy".to_string(),
+        crate::reminders::RepeatPolicy::Once,
     );
     state.github.mark_reviewed_pr(42);
 
@@ -185,10 +186,12 @@ fn test_full_roundtrip_with_all_fields() {
     state.reminders.add(
         crate::reminders::ReminderTrigger::AllWorkMerged,
         "Cut release".to_string(),
+        crate::reminders::RepeatPolicy::Once,
     );
     state.reminders.add(
         crate::reminders::ReminderTrigger::AllWorkMerged,
         "Deploy staging".to_string(),
+        crate::reminders::RepeatPolicy::Once,
     );
 
     // Populate task-channel mappings

@@ -1060,11 +1060,18 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 
 ## Reminders
 
-The Lead can set reminders that trigger on specific conditions:
+The Lead can set reminders that trigger on specific conditions or cron schedules:
 
 ```bash
 # Remind me when all tasks are done and PRs merged
 midtown channel remind all-work-merged "Time to deploy!"
+
+# Cron-based reminder (UTC) — fires on schedule
+midtown channel remind cron "0 9 * * MON" "Monday standup"
+
+# Repeat policies: --repeat 0 (once, default for all-work-merged),
+#   --repeat -1 (indefinite, default for cron), --repeat N (N additional fires)
+midtown channel remind cron "*/30 * * * *" "Check deploy" --repeat 3
 
 # List active reminders
 midtown channel remind list
@@ -1073,7 +1080,13 @@ midtown channel remind list
 midtown channel remind cancel <id>
 ```
 
-Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.
+**Trigger types:**
+- `AllWorkMerged` — fires when no pending/in-progress tasks and no open coworker PRs.
+- `CronUtc` — fires on a cron schedule (evaluated in UTC). Uses window-based matching: the daemon checks if the next cron occurrence after `last_evaluated_at` falls within the current tick window, preventing double-fires and missed fires across ~30s tick intervals.
+
+**Repeat policy:** Reminders can fire once (`RepeatPolicy::Once`), a fixed number of additional times (`Times(N)` = N+1 total fires), or indefinitely (`Indefinite`). The `fire_count` field tracks how many times a reminder has fired.
+
+Reminders are stored in `daemon-state.json` and evaluated by the daemon each tick.
 
 
 ## Self-Update (`midtown update`)

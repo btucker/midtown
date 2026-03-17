@@ -369,11 +369,22 @@ impl DaemonClient {
 
     // Reminder commands
 
-    pub fn reminder_create(&self, trigger: &str, message: &str) -> Result<Response, String> {
-        self.send(
-            "reminder.create",
-            Some(serde_json::json!({ "trigger": trigger, "message": message })),
-        )
+    pub fn reminder_create(
+        &self,
+        trigger: &str,
+        message: &str,
+        cron_expr: Option<&str>,
+        repeat: i32,
+    ) -> Result<Response, String> {
+        let mut params = serde_json::json!({
+            "trigger": trigger,
+            "message": message,
+            "repeat": repeat,
+        });
+        if let Some(expr) = cron_expr {
+            params["cron_expr"] = serde_json::Value::String(expr.to_string());
+        }
+        self.send("reminder.create", Some(params))
     }
 
     pub fn reminder_list(&self) -> Result<Response, String> {
