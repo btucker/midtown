@@ -6,7 +6,6 @@
 use tracing::error;
 
 use super::DaemonState;
-use super::constants::*;
 use super::helpers::*;
 use crate::rpc::{RequestId, Response, RpcError};
 
@@ -191,14 +190,22 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     let (coworkers, active_coworker_count) =
         tag_channel_leads_and_count(coworkers, &channel_lead_names);
 
+    let in_progress_task_count = {
+        let tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
+        tasks
+            .iter()
+            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .count()
+    };
+
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "daemon_running": true,
             "active_coworkers": active_coworker_count,
-            "max_coworkers": state.max_coworkers,
-            "max_dev_coworkers": state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
+            "max_in_progress_tasks": state.max_in_progress_tasks,
+            "in_progress_task_count": in_progress_task_count,
             "pending_tasks": pending_count,
             "socket_path": state.socket_path.to_string_lossy(),
             "coworkers": coworkers,

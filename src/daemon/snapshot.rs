@@ -120,6 +120,10 @@ fn default_lead_refresh_interval() -> u64 {
     crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS
 }
 
+fn default_max_in_progress_tasks() -> usize {
+    crate::daemon::constants::DEFAULT_MAX_IN_PROGRESS_TASKS
+}
+
 /// Number of recent channel messages to include in WorldSnapshot captures.
 const SNAPSHOT_CHANNEL_MESSAGE_COUNT: usize = 50;
 
@@ -359,6 +363,11 @@ pub struct WorldSnapshot {
     /// Maps child task ID → parent task ID. Used for displaying task hierarchies.
     #[serde(default)]
     pub task_parent_map: HashMap<String, String>,
+    /// Inverted blocking graph: task_id → list of task_ids it unblocks.
+    /// Built from `Task.blocked_by` during snapshot collection.
+    /// Used by dispatch priority to identify tasks that unblock other work.
+    #[serde(default)]
+    pub blocks_map: HashMap<String, Vec<String>>,
     /// Task-to-agent-type mapping for specialized task dispatch.
     /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
     /// Used by dispatch.rs to spawn tasks with the correct agent definition.
@@ -432,10 +441,13 @@ pub struct WorldSnapshot {
     pub lead_session_refresh_interval_secs: u64,
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    /// Whether the daemon is at the absolute coworker limit (max capacity).
-    pub is_at_coworker_limit: bool,
-    /// Whether the daemon is at the dev coworker limit (reserving review headroom).
-    pub is_at_dev_limit: bool,
+    /// Whether the daemon is at the in-progress task limit.
+    #[serde(default)]
+    pub is_at_task_limit: bool,
+    /// Maximum in-progress tasks (from config). Available to pure decision functions
+    /// for per-spawn limit checks in the dispatch loop.
+    #[serde(default = "default_max_in_progress_tasks")]
+    pub max_in_progress_tasks: usize,
     /// Current wall-clock time.
     pub now_utc: DateTime<Utc>,
     /// Filesystem directory key (e.g., "midtown.nosync"). Used for path construction,
@@ -835,6 +847,18 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .collect();
     let pending_tasks_without_owners =
         crate::tasks::filter_pending_tasks_without_owners(&all_tasks, 45);
+    let mut blocks_map: HashMap<String, Vec<String>> = HashMap::new();
+    for task in all_tasks
+        .iter()
+        .filter(|t| t.status != crate::tasks::TaskStatus::Completed)
+    {
+        for blocker_id in &task.blocked_by {
+            blocks_map
+                .entry(blocker_id.clone())
+                .or_default()
+                .push(task.id.clone());
+        }
+    }
     let busy_coworkers: HashSet<String> =
         state.get_all_busy_coworkers().await.into_iter().collect();
 
@@ -1185,10 +1209,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    let channel_lead_names: std::collections::HashSet<String> =
-        channel_lead_sessions.keys().cloned().collect();
-    let is_at_coworker_limit = state.is_at_coworker_limit(&channel_lead_names);
-    let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let is_at_task_limit = in_progress_tasks.len() >= state.max_in_progress_tasks;
     let dir_key = state.paths.dir_key().to_string();
     let project_name = state.project_name.clone();
     let default_channel = state.channel_router.default_channel_name().to_string();
@@ -1503,8 +1524,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         worktree_branch_owners,
         merged_pr_branches,
         lead_session_refresh_interval_secs,
-        is_at_coworker_limit,
-        is_at_dev_limit,
+        is_at_task_limit,
+        max_in_progress_tasks: state.max_in_progress_tasks,
+        blocks_map,
         now_utc,
         dir_key,
         project_name,
@@ -1582,8 +1604,9 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),

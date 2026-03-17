@@ -5,7 +5,7 @@ import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import * as Tooltip from "$lib/components/ui/tooltip/index.ts";
 import { openTaskThread, selectDm } from "./api.ts";
 import { getSenderColor } from "./messageUtils.ts";
-import { coworkers, kanbanData, maxCoworkers, repoStatus } from "./store.ts";
+import { coworkers, kanbanData, maxInProgressTasks, repoStatus } from "./store.ts";
 
 const sidebar = useSidebar();
 
@@ -107,7 +107,7 @@ function openPrDetail(prNumber) {
   <div class="overflow-hidden rounded-md bg-sidebar">
     <div class="px-3 py-2">
       <span class="text-[0.75rem] font-bold tracking-wide text-sidebar-primary">
-        Coworkers ({activeCoworkers.length}/{$maxCoworkers})
+        Coworkers ({activeCoworkers.length}/{$maxInProgressTasks})
       </span>
     </div>
     <div class="p-1.5">

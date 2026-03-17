@@ -13,7 +13,7 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
-use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
+use super::helpers::{get_merged_task_pr, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -405,7 +405,19 @@ pub(crate) fn is_task_pr_protected(
 ///
 /// Rate limiting: Only spawns ONE coworker per tick with a cooldown between
 /// spawns to prevent window flashing from spawn storms.
-// Backward-compat test infrastructure: testable version with injectable task lookup.
+/// Check for orphaned tasks and recover coworkers.
+///
+/// Handles ALL orphaned in-progress tasks regardless of whether they have
+/// session records. Tasks with dead sessions get resumed; tasks without
+/// sessions get fresh spawns.
+pub(super) fn check_and_recover_orphans(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
+    check_and_recover_orphans_impl(snap, state)
+}
+
+// Test wrapper with injectable task lookup (unused parameter kept for test compat).
 #[cfg(test)]
 fn check_and_recover_orphans_with_task_lookup<F>(
     snap: &snapshot::WorldSnapshot,
@@ -415,6 +427,13 @@ fn check_and_recover_orphans_with_task_lookup<F>(
 where
     F: Fn(&str) -> Option<crate::tasks::Task>,
 {
+    check_and_recover_orphans_impl(snap, state)
+}
+
+fn check_and_recover_orphans_impl(
+    snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
+) -> Vec<effects::Effect> {
     // Check cooldown - skip if we spawned too recently (pre-evaluated in snapshot)
     if snap.orphan_spawn_cooldown_active {
         debug!("Orphan recovery cooldown active");
@@ -437,20 +456,9 @@ where
         .in_progress_tasks
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
-            // Skip tasks that have a session record — dispatch_via_sessions handles them.
-            if snap.session_task_map.contains_key(task_id.as_str()) {
-                debug!(
-                    "Orphan recovery skipping task !{} — has session record, handled by dispatch_via_sessions",
-                    task_id
-                );
-                return false;
-            }
             // Skip tasks that are PR-protected (pre-computed in snapshot)
             if snap.pr_protected_tasks.contains(task_id) {
-                debug!(
-                    "Orphan recovery skipping task !{} — PR-protected",
-                    task_id
-                );
+                debug!("Orphan recovery skipping task !{} — PR-protected", task_id);
                 return false;
             }
             true
@@ -480,9 +488,6 @@ where
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.coworkers.active_names,
-        at_dev_limit: snap.is_at_dev_limit,
-        coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
-        review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names: &channel_lead_names,
@@ -528,7 +533,7 @@ where
     // ── Session-aware resume path ──────────────────────────────────────
     // Check if there's a dead session record for this task that we can resume
     // instead of spawning fresh. Reviewer tasks always get fresh sessions.
-    let session_record = find_session_for_task(&recovery.task_id, snap);
+    let session_record = snap.find_session_for_task(&recovery.task_id);
     if let Some(record) = session_record
         && !record.is_running
         && !record.is_reviewer
@@ -656,23 +661,21 @@ where
     pre_spawn
 }
 
-/// Session-aware dispatch for all in_progress tasks.
+/// Session-aware dispatch for in_progress tasks that have session records.
 ///
 /// Pre-filter: skips tasks owned by empty owners, the Lead, channel leads
 /// (looked up via `channel_lead_sessions`), or tasks in lead-driven channels.
 /// These are not managed by the coworker dispatch loop and must not be
 /// recovered as regular coworkers.
 ///
-/// For remaining tasks, handles three cases:
+/// For remaining tasks with session records, handles two cases:
 /// 1. Task has running session -> skip (being worked on)
 /// 2. Task has stopped session -> resume via SpawnCoworkerWithCallbacks,
 ///    unless the coworker is an active reviewer (skip to avoid interrupting
 ///    their review work) or the session was recently recovered (per-session
 ///    cooldown prevents re-recovery spam when sessions die quickly)
-/// 3. Task has no session record -> apply recovery filtering (PR merge checks,
-///    dev limit, grace period) and fresh spawn if eligible
 ///
-/// Replaces the former `check_and_recover_orphans` which handled case 3 separately.
+/// Tasks without session records are handled by `check_and_recover_orphans`.
 /// Rate-limited to one spawn per tick across all paths.
 ///
 /// Note: not fully pure — `build_plan_prompt_section` reads plan files from disk.
@@ -711,7 +714,6 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     }
 
     let mut effects = Vec::new();
-    let mut tasks_without_sessions: Vec<(String, String, String)> = Vec::new();
 
     for (task_id, task_subject, owner) in &snap.in_progress_tasks {
         // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
@@ -739,19 +741,12 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
             Some(r) => r,
             None => {
                 if snap.session_task_map.contains_key(task_id) {
-                    // session_task_map has the entry but sessions map is stale
                     warn!(
                         "Session for task !{} referenced in session_task_map but not found in sessions map",
                         task_id
                     );
-                } else {
-                    // No session record — collect for legacy fallback path below.
-                    tasks_without_sessions.push((
-                        task_id.clone(),
-                        task_subject.clone(),
-                        owner.clone(),
-                    ));
                 }
+                // No session record — handled by check_and_recover_orphans.
                 continue;
             }
         };
@@ -948,165 +943,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         break;
     }
 
-    // If the session-aware loop already spawned a coworker, return immediately.
-    // Rate-limited to one spawn per tick.
-    if !effects.is_empty() {
-        return effects;
-    }
-
-    // ── Fallback: handle tasks WITHOUT session records ──────────────────
-    // This replaces the former check_and_recover_orphans path. Tasks here
-    // are in_progress but have no session data — either legacy tasks or
-    // tasks whose session was lost.
-    if tasks_without_sessions.is_empty() {
-        return effects;
-    }
-
-    // At dev limit — cannot spawn any more coworkers.
-    if snap.is_at_dev_limit {
-        debug!("At dev limit — skipping no-session fallback dispatch");
-        return effects;
-    }
-
-    // Compute recently-stopped coworkers (within grace period).
-    // When a coworker completes work and goes idle -> shutdown, the task may
-    // not yet be marked done. This grace period prevents false orphan recovery
-    // by giving the system time to process the task completion.
-    let grace_period = chrono::Duration::seconds(ORPHAN_RECOVERY_GRACE_PERIOD.as_secs() as i64);
-    let recently_stopped: HashSet<String> = snap
-        .coworkers
-        .coworker_stop_times
-        .iter()
-        .filter(|(_, stop_time)| snap.now_utc.signed_duration_since(**stop_time) < grace_period)
-        .map(|(name, _)| name.clone())
-        .collect();
-
-    // Use the same pure decision function from rules.rs that orphan recovery used.
-    // This ensures identical filtering behavior (active check, attached check,
-    // recently-stopped grace period, open PR without feedback check).
-    let channel_lead_names = snap.channel_lead_names();
-    let orphan_ctx = crate::rules::OrphanRecoveryContext {
-        in_progress: &tasks_without_sessions,
-        active_names: &snap.coworkers.active_names,
-        at_dev_limit: snap.is_at_dev_limit,
-        coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
-        review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
-        recently_stopped: &recently_stopped,
-        attached_coworkers: &snap.coworkers.attached_coworkers,
-        channel_lead_names: &channel_lead_names,
-    };
-    let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
-        Some(r) => r,
-        None => return effects,
-    };
-
-    // Check pre-computed PR protection (snapshot-level filtering).
-    if snap.pr_protected_tasks.contains(&recovery.task_id) {
-        debug!(
-            "Task !{} is PR-protected — skipping fresh spawn",
-            recovery.task_id
-        );
-        return effects;
-    }
-
-    // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
-    if snap
-        .spawn_failure_cooldown_names
-        .contains(&recovery.owner.to_lowercase())
-    {
-        debug!(
-            "Spawn failure cooldown active for {} — skipping fresh spawn for task !{}",
-            recovery.owner, recovery.task_id
-        );
-        return effects;
-    }
-
-    info!(
-        "Session dispatch (no-session fallback): fresh spawn for task !{} (owner: {})",
-        recovery.task_id, recovery.owner
-    );
-
-    let plan_section = build_plan_prompt_section(&recovery.task_id, snap);
-    let prompt = crate::agents::coworker_recovery_prompt(
-        &recovery.task_id,
-        &recovery.task_subject,
-        &plan_section,
-    );
-
-    // Set channel from task if available
-    let channel = snap
-        .all_tasks
-        .iter()
-        .find(|t| t.id == recovery.task_id)
-        .and_then(|t| t.channel.clone());
-
-    // Prepare worktree (reuse existing or create new)
-    let wt = prepare_task_worktree(
-        &recovery.task_id,
-        &recovery.task_subject,
-        &snap.dir_key,
-        snap,
-    );
-    if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, &recovery.owner) {
-        debug!(
-            "Session dispatch: skipping fallback spawn for task !{} because worktree {} is bound to active coworker {}",
-            recovery.task_id, wt.worktree_id, bound_coworker
-        );
-        return vec![];
-    }
-
-    let mut config = crate::launch::LaunchConfig::coworker(
-        recovery.owner.clone(),
-        snap.dir_key.clone(),
-        crate::launch::SessionMode::Fresh,
-        Some(prompt),
-        Some(recovery.task_id.clone()),
-    );
-    config.working_dir = Some(wt.path);
-    config.channel = channel;
-
-    // Apply task model if available (sets both provider and model)
-    config.apply_task_model(&snap.task_model_map, &recovery.task_id);
-
-    // Pre-spawn effects: create worktree and register assignment BEFORE spawning.
-    let mut pre_spawn = wt.pre_spawn_effects;
-
-    // Post-spawn success effects
-    let mut on_success = spawn_success_effects(
-        recovery.owner.clone(),
-        recovery.task_id.clone(),
-        wt.worktree_id,
-        format!(
-            "Session dispatch: fresh spawn for orphaned task !{} (coworker {})",
-            recovery.task_id, recovery.owner
-        ),
-    );
-    on_success.insert(
-        on_success.len() - 1,
-        Effect::RecordCooldown {
-            category: "session_dispatch".to_string(),
-            key: "global".to_string(),
-        },
-    );
-
-    // EnsureWorktree + RegisterWorktreeAssignment run first, then spawn
-    pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
-        config,
-        on_success,
-        on_failure: spawn_failure_effects(
-            recovery.owner.clone(),
-            recovery.task_id.clone(),
-            snap.dir_key.clone(),
-            format!(
-                "Task !{} reset to pending - {} could not be spawned (backing off for {}s)",
-                recovery.task_id,
-                recovery.owner,
-                SPAWN_FAILURE_COOLDOWN.as_secs()
-            ),
-        ),
-    });
-    effects.extend(pre_spawn);
-
+    // No-session tasks are now handled by check_and_recover_orphans, which
+    // covers all orphans (with or without session records) in a single path.
     effects
 }
 
@@ -1517,7 +1355,7 @@ fn dispatch_owned_pending_tasks(
             task_subject,
             owner,
             &snap.coworkers.active_names,
-            snap.is_at_dev_limit,
+            snap.is_at_task_limit,
             on_nudge_cooldown,
             is_owner_reviewer,
             has_in_progress_task,
@@ -1736,27 +1574,38 @@ fn dispatch_unowned_pending_tasks(
     let mut task_coworker_map: HashMap<String, String> = HashMap::new();
     // Track coworker names assigned within this phase to prevent duplicate assignments.
     let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
-    // Track NEW spawns queued (for dev limit enforcement). Nudges to already-running
+    // Track NEW spawns queued (for task limit enforcement). Nudges to already-running
     // coworkers (grouped tasks) don't count — only fresh spawns.
     let mut spawns_queued_this_tick: usize = 0;
-    // Dev cap = max_coworkers (REVIEW_HEADROOM does NOT reduce dev slots).
-    let dev_cap = state.max_coworkers;
-    // Use running coworkers from snapshot (excludes lead and channel leads).
-    let channel_lead_names = snap.channel_lead_names();
-    let current_coworker_count = snap
-        .coworkers
-        .running_coworkers
-        .iter()
-        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.project_name, &channel_lead_names))
-        .count();
+    let in_progress_count = snap.in_progress_tasks.len();
+    let task_cap = snap.max_in_progress_tasks;
 
-    for task in snap.pending_tasks_without_owners.iter() {
-        // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
-        let effective_count = current_coworker_count + spawns_queued_this_tick;
-        if effective_count >= dev_cap {
+    // Order pending tasks by dispatch priority before iterating.
+    let in_progress_ids: std::collections::HashSet<String> = snap
+        .in_progress_tasks
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect();
+    let prioritized_ids = crate::daemon::dispatch_priority::prioritize_pending_tasks(
+        &snap.pending_tasks_without_owners,
+        &in_progress_ids,
+        &snap.task_parent_map,
+        &snap.blocks_map,
+    );
+
+    for task_id in prioritized_ids.iter() {
+        let Some(task) = snap
+            .pending_tasks_without_owners
+            .iter()
+            .find(|t| &t.id == task_id)
+        else {
+            continue;
+        };
+        let effective_count = in_progress_count + spawns_queued_this_tick;
+        if effective_count >= task_cap {
             debug!(
-                "Dev coworkers limit reached ({}+{} >= {}), deferring unowned task !{}",
-                current_coworker_count, spawns_queued_this_tick, dev_cap, task.id
+                "In-progress task limit reached ({}+{} >= {}), deferring unowned task !{}",
+                in_progress_count, spawns_queued_this_tick, task_cap, task.id
             );
             break;
         }

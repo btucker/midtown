@@ -19,13 +19,17 @@ fn test_dispatch_with_all_coworkers_stopped() {
     let running_coworkers = snapshot["running_coworkers"].as_array().unwrap();
     let pending_tasks = snapshot["pending_tasks_without_owners"].as_array().unwrap();
     let stop_times = snapshot["coworker_stop_times"].as_object().unwrap();
-    let is_at_dev_limit = snapshot["is_at_dev_limit"].as_bool().unwrap();
+    // Support both old (is_at_dev_limit) and new (is_at_task_limit) field names
+    let is_at_task_limit = snapshot["is_at_task_limit"]
+        .as_bool()
+        .or_else(|| snapshot["is_at_dev_limit"].as_bool())
+        .unwrap_or(false);
     let prs_needing_review = snapshot["prs_needing_review"].as_u64().unwrap();
 
     assert_eq!(active_coworkers.len(), 0, "No active coworkers");
     assert_eq!(running_coworkers.len(), 0, "No running coworkers");
     assert_eq!(pending_tasks.len(), 8, "8 pending tasks without owners");
-    assert!(!is_at_dev_limit, "Not at dev limit");
+    assert!(!is_at_task_limit, "Not at task limit");
     assert_eq!(prs_needing_review, 3, "3 PRs need review");
 
     // Verify that there ARE stopped coworkers in coworker_stop_times

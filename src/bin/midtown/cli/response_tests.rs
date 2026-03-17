@@ -202,7 +202,7 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
     let status = StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: Some(10),
+        max_in_progress_tasks: Some(10),
         pending_tasks: 0,
         socket_path: "/tmp/test.sock".to_string(),
         lead_session: None,
@@ -356,7 +356,7 @@ fn test_status_pretty_format() {
     let status = StatusResponse {
         daemon_running: true,
         active_coworkers: 2,
-        max_coworkers: Some(16),
+        max_in_progress_tasks: Some(16),
         pending_tasks: 1,
         socket_path: "/tmp/test.sock".to_string(),
         lead_session: Some("midtown-lead".to_string()),
@@ -475,7 +475,7 @@ fn test_status_pretty_shows_lead_sessions() {
     let status = StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: Some(10),
+        max_in_progress_tasks: Some(10),
         pending_tasks: 0,
         socket_path: "/tmp/test.sock".to_string(),
         lead_session: None,
@@ -601,7 +601,7 @@ fn test_token_display_in_status() {
     let response = Response::Status(StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: None,
+        max_in_progress_tasks: None,
         pending_tasks: 0,
         socket_path: "/tmp/midtown.sock".to_string(),
         lead_session: None,
@@ -642,7 +642,7 @@ fn test_status_shows_reviewing_pr_when_phase_is_review() {
     let response = Response::Status(StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: None,
+        max_in_progress_tasks: None,
         pending_tasks: 0,
         socket_path: "/tmp/midtown.sock".to_string(),
         lead_session: None,
@@ -685,7 +685,7 @@ fn test_status_shows_phase_without_pr() {
     let response = Response::Status(StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: None,
+        max_in_progress_tasks: None,
         pending_tasks: 0,
         socket_path: "/tmp/midtown.sock".to_string(),
         lead_session: None,
@@ -723,7 +723,7 @@ fn test_status_falls_back_to_working_on_when_no_phase() {
     let response = Response::Status(StatusResponse {
         daemon_running: true,
         active_coworkers: 1,
-        max_coworkers: None,
+        max_in_progress_tasks: None,
         pending_tasks: 0,
         socket_path: "/tmp/midtown.sock".to_string(),
         lead_session: None,

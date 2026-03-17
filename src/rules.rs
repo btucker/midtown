@@ -681,7 +681,7 @@ fn resolve_pr_handoff(
     owner: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
-    at_dev_limit: bool,
+    at_task_limit: bool,
     message: &str,
     reason_label: &str,
     empty_owner_fallback: PrAction,
@@ -705,7 +705,7 @@ fn resolve_pr_handoff(
     // Fallback depends on whether the owner is active:
     // - Active but busy → nudge (spawning an active coworker fails)
     // - Inactive → spawn (TaskPrompt handles resume-if-stopped for task-linked PRs)
-    if !is_active && at_dev_limit {
+    if !is_active && at_task_limit {
         return PrAction::Skip {
             reason: format!(
                 "dev limit reached, cannot spawn {} for {}",
@@ -743,7 +743,7 @@ pub fn decide_pr_action(
     owner: &str,
     active_coworkers: &[String],
     idle_coworkers: &[String],
-    at_dev_limit: bool,
+    at_task_limit: bool,
     message: &str,
     context: PrActionContext,
 ) -> PrAction {
@@ -783,7 +783,7 @@ pub fn decide_pr_action(
         owner,
         active_coworkers,
         idle_coworkers,
-        at_dev_limit,
+        at_task_limit,
         message,
         reason_label,
         empty_owner_fallback,
@@ -838,7 +838,7 @@ pub(crate) fn decide_pending_task_action(
     task_subject: &str,
     owner: &str,
     active_names: &HashSet<String>,
-    at_dev_limit: bool,
+    at_task_limit: bool,
     on_nudge_cooldown: bool,
     is_owner_reviewer: bool,
     has_in_progress_task: bool,
@@ -901,7 +901,7 @@ pub(crate) fn decide_pending_task_action(
     }
 
     // Owner is inactive → check dev limit
-    if at_dev_limit {
+    if at_task_limit {
         return PendingTaskAction::Skip {
             reason: format!(
                 "dev limit reached, deferring spawn for task !{} owned by {}",
@@ -930,9 +930,6 @@ pub(crate) struct OrphanRecovery {
 pub(crate) struct OrphanRecoveryContext<'a> {
     pub in_progress: &'a [(String, String, String)], // (task_id, task_subject, owner)
     pub active_names: &'a HashSet<String>,
-    pub at_dev_limit: bool,
-    pub coworkers_with_open_prs: &'a HashSet<String>,
-    pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub recently_stopped: &'a HashSet<String>,
     pub attached_coworkers: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
     pub channel_lead_names: &'a HashSet<String>,
@@ -945,13 +942,10 @@ impl OrphanRecoveryContext<'_> {
     /// - Owner is active (running session)
     /// - Owner is attached (interactive session)
     /// - Owner recently stopped (within grace period — task may not be marked done yet)
-    /// - Owner has an open PR awaiting review without feedback (recovery would loop)
     fn should_skip_owner(&self, owner_lower: &str) -> bool {
         self.active_names.contains(owner_lower)
             || self.attached_coworkers.contains_key(owner_lower)
             || self.recently_stopped.contains(owner_lower)
-            || (self.coworkers_with_open_prs.contains(owner_lower)
-                && !self.review_feedback_pr_coworkers.contains(owner_lower))
     }
 }
 
@@ -973,9 +967,11 @@ impl OrphanRecoveryContext<'_> {
 /// without review feedback. CI failures on open PRs are handled separately
 /// by the webhook/PR poll pathway.
 pub(crate) fn decide_orphan_recovery(ctx: &OrphanRecoveryContext<'_>) -> Option<OrphanRecovery> {
-    if ctx.at_dev_limit {
-        return None;
-    }
+    // NOTE: We intentionally do NOT bail out when at_task_limit is true.
+    // Orphan recovery replaces a dead coworker on an existing in-progress task —
+    // it does not increase the in-progress count. Blocking recovery at the task
+    // limit would create a deadlock: the orphaned task keeps the count at the
+    // limit, and the limit prevents recovery from clearing the orphan.
 
     for (task_id, task_subject, owner) in ctx.in_progress {
         let owner_clean = owner.trim().trim_matches('"').to_string();
@@ -1024,7 +1020,7 @@ pub(crate) fn decide_mention_action(
     mentioned_name: &str,
     sender: &str,
     is_running: bool,
-    at_dev_limit: bool,
+    at_task_limit: bool,
     has_reviewer_session: bool,
     nudge_text: &str,
 ) -> MentionAction {
@@ -1046,7 +1042,7 @@ pub(crate) fn decide_mention_action(
             name: mentioned_name.to_string(),
             message: nudge_text.to_string(),
         }
-    } else if at_dev_limit {
+    } else if at_task_limit {
         MentionAction::Skip {
             reason: format!(
                 "dev limit reached, cannot spawn {} for @mention",

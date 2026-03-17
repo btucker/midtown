@@ -12,7 +12,7 @@ import {
 	deepLinkMsgId,
 	dismissedThreads,
 	kanbanData,
-	maxCoworkers,
+	maxInProgressTasks,
 	messages,
 	messagesByChannel,
 	pendingQuestions,
@@ -473,8 +473,8 @@ export async function fetchStatus(): Promise<void> {
 			const data = await res.json();
 			daemonStatus.set(data);
 			coworkers.set(data.coworkers || []);
-			if (data.max_coworkers !== undefined) {
-				maxCoworkers.set(data.max_coworkers);
+			if (data.max_in_progress_tasks !== undefined) {
+				maxInProgressTasks.set(data.max_in_progress_tasks);
 			}
 			userSenderName.set(data.user_display_name || "user");
 			updateKanbanData(data);

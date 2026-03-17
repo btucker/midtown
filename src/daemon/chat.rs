@@ -180,7 +180,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         owner
     });
 
-    let channel_lead_names = {
+    let _channel_lead_names = {
         let ps = state.persistent_state.lock().await;
         ps.channel_lead_names()
     };
@@ -257,7 +257,7 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &target_name,
             &msg.from,
             is_running,
-            state.is_at_dev_limit(&channel_lead_names),
+            state.is_at_task_limit(),
             reviewer_session.is_some(),
             &nudge_text,
         );

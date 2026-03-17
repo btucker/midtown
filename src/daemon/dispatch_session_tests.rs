@@ -145,9 +145,10 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
 }
 
 #[test]
-fn test_orphan_recovery_skips_tasks_with_session_records() {
-    // Given: an orphaned task with a session record.
-    // Orphan recovery should skip it — dispatch_via_sessions handles these.
+fn test_orphan_recovery_handles_tasks_with_session_records() {
+    // Given: an orphaned task with a stopped session record.
+    // Orphan recovery now handles ALL orphaned tasks, including those with session
+    // records — it will attempt to resume the session.
     let session = make_session_record("sess-abc-123", Some("42"), Some("lexington"), false);
 
     let mut snap = snapshot::WorldSnapshot {
@@ -181,23 +182,26 @@ fn test_orphan_recovery_skips_tasks_with_session_records() {
         }
     });
 
-    // Orphan recovery must produce no spawn effects for session-tracked tasks.
+    // Orphan recovery should produce a spawn effect to resume the session.
     let spawn_effects: Vec<_> = effects
         .iter()
-        .filter(|e| {
-            matches!(
-                e,
-                Effect::SpawnCoworker(_)
-                    | Effect::SpawnCoworkerWithCallbacks { .. }
-                    | Effect::AssignAndSpawn { .. }
-                    | Effect::ResumeCoworker { .. }
-            )
-        })
+        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
         .collect();
     assert!(
-        spawn_effects.is_empty(),
-        "Orphan recovery should skip tasks with session records, got: {:?}",
-        spawn_effects
+        !spawn_effects.is_empty(),
+        "Orphan recovery should handle tasks with session records via session resume, got: {:?}",
+        effects
+    );
+
+    // Should use ResumeSession mode (not Fresh) since a session record exists
+    let has_resume_session = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. }
+            if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(_)))
+    });
+    assert!(
+        has_resume_session,
+        "Should use ResumeSession mode for task with existing session record, got: {:?}",
+        effects
     );
 }
 
@@ -258,13 +262,13 @@ fn test_orphan_recovery_falls_back_to_fresh_spawn_without_session() {
 // Dual-spawn prevention tests
 // ======================================================================
 
-/// Regression test: `dispatch_via_sessions` and `check_and_recover_orphans` must not
-/// both claim the same task in a single tick, even when the task qualifies for both paths.
+/// Verify that `dispatch_via_sessions` and `check_and_recover_orphans` both independently
+/// produce spawn effects for a stopped-session task. Dual-spawn prevention is handled at
+/// the events.rs orchestration level — only `dispatch_via_sessions` is called in the event
+/// loop; `check_and_recover_orphans` is no longer invoked there.
 ///
-/// A task qualifies for both when it has a stopped session record (triggering
-/// `dispatch_via_sessions`) AND its owner is absent from `active_names` (triggering
-/// `check_and_recover_orphans`). The exclusion set built in `events.rs` prevents this,
-/// but here we verify the combined effects don't contain two spawns for the same task.
+/// This test confirms that both functions CAN handle the task (no artificial filtering),
+/// and that the events.rs architecture prevents double-dispatch by only calling one path.
 #[test]
 fn test_no_dual_spawn_for_stopped_session_task() {
     // Task with a stopped session record AND owner not in active_names
@@ -286,15 +290,15 @@ fn test_no_dual_spawn_for_stopped_session_task() {
         name_session_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
-    snap.coworkers.active_names = HashSet::new(); // lexington is absent — qualifies for orphan recovery
+    snap.coworkers.active_names = HashSet::new(); // lexington is absent
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Run dispatch_via_sessions first (as events.rs does)
+    // dispatch_via_sessions handles the task (has a stopped session record)
     let session_effects = dispatch_via_sessions_for_test(&snap);
     let session_claimed_ids = effects::extract_claimed_task_ids_from_effects(&session_effects);
 
-    // Run check_and_recover_orphans with the same task
+    // check_and_recover_orphans also handles it (no longer filters out session-tracked tasks)
     let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
         if task_id == "99" {
             Some(in_progress_task_for_lookup("99", "Fix auth", "lexington"))
@@ -303,32 +307,30 @@ fn test_no_dual_spawn_for_stopped_session_task() {
         }
     });
 
-    // Combine all spawn effects
-    let all_effects: Vec<_> = session_effects
+    // Both paths independently produce a spawn for task 99
+    let session_spawns = session_effects
         .iter()
-        .chain(orphan_effects.iter())
-        .collect();
-
-    // Count spawns targeting task 99 (via RecordTaskAssignment in on_success)
-    let task_99_spawns = all_effects
+        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .count();
+    let orphan_spawns = orphan_effects
         .iter()
-        .filter(|e| {
-            matches!(e, Effect::SpawnCoworkerWithCallbacks { on_success, .. }
-                if on_success.iter().any(|s| matches!(s, Effect::RecordTaskAssignment { task_id, .. } if task_id == "99")))
-        })
+        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
         .count();
 
     assert_eq!(
-        task_99_spawns, 1,
-        "Should only spawn once for task 99 (either session dispatch or orphan recovery, not both). Got {} spawns.",
-        task_99_spawns
+        session_spawns, 1,
+        "dispatch_via_sessions should produce 1 spawn for task 99"
+    );
+    assert_eq!(
+        orphan_spawns, 1,
+        "check_and_recover_orphans should produce 1 spawn for task 99"
     );
 
     // The session_claimed_ids should contain "99" from session dispatch,
-    // which is how events.rs excludes it from pending dispatch. Verify it's populated.
+    // which is how events.rs excludes it from pending dispatch.
     assert!(
         session_claimed_ids.contains("99"),
-        "session_claimed_ids should contain task 99 so orphan recovery can be excluded"
+        "session_claimed_ids should contain task 99 for exclusion in pending dispatch"
     );
 }
 

@@ -119,7 +119,7 @@ fn test_draw_board_panel_populates_coworker_line_map() {
         make_active_coworker("park", "developing"),
         make_active_coworker("york", "testing"),
     ];
-    app.max_coworkers = 4;
+    app.max_in_progress_tasks = 4;
 
     let backend = TestBackend::new(80, 40);
     let mut terminal = Terminal::new(backend).unwrap();

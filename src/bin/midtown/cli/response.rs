@@ -28,7 +28,8 @@ pub struct StatusResponse {
     pub daemon_running: bool,
     pub active_coworkers: usize,
     #[serde(default)]
-    pub max_coworkers: Option<usize>,
+    #[serde(alias = "max_in_progress_tasks")]
+    pub max_in_progress_tasks: Option<usize>,
     pub pending_tasks: usize,
     pub socket_path: String,
     /// Lead session name (usually "midtown-lead")
@@ -228,7 +229,7 @@ impl Response {
                         .iter()
                         .filter(|cw| !cw.is_channel_lead)
                         .count();
-                    let coworker_header = match status.max_coworkers {
+                    let coworker_header = match status.max_in_progress_tasks {
                         Some(max) => {
                             format!("Coworkers: {}/{} active\n", worker_count, max)
                         }
@@ -327,7 +328,7 @@ impl Response {
                         None => "unknown",
                     };
                     {
-                        let coworker_display = match status.max_coworkers {
+                        let coworker_display = match status.max_in_progress_tasks {
                             Some(max) => format!("{}/{}", status.active_coworkers, max),
                             None => format!("{}", status.active_coworkers),
                         };

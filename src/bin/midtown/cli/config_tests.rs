@@ -36,7 +36,7 @@ fn unknown_key_returns_helpful_error() {
     );
     // Should list valid keys
     assert!(
-        msg.contains("default.max_coworkers"),
+        msg.contains("default.max_in_progress_tasks"),
         "Expected valid keys in: {msg}"
     );
 }
@@ -64,7 +64,11 @@ fn invalid_integer_returns_error() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    let result = set_global_key("default.max_coworkers", "not_a_number", &config_path);
+    let result = set_global_key(
+        "default.max_in_progress_tasks",
+        "not_a_number",
+        &config_path,
+    );
     assert!(result.is_err());
     let msg = result.unwrap_err();
     assert!(
@@ -106,12 +110,12 @@ fn invalid_chat_layout_returns_error() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn set_and_get_global_max_coworkers() {
+fn set_and_get_global_max_in_progress_tasks() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    set_global_key("default.max_coworkers", "4", &config_path).unwrap();
-    let value = get_global_key("default.max_coworkers", &config_path).unwrap();
+    set_global_key("default.max_in_progress_tasks", "4", &config_path).unwrap();
+    let value = get_global_key("default.max_in_progress_tasks", &config_path).unwrap();
     assert_eq!(value, "4");
 }
 
@@ -231,7 +235,7 @@ fn get_unset_key_returns_not_set() {
     let config_path = temp_global_config(&dir);
 
     // Don't write anything; file doesn't exist yet
-    let value = get_global_key("default.max_coworkers", &config_path).unwrap();
+    let value = get_global_key("default.max_in_progress_tasks", &config_path).unwrap();
     assert_eq!(value, "(not set)");
 }
 
@@ -240,12 +244,12 @@ fn get_unset_key_returns_not_set() {
 // ──────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn set_and_get_project_max_coworkers() {
+fn set_and_get_project_max_in_progress_tasks() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
 
-    set_project_key("default.max_coworkers", "6", &config_path).unwrap();
-    let value = get_project_key("default.max_coworkers", &config_path).unwrap();
+    set_project_key("default.max_in_progress_tasks", "6", &config_path).unwrap();
+    let value = get_project_key("default.max_in_progress_tasks", &config_path).unwrap();
     assert_eq!(value, "6");
 }
 
@@ -297,12 +301,12 @@ fn list_global_shows_all_keys() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    set_global_key("default.max_coworkers", "3", &config_path).unwrap();
+    set_global_key("default.max_in_progress_tasks", "3", &config_path).unwrap();
     set_global_key("daemon.webhook_port", "47024", &config_path).unwrap();
 
     let output = list_global_config(&config_path).unwrap();
     assert!(
-        output.contains("default.max_coworkers"),
+        output.contains("default.max_in_progress_tasks"),
         "Expected key in list: {output}"
     );
     assert!(output.contains("3"), "Expected value in list: {output}");
@@ -433,12 +437,12 @@ fn set_persists_to_disk_via_global_config_load() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    set_global_key("default.max_coworkers", "7", &config_path).unwrap();
+    set_global_key("default.max_in_progress_tasks", "7", &config_path).unwrap();
 
     // Reload by reading and parsing the file directly (GlobalConfig::load() hardcodes its path)
     let contents = std::fs::read_to_string(&config_path).unwrap();
     let loaded: midtown::config::GlobalConfig = toml::from_str(&contents).unwrap();
-    assert_eq!(loaded.default.max_coworkers, Some(7));
+    assert_eq!(loaded.default.max_in_progress_tasks, Some(7));
 }
 
 #[test]
@@ -446,10 +450,10 @@ fn set_persists_to_disk_via_project_config_load() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
 
-    set_project_key("default.max_coworkers", "5", &config_path).unwrap();
+    set_project_key("default.max_in_progress_tasks", "5", &config_path).unwrap();
 
     let loaded = midtown::config::FullProjectConfig::load_from(&config_path).unwrap();
-    assert_eq!(loaded.default.max_coworkers, Some(5));
+    assert_eq!(loaded.default.max_in_progress_tasks, Some(5));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -465,7 +469,11 @@ fn project_scope_invalid_integer_returns_error() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_project_config(&dir);
 
-    let result = set_project_key("default.max_coworkers", "not_a_number", &config_path);
+    let result = set_project_key(
+        "default.max_in_progress_tasks",
+        "not_a_number",
+        &config_path,
+    );
     assert!(result.is_err());
     let msg = result.unwrap_err();
     assert!(
@@ -508,7 +516,7 @@ fn corrupt_project_config_get_returns_error() {
     let config_path = temp_project_config(&dir);
     std::fs::write(&config_path, "this is not valid toml ][[[").unwrap();
 
-    let result = get_project_key("default.max_coworkers", &config_path);
+    let result = get_project_key("default.max_in_progress_tasks", &config_path);
     assert!(result.is_err());
     let msg = result.unwrap_err();
     assert!(
@@ -693,13 +701,13 @@ fn multiple_sets_accumulate_correctly() {
     let dir = TempDir::new().unwrap();
     let config_path = temp_global_config(&dir);
 
-    set_global_key("default.max_coworkers", "5", &config_path).unwrap();
+    set_global_key("default.max_in_progress_tasks", "5", &config_path).unwrap();
     set_global_key("default.user_display_name", "Alice", &config_path).unwrap();
     set_global_key("daemon.webhook_port", "47025", &config_path).unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     let loaded: midtown::config::GlobalConfig = toml::from_str(&contents).unwrap();
-    assert_eq!(loaded.default.max_coworkers, Some(5));
+    assert_eq!(loaded.default.max_in_progress_tasks, Some(5));
     assert_eq!(loaded.default.user_display_name, Some("Alice".to_string()));
     assert_eq!(loaded.daemon.webhook_port, Some(47025));
 }

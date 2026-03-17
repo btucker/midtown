@@ -94,14 +94,18 @@ pub async fn evaluate_tick(
             // effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
             effects.extend(super::dispatch::reset_orphaned_tasks(snap));
             effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
-            // Session-aware dispatch now handles ALL in_progress tasks:
-            // - Tasks with sessions: resume stopped, skip running
-            // - Tasks without sessions: apply orphan recovery filtering, fresh spawn
+            // Session-aware dispatch handles in_progress tasks with session records:
+            // resume stopped sessions, skip running ones.
             let session_effects = super::dispatch::dispatch_via_sessions(snap, state);
-            let claimed_ids =
+            let mut claimed_ids =
                 super::effects::extract_claimed_task_ids_from_effects(&session_effects);
             effects.extend(session_effects);
-            // Orphan recovery removed — dispatch_via_sessions handles all in_progress tasks.
+            // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
+            let orphan_effects = super::dispatch::check_and_recover_orphans(snap, state);
+            let orphan_claimed =
+                super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
+            claimed_ids.extend(orphan_claimed);
+            effects.extend(orphan_effects);
             effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
                 snap,
                 state,

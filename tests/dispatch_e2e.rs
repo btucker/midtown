@@ -50,8 +50,8 @@ struct DispatchSnapshot {
     coworkers_with_open_prs: HashSet<String>,
     /// Coworkers assigned as reviewers.
     active_reviewers: HashSet<String>,
-    /// Whether we're at the dev coworker limit.
-    is_at_dev_limit: bool,
+    /// Whether we're at the task limit.
+    is_at_task_limit: bool,
     /// Current timestamp from snapshot.
     now_utc: DateTime<Utc>,
     /// Coworker start times for sorting (e.g., duplicate worker detection).
@@ -66,8 +66,6 @@ struct DispatchSnapshot {
     reviewer_pr_assignments: HashMap<String, u64>,
     /// Number of PRs that need review (from PR poll cache).
     prs_needing_review: usize,
-    /// Whether we're at the overall coworker limit.
-    is_at_coworker_limit: bool,
     /// PR numbers of recently merged PRs. Used to skip tasks referencing merged PRs.
     #[allow(dead_code)]
     merged_pr_numbers: HashSet<u64>,
@@ -123,8 +121,6 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
                 .collect()
         })
         .unwrap_or_default();
-
-    let is_at_dev_limit = v["is_at_dev_limit"].as_bool().unwrap_or(false);
 
     let now_utc =
         DateTime::parse_from_rfc3339(v["now_utc"].as_str().unwrap_or("1970-01-01T00:00:00Z"))
@@ -207,7 +203,7 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         .unwrap_or_default();
 
     let prs_needing_review = v["prs_needing_review"].as_u64().unwrap_or(0) as usize;
-    let is_at_coworker_limit = v["is_at_coworker_limit"].as_bool().unwrap_or(false);
+    let is_at_task_limit = v["is_at_task_limit"].as_bool().unwrap_or(false);
 
     let merged_pr_numbers: HashSet<u64> = v["merged_pr_numbers"]
         .as_array()
@@ -220,7 +216,7 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         busy_coworkers,
         coworkers_with_open_prs,
         active_reviewers,
-        is_at_dev_limit,
+        is_at_task_limit,
         now_utc,
         coworker_start_times,
         in_progress_tasks,
@@ -228,7 +224,6 @@ fn load_snapshot(json_str: &str) -> DispatchSnapshot {
         pending_tasks_without_owners,
         reviewer_pr_assignments,
         prs_needing_review,
-        is_at_coworker_limit,
         merged_pr_numbers,
     }
 }
@@ -302,12 +297,12 @@ fn pending_task_active_owner_should_be_nudged() {
 
     // If york had a pending task, the condition for nudge is met:
     // - owner is active (in active_names)
-    // - not at dev limit (is_at_dev_limit = false)
+    // - not at dev limit (is_at_task_limit = false)
     // - (cooldown is runtime state, not in snapshot)
 
     // Verify the preconditions for nudge are satisfied
     assert!(
-        !snap.is_at_dev_limit,
+        !snap.is_at_task_limit,
         "Should not be at dev limit for nudge"
     );
 }
@@ -332,7 +327,7 @@ fn pending_task_inactive_owner_should_spawn() {
     // - not at dev limit
     // - madison is a valid coworker name
     assert!(
-        !snap.is_at_dev_limit,
+        !snap.is_at_task_limit,
         "Should not be at dev limit for spawn"
     );
     assert!(
@@ -347,16 +342,16 @@ fn pending_task_inactive_owner_should_spawn() {
 /// new coworkers for pending tasks (to reserve slots for reviewers).
 #[test]
 fn dev_limit_blocks_spawn_condition() {
-    // Create a modified snapshot with is_at_dev_limit = true
+    // Create a modified snapshot with is_at_task_limit = true
     // to verify the condition would block spawning
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let snap = load_snapshot(fixture);
 
-    // In this fixture, is_at_dev_limit is false
+    // In this fixture, is_at_task_limit is false
     // When true, the spawn_for_pending_tasks function would skip unowned tasks
     println!(
-        "is_at_dev_limit: {} (would block spawn if true)",
-        snap.is_at_dev_limit
+        "is_at_task_limit: {} (would block spawn if true)",
+        snap.is_at_task_limit
     );
 
     // Verify active count for context
@@ -472,14 +467,14 @@ fn active_owners_not_orphaned() {
 /// Even if there's an orphaned task, don't spawn recovery at dev limit.
 #[test]
 fn orphan_recovery_blocked_at_dev_limit() {
-    // The orphan recovery function checks is_at_dev_limit before attempting recovery
+    // The orphan recovery function checks is_at_task_limit before attempting recovery
     // When true, it returns None immediately
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let snap = load_snapshot(fixture);
 
     println!(
-        "is_at_dev_limit: {} (orphan recovery would be blocked if true)",
-        snap.is_at_dev_limit
+        "is_at_task_limit: {} (orphan recovery would be blocked if true)",
+        snap.is_at_task_limit
     );
 }
 
@@ -877,7 +872,7 @@ fn dispatch_scenario_analysis() {
     println!("=== Dispatch Scenario Analysis ===");
     println!("Active coworkers: {:?}", snap.active_names);
     println!("Busy coworkers: {:?}", snap.busy_coworkers);
-    println!("At dev limit: {}", snap.is_at_dev_limit);
+    println!("At dev limit: {}", snap.is_at_task_limit);
     println!("In-progress tasks: {}", snap.in_progress_tasks.len());
     println!(
         "Pending with owners: {}",
@@ -1010,8 +1005,8 @@ fn dev_limit_state_captured() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let snap = load_snapshot(fixture);
 
-    // The is_at_dev_limit flag is captured and can be used for decision logic
-    println!("is_at_dev_limit: {}", snap.is_at_dev_limit);
+    // The is_at_task_limit flag is captured and can be used for decision logic
+    println!("is_at_task_limit: {}", snap.is_at_task_limit);
 
     // When true, new task spawns would be blocked
     // When false, spawns are allowed (up to the configured limit)
@@ -1030,7 +1025,7 @@ fn unserved_prs_needing_review(snap: &DispatchSnapshot) -> usize {
 /// This mirrors the deferral condition in dispatch.rs spawn_for_pending_tasks().
 /// Task dispatch is deferred when the dev coworker limit is reached (preserving review headroom).
 fn should_defer_task_dispatch(snap: &DispatchSnapshot) -> bool {
-    snap.is_at_dev_limit
+    snap.is_at_task_limit
 }
 
 /// Captured snapshot shows: prs_needing_review=2, active_reviewers=[pleasant, york],
@@ -1056,7 +1051,7 @@ fn dispatch_not_deferred_when_all_prs_have_reviewers() {
         !snap.pending_tasks_without_owners.is_empty(),
         "there are unowned tasks waiting for dispatch"
     );
-    assert!(!snap.is_at_coworker_limit, "not at coworker limit");
+    assert!(!snap.is_at_task_limit, "not at coworker limit");
 
     // Every PR needing review already has a reviewer assigned
     let prs_with_reviewers: HashSet<&u64> = snap.reviewer_pr_assignments.values().collect();
@@ -1303,10 +1298,9 @@ fn snapshot_preconditions_for_zero_coworker_dispatch() {
         !snap.pending_tasks_without_owners.is_empty(),
         "snapshot should have pending tasks without owners"
     );
-    assert!(!snap.is_at_dev_limit, "snapshot should not be at dev limit");
     assert!(
-        !snap.is_at_coworker_limit,
-        "snapshot should not be at coworker limit"
+        !snap.is_at_task_limit,
+        "snapshot should not be at task limit"
     );
 
     println!(
@@ -1386,7 +1380,7 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         })
         .unwrap_or_default();
 
-    let is_at_dev_limit = v["is_at_dev_limit"].as_bool().unwrap_or(false);
+    let is_at_task_limit = v["is_at_task_limit"].as_bool().unwrap_or(false);
 
     // Verify preconditions from the snapshot
     assert!(
@@ -1401,14 +1395,14 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
             .any(|c| c.eq_ignore_ascii_case("pleasant")),
         "pleasant should NOT be idle in the snapshot"
     );
-    assert!(!is_at_dev_limit);
+    assert!(!is_at_task_limit);
 
     // Test 1: PR issue action (CI green / review feedback) — should nudge, not spawn
     let action = decide_pr_action(
         "pleasant",
         &active_coworkers,
         &idle_coworkers,
-        is_at_dev_limit,
+        is_at_task_limit,
         "CI is green — please address review feedback and merge",
         PrActionContext::PrIssue,
     );
@@ -1423,7 +1417,7 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         "pleasant",
         &active_coworkers,
         &idle_coworkers,
-        is_at_dev_limit,
+        is_at_task_limit,
         "review is complete — please address feedback",
         PrActionContext::PrComment {
             actor: "reviewer".to_string(),
@@ -1440,7 +1434,7 @@ fn active_coworker_gets_nudge_not_spawn_for_pr_notifications() {
         "pleasant",
         &active_coworkers,
         &idle_coworkers,
-        is_at_dev_limit,
+        is_at_task_limit,
         "review complete — please address feedback and merge",
         PrActionContext::ReviewComplete,
     );

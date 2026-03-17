@@ -552,12 +552,12 @@ fn test_daemon_rpc_status_returns_complete_daemon_state() {
         "Status should include active_coworkers count"
     );
     assert!(
-        result["max_coworkers"].is_number(),
-        "Status should include max_coworkers"
+        result["max_in_progress_tasks"].is_number(),
+        "Status should include max_in_progress_tasks"
     );
     assert!(
-        result["max_dev_coworkers"].is_number(),
-        "Status should include max_dev_coworkers (respects reviewer headroom)"
+        result["in_progress_task_count"].is_number(),
+        "Status should include in_progress_task_count"
     );
     assert!(
         result["pending_tasks"].is_number(),
@@ -1605,7 +1605,7 @@ fn test_global_config_generates_template() {
     let config: midtown::config::GlobalConfig =
         toml::from_str(&template).expect("Template should be valid TOML");
     assert!(
-        config.default.max_coworkers().is_none(),
+        config.default.max_in_progress_tasks().is_none(),
         "All options should be commented out (defaults)"
     );
 }

@@ -523,6 +523,7 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -980,6 +981,7 @@ async fn test_reviewer_spawns_when_worktree_exists_but_no_current_coworker() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -1044,6 +1046,7 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -1120,6 +1123,7 @@ async fn test_completed_worktree_with_snapshot_data() {
         &[pr_json], // Synthetic PR that extracts task ID 1323 from title
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -1199,6 +1203,7 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -1776,6 +1781,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -1849,6 +1855,7 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2342,6 +2349,7 @@ async fn test_reviewer_not_assigned_to_pr_author() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2418,6 +2426,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_with_active_coworker(
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2481,6 +2490,7 @@ async fn test_reviewer_spawn_aborted_on_worktree_collision_mixed_case() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2549,6 +2559,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         std::slice::from_ref(&pr_json),
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2578,6 +2589,7 @@ async fn test_reviewer_spawn_blocked_by_stale_active_names_retries_next_tick() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2638,6 +2650,7 @@ async fn test_reviewer_spawn_proceeds_when_previous_reviewer_is_dead() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2687,6 +2700,7 @@ async fn test_review_mode_github_app_disables_local_reviewer_spawn() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2737,6 +2751,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -2794,6 +2809,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -3388,6 +3404,7 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -3462,6 +3479,7 @@ async fn test_review_complete_falls_back_to_user_when_no_task_or_branch_owner() 
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -3925,6 +3943,7 @@ async fn auto_merge_blocked_when_reviewer_active() {
         &reviewed_prs,
         &branch_owners,
         review_mode,
+        false, // not at task limit
     )
     .await;
 
@@ -3970,6 +3989,7 @@ async fn auto_merge_fires_when_no_reviewer() {
         &reviewed_prs,
         &branch_owners,
         review_mode,
+        false, // not at task limit
     )
     .await;
 
@@ -4022,6 +4042,7 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
         &reviewed_prs,
         &branch_owners,
         review_mode,
+        false, // not at task limit
     )
     .await;
 
@@ -4090,6 +4111,7 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
         &reviewed_prs,
         &branch_owners,
         review_mode,
+        false, // not at task limit
     )
     .await;
 
@@ -4170,6 +4192,7 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
         &reviewed_prs,
         &branch_owners,
         review_mode,
+        false, // not at task limit
     )
     .await;
 
@@ -4245,6 +4268,7 @@ async fn test_reviewer_spawn_inherits_task_channel() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4320,6 +4344,7 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4390,6 +4415,7 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4445,6 +4471,7 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
         &[pr_json],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4549,6 +4576,7 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4650,6 +4678,7 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
         &[pr],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4708,7 +4737,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         ctx: &ctx,
         owner_is_active: true,
         owner_is_idle: false,
-        at_dev_limit: false,
+        at_task_limit: false,
         source: "polling",
     });
 
@@ -4722,7 +4751,7 @@ fn log_pr_decision_writes_valid_jsonl() {
     assert_eq!(entry["issue"], "approved");
     assert_eq!(entry["owner_active"], true);
     assert_eq!(entry["owner_idle"], false);
-    assert_eq!(entry["at_dev_limit"], false);
+    assert_eq!(entry["at_task_limit"], false);
     assert_eq!(entry["has_active_reviewer"], false);
     assert_eq!(entry["task_id"], "7");
     assert_eq!(entry["channel"], "installer");
@@ -4766,7 +4795,7 @@ fn log_pr_decision_appends_multiple_entries() {
             ctx: &ctx,
             owner_is_active: false,
             owner_is_idle: false,
-            at_dev_limit: false,
+            at_task_limit: false,
             source: "webhook",
         });
     }
@@ -4838,6 +4867,7 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4926,6 +4956,7 @@ async fn test_review_complete_lead_branch_no_repeat_after_cooldown() {
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -4994,6 +5025,7 @@ async fn test_review_complete_lead_branch_survives_cleanup() {
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -5062,6 +5094,7 @@ async fn test_review_complete_coworker_pr_no_repeat_after_cooldown() {
         &[pr],
         true,
         &HashMap::new(),
+        false, // not at task limit
     )
     .await;
 
@@ -5313,7 +5346,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
     // from name selection via `reserved_names`. Register only the overflow
     // names (minus one) as coworkers so they're excluded via `used_names`.
     // This leaves exactly ONE overflow name available while staying under
-    // the coworker limit (6 registered < max_coworkers + REVIEW_HEADROOM = 10).
+    // the task limit (6 registered < max_in_progress_tasks = 8).
     //
     // Without the fix, both PRs see the same single overflow name and both
     // get assigned it. With the fix, the first PR claims it and the
@@ -5364,6 +5397,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
         &[pr1, pr2],
         true,
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 

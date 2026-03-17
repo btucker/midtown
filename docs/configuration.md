@@ -18,7 +18,7 @@ Project settings take precedence over global defaults. All fields are optional.
 bin_command = "midtown"         # CLI command to invoke midtown
 chat_layout = "auto"            # "auto", "split", or "window"
 chat_min_width = 160            # Min terminal width for split layout (auto mode)
-max_coworkers = 10              # Maximum concurrent coworkers
+max_in_progress_tasks = 10      # Maximum concurrent in-progress tasks
 
 [daemon]
 webhook_port = 47022                  # Web UI & webhook port (0 to disable)
@@ -52,7 +52,7 @@ primary_repo = "/path/to/backend"
 
 [default]
 bin_command = "cargo run --release --"
-max_coworkers = 4
+max_in_progress_tasks = 4
 [daemon]
 webhook_port = 47023              # Auto-assigned if not set
 
@@ -101,7 +101,7 @@ Daemon settings can be overridden with environment variables:
 | `MIDTOWN_WEBHOOK_RESTART_INTERVAL` | `webhook_restart_interval_secs` |
 | `MIDTOWN_PR_POLL_INTERVAL` | `pr_poll_interval_secs` |
 | `MIDTOWN_CHAT_MONITOR` | `chat_monitor_enabled` (set to `0` to disable) |
-| `MIDTOWN_MAX_COWORKERS` | `max_coworkers` |
+| `MIDTOWN_MAX_IN_PROGRESS_TASKS` | `max_in_progress_tasks` |
 
 ## Custom System Prompts
 

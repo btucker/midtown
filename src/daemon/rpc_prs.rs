@@ -619,6 +619,7 @@ pub(super) async fn handle_pr_review(
         &[pr_json],
         false,                             // not polling fallback
         &std::collections::HashMap::new(), // RPC path: spawning reviewers, not nudging authors
+        snap.is_at_task_limit,
     )
     .await;
 

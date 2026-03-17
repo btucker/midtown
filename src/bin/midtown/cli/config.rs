@@ -13,7 +13,7 @@ use super::Response;
 pub enum ConfigCommand {
     /// Get a config value
     Get {
-        /// Dotted key path (e.g., default.max_coworkers, daemon.webhook_port)
+        /// Dotted key path (e.g., default.max_in_progress_tasks, daemon.webhook_port)
         key: String,
         /// Use global config (~/.midtown/config.toml) instead of project config
         #[arg(long)]
@@ -21,7 +21,7 @@ pub enum ConfigCommand {
     },
     /// Set a config value and persist it
     Set {
-        /// Dotted key path (e.g., default.max_coworkers, daemon.webhook_port)
+        /// Dotted key path (e.g., default.max_in_progress_tasks, daemon.webhook_port)
         key: String,
         /// Value to set (parsed as appropriate type for the key)
         value: String,
@@ -39,7 +39,7 @@ pub enum ConfigCommand {
 
 /// All supported config key paths.
 const VALID_KEYS: &[&str] = &[
-    "default.max_coworkers",
+    "default.max_in_progress_tasks",
     "default.chat_layout",
     "default.chat_min_width",
     "default.user_display_name",
@@ -273,7 +273,7 @@ fn fmt_secret(opt: Option<&str>) -> String {
 /// Read a field from `GlobalConfig` by dotted key name.
 fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> String {
     match key {
-        "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
+        "default.max_in_progress_tasks" => fmt_opt(config.default.max_in_progress_tasks),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
@@ -332,7 +332,7 @@ fn global_field_value(config: &midtown::config::GlobalConfig, key: &str) -> Stri
 /// Read a field from `FullProjectConfig` by dotted key name.
 fn project_field_value(config: &midtown::config::FullProjectConfig, key: &str) -> String {
     match key {
-        "default.max_coworkers" => fmt_opt(config.default.max_coworkers),
+        "default.max_in_progress_tasks" => fmt_opt(config.default.max_in_progress_tasks),
         "default.chat_layout" => fmt_opt(config.default.chat_layout.map(chat_layout_str)),
         "default.chat_min_width" => fmt_opt(config.default.chat_min_width),
         "default.user_display_name" => fmt_opt(config.default.user_display_name.as_deref()),
@@ -395,8 +395,8 @@ fn apply_global_key(
     value: &str,
 ) -> Result<(), String> {
     match key {
-        "default.max_coworkers" => {
-            config.default.max_coworkers = Some(parse_usize(key, value)?);
+        "default.max_in_progress_tasks" => {
+            config.default.max_in_progress_tasks = Some(parse_usize(key, value)?);
         }
         "default.chat_layout" => {
             config.default.chat_layout = Some(parse_chat_layout(value)?);
@@ -490,8 +490,8 @@ fn apply_project_key(
     value: &str,
 ) -> Result<(), String> {
     match key {
-        "default.max_coworkers" => {
-            config.default.max_coworkers = Some(parse_usize(key, value)?);
+        "default.max_in_progress_tasks" => {
+            config.default.max_in_progress_tasks = Some(parse_usize(key, value)?);
         }
         "default.chat_layout" => {
             config.default.chat_layout = Some(parse_chat_layout(value)?);
