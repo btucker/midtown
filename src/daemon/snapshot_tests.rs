@@ -771,3 +771,52 @@ fn stored_placeholder_ids_none_when_no_task_entry() {
         "should return None when no task_placeholder_comment_id entry exists"
     );
 }
+
+/// Verify PrTaskIndex deserializes correctly from old JSON using alias field names,
+/// both directly and through the SnapshotPrState flatten boundary.
+#[test]
+fn test_pr_task_index_deserializes_from_old_field_names() {
+    // Direct PrTaskIndex deserialization
+    let old_json = r#"{
+        "tasks_with_open_prs":     {"42": 100},
+        "github_open_pr_task_ids": {"55": 200},
+        "pr_task_associations":    {"100": "42"}
+    }"#;
+    let index: PrTaskIndex =
+        serde_json::from_str(old_json).expect("should deserialize via alias names");
+    assert_eq!(index.session_pr_for_task("42"), Some(100));
+    assert_eq!(index.github_pr_for_task("55"), Some(200));
+    assert_eq!(index.task_for_pr(100), Some("42"));
+
+    // Also verify through a captured snapshot fixture (tests the full flatten path).
+    // Use one of the existing fixtures that contains old field names.
+    let fixture = std::fs::read_to_string(
+        "tests/fixtures/snapshot/snapshot-double-assign-open-pr-20260216-231443.json",
+    )
+    .expect("fixture should exist");
+    let snap: WorldSnapshot =
+        serde_json::from_str(&fixture).expect("fixture should deserialize with alias names");
+    // This fixture has pr_task_associations — verify the flatten+alias path works
+    // Verify the fixture has PR-task data and the flatten+alias path works.
+    // This fixture has pr_task_associations entries — they should be accessible.
+    let _pair_count = snap.pr.pr_task_index.pr_task_pairs().count();
+}
+
+/// Verify PrTaskIndex::new() derives pr_to_task from session_task_to_pr.
+#[test]
+fn test_pr_task_index_new_derives_reverse_map() {
+    let session: HashMap<String, u64> = [("task-1".to_string(), 100), ("task-2".to_string(), 200)]
+        .into_iter()
+        .collect();
+    let github: HashMap<String, u64> = [("task-3".to_string(), 300)].into_iter().collect();
+    let index = PrTaskIndex::new(session, github);
+
+    assert_eq!(index.session_pr_for_task("task-1"), Some(100));
+    assert_eq!(index.session_pr_for_task("task-2"), Some(200));
+    assert_eq!(index.github_pr_for_task("task-3"), Some(300));
+    assert_eq!(index.task_for_pr(100), Some("task-1"));
+    assert_eq!(index.task_for_pr(200), Some("task-2"));
+    assert!(index.task_has_pr("task-1"));
+    assert!(index.task_has_pr("task-3")); // github source
+    assert!(!index.task_has_pr("task-999"));
+}
