@@ -835,25 +835,72 @@ pub(super) async fn check_and_fire_reminders(
 ) -> Vec<Effect> {
     let open_pr_coworkers: Vec<String> = snap.pr.coworkers_with_open_prs.iter().cloned().collect();
     let ps = state.persistent_state.lock().await;
-    build_reminder_effects(
+    let now = chrono::Utc::now();
+
+    let mut effects = build_reminder_effects_at(
         &ps.reminders.reminders,
         &open_pr_coworkers,
         &snap.dir_key,
         &snap.default_channel,
-    )
+        now,
+    );
+
+    // Emit an effect to advance last_evaluated_at for all cron reminders
+    let has_cron = ps
+        .reminders
+        .reminders
+        .iter()
+        .any(|r| matches!(r.trigger, crate::reminders::ReminderTrigger::CronUtc { .. }));
+    if has_cron {
+        effects.push(Effect::AdvanceCronEvalTimestamps {
+            dir_key: snap.dir_key.clone(),
+            now,
+        });
+    }
+
+    effects
 }
 
 /// Pure function: evaluate reminders and build effects (PostToChannel + NudgeChannelLead + MarkFired).
+#[cfg(test)]
 fn build_reminder_effects(
     reminders: &[crate::reminders::Reminder],
     open_pr_coworkers: &[String],
     dir_key: &str,
     default_channel: &str,
 ) -> Vec<Effect> {
+    build_reminder_effects_at(
+        reminders,
+        open_pr_coworkers,
+        dir_key,
+        default_channel,
+        chrono::Utc::now(),
+    )
+}
+
+/// Testable version with explicit `now` parameter.
+fn build_reminder_effects_at(
+    reminders: &[crate::reminders::Reminder],
+    open_pr_coworkers: &[String],
+    dir_key: &str,
+    default_channel: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<Effect> {
     let fired: Vec<&crate::reminders::Reminder> = reminders
         .iter()
         .filter(|r| {
-            r.is_active() && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers)
+            if !r.is_active() {
+                return false;
+            }
+            match &r.trigger {
+                crate::reminders::ReminderTrigger::AllWorkMerged => {
+                    crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers)
+                }
+                crate::reminders::ReminderTrigger::CronUtc { .. } => {
+                    let last_eval = r.last_evaluated_at.unwrap_or(r.created_at);
+                    crate::reminders::evaluate_cron_trigger(&r.trigger, last_eval, now)
+                }
+            }
         })
         .collect();
     effects_for_fired_reminders(&fired, dir_key, default_channel)
