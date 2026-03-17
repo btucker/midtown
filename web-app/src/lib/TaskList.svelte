@@ -63,7 +63,7 @@ function handleTaskClick(task) {
   {#each groupedTasks as { task, children }}
     {@const cw = task.owner ? cwMap.get(task.owner) : null}
     {@const reviewInfo = taskReviewerMap.get(String(task.id))}
-    {@const childReviewer = !reviewInfo?.reviewer ? children.find((c) => c.status === "in_progress" && /review/i.test(c.subject))?.owner : undefined}
+    {@const childReviewer = !reviewInfo?.reviewer ? children.find((c) => /review/i.test(c.subject))?.owner : undefined}
     <TaskRow
       {task}
       {cw}
