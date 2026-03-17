@@ -53,10 +53,84 @@ fn channel_lead_owned_task_not_orphan_recovered() {
         recently_stopped: &empty,
         attached_coworkers: &empty_map,
         channel_lead_names: &leads,
+        spawn_failure_cooldown_names: &empty,
     };
     let result = decide_orphan_recovery(&ctx);
     assert!(
         result.is_none(),
         "channel lead owned task should not be orphan recovered"
+    );
+}
+
+#[test]
+fn orphan_recovery_skips_cooldown_blocked_owner_recovers_next() {
+    // Two orphaned tasks: first owner ("lexington") is on spawn failure cooldown,
+    // second owner ("park") is not. Recovery should skip lexington and return park's task.
+    let tasks = vec![
+        (
+            "10".to_string(),
+            "lexington task".to_string(),
+            "lexington".to_string(),
+        ),
+        (
+            "20".to_string(),
+            "park task".to_string(),
+            "park".to_string(),
+        ),
+    ];
+    let empty = empty_set();
+    let empty_map: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    let cooldown = names(&["lexington"]);
+    let ctx = OrphanRecoveryContext {
+        in_progress: &tasks,
+        active_names: &empty,
+        at_dev_limit: false,
+        coworkers_with_open_prs: &empty,
+        review_feedback_pr_coworkers: &empty,
+        recently_stopped: &empty,
+        attached_coworkers: &empty_map,
+        channel_lead_names: &empty,
+        spawn_failure_cooldown_names: &cooldown,
+    };
+    let result = decide_orphan_recovery(&ctx);
+    assert!(result.is_some(), "should recover park's task");
+    let recovery = result.unwrap();
+    assert_eq!(recovery.task_id, "20");
+    assert_eq!(recovery.owner, "park");
+}
+
+#[test]
+fn orphan_recovery_returns_none_when_all_on_cooldown() {
+    // All owners on cooldown — no recovery should happen.
+    let tasks = vec![
+        (
+            "10".to_string(),
+            "lexington task".to_string(),
+            "lexington".to_string(),
+        ),
+        (
+            "20".to_string(),
+            "park task".to_string(),
+            "park".to_string(),
+        ),
+    ];
+    let empty = empty_set();
+    let empty_map: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
+    let cooldown = names(&["lexington", "park"]);
+    let ctx = OrphanRecoveryContext {
+        in_progress: &tasks,
+        active_names: &empty,
+        at_dev_limit: false,
+        coworkers_with_open_prs: &empty,
+        review_feedback_pr_coworkers: &empty,
+        recently_stopped: &empty,
+        attached_coworkers: &empty_map,
+        channel_lead_names: &empty,
+        spawn_failure_cooldown_names: &cooldown,
+    };
+    let result = decide_orphan_recovery(&ctx);
+    assert!(
+        result.is_none(),
+        "should not recover when all owners are on cooldown"
     );
 }

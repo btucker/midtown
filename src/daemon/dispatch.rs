@@ -486,25 +486,13 @@ where
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names: &channel_lead_names,
+        spawn_failure_cooldown_names: &snap.spawn_failure_cooldown_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
     let Some(recovery) = recovery else {
         return vec![];
     };
-
-    // Check per-coworker spawn failure cooldown to prevent infinite retry loops
-    // (pre-evaluated in snapshot)
-    if snap
-        .spawn_failure_cooldown_names
-        .contains(&recovery.owner.to_lowercase())
-    {
-        debug!(
-            "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
-            recovery.owner, recovery.task_id
-        );
-        return vec![];
-    }
 
     info!(
         "Detected orphaned task !{} owned by {} - attempting recovery",
@@ -994,6 +982,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names: &channel_lead_names,
+        spawn_failure_cooldown_names: &snap.spawn_failure_cooldown_names,
     };
     let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
         Some(r) => r,
@@ -1005,18 +994,6 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         debug!(
             "Task !{} is PR-protected — skipping fresh spawn",
             recovery.task_id
-        );
-        return effects;
-    }
-
-    // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
-    if snap
-        .spawn_failure_cooldown_names
-        .contains(&recovery.owner.to_lowercase())
-    {
-        debug!(
-            "Spawn failure cooldown active for {} — skipping fresh spawn for task !{}",
-            recovery.owner, recovery.task_id
         );
         return effects;
     }

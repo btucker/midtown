@@ -936,6 +936,7 @@ pub(crate) struct OrphanRecoveryContext<'a> {
     pub recently_stopped: &'a HashSet<String>,
     pub attached_coworkers: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
     pub channel_lead_names: &'a HashSet<String>,
+    pub spawn_failure_cooldown_names: &'a HashSet<String>,
 }
 
 impl OrphanRecoveryContext<'_> {
@@ -946,12 +947,14 @@ impl OrphanRecoveryContext<'_> {
     /// - Owner is attached (interactive session)
     /// - Owner recently stopped (within grace period — task may not be marked done yet)
     /// - Owner has an open PR awaiting review without feedback (recovery would loop)
+    /// - Owner is on spawn failure cooldown (prevent infinite retry loops)
     fn should_skip_owner(&self, owner_lower: &str) -> bool {
         self.active_names.contains(owner_lower)
             || self.attached_coworkers.contains_key(owner_lower)
             || self.recently_stopped.contains(owner_lower)
             || (self.coworkers_with_open_prs.contains(owner_lower)
                 && !self.review_feedback_pr_coworkers.contains(owner_lower))
+            || self.spawn_failure_cooldown_names.contains(owner_lower)
     }
 }
 
