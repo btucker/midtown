@@ -44,56 +44,6 @@ pub fn build_push_deep_link(
 // ============================================================================
 
 // ============================================================================
-// Spawn callback helpers
-// ============================================================================
-
-/// Standard spawn-failure callback: record cooldown, reset task to pending, post to ops.
-fn spawn_failure_effects(
-    cooldown_key: impl Into<String>,
-    task_id: impl Into<String>,
-    dir_key: impl Into<String>,
-    message: impl Into<String>,
-) -> Vec<Effect> {
-    vec![
-        Effect::RecordCooldown {
-            category: "spawn_failure".to_string(),
-            key: cooldown_key.into(),
-        },
-        Effect::ResetTaskToPending {
-            task_id: task_id.into(),
-            dir_key: dir_key.into(),
-        },
-        Effect::post_to_ops(message),
-    ]
-}
-
-/// Common spawn-success effects: assign task, bind worktree, broadcast status, post to ops.
-fn spawn_success_effects(
-    coworker: impl Into<String>,
-    task_id: impl Into<String>,
-    worktree_id: impl Into<String>,
-    message: impl Into<String>,
-) -> Vec<Effect> {
-    let coworker = coworker.into();
-    vec![
-        Effect::RecordTaskAssignment {
-            coworker: coworker.clone(),
-            task_id: task_id.into(),
-        },
-        Effect::BindCoworkerToWorktree {
-            worktree_id: worktree_id.into(),
-            coworker: coworker.clone(),
-        },
-        Effect::BroadcastCoworkerUpdate {
-            name: coworker,
-            status: "running".to_string(),
-            current_task: None,
-        },
-        Effect::post_to_ops(message),
-    ]
-}
-
-// ============================================================================
 // Recently-stopped coworker helper
 // ============================================================================
 
@@ -311,32 +261,6 @@ fn build_spawn_effects(
     config.channel = channel;
     config.apply_task_model(&snap.task_model_map, &decision.task_id);
 
-    // Build success effects
-    let mut on_success = spawn_success_effects(
-        String::new(), // placeholder — SpawnForTask executor fills in actual name
-        decision.task_id.clone(),
-        wt.worktree_id,
-        format!(
-            "Spawned coworker for task !{} ({})",
-            decision.task_id, task_subject
-        ),
-    );
-    on_success.push(effects::Effect::RecordCooldown {
-        category: decision.cooldown_category.clone(),
-        key: "global".to_string(),
-    });
-
-    let on_failure = spawn_failure_effects(
-        String::new(), // placeholder
-        decision.task_id.clone(),
-        snap.dir_key.clone(),
-        format!(
-            "Task !{} reset to pending — could not spawn (backing off for {}s)",
-            decision.task_id,
-            SPAWN_FAILURE_COOLDOWN.as_secs()
-        ),
-    );
-
     // For session resume, clear stale working_dir if needed
     let mut all_effects = Vec::new();
     if let crate::launch::SessionMode::ResumeSession(ref session_id) = decision.session_mode
@@ -357,9 +281,20 @@ fn build_spawn_effects(
         task_id: decision.task_id.clone(),
         dir_key: snap.dir_key.clone(),
         preferred_name: decision.preferred_name.clone(),
-        config,
-        on_success,
-        on_failure,
+        config: Box::new(config),
+        worktree_id: wt.worktree_id,
+        success_message: format!(
+            "Spawned coworker for task !{} ({})",
+            decision.task_id, task_subject
+        ),
+        failure_message: format!(
+            "Task !{} reset to pending — could not spawn (backing off for {}s)",
+            decision.task_id,
+            SPAWN_FAILURE_COOLDOWN.as_secs()
+        ),
+        cooldown_category: decision.cooldown_category.clone(),
+        extra_success_cooldowns: vec![],
+        reviewer: None,
     });
     all_effects
 }
@@ -743,11 +678,13 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
                 // even if the session dies quickly (see !1709 fix). The
                 // recently_recovered_session_ids snapshot field checks this cooldown.
                 for effect in &mut spawn_effects {
-                    if let Effect::SpawnForTask { on_success, .. } = effect {
-                        on_success.push(Effect::RecordCooldown {
-                            category: "session_recovered".to_string(),
-                            key: record.session_id.clone(),
-                        });
+                    if let Effect::SpawnForTask {
+                        extra_success_cooldowns,
+                        ..
+                    } = effect
+                    {
+                        extra_success_cooldowns
+                            .push(("session_recovered".to_string(), record.session_id.clone()));
                     }
                 }
                 effects.extend(spawn_effects);
@@ -1655,56 +1592,33 @@ fn dispatch_unowned_pending_tasks(
                 path: wt_path.clone(),
             });
 
-            // Build reviewer-specific on_success effects.
-            // CreateTaskSessionSpan must come before PostPrComment so the
-            // span exists when post_pr_comment() stores the placeholder_comment_id.
-            let mut on_success = spawn_success_effects(
-                String::new(), // placeholder — SpawnForTask executor fills in actual name
-                task.id.clone(),
-                worktree_id.clone(),
-                daemon_messages::called_in_reviewer(&coworker_name, pr_number),
-            );
-            on_success.push(effects::Effect::RecordCooldown {
-                category: "task_dispatch".to_string(),
-                key: "global".to_string(),
-            });
-            on_success.push(effects::Effect::CreateTaskSessionSpan {
-                task_id: task.id.clone(),
-                agent_name: coworker_name.clone(),
-                agent_type: "reviewer".to_string(),
-                session_id: String::new(),
-                pr_number: Some(pr_number),
-                restart_count: 0,
-            });
-            on_success.push(effects::Effect::PostPrComment {
-                pr_number,
-                reviewer_name: coworker_name.clone(),
-                body: format!(
-                    "{}\n## Review Status\n\n\
-                         🔍 Review in progress...\n\n---\n\
-                         > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
-                         🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                    crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
-                ),
-            });
-
             effects.push(effects::Effect::SpawnForTask {
                 task_id: task.id.clone(),
                 dir_key: snap.dir_key.clone(),
                 preferred_name: Some(coworker_name.clone()),
-                config,
-                on_success,
-                on_failure: spawn_failure_effects(
-                    String::new(), // placeholder
-                    task.id.clone(),
-                    snap.dir_key.clone(),
-                    format!(
-                        "⚠️ Spawn failed for review task !{} (reviewer {}) — backing off for {}s",
-                        task.id,
-                        coworker_name,
-                        SPAWN_FAILURE_COOLDOWN.as_secs()
-                    ),
+                config: Box::new(config),
+                worktree_id: worktree_id.clone(),
+                success_message: daemon_messages::called_in_reviewer(&coworker_name, pr_number),
+                failure_message: format!(
+                    "⚠️ Spawn failed for review task !{} (reviewer {}) — backing off for {}s",
+                    task.id,
+                    coworker_name,
+                    SPAWN_FAILURE_COOLDOWN.as_secs()
                 ),
+                cooldown_category: "task_dispatch".to_string(),
+                extra_success_cooldowns: vec![],
+                reviewer: Some(effects::ReviewerSpawnInfo {
+                    pr_number,
+                    pr_comment_body: format!(
+                        "{}\n## Review Status\n\n\
+                         🔍 Review in progress...\n\n---\n\
+                         > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
+                         🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                        crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
+                    ),
+                    restart_count: 0,
+                    agent_type: "reviewer".to_string(),
+                }),
             });
             spawns_queued_this_tick += 1;
         } else {

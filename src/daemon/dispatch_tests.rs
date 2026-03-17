@@ -1039,11 +1039,11 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         .find_map(|e| {
             if let Effect::SpawnForTask {
                 task_id,
-                on_success,
+                worktree_id,
                 ..
             } = e
             {
-                Some((task_id, on_success))
+                Some((task_id, worktree_id))
             } else {
                 None
             }
@@ -1052,20 +1052,12 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
 
     assert_eq!(spawn_for_task.0, "42");
 
-    // BindCoworkerToWorktree stays in on_success (runs after spawn)
-    let bind_count = spawn_for_task
-        .1
-        .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
-        .count();
-
-    assert_eq!(
-        bind_count, 1,
-        "Should have BindCoworkerToWorktree in on_success"
-    );
-    assert_eq!(
-        bind_count, 1,
-        "Should have BindCoworkerToWorktree in on_success"
+    // worktree_id is now a direct field on SpawnForTask (BindCoworkerToWorktree
+    // is inlined in the executor using this value after the name is allocated)
+    assert!(
+        spawn_for_task.1.starts_with("task-42-"),
+        "SpawnForTask.worktree_id should start with task-42-, got: {}",
+        spawn_for_task.1
     );
 
     // Verify the top-level RegisterWorktreeAssignment has correct fields
@@ -1110,8 +1102,8 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
     let spawn_effect = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnForTask { on_success, .. } = e {
-                Some(on_success)
+            if let Effect::SpawnForTask { worktree_id, .. } = e {
+                Some(worktree_id)
             } else {
                 None
             }
@@ -1119,23 +1111,20 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
         .expect("Should have SpawnForTask effect for owned pending task");
 
     // Should NOT generate RegisterWorktreeAssignment (worktree already exists)
-    // SHOULD generate BindCoworkerToWorktree (rebind to new owner)
-    let register_count = spawn_effect
+    let register_count = effects
         .iter()
         .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-        .count();
-    let bind_count = spawn_effect
-        .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
         .count();
 
     assert_eq!(
         register_count, 0,
         "Should NOT generate RegisterWorktreeAssignment for existing worktree"
     );
+
+    // worktree_id should be set to the existing worktree
     assert_eq!(
-        bind_count, 1,
-        "Should generate BindCoworkerToWorktree to rebind"
+        spawn_effect, "task-42-add-auth-endpoint",
+        "SpawnForTask.worktree_id should be the existing worktree"
     );
 }
 
@@ -1197,10 +1186,10 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
 }
 
 #[test]
-fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
-    // Verify that SpawnForTask from the SpawnOwner branch
-    // includes RecordTaskAssignment in on_success, enabling
-    // mark_in_flight_spawns_from_effects() to track it across ticks.
+fn test_spawn_owner_includes_task_id_for_cross_tick_dedup() {
+    // Verify that SpawnForTask from the SpawnOwner branch carries task_id,
+    // enabling mark_in_flight_spawns_from_effects() to track it across ticks.
+    // RecordTaskAssignment is no longer in on_success — the executor inlines it.
     let snap = snapshot::WorldSnapshot {
         pending_tasks_with_owners: vec![(
             "42".to_string(),
@@ -1213,26 +1202,14 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnForTask effect
-    let spawn_effect = effects
+    // SpawnForTask carries task_id directly; mark_in_flight_spawns_from_effects
+    // reads it from the effect's task_id field (not from a callback).
+    let has_spawn_for_task_42 = effects
         .iter()
-        .find_map(|e| {
-            if let Effect::SpawnForTask { on_success, .. } = e {
-                Some(on_success)
-            } else {
-                None
-            }
-        })
-        .expect("Should have SpawnForTask for broadway");
-
-    // Verify RecordTaskAssignment is in on_success
-    let has_record = spawn_effect
-        .iter()
-        .any(|e| matches!(e, Effect::RecordTaskAssignment { task_id, .. } if task_id == "42"));
+        .any(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "42"));
     assert!(
-        has_record,
-        "SpawnForTask on_success must include RecordTaskAssignment \
-         for cross-tick spawn deduplication"
+        has_spawn_for_task_42,
+        "SpawnForTask must have task_id='42' for cross-tick spawn deduplication"
     );
 }
 
@@ -1537,22 +1514,24 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         "Should NOT register worktree again (already exists)"
     );
 
-    // Verify SpawnForTask has working_dir set to the existing worktree
+    // Verify SpawnForTask has working_dir and worktree_id set to the existing worktree
     let spawn = effects
         .iter()
         .find_map(|e| {
             if let Effect::SpawnForTask {
-                config, on_success, ..
+                config,
+                worktree_id,
+                ..
             } = e
             {
-                Some((config, on_success))
+                Some((config, worktree_id))
             } else {
                 None
             }
         })
         .expect("Should have SpawnForTask");
 
-    let (config, on_success) = spawn;
+    let (config, worktree_id) = spawn;
 
     let expected_path =
         crate::paths::worktrees_dir_for_repo("test-repo").join("task-42-add-auth-endpoint");
@@ -1562,15 +1541,10 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         "Should set working_dir to the existing task worktree"
     );
 
-    // BindCoworkerToWorktree stays in on_success (runs after spawn)
-    // Note: coworker name is empty placeholder — SpawnForTask fills it at execution time
-    let bind_count = on_success
-        .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { worktree_id, .. } if worktree_id == "task-42-add-auth-endpoint"))
-        .count();
+    // worktree_id field on SpawnForTask (used by executor for BindCoworkerToWorktree)
     assert_eq!(
-        bind_count, 1,
-        "Should have BindCoworkerToWorktree to rebind"
+        worktree_id, "task-42-add-auth-endpoint",
+        "SpawnForTask.worktree_id should be the existing worktree"
     );
 }
 
@@ -1646,17 +1620,19 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         .iter()
         .find_map(|e| {
             if let Effect::SpawnForTask {
-                config, on_success, ..
+                config,
+                worktree_id,
+                ..
             } = e
             {
-                Some((config, on_success))
+                Some((config, worktree_id))
             } else {
                 None
             }
         })
         .expect("Should have SpawnForTask");
 
-    let (config, on_success) = spawn;
+    let (config, worktree_id) = spawn;
 
     // Working dir SHOULD be set to computed worktree path
     assert!(
@@ -1672,14 +1648,11 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
         working_dir
     );
 
-    // BindCoworkerToWorktree stays in on_success (runs after spawn)
-    let bind_count = on_success
-        .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
-        .count();
-    assert_eq!(
-        bind_count, 1,
-        "Should have BindCoworkerToWorktree in on_success"
+    // worktree_id field on SpawnForTask (used by executor for BindCoworkerToWorktree)
+    assert!(
+        worktree_id.contains("task-42-add-auth-endpoint"),
+        "SpawnForTask.worktree_id should contain task-42-add-auth-endpoint, got: {}",
+        worktree_id
     );
 }
 
@@ -1750,17 +1723,19 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         .iter()
         .find_map(|e| {
             if let Effect::SpawnForTask {
-                config, on_success, ..
+                config,
+                worktree_id,
+                ..
             } = e
             {
-                Some((config, on_success))
+                Some((config, worktree_id))
             } else {
                 None
             }
         })
         .expect("Should have SpawnForTask");
 
-    let (config, on_success) = spawn_for_task;
+    let (config, worktree_id) = spawn_for_task;
 
     // Working dir should point to the EXISTING worktree
     let expected_path =
@@ -1771,22 +1746,11 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         "Should reuse existing worktree path"
     );
 
-    // BindCoworkerToWorktree stays in on_success (runs after spawn)
-    let bind_effects: Vec<_> = on_success
-        .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
-        .collect();
+    // worktree_id on SpawnForTask is used by executor for BindCoworkerToWorktree
     assert_eq!(
-        bind_effects.len(),
-        1,
-        "Should bind coworker to existing worktree"
+        worktree_id, "task-42-add-auth-endpoint",
+        "Should use the existing worktree, not a new one"
     );
-    if let Effect::BindCoworkerToWorktree { worktree_id, .. } = bind_effects[0] {
-        assert_eq!(
-            worktree_id, "task-42-add-auth-endpoint",
-            "Should bind to the existing worktree, not a new one"
-        );
-    }
 }
 
 #[test]
@@ -2307,19 +2271,14 @@ fn test_spawn_coworker_with_callbacks_records_task_assignment() {
         .count();
     assert_eq!(spawn_count, 1, "Tick 1 should spawn york");
 
-    // Verify the effect has RecordTaskAssignment in on_success
-    let has_record_assignment = effects.iter().any(|e| {
-        if let Effect::SpawnForTask { on_success, .. } = e {
-            on_success
-                .iter()
-                .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
-        } else {
-            false
-        }
-    });
+    // SpawnForTask carries task_id directly; the executor inlines RecordTaskAssignment.
+    // mark_in_flight_spawns_from_effects reads task_id from the effect's task_id field.
+    let has_spawn_for_task = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "1107"));
     assert!(
-        has_record_assignment,
-        "SpawnForTask should have RecordTaskAssignment in on_success"
+        has_spawn_for_task,
+        "SpawnForTask should have task_id='1107' for cross-tick spawn deduplication"
     );
 
     // Mark in-flight (daemon does this between evaluate_tick and execute_effects)
@@ -3086,29 +3045,13 @@ fn test_orphan_recovery_marks_task_in_flight() {
         }
     });
 
-    // Should have SpawnForTask effect
-    let spawn_effect = effects
+    // Should have SpawnForTask effect with task_id
+    let has_spawn_for_task = effects
         .iter()
-        .find(|e| matches!(e, Effect::SpawnForTask { .. }))
-        .expect("Should have SpawnForTask effect");
-
-    // Extract on_success effects
-    let on_success = if let Effect::SpawnForTask { on_success, .. } = spawn_effect {
-        on_success
-    } else {
-        panic!("Expected SpawnForTask");
-    };
-
-    // Should include RecordTaskAssignment in on_success
-    // Note: coworker name is empty placeholder — SpawnForTask fills it at execution time
-    let has_record_assignment = on_success.iter().any(|e| {
-        matches!(e, Effect::RecordTaskAssignment { task_id, .. }
-            if task_id == "999999")
-    });
-
+        .any(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "999999"));
     assert!(
-        has_record_assignment,
-        "Orphan recovery must include RecordTaskAssignment in on_success to prevent double-assignment race"
+        has_spawn_for_task,
+        "Orphan recovery must produce SpawnForTask with task_id='999999'"
     );
 
     // Verify that mark_in_flight_spawns_from_effects would mark this task
@@ -4613,11 +4556,10 @@ fn test_owned_pending_task_skips_spawn_when_spawn_failure_cooldown_active() {
 
 #[test]
 fn test_owned_pending_task_spawn_failure_records_cooldown() {
-    // Bug scenario: dispatch_owned_pending_tasks has on_failure: vec![] — when
-    // the spawn fails (e.g., missing worktree), no cooldown is recorded and the
-    // task is retried every 5 seconds forever.
-    //
-    // Fix: add RecordCooldown to on_failure so the next tick skips this coworker.
+    // The executor always inlines spawn_failure bookkeeping (RecordCooldown +
+    // ResetTaskToPending + ops message) using the real allocated name after spawn fails.
+    // Verify SpawnForTask is emitted with the correct task_id and dir_key fields
+    // so the executor can perform this bookkeeping correctly.
     let snap = snapshot::WorldSnapshot {
         pending_tasks_with_owners: vec![(
             "2059".to_string(),
@@ -4631,43 +4573,36 @@ fn test_owned_pending_task_spawn_failure_records_cooldown() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnForTask and check its on_failure
-    let on_failure = effects
+    // SpawnForTask must be emitted; the executor handles failure bookkeeping inline.
+    let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnForTask { on_failure, .. } = e {
-                Some(on_failure)
+            if let Effect::SpawnForTask {
+                task_id, dir_key, ..
+            } = e
+            {
+                Some((task_id.as_str(), dir_key.as_str()))
             } else {
                 None
             }
         })
         .expect("Should emit SpawnForTask for owned pending task");
 
-    // on_failure MUST contain RecordCooldown for spawn_failure
-    let has_cooldown = on_failure.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordCooldown { category, .. } if category == "spawn_failure"
-        )
-    });
+    assert_eq!(
+        spawn.0, "2059",
+        "task_id must be set for executor failure bookkeeping"
+    );
     assert!(
-        has_cooldown,
-        "on_failure must include RecordCooldown for 'spawn_failure' to prevent infinite retry loops. \
-         Got on_failure: {:?}",
-        on_failure
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect::<Vec<_>>()
+        !spawn.1.is_empty(),
+        "dir_key must be set for ResetTaskToPending"
     );
 }
 
 #[test]
 fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
-    // Bug scenario: dispatch_unowned_pending_tasks produces SpawnForTask with
-    // on_failure: vec![] — when the spawn fails, no cooldown is recorded and
-    // the daemon retries every tick forever (same bug class as !2172).
-    //
-    // Fix: add RecordCooldown to on_failure so the next tick skips this coworker.
+    // The executor always inlines spawn_failure bookkeeping (RecordCooldown +
+    // ResetTaskToPending + ops message) using the real allocated name after spawn fails.
+    // Verify SpawnForTask is emitted with the correct fields.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -4690,33 +4625,28 @@ fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnForTask and check its on_failure
-    let on_failure = effects
+    // SpawnForTask must be emitted; the executor handles failure bookkeeping inline.
+    let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnForTask { on_failure, .. } = e {
-                Some(on_failure)
+            if let Effect::SpawnForTask {
+                task_id, dir_key, ..
+            } = e
+            {
+                Some((task_id.as_str(), dir_key.as_str()))
             } else {
                 None
             }
         })
         .expect("Should emit SpawnForTask for unowned pending task");
 
-    // on_failure MUST contain RecordCooldown for spawn_failure
-    let has_cooldown = on_failure.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordCooldown { category, .. } if category == "spawn_failure"
-        )
-    });
+    assert_eq!(
+        spawn.0, "2059",
+        "task_id must be set for executor failure bookkeeping"
+    );
     assert!(
-        has_cooldown,
-        "on_failure must include RecordCooldown for 'spawn_failure' to prevent infinite retry loops. \
-         Got on_failure: {:?}",
-        on_failure
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect::<Vec<_>>()
+        !spawn.1.is_empty(),
+        "dir_key must be set for ResetTaskToPending"
     );
 }
 
@@ -4787,12 +4717,8 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
 
 #[test]
 fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
-    // Bug: dispatch_owned_pending_tasks on_failure lacks ResetTaskToPending.
-    // Without it, the task keeps its owner after spawn failure. When cooldown
-    // expires, the same coworker retries → fails → cooldown → infinite loop.
-    //
-    // Fix: add ResetTaskToPending to on_failure so the task loses its owner
-    // and can be picked up by a different coworker.
+    // The executor always inlines ResetTaskToPending on failure, using the task_id
+    // and dir_key from SpawnForTask. Verify those fields are set correctly.
     let snap = snapshot::WorldSnapshot {
         pending_tasks_with_owners: vec![(
             "2059".to_string(),
@@ -4806,45 +4732,34 @@ fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnForTask and check its on_failure
-    let on_failure = effects
+    let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnForTask { on_failure, .. } = e {
-                Some(on_failure)
+            if let Effect::SpawnForTask {
+                task_id, dir_key, ..
+            } = e
+            {
+                Some((task_id.as_str(), dir_key.as_str()))
             } else {
                 None
             }
         })
         .expect("Should emit SpawnForTask for owned pending task");
 
-    // on_failure MUST contain ResetTaskToPending for task 2059
-    let has_reset = on_failure.iter().any(|e| {
-        matches!(
-            e,
-            Effect::ResetTaskToPending { task_id, .. } if task_id == "2059"
-        )
-    });
+    assert_eq!(
+        spawn.0, "2059",
+        "task_id must match for executor's ResetTaskToPending on failure"
+    );
     assert!(
-        has_reset,
-        "on_failure must include ResetTaskToPending to clear ownership after spawn failure. \
-         Without it, the task stays owned by the failed coworker and loops forever. \
-         Got on_failure: {:?}",
-        on_failure
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect::<Vec<_>>()
+        !spawn.1.is_empty(),
+        "dir_key must be set for ResetTaskToPending on failure"
     );
 }
 
 #[test]
 fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
-    // Bug: assign_pending_tasks SpawnForTask on_failure lacks ResetTaskToPending.
-    // Without it, on spawn failure the task can cycle through all coworker names
-    // (each getting a cooldown) before starting over when cooldowns expire.
-    //
-    // Fix: add ResetTaskToPending to on_failure for consistency with all other
-    // spawn failure paths and to clear any in-memory task assignment state.
+    // The executor always inlines ResetTaskToPending on failure, using the task_id
+    // and dir_key from SpawnForTask. Verify those fields are set correctly.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -4867,83 +4782,28 @@ fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnForTask and check its on_failure
-    let on_failure = effects
+    let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnForTask { on_failure, .. } = e {
-                Some(on_failure)
+            if let Effect::SpawnForTask {
+                task_id, dir_key, ..
+            } = e
+            {
+                Some((task_id.as_str(), dir_key.as_str()))
             } else {
                 None
             }
         })
         .expect("Should emit SpawnForTask for unowned pending task");
 
-    // on_failure MUST contain ResetTaskToPending for task 2059
-    let has_reset = on_failure.iter().any(|e| {
-        matches!(
-            e,
-            Effect::ResetTaskToPending { task_id, .. } if task_id == "2059"
-        )
-    });
-    assert!(
-        has_reset,
-        "on_failure must include ResetTaskToPending to clear task state after spawn failure. \
-         Without it, the task cycles through all coworker names on failure. \
-         Got on_failure: {:?}",
-        on_failure
-            .iter()
-            .map(|e| format!("{:?}", e))
-            .collect::<Vec<_>>()
+    assert_eq!(
+        spawn.0, "2059",
+        "task_id must match for executor's ResetTaskToPending on failure"
     );
-}
-
-#[test]
-fn test_spawn_failure_effects() {
-    let effects = spawn_failure_effects("worker-1", "task-42", "my-project", "spawn failed msg");
-    assert_eq!(effects.len(), 3);
-    assert!(matches!(
-        &effects[0],
-        Effect::RecordCooldown { category, key }
-            if category == "spawn_failure" && key == "worker-1"
-    ));
-    assert!(matches!(
-        &effects[1],
-        Effect::ResetTaskToPending { task_id, dir_key }
-            if task_id == "task-42" && dir_key == "my-project"
-    ));
-    assert!(matches!(
-        &effects[2],
-        Effect::PostToChannel { sender, message, .. }
-            if sender == "midtown" && message.contains("spawn failed msg")
-    ));
-}
-
-#[test]
-fn test_spawn_success_effects() {
-    let effects =
-        spawn_success_effects("worker-1", "task-42", "wt-branch-slug", "spawn success msg");
-    assert_eq!(effects.len(), 4);
-    assert!(matches!(
-        &effects[0],
-        Effect::RecordTaskAssignment { coworker, task_id }
-            if coworker == "worker-1" && task_id == "task-42"
-    ));
-    assert!(matches!(
-        &effects[1],
-        Effect::BindCoworkerToWorktree { worktree_id, coworker }
-            if worktree_id == "wt-branch-slug" && coworker == "worker-1"
-    ));
-    assert!(matches!(
-        &effects[2],
-        Effect::BroadcastCoworkerUpdate { name, status, current_task }
-            if name == "worker-1" && status == "running" && current_task.is_none()
-    ));
-    assert!(matches!(
-        &effects[3],
-        Effect::PostToChannel { sender, message, .. }
-            if sender == "midtown" && message.contains("spawn success msg")
-    ));
+    assert!(
+        !spawn.1.is_empty(),
+        "dir_key must be set for ResetTaskToPending on failure"
+    );
 }
 
 // ============================================================================
@@ -5178,16 +5038,14 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
         effects
     );
 
-    // The on_success should include reviewer-specific effects
-    let on_success = effects.iter().find_map(|e| {
+    // The reviewer field should contain reviewer-specific extras
+    let reviewer_info = effects.iter().find_map(|e| {
         if let Effect::SpawnForTask {
-            on_success,
-            task_id,
-            ..
+            reviewer, task_id, ..
         } = e
         {
             if task_id == "500" {
-                Some(on_success)
+                reviewer.as_ref()
             } else {
                 None
             }
@@ -5196,26 +5054,21 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
         }
     });
 
-    if let Some(on_success) = on_success {
-        // Should include PostPrComment for placeholder
-        let has_placeholder = on_success
-            .iter()
-            .any(|e| matches!(e, Effect::PostPrComment { pr_number: 42, .. }));
-        assert!(
-            has_placeholder,
-            "Reviewer dispatch should include PostPrComment placeholder. on_success: {:#?}",
-            on_success
+    if let Some(info) = reviewer_info {
+        assert_eq!(
+            info.pr_number, 42,
+            "Reviewer spawn info should have pr_number=42"
         );
-
-        // Should include CreateTaskSessionSpan for reviewer
-        let has_create_span = on_success
-            .iter()
-            .any(|e| matches!(e, Effect::CreateTaskSessionSpan { pr_number: Some(42), agent_type, .. } if agent_type == "reviewer"));
-        assert!(
-            has_create_span,
-            "Reviewer dispatch should include CreateTaskSessionSpan. on_success: {:#?}",
-            on_success
+        assert_eq!(
+            info.agent_type, "reviewer",
+            "Reviewer spawn info should have agent_type='reviewer'"
         );
+        assert!(
+            !info.pr_comment_body.is_empty(),
+            "Reviewer spawn info should have a pr_comment_body"
+        );
+    } else {
+        panic!("SpawnForTask for task 500 should have reviewer field set");
     }
 }
 
@@ -5247,20 +5100,18 @@ fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Should NOT have PostPrComment (that's reviewer-specific)
-    let has_post_pr_comment = effects.iter().any(|e| {
-        if let Effect::SpawnForTask { on_success, .. } = e {
-            on_success
-                .iter()
-                .any(|s| matches!(s, Effect::PostPrComment { .. }))
+    // Should NOT have reviewer field set (that's reviewer-specific)
+    let has_reviewer = effects.iter().any(|e| {
+        if let Effect::SpawnForTask { reviewer, .. } = e {
+            reviewer.is_some()
         } else {
             false
         }
     });
 
     assert!(
-        !has_post_pr_comment,
-        "Regular task with PR should NOT dispatch with PostPrComment. Effects: {:#?}",
+        !has_reviewer,
+        "Regular task with PR should NOT have reviewer field set. Effects: {:#?}",
         effects
     );
 }
@@ -5444,17 +5295,18 @@ fn test_reviewer_create_span_before_post_pr_comment() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    let on_success = effects
+    // In the new design, CreateTaskSessionSpan and PostPrComment are executed
+    // sequentially inside the executor (CreateTaskSessionSpan first, then PostPrComment),
+    // encoded in the ReviewerSpawnInfo struct — just verify the reviewer field is set.
+    let reviewer = effects
         .iter()
         .find_map(|e| {
             if let Effect::SpawnForTask {
-                on_success,
-                task_id,
-                ..
+                reviewer, task_id, ..
             } = e
             {
                 if task_id == "800" {
-                    Some(on_success)
+                    reviewer.as_ref()
                 } else {
                     None
                 }
@@ -5462,24 +5314,17 @@ fn test_reviewer_create_span_before_post_pr_comment() {
                 None
             }
         })
-        .expect("Reviewer task should produce SpawnForTask");
+        .expect("Reviewer task should produce SpawnForTask with reviewer field");
 
-    let span_pos = on_success
-        .iter()
-        .position(|e| matches!(e, Effect::CreateTaskSessionSpan { agent_type, .. } if agent_type == "reviewer"))
-        .expect("on_success should contain CreateTaskSessionSpan");
-    let post_pos = on_success
-        .iter()
-        .position(|e| matches!(e, Effect::PostPrComment { .. }))
-        .expect("on_success should contain PostPrComment");
-
-    assert!(
-        span_pos < post_pos,
-        "CreateTaskSessionSpan (pos {}) must come before PostPrComment (pos {}) \
-         so that the span exists when placeholder_comment_id is stored. \
-         on_success: {:#?}",
-        span_pos,
-        post_pos,
-        on_success
+    assert_eq!(
+        reviewer.agent_type, "reviewer",
+        "agent_type should be 'reviewer'"
     );
+    assert!(reviewer.pr_number == 99, "pr_number should be 99");
+    assert!(
+        !reviewer.pr_comment_body.is_empty(),
+        "pr_comment_body should not be empty"
+    );
+    // The executor always runs CreateTaskSessionSpan before PostPrComment (in that order
+    // in the effects vec it builds), so ordering is guaranteed by construction.
 }

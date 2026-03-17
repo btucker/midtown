@@ -217,6 +217,17 @@ pub struct TaskPromptPrContext {
     pub issue_type: PrIssueType,
 }
 
+/// Extra data needed when spawning a reviewer coworker.
+/// Passed in `SpawnForTask.reviewer` so the executor can create the session span
+/// and post the placeholder PR comment after the real coworker name is known.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ReviewerSpawnInfo {
+    pub pr_number: u64,
+    pub pr_comment_body: String,
+    pub restart_count: u32,
+    pub agent_type: String,
+}
+
 /// A side effect that the daemon should execute.
 ///
 /// Pure evaluation functions return `Vec<Effect>` instead of performing side
@@ -344,15 +355,21 @@ pub enum Effect {
     ///
     /// Allocates a coworker name (preferring `preferred_name` if available),
     /// writes task ownership + in_progress status to disk, then spawns.
-    /// On success, executes `on_success` effects. On failure, resets the
-    /// task to pending and executes `on_failure` effects.
+    /// On success, inlines all bookkeeping using the real allocated name.
+    /// On failure, resets the task to pending and records a spawn-failure cooldown.
     SpawnForTask {
         task_id: String,
         dir_key: String,
         preferred_name: Option<String>,
-        config: crate::launch::LaunchConfig,
-        on_success: Vec<Effect>,
-        on_failure: Vec<Effect>,
+        config: Box<crate::launch::LaunchConfig>,
+        worktree_id: String,
+        success_message: String,
+        failure_message: String,
+        cooldown_category: String,
+        /// Extra (category, key) cooldowns to record on success, beyond the main cooldown.
+        extra_success_cooldowns: Vec<(String, String)>,
+        /// Reviewer-specific extras. `None` for regular task spawns.
+        reviewer: Option<ReviewerSpawnInfo>,
     },
     /// Mark reminders as fired and persist to disk.
     ///
@@ -1712,8 +1729,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 dir_key,
                 preferred_name,
                 mut config,
-                on_success,
-                on_failure,
+                worktree_id,
+                success_message,
+                failure_message,
+                cooldown_category,
+                extra_success_cooldowns,
+                reviewer,
             } => {
                 // 1. Allocate name from pool
                 let channel_lead_names = {
@@ -1739,18 +1760,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         info!("SpawnForTask: spawned {} for task !{}", name, task_id);
 
                         // Update task_to_session mapping
-                        let maybe_session_id =
-                            state.name_to_session.lock().unwrap().get(&name).cloned();
-                        if let Some(session_id) = maybe_session_id {
+                        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
+                        if let Some(ref sid) = session_id {
                             let mut ps = state.persistent_state.lock().await;
-                            if let Some(record) = ps.sessions.get_mut(&session_id) {
+                            if let Some(record) = ps.sessions.get_mut(sid) {
                                 record.task_id = Some(task_id.clone());
                             }
                             state
                                 .task_to_session
                                 .lock()
                                 .unwrap()
-                                .insert(task_id.clone(), session_id);
+                                .insert(task_id.clone(), sid.clone());
                             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save persistent state after SpawnForTask task_id update: {}",
@@ -1789,18 +1809,76 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         );
                         Box::pin(execute_effects(vec![separator_effect], state)).await;
 
-                        // Clear in-flight marker on success
-                        state.clear_task_spawn_in_flight(&task_id);
+                        // Bind worktree, broadcast status, post ops message, record main cooldown
+                        let mut success_effects = vec![
+                            Effect::BindCoworkerToWorktree {
+                                worktree_id,
+                                coworker: name.clone(),
+                            },
+                            Effect::BroadcastCoworkerUpdate {
+                                name: name.clone(),
+                                status: "running".to_string(),
+                                current_task: None,
+                            },
+                            Effect::post_to_ops(success_message),
+                            Effect::RecordCooldown {
+                                category: cooldown_category,
+                                key: "global".to_string(),
+                            },
+                        ];
+                        // Extra per-spawn cooldowns (e.g. session_recovered)
+                        for (category, key) in extra_success_cooldowns {
+                            success_effects.push(Effect::RecordCooldown { category, key });
+                        }
+                        Box::pin(execute_effects(success_effects, state)).await;
 
-                        // Execute on_success callbacks
-                        Box::pin(execute_effects(on_success, state)).await;
+                        // Reviewer-specific extras (need real name + session_id)
+                        if let Some(info) = reviewer {
+                            let sid = session_id.unwrap_or_default();
+                            Box::pin(execute_effects(
+                                vec![
+                                    Effect::CreateTaskSessionSpan {
+                                        task_id: task_id.clone(),
+                                        agent_name: name.clone(),
+                                        agent_type: info.agent_type,
+                                        session_id: sid,
+                                        pr_number: Some(info.pr_number),
+                                        restart_count: info.restart_count,
+                                    },
+                                    Effect::PostPrComment {
+                                        pr_number: info.pr_number,
+                                        reviewer_name: name.clone(),
+                                        body: info.pr_comment_body,
+                                    },
+                                ],
+                                state,
+                            ))
+                            .await;
+                        }
+
+                        // Clear in-flight marker after all success bookkeeping
+                        state.clear_task_spawn_in_flight(&task_id);
                     }
                     Err(e) => {
                         warn!("SpawnForTask: failed to spawn for task !{}: {}", task_id, e);
                         // Clear in-flight marker on failure
                         state.clear_task_spawn_in_flight(&task_id);
-                        // Execute on_failure callbacks
-                        Box::pin(execute_effects(on_failure, state)).await;
+                        // Inline failure bookkeeping with real coworker name
+                        Box::pin(execute_effects(
+                            vec![
+                                Effect::RecordCooldown {
+                                    category: "spawn_failure".to_string(),
+                                    key: name.to_string(),
+                                },
+                                Effect::ResetTaskToPending {
+                                    task_id: task_id.clone(),
+                                    dir_key: dir_key.clone(),
+                                },
+                                Effect::post_to_ops(failure_message),
+                            ],
+                            state,
+                        ))
+                        .await;
                     }
                 }
             }

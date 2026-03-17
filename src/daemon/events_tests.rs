@@ -124,9 +124,13 @@ fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
         task_id: task_id.to_string(),
         dir_key: "test".to_string(),
         preferred_name: Some(name.to_string()),
-        config,
-        on_success: vec![],
-        on_failure: vec![],
+        config: Box::new(config),
+        worktree_id: format!("task-{}-slug", task_id),
+        success_message: format!("spawned for task !{}", task_id),
+        failure_message: format!("spawn failed for task !{}", task_id),
+        cooldown_category: "task_dispatch".to_string(),
+        extra_success_cooldowns: vec![],
+        reviewer: None,
     }
 }
 
@@ -164,88 +168,35 @@ fn dedup_across_spawn_variants() {
 #[test]
 fn dedup_preserves_registry_effects_from_dropped_spawns() {
     // Issue #8 from PR #752 review: When two tasks are assigned to the same
-    // coworker in one tick, the second SpawnForTask is dropped entirely,
-    // losing its RegisterWorktreeAssignment effect.
+    // coworker in one tick, the second SpawnForTask is dropped entirely.
+    // RegisterWorktreeAssignment is now a top-level effect emitted BEFORE
+    // SpawnForTask (by build_spawn_effects / prepare_task_worktree), so it is
+    // never lost — it lives outside the spawn and is not subject to dedup.
     use crate::worktree_registry::WorktreeAssignment;
 
-    // First spawn with task-123 worktree assignment
-    let spawn1 = Effect::SpawnForTask {
-        task_id: "123".to_string(),
-        dir_key: "test".to_string(),
-        preferred_name: Some("lexington".to_string()),
-        config: LaunchConfig {
-            name: String::new(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Coworker,
-            initial_prompt: None,
-            additional_dirs: vec![],
+    let make_register = |worktree_id: &str, task_id_str: &str| Effect::RegisterWorktreeAssignment {
+        assignment: WorktreeAssignment {
+            worktree_id: worktree_id.to_string(),
+            branch_name: worktree_id.to_string(),
+            task_id: Some(task_id_str.to_string()),
+            current_coworker: None,
             pr_number: None,
-            working_dir: None,
-            model: "sonnet".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
+            created_at: chrono::Utc::now(),
+            completed_at: None,
         },
-        on_success: vec![Effect::RegisterWorktreeAssignment {
-            assignment: WorktreeAssignment {
-                worktree_id: "task-123-foo".to_string(),
-                branch_name: "task-123-foo".to_string(),
-                task_id: Some("123".to_string()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        }],
-        on_failure: vec![],
     };
 
-    // Second spawn with task-456 worktree assignment (different task, same coworker)
-    let spawn2 = Effect::SpawnForTask {
-        task_id: "456".to_string(),
-        dir_key: "test".to_string(),
-        preferred_name: Some("lexington".to_string()),
-        config: LaunchConfig {
-            name: String::new(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Coworker,
-            initial_prompt: None,
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model: "sonnet".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        },
-        on_success: vec![Effect::RegisterWorktreeAssignment {
-            assignment: WorktreeAssignment {
-                worktree_id: "task-456-bar".to_string(),
-                branch_name: "task-456-bar".to_string(),
-                task_id: Some("456".to_string()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        }],
-        on_failure: vec![],
-    };
+    // In the new design: RegisterWorktreeAssignment comes before SpawnForTask.
+    let effects = vec![
+        make_register("task-123-foo", "123"),
+        make_spawn_for_task("lexington", "123"),
+        make_register("task-456-bar", "456"),
+        make_spawn_for_task("lexington", "456"), // duplicate coworker — spawn dropped
+    ];
 
-    let effects = vec![spawn1, spawn2];
     let deduped = dedup_spawn_effects(effects);
 
-    // The spawn should be deduplicated (only one spawn for lexington)
+    // The second spawn is deduplicated
     let spawn_count = deduped
         .iter()
         .filter(|e| {
@@ -259,7 +210,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         .count();
     assert_eq!(spawn_count, 1, "Should have only one spawn for lexington");
 
-    // BUT: Both RegisterWorktreeAssignment effects should be preserved
+    // Both RegisterWorktreeAssignment effects are preserved (they're top-level, not in spawn)
     let registry_assignments: Vec<&str> = deduped
         .iter()
         .filter_map(|e| {
@@ -274,7 +225,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
     assert_eq!(
         registry_assignments.len(),
         2,
-        "Both registry assignments should be preserved"
+        "Both registry assignments should be preserved (they are top-level effects)"
     );
     assert!(
         registry_assignments.contains(&"task-123-foo"),
@@ -291,81 +242,15 @@ fn dedup_prevents_double_spawn_for_same_task() {
     // Bug: Orphan recovery spawns "amsterdam" for task 123, then task dispatch
     // spawns "york" for the same task in the same tick. Dedup only checks coworker
     // name, so both spawns go through. Task ID dedup is the backstop.
-    use crate::worktree_registry::WorktreeAssignment;
+    //
+    // In the new design, RegisterWorktreeAssignment is a top-level effect before
+    // SpawnForTask — it is always preserved and never needs extracting from spawns.
 
-    // Orphan recovery spawns amsterdam for task 123 via SpawnForTask
-    let orphan_spawn = Effect::SpawnForTask {
-        task_id: "123".to_string(),
-        dir_key: "test".to_string(),
-        preferred_name: Some("amsterdam".to_string()),
-        config: LaunchConfig {
-            name: String::new(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Coworker,
-            initial_prompt: None,
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model: "sonnet".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        },
-        on_success: vec![Effect::RegisterWorktreeAssignment {
-            assignment: WorktreeAssignment {
-                worktree_id: "task-123-foo".to_string(),
-                branch_name: "task-123-foo".to_string(),
-                task_id: Some("123".to_string()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        }],
-        on_failure: vec![],
-    };
+    // Orphan recovery: RegisterWorktreeAssignment + SpawnForTask
+    let orphan_spawn = make_spawn_for_task("amsterdam", "123");
 
-    // Task dispatch spawns york for task 123 (same task, different coworker)
-    let dispatch_spawn = Effect::SpawnForTask {
-        task_id: "123".to_string(),
-        dir_key: "test".to_string(),
-        preferred_name: Some("york".to_string()),
-        config: LaunchConfig {
-            name: String::new(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Coworker,
-            initial_prompt: None,
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model: "sonnet".to_string(),
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider: crate::auth::AuthProvider::Claude,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        },
-        on_success: vec![Effect::RegisterWorktreeAssignment {
-            assignment: WorktreeAssignment {
-                worktree_id: "task-123-bar".to_string(),
-                branch_name: "task-123-bar".to_string(),
-                task_id: Some("123".to_string()),
-                current_coworker: None,
-                pr_number: None,
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-            },
-        }],
-        on_failure: vec![],
-    };
+    // Task dispatch: same task ID, different coworker
+    let dispatch_spawn = make_spawn_for_task("york", "123");
 
     let effects = vec![orphan_spawn, dispatch_spawn];
     let deduped = dedup_spawn_effects(effects);
@@ -386,16 +271,6 @@ fn dedup_prevents_double_spawn_for_same_task() {
         spawn_count, 1,
         "Should have only one spawn for task 123 (got {} spawns)",
         spawn_count
-    );
-
-    // Both worktree assignments should be preserved
-    let registry_count = deduped
-        .iter()
-        .filter(|e| matches!(e, Effect::RegisterWorktreeAssignment { .. }))
-        .count();
-    assert_eq!(
-        registry_count, 2,
-        "Both worktree registrations should be preserved"
     );
 
     // Verify the kept spawn is for amsterdam (first one wins)
