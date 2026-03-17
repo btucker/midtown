@@ -286,6 +286,9 @@ fn draw_chat_messages(f: &mut Frame, app: &mut App, area: Rect) {
         let mut counts: HashMap<String, (usize, Option<String>)> = HashMap::new();
         for msg in app.messages.iter() {
             if let Some(ref parent_id) = msg.thread_parent_id {
+                if msg.is_tool_only() {
+                    continue;
+                }
                 let entry = counts.entry(parent_id.clone()).or_insert((0, None));
                 entry.0 += 1;
                 entry.1 = Some(msg.from.clone());

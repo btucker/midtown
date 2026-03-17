@@ -265,6 +265,13 @@ impl Message {
         msg
     }
 
+    /// Returns `true` when the message has no meaningful text content and
+    /// only carries tool call data. Matches the JS `isToolOnly()` helper in
+    /// `web-app/src/lib/toolRunGrouping.ts`.
+    pub fn is_tool_only(&self) -> bool {
+        self.content.trim().is_empty() && self.tool_data.as_ref().is_some_and(|td| !td.is_empty())
+    }
+
     /// Returns the thread anchor ID for replies (parent ID when present).
     ///
     /// Thread replies must carry their parent's ID when nudging coworkers so

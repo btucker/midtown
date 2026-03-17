@@ -1781,3 +1781,91 @@ fn test_from_json_rejects_invalid_lead_driven_type() {
     let err = SetWorkflowRequest::from_json(&body).unwrap_err();
     assert_eq!(err, "lead_driven must be a boolean");
 }
+
+#[test]
+fn test_reply_count_excludes_tool_only_messages() {
+    use crate::message::{Message, MessageType, ToolBlock};
+
+    let parent_id = "parent-1";
+
+    // Parent message (top-level)
+    let parent = Message::for_channel("web", "alice", "Hello", MessageType::Text);
+    let mut parent = parent;
+    parent.id = parent_id.to_string();
+
+    // Normal text reply — should be counted
+    let mut text_reply =
+        Message::thread_reply("web", "bob", "Got it!", parent_id, MessageType::Text);
+    text_reply.id = "reply-1".to_string();
+
+    // Tool-only reply (empty content + non-empty tool_data) — should NOT be counted
+    let mut tool_only_reply = Message::thread_reply("web", "bob", "", parent_id, MessageType::Text);
+    tool_only_reply.id = "reply-2".to_string();
+    tool_only_reply.tool_data = Some(vec![ToolBlock {
+        tool_name: "Bash".to_string(),
+        input: serde_json::json!({"command": "ls"}),
+        output: None,
+        error: false,
+        call_id: None,
+        parent_tool_use_id: None,
+    }]);
+
+    // Whitespace-only content + tool_data — should also NOT be counted
+    let mut ws_tool_reply =
+        Message::thread_reply("web", "charlie", "  \n  ", parent_id, MessageType::Text);
+    ws_tool_reply.id = "reply-3".to_string();
+    ws_tool_reply.tool_data = Some(vec![ToolBlock {
+        tool_name: "Read".to_string(),
+        input: serde_json::json!({"file_path": "/tmp/x"}),
+        output: None,
+        error: false,
+        call_id: None,
+        parent_tool_use_id: None,
+    }]);
+
+    // Mixed reply (has both content AND tool_data) — should be counted
+    let mut mixed_reply = Message::thread_reply(
+        "web",
+        "charlie",
+        "Here are the results",
+        parent_id,
+        MessageType::Text,
+    );
+    mixed_reply.id = "reply-4".to_string();
+    mixed_reply.tool_data = Some(vec![ToolBlock {
+        tool_name: "Bash".to_string(),
+        input: serde_json::json!({"command": "cargo test"}),
+        output: None,
+        error: false,
+        call_id: None,
+        parent_tool_use_id: None,
+    }]);
+
+    let messages = vec![
+        parent,
+        text_reply,
+        tool_only_reply,
+        ws_tool_reply,
+        mixed_reply,
+    ];
+    let meta = compute_reply_meta(&messages);
+
+    let (count, last_reply, participants) = meta.get(parent_id).expect("should have reply meta");
+
+    // Only text_reply and mixed_reply should be counted (2), not tool_only or ws_tool
+    assert_eq!(
+        *count, 2,
+        "tool-only messages should be excluded from reply count"
+    );
+    assert_eq!(
+        last_reply.from, "charlie",
+        "last reply should be the mixed reply"
+    );
+    assert_eq!(
+        participants.len(),
+        2,
+        "both bob and charlie participated with visible replies"
+    );
+    assert!(participants.contains(&"bob".to_string()));
+    assert!(participants.contains(&"charlie".to_string()));
+}
