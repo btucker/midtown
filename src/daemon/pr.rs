@@ -714,7 +714,7 @@ async fn decide_and_build_pr_issue_effects(
     pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
     // Decide action using handoff-aware decision function (matches webhook path)
-    let at_task_limit = state.is_at_task_limit();
+    let at_task_limit = snap.is_at_task_limit;
     let action = decide_pr_action(
         owner,
         active_coworkers,
@@ -1185,6 +1185,7 @@ pub(super) async fn poll_prs_for_issues(
             &reviewed_prs,
             &snap.worktree_branch_owners,
             review_mode,
+            snap.is_at_task_limit,
         )
         .await,
     );
@@ -1576,6 +1577,7 @@ async fn collect_stuck_condition_effects(
     reviewed_prs: &HashSet<u64>,
     branch_owners: &HashMap<String, String>,
     review_mode: crate::config::ReviewMode,
+    at_task_limit: bool,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1604,7 +1606,11 @@ async fn collect_stuck_condition_effects(
             })
             .collect();
         let channel_lead_names = ps.channel_lead_names();
-        let has_available_slots = !state.is_at_task_limit();
+        let has_available_slots = !at_task_limit
+            && state
+                .coworkers
+                .next_available_name_excluding(&channel_lead_names)
+                .is_some();
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
@@ -2375,7 +2381,7 @@ async fn collect_comment_notification_effects(
             &owner,
             active_coworkers,
             idle_coworkers,
-            state.is_at_task_limit(),
+            snap.is_at_task_limit,
             &nudge_msg,
             crate::rules::PrActionContext::PrComment {
                 actor: "reviewer".to_string(), // Generic actor since we don't know the specific commenter from polling
@@ -2428,6 +2434,7 @@ async fn collect_reviewer_effects(
         prs,
         true, // is_polling_fallback
         pre_fetched_review_content,
+        snap.is_at_task_limit,
     )
     .await
 }
@@ -2626,6 +2633,7 @@ async fn collect_review_complete_effects(
     Some(effects)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn collect_reviewer_effects_with_source(
     branch_owners: &std::collections::HashMap<String, String>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
@@ -2634,6 +2642,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     prs: &[serde_json::Value],
     is_polling_fallback: bool,
     pre_fetched_review_content: &HashMap<u64, String>,
+    at_task_limit: bool,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let review_mode = crate::config::get_review_mode_for_repo(state.paths.dir_key());
@@ -2683,7 +2692,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             .collect();
         let sessions = ps.sessions.clone();
         let pr_ctx = PrContext::routing_only(&ps);
-        let is_at_task_limit = state.is_at_task_limit();
+        let is_at_task_limit = at_task_limit;
         let task_channel = ps.task_channel.clone();
         let channel_workflow_channels: std::collections::HashSet<String> =
             ps.channel_workflows.keys().cloned().collect();

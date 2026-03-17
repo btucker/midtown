@@ -670,7 +670,7 @@ where
 ///    their review work) or the session was recently recovered (per-session
 ///    cooldown prevents re-recovery spam when sessions die quickly)
 /// 3. Task has no session record -> apply recovery filtering (PR merge checks,
-///    dev limit, grace period) and fresh spawn if eligible
+///    task limit, grace period) and fresh spawn if eligible
 ///
 /// Replaces the former `check_and_recover_orphans` which handled case 3 separately.
 /// Rate-limited to one spawn per tick across all paths.
@@ -962,7 +962,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         return effects;
     }
 
-    // At dev limit — cannot spawn any more coworkers.
+    // At task limit — deferring dispatch.
     if snap.is_at_task_limit {
         debug!("At task limit — skipping no-session fallback dispatch");
         return effects;
@@ -1736,7 +1736,7 @@ fn dispatch_unowned_pending_tasks(
     let mut task_coworker_map: HashMap<String, String> = HashMap::new();
     // Track coworker names assigned within this phase to prevent duplicate assignments.
     let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
-    // Track NEW spawns queued (for dev limit enforcement). Nudges to already-running
+    // Track NEW spawns queued (for task limit enforcement). Nudges to already-running
     // coworkers (grouped tasks) don't count — only fresh spawns.
     let mut spawns_queued_this_tick: usize = 0;
     let in_progress_count = snap.in_progress_tasks.len();

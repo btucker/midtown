@@ -28,7 +28,6 @@ fn tier(
     3
 }
 
-#[allow(dead_code)]
 pub(crate) fn prioritize_pending_tasks(
     pending_tasks: &[Task],
     in_progress_task_ids: &HashSet<String>,
