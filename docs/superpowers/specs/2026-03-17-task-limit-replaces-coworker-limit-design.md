@@ -26,7 +26,7 @@ The current `max_coworkers` infrastructure limits concurrent Claude Code process
 - `max_coworkers: usize` → `max_in_progress_tasks: usize`.
 - Remove `is_at_coworker_limit()`, `is_at_dev_limit()`, `has_available_coworker_slot()`.
 - Add single `is_at_task_limit(&self) -> bool` that counts in-progress tasks against `max_in_progress_tasks`.
-- `is_at_task_limit()` reads from the snapshot's `in_progress_tasks` vec (already computed during `collect_world_snapshot()`), not from disk — preserving the no-I/O-in-decision-functions convention.
+- `DaemonState::is_at_task_limit()` reads from disk (the shared task storage already loaded in memory) for RPC handlers that operate outside the snapshot pipeline (e.g., `rpc_coworker.rs`). It is **not** called from pure decision functions — those use `snap.is_at_task_limit` instead, which is pre-computed during `collect_world_snapshot()` to preserve the no-I/O-in-decision-functions convention.
 - Orphaned tasks (in-progress but no running coworker) DO count toward the limit. This is intentional: orphan recovery will either reassign or clear them, and counting them prevents overcommitting while recovery is in progress.
 
 ### WorldSnapshot changes
