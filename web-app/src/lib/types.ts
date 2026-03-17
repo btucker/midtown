@@ -208,7 +208,7 @@ export interface SearchResponse {
 
 export interface DaemonStatus {
 	coworkers?: Coworker[];
-	max_coworkers?: number;
+	max_in_progress_tasks?: number;
 	user_display_name?: string;
 	tasks?: Task[];
 	pull_requests?: PullRequest[];
