@@ -1336,15 +1336,19 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             task_id: "874".to_string(),
             dir_key: "test-repo".to_string(),
             preferred_name: Some("park".to_string()),
-            config: crate::launch::LaunchConfig::coworker(
+            config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Fresh,
                 None,
                 Some("874".to_string()),
-            ),
-            on_success: vec![],
-            on_failure: vec![],
+            )),
+            worktree_id: "task-874-slug".to_string(),
+            success_message: "spawned for task !874".to_string(),
+            failure_message: "spawn failed for task !874".to_string(),
+            cooldown_category: "task_dispatch".to_string(),
+            extra_success_cooldowns: vec![],
+            reviewer: None,
         },
         effects::Effect::SpawnCoworkerWithCallbacks {
             config: crate::launch::LaunchConfig::coworker(
@@ -1364,15 +1368,19 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             task_id: "876".to_string(),
             dir_key: "test-repo".to_string(),
             preferred_name: Some("amsterdam".to_string()),
-            config: crate::launch::LaunchConfig::coworker(
+            config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Fresh,
                 Some("resume task".to_string()),
                 Some("876".to_string()),
-            ),
-            on_success: vec![],
-            on_failure: vec![],
+            )),
+            worktree_id: "task-876-slug".to_string(),
+            success_message: "spawned for task !876".to_string(),
+            failure_message: "spawn failed for task !876".to_string(),
+            cooldown_category: "task_dispatch".to_string(),
+            extra_success_cooldowns: vec![],
+            reviewer: None,
         },
     ];
 

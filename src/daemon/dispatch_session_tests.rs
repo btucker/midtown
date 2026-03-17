@@ -696,18 +696,19 @@ fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
         effects
     );
 
-    // SpawnForTask delegates failure handling to the executor via standard
-    // spawn_failure_effects (ResetTaskToPending + cooldown). The old
-    // ClearSessionForTask-on-failure behavior was removed during the
-    // SpawnDecision migration — session cleanup is handled elsewhere.
-    if let Some(Effect::SpawnForTask { on_failure, .. }) = spawn_effect {
-        let has_reset = on_failure
-            .iter()
-            .any(|e| matches!(e, Effect::ResetTaskToPending { task_id, .. } if task_id == "42"));
+    // SpawnForTask executor always inlines ResetTaskToPending + RecordCooldown on failure.
+    // Verify the SpawnForTask has the correct task_id and dir_key for the executor to use.
+    if let Some(Effect::SpawnForTask {
+        task_id, dir_key, ..
+    }) = spawn_effect
+    {
+        assert_eq!(
+            task_id, "42",
+            "task_id must be set for executor ResetTaskToPending"
+        );
         assert!(
-            has_reset,
-            "on_failure should contain ResetTaskToPending for task 42, got: {:?}",
-            on_failure
+            !dir_key.is_empty(),
+            "dir_key must be set for executor ResetTaskToPending"
         );
     }
 }
@@ -938,16 +939,20 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
         "Expected SpawnForTask for stopped session"
     );
 
-    if let Some(Effect::SpawnForTask { on_success, .. }) = spawn_effect {
-        let has_session_recovered_cooldown = on_success.iter().any(|e| {
-            matches!(e, Effect::RecordCooldown { category, key }
-                if category == "session_recovered" && key == "7659329f-dead-4ead-b00b-cafecafecafe")
-        });
+    if let Some(Effect::SpawnForTask {
+        extra_success_cooldowns,
+        ..
+    }) = spawn_effect
+    {
+        let has_session_recovered_cooldown =
+            extra_success_cooldowns.iter().any(|(category, key)| {
+                category == "session_recovered" && key == "7659329f-dead-4ead-b00b-cafecafecafe"
+            });
         assert!(
             has_session_recovered_cooldown,
-            "on_success must contain RecordCooldown(session_recovered, session_id) \
+            "extra_success_cooldowns must contain (session_recovered, session_id) \
              to prevent re-recovery spam on the next tick. Got: {:?}",
-            on_success
+            extra_success_cooldowns
         );
     }
 }
