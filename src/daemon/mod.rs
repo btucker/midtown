@@ -1219,16 +1219,20 @@ impl DaemonState {
         }
 
         // Slow path: check via API calls (no lock held)
-        let (cached, assigned_reviewer) = {
+        let (cached, assigned_reviewer, assigned_session_id) = {
             let ps = self.persistent_state.lock().await;
             let cached = ps.github.has_cached_review(pr_number);
-            let reviewer = ps
-                .active_reviewer_for_pr(pr_number)
-                .map(|s| s.agent_name.clone());
-            (cached, reviewer)
+            let span = ps.active_reviewer_for_pr(pr_number);
+            let reviewer = span.map(|s| s.agent_name.clone());
+            let session_id = span.map(|s| s.session_id.clone());
+            (cached, reviewer, session_id)
         };
-        let has_review =
-            cached || pr::pr_has_completed_review_uncached(pr_number, assigned_reviewer.as_deref());
+        let has_review = cached
+            || pr::pr_has_completed_review_uncached(
+                pr_number,
+                assigned_reviewer.as_deref(),
+                assigned_session_id.as_deref(),
+            );
 
         if has_review {
             // Bug #2 fix: do all blocking I/O (subprocess calls) BEFORE
@@ -3725,15 +3729,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // from prematurely marking a PR as "reviewed and CI green" while
                 // the assigned reviewer is still working. (Bug fix for !1924)
                 if let Some(pr_number) = webhook_event.reviewed_pr {
-                    let assigned_reviewer = {
+                    let (assigned_reviewer, assigned_session_id) = {
                         let ps = state.persistent_state.lock().await;
-                        ps.active_reviewer_for_pr(pr_number)
-                            .map(|s| s.agent_name.clone())
+                        let span = ps.active_reviewer_for_pr(pr_number);
+                        let reviewer = span.map(|s| s.agent_name.clone());
+                        let session_id = span.map(|s| s.session_id.clone());
+                        (reviewer, session_id)
                     };
 
                     let author_matches = match (&webhook_event.review_author, &assigned_reviewer) {
                         (Some(author), Some(reviewer)) => {
+                            // Match by name (legacy) or by session ID (new format)
                             author.eq_ignore_ascii_case(reviewer)
+                                || assigned_session_id.as_ref().is_some_and(|sid| sid == author)
                         }
                         (None, Some(_)) => {
                             // Review detected but author unknown — accept if it's

@@ -651,25 +651,54 @@ const COWORKER_NAMES: &[&str] = &[
     "riverside",
 ];
 
-/// Extract coworker name from frontmatter in body (e.g., "<!-- midtown: lexington -->")
-fn coworker_from_frontmatter(body: &str) -> Option<&'static str> {
-    // Look for <!-- midtown: name --> pattern
+/// Extract coworker name from legacy frontmatter (e.g., "<!-- midtown: lexington -->")
+/// or session ID from structured frontmatter (e.g., "<!-- midtown session:abc123 -->").
+///
+/// Returns `CoworkerOrSession::Name` for legacy format (validated against COWORKER_NAMES),
+/// or `CoworkerOrSession::SessionId` for structured format.
+fn coworker_from_frontmatter(body: &str) -> Option<CoworkerOrSession> {
+    // Try new structured frontmatter first
+    if let Some(fm) = crate::daemon::helpers::parse_frontmatter(body)
+        && let Some(session_id) = fm.session_id
+    {
+        return Some(CoworkerOrSession::SessionId(session_id));
+    }
+
+    // Legacy: <!-- midtown: name -->
     let start = body.find("<!-- midtown:")?;
     let after_start = &body[start + 13..];
     let end = after_start.find("-->")?;
-    let name = after_start[..end].trim();
+    let content = after_start[..end].trim();
+    // Skip structured frontmatter tokens
+    if content
+        .split_whitespace()
+        .any(|t| t.starts_with("session:") || t.starts_with("task:") || t.starts_with("type:"))
+    {
+        return None;
+    }
 
     COWORKER_NAMES
         .iter()
-        .find(|&&n| n.eq_ignore_ascii_case(name))
+        .find(|&&n| n.eq_ignore_ascii_case(content))
         .copied()
+        .map(CoworkerOrSession::Name)
+}
+
+/// Result of parsing frontmatter identity — either a known coworker name or a session ID.
+#[derive(Debug)]
+enum CoworkerOrSession {
+    Name(&'static str),
+    SessionId(String),
 }
 
 /// Determine the coworker associated with a PR-related event.
-/// Uses frontmatter (`<!-- midtown: name -->`) in the PR body for attribution.
-/// Returns None if no coworker can be determined.
-fn determine_pr_coworker(body: Option<&str>) -> Option<&'static str> {
-    body.and_then(coworker_from_frontmatter)
+/// Uses frontmatter in the PR body for attribution.
+/// Returns the coworker name (legacy) or session ID (new format).
+fn determine_pr_coworker(body: Option<&str>) -> Option<String> {
+    body.and_then(coworker_from_frontmatter).map(|c| match c {
+        CoworkerOrSession::Name(name) => name.to_string(),
+        CoworkerOrSession::SessionId(sid) => sid,
+    })
 }
 
 /// Format @mention prefix for a coworker, or empty string if none.
@@ -684,17 +713,21 @@ fn mention_prefix(coworker: Option<&str>) -> String {
 ///
 /// Priority: comment frontmatter > PR coworker (from frontmatter) > GitHub username.
 /// The `pr_coworker` fallback handles the common case where a coworker posts a comment
-/// without the `<!-- midtown: name -->` signature — we infer their identity from the PR
-/// owner. This only applies when the commenter is the repo owner (the shared GitHub
-/// account used by all coworkers), since external users should keep their username.
+/// without frontmatter — we infer their identity from the PR owner. This only applies
+/// when the commenter is the repo owner (the shared GitHub account used by all coworkers).
+///
+/// Returns a coworker name, session ID, or GitHub username.
 fn commenter_identity(
     comment_body: &str,
     github_username: &str,
     pr_coworker: Option<&str>,
     repo_owner: Option<&str>,
 ) -> String {
-    if let Some(coworker) = coworker_from_frontmatter(comment_body) {
-        return coworker.to_string();
+    if let Some(identity) = coworker_from_frontmatter(comment_body) {
+        return match identity {
+            CoworkerOrSession::Name(name) => name.to_string(),
+            CoworkerOrSession::SessionId(sid) => sid,
+        };
     }
     // Only fall back to PR coworker when the GitHub username matches the repo owner
     // (the shared account). External users (bots, other humans) keep their username.
@@ -715,10 +748,10 @@ fn repo_owner(full_name: &str) -> Option<&str> {
 
 /// Strip the midtown frontmatter line from a comment body.
 ///
-/// Returns the body with the `<!-- midtown: name -->` line removed.
+/// Removes both new (`<!-- midtown session:... -->`) and legacy (`<!-- midtown: name -->`) formats.
 fn strip_frontmatter(body: &str) -> String {
     body.lines()
-        .filter(|line| !line.trim().starts_with("<!-- midtown:"))
+        .filter(|line| !line.trim().starts_with("<!-- midtown"))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -736,7 +769,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
     let coworker = determine_pr_coworker(pr_body);
-    let mention = mention_prefix(coworker);
+    let mention = mention_prefix(coworker.as_deref());
 
     let action_text = match event.action.as_str() {
         "opened" => format!("opened PR #{}: {}", event.number, event.pull_request.title),
@@ -790,7 +823,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
         "opened" | "ready_for_review" => branch.map(|b| PrOpenedInfo {
             pr_number: event.number,
             branch: b.to_string(),
-            author_coworker: coworker.map(String::from),
+            author_coworker: coworker.clone(),
             title: event.pull_request.title.clone(),
         }),
         _ => None,
@@ -832,7 +865,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
     let coworker = determine_pr_coworker(pr_body);
-    let mention = mention_prefix(coworker);
+    let mention = mention_prefix(coworker.as_deref());
 
     let action_text = match event.review.state.to_lowercase().as_str() {
         "approved" => format!(
@@ -898,7 +931,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
 
     // Three-stage filter for issue comments:
     // 1. Only process 'created' and 'edited' actions.
-    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    // 2. Placeholder comments (type:review-placeholder frontmatter) are ignored
     //    entirely — no pr_activity, no nudge to PR owner.
     // 3. For 'edited' events, only process non-review → review transitions
     //    (placeholder edited with final review). Edits to an already-posted
@@ -993,7 +1026,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
 
     // Three-stage filter (mirrors handle_issue_comment):
     // 1. Only process 'created' and 'edited' actions.
-    // 2. Placeholder comments (<!-- midtown-placeholder -->) are ignored
+    // 2. Placeholder comments (type:review-placeholder frontmatter) are ignored
     //    (defense-in-depth — unlikely for inline diff comments).
     // 3. For 'edited', only process non-review → review transitions.
     let is_edited = event.action == "edited";
@@ -1025,7 +1058,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     let branch = event.pull_request.head.as_ref().map(|h| h.branch.as_str());
     let pr_body = event.pull_request.body.as_deref();
     let coworker = determine_pr_coworker(pr_body);
-    let mention = mention_prefix(coworker);
+    let mention = mention_prefix(coworker.as_deref());
 
     // Determine commenter: use coworker name from comment signature if present,
     // fall back to PR coworker (from frontmatter) when signature is missing
@@ -1033,7 +1066,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
     let commenter = commenter_identity(
         &event.comment.body,
         &event.comment.user.login,
-        coworker,
+        coworker.as_deref(),
         repo_owner(&event.repository.full_name),
     );
 
@@ -1091,7 +1124,7 @@ fn handle_status(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Error>
     // CI status events don't carry a PR body, so coworker attribution
     // is handled by session-based resolution in the daemon, not here.
     let coworker = determine_pr_coworker(None);
-    let mention = mention_prefix(coworker);
+    let mention = mention_prefix(coworker.as_deref());
 
     let action_text = match event.state.as_str() {
         "success" => format!(
@@ -1133,7 +1166,7 @@ fn handle_check_run(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::Err
     // CI check events don't carry a PR body, so coworker attribution
     // is handled by session-based resolution in the daemon, not here.
     let coworker = determine_pr_coworker(None);
-    let mention = mention_prefix(coworker);
+    let mention = mention_prefix(coworker.as_deref());
 
     let pr_info = event
         .check_run
@@ -1271,19 +1304,18 @@ fn compute_check_duration(
 
 /// Check if a comment body contains a Claude code review signature.
 ///
-/// This uses the same signatures as `text_contains_review_signature` in
-/// `daemon/helpers.rs` to detect review comments from webhook payloads.
+/// Detection priority:
+/// 1. Structured frontmatter `type:review` (new format)
+/// 2. Legacy text signatures ("Reviewed by", "Code Review" header)
 fn is_review_comment(body: &str) -> bool {
     crate::daemon::helpers::text_contains_review_signature(body)
 }
 
 /// Check if a comment is a reviewer placeholder ("review in progress").
 ///
-/// Placeholder comments contain `<!-- midtown-placeholder -->` and should be
-/// ignored entirely — no `pr_activity` is generated, preventing false nudges
-/// to the PR owner while the review is still in progress.
+/// Matches `type:review-placeholder` in structured frontmatter.
 fn is_placeholder_comment(body: &str) -> bool {
-    body.contains("<!-- midtown-placeholder -->")
+    crate::daemon::helpers::parse_frontmatter(body).is_some_and(|fm| fm.is_placeholder())
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely

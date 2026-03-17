@@ -1443,13 +1443,13 @@ fn extract_author_frontmatter_takes_priority() {
 #[test]
 fn review_author_matches_no_assigned_reviewer() {
     // No assigned reviewer — accept any review
-    assert!(review_author_matches("Reviewed by anyone", None));
+    assert!(review_author_matches("Reviewed by anyone", None, None));
 }
 
 #[test]
 fn review_author_matches_correct_reviewer() {
     let body = "<!-- midtown: pleasant -->\n## Code Review by pleasant\nLGTM";
-    assert!(review_author_matches(body, Some("pleasant")));
+    assert!(review_author_matches(body, Some("pleasant"), None));
 }
 
 #[test]
@@ -1457,7 +1457,7 @@ fn review_author_matches_wrong_reviewer() {
     // Bot or different coworker posted the review
     let body = "<!-- midtown: codecov -->\nReviewed by codecov";
     assert!(
-        !review_author_matches(body, Some("pleasant")),
+        !review_author_matches(body, Some("pleasant"), None),
         "Should reject review from wrong author"
     );
 }
@@ -1465,7 +1465,7 @@ fn review_author_matches_wrong_reviewer() {
 #[test]
 fn review_author_matches_case_insensitive() {
     let body = "<!-- midtown: Pleasant -->\nReviewed by Pleasant";
-    assert!(review_author_matches(body, Some("pleasant")));
+    assert!(review_author_matches(body, Some("pleasant"), None));
 }
 
 #[test]
@@ -1475,7 +1475,7 @@ fn review_author_matches_rejects_unknown_author() {
     // being treated as the assigned reviewer's review
     let body = "### Code review\n\nNo issues found.";
     assert!(
-        !review_author_matches(body, Some("pleasant")),
+        !review_author_matches(body, Some("pleasant"), None),
         "Unknown author should not match assigned reviewer"
     );
 }
@@ -1487,9 +1487,165 @@ fn review_author_matches_bot_comment_rejected() {
     // (pleasant) hasn't posted yet, so this should NOT mark the PR as reviewed.
     let body = "Some bot output that doesn't have midtown frontmatter";
     assert!(
-        !review_author_matches(body, Some("pleasant")),
+        !review_author_matches(body, Some("pleasant"), None),
         "Bot comment without frontmatter should not match assigned reviewer"
     );
+}
+
+// ---------------------------------------------------------------------------
+// parse_frontmatter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_frontmatter_placeholder() {
+    let body = "<!-- midtown task:42 type:review-placeholder -->\n## Review Status";
+    let fm = parse_frontmatter(body).unwrap();
+    assert_eq!(fm.task_id.as_deref(), Some("42"));
+    assert!(fm.is_placeholder());
+    assert!(fm.session_id.is_none());
+}
+
+#[test]
+fn parse_frontmatter_review() {
+    let body = "<!-- midtown session:abc123 task:42 type:review -->\n## Code Review\nLGTM";
+    let fm = parse_frontmatter(body).unwrap();
+    assert_eq!(fm.session_id.as_deref(), Some("abc123"));
+    assert_eq!(fm.task_id.as_deref(), Some("42"));
+    assert!(fm.is_review());
+}
+
+#[test]
+fn parse_frontmatter_session_only() {
+    let body = "<!-- midtown session:xyz789 -->\nSome comment";
+    let fm = parse_frontmatter(body).unwrap();
+    assert_eq!(fm.session_id.as_deref(), Some("xyz789"));
+    assert!(fm.task_id.is_none());
+    assert!(fm.comment_type.is_none());
+}
+
+#[test]
+fn parse_frontmatter_no_tag() {
+    let body = "Just a regular comment with no midtown tag";
+    assert!(parse_frontmatter(body).is_none());
+}
+
+#[test]
+fn parse_frontmatter_legacy_not_parsed_as_structured() {
+    // Legacy `<!-- midtown: name -->` should return Some but with no fields set
+    let body = "<!-- midtown: park -->\n## Code Review by park";
+    let fm = parse_frontmatter(body).unwrap();
+    assert!(fm.session_id.is_none());
+    assert!(fm.task_id.is_none());
+    assert!(fm.comment_type.is_none());
+}
+
+#[test]
+fn format_placeholder_frontmatter_roundtrip() {
+    let tag = format_placeholder_frontmatter("42");
+    let fm = parse_frontmatter(&tag).unwrap();
+    assert_eq!(fm.task_id.as_deref(), Some("42"));
+    assert!(fm.is_placeholder());
+}
+
+#[test]
+fn format_review_frontmatter_roundtrip() {
+    let tag = format_review_frontmatter("sess-abc", "42");
+    let fm = parse_frontmatter(&tag).unwrap();
+    assert_eq!(fm.session_id.as_deref(), Some("sess-abc"));
+    assert_eq!(fm.task_id.as_deref(), Some("42"));
+    assert!(fm.is_review());
+}
+
+#[test]
+fn format_session_frontmatter_roundtrip() {
+    let tag = format_session_frontmatter("sess-xyz");
+    let fm = parse_frontmatter(&tag).unwrap();
+    assert_eq!(fm.session_id.as_deref(), Some("sess-xyz"));
+    assert!(fm.task_id.is_none());
+}
+
+#[test]
+fn extract_review_session_id_from_review() {
+    let body = "<!-- midtown session:abc123 task:42 type:review -->\n## Code Review\nLGTM";
+    assert_eq!(extract_review_session_id(body), Some("abc123".to_string()));
+}
+
+#[test]
+fn extract_review_session_id_from_non_review() {
+    // Session-only comment (no type:review) should return None
+    let body = "<!-- midtown session:abc123 -->\nSome comment";
+    assert_eq!(extract_review_session_id(body), None);
+}
+
+#[test]
+fn review_author_matches_by_session_id() {
+    let body = "<!-- midtown session:sess-42 task:100 type:review -->\n## Code Review\nLGTM";
+    // Match by session ID even though name doesn't match
+    assert!(review_author_matches(body, Some("park"), Some("sess-42")));
+}
+
+#[test]
+fn review_author_matches_session_id_mismatch() {
+    let body = "<!-- midtown session:sess-42 task:100 type:review -->\n## Code Review\nLGTM";
+    // Wrong session ID and wrong name
+    assert!(!review_author_matches(body, Some("park"), Some("sess-99")));
+}
+
+#[test]
+fn text_contains_review_signature_new_format() {
+    let body = "<!-- midtown session:abc task:42 type:review -->\n## Code Review\nLGTM";
+    assert!(text_contains_review_signature(body));
+}
+
+#[test]
+fn text_contains_review_signature_placeholder_not_review() {
+    let body = "<!-- midtown task:42 type:review-placeholder -->\n## Review Status\nIn progress...";
+    // Placeholder is NOT a review signature
+    assert!(!text_contains_review_signature(body));
+}
+
+// ---------------------------------------------------------------------------
+// json_has_completed_review with session ID tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_review_matches_by_session_id() {
+    let json = serde_json::json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "<!-- midtown session:sess-42 task:100 type:review -->\n## Code Review\nLGTM",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    // Name doesn't match but session ID does
+    assert!(super::super::pr::json_has_completed_review(
+        &json,
+        Some("park"),
+        Some("sess-42")
+    ));
+}
+
+#[test]
+fn json_review_rejects_wrong_session_id() {
+    let json = serde_json::json!({
+        "reviews": [],
+        "comments": [
+            {
+                "body": "<!-- midtown session:sess-42 task:100 type:review -->\n## Code Review\nLGTM",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    // Both name and session ID mismatch
+    assert!(!super::super::pr::json_has_completed_review(
+        &json,
+        Some("park"),
+        Some("sess-99")
+    ));
 }
 
 // ---------------------------------------------------------------------------

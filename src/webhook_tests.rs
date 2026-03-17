@@ -645,7 +645,7 @@ fn test_issue_comment_non_review_no_review_comment_id() {
 
 #[test]
 fn test_handle_issue_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder (with <!-- midtown-placeholder --> tag),
+    // Reviewer posts a placeholder (with type:review-placeholder frontmatter),
     // then edits it with the full review. The 'edited' event should be
     // processed (non-review → review transition).
     let payload = serde_json::json!({
@@ -657,11 +657,11 @@ fn test_handle_issue_comment_edited_placeholder_to_review() {
         "comment": {
             "id": 77777,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found."
+            "body": "<!-- midtown session:sess-1 task:100 type:review -->\n\n## Code Review by park\n\nLGTM - no issues found."
         },
         "changes": {
             "body": {
-                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\nReview in progress..."
             }
         },
         "repository": {"full_name": "org/repo"}
@@ -673,7 +673,8 @@ fn test_handle_issue_comment_edited_placeholder_to_review() {
     assert_eq!(event.review_comment_id, Some(77777));
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 55);
-    assert_eq!(activity.actor, "park");
+    // New structured frontmatter returns session ID, not coworker name
+    assert_eq!(activity.actor, "sess-1");
 }
 
 #[test]
@@ -1232,9 +1233,9 @@ fn test_pull_request_event_routes_to_ops_channel() {
 
 #[test]
 fn test_handle_review_comment_edited_placeholder_to_review() {
-    // Reviewer posts a placeholder inline comment (with <!-- midtown-placeholder -->
-    // tag), then edits it with a review. The 'edited' event should be processed
-    // (non-review → review transition).
+    // Reviewer posts a placeholder inline comment (with type:review-placeholder
+    // frontmatter), then edits it with a review. The 'edited' event should be
+    // processed (non-review → review transition).
     let payload = serde_json::json!({
         "action": "edited",
         "pull_request": {
@@ -1245,11 +1246,11 @@ fn test_handle_review_comment_edited_placeholder_to_review() {
         "comment": {
             "id": 300,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - no issues found."
+            "body": "<!-- midtown session:sess-1 task:100 type:review -->\n\n## Code Review by park\n\nLGTM - no issues found."
         },
         "changes": {
             "body": {
-                "from": "<!-- midtown-placeholder -->\n## Review Status\n\nReview in progress by park..."
+                "from": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\nReview in progress..."
             }
         },
         "repository": {"full_name": "org/repo"}
@@ -1267,7 +1268,8 @@ fn test_handle_review_comment_edited_placeholder_to_review() {
     );
     let activity = event.pr_activity.unwrap();
     assert_eq!(activity.pr_number, 77);
-    assert_eq!(activity.actor, "park");
+    // New structured frontmatter returns session ID, not coworker name
+    assert_eq!(activity.actor, "sess-1");
 }
 
 #[test]
@@ -1454,7 +1456,7 @@ fn test_handle_issue_comment_placeholder_suppresses_pr_activity() {
             "comment": {
                 "id": 300,
                 "user": {"login": "btucker"},
-                "body": "<!-- midtown-placeholder -->\n## Review Status\n\n🔍 Review in progress by riverside...\n\n---\n> [!NOTE]\n> This comment will be updated with the review results when complete.\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n## Review Status\n\n🔍 Review in progress...\n\n---\n> [!NOTE]\n> This comment will be updated with the review results when complete.\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -1480,7 +1482,7 @@ fn test_handle_review_comment_placeholder_suppresses_pr_activity() {
         "comment": {
             "id": 301,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown-placeholder -->\nReview in progress...",
+            "body": "<!-- midtown task:100 type:review-placeholder -->\nReview in progress...",
             "diff_hunk": "@@ -1,3 +1,3 @@"
         },
         "repository": {"full_name": "org/repo"}
