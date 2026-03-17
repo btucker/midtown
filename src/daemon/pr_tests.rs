@@ -1614,6 +1614,18 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
     snap.pr
         .github_open_pr_task_ids
         .insert("500".to_string(), 99);
+    // The task must be non-completed for the title link to suppress orphan detection
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "500".to_string(),
+        subject: "Add auth endpoint".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
 
     let effects = reconcile_orphaned_prs(&snap);
 
@@ -1679,6 +1691,57 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
     );
 }
 
+/// A completed task's `pr` field should NOT suppress orphan detection.
+/// The PR is genuinely orphaned — work is done but the PR wasn't merged.
+#[test]
+fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 88,
+        "title": "feat: Something [Midtown !700]",
+        "headRefName": "york/something",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(88);
+    snap.worktree_branch_owners
+        .insert("york/something".to_string(), "york".to_string());
+
+    // Task is completed but PR is still open — PR is orphaned
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "700".to_string(),
+        subject: "Something".to_string(),
+        status: crate::tasks::TaskStatus::Completed,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    });
+    // Title-based link also exists
+    snap.pr
+        .github_open_pr_task_ids
+        .insert("700".to_string(), 88);
+
+    let effects = reconcile_orphaned_prs(&snap);
+
+    let nudge_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
+        .count();
+    assert_eq!(
+        nudge_count, 1,
+        "Should nudge lead when task is completed but PR is still open (orphaned)"
+    );
+}
+
 /// When a previously-nudged PR is found linked via `github_open_pr_task_ids`,
 /// `ClearOrphanedPrLeadNudge` should be emitted so re-nudging is possible if
 /// the link later disappears.
@@ -1708,6 +1771,18 @@ fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
     snap.pr
         .github_open_pr_task_ids
         .insert("300".to_string(), 55);
+    // Non-completed task required for title link to be active
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "300".to_string(),
+        subject: "New feature".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
 
     let effects = reconcile_orphaned_prs(&snap);
 
