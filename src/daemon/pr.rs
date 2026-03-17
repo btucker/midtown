@@ -324,10 +324,10 @@ pub(super) fn detect_abandoned_pr_tasks(
     let mut effects = Vec::new();
 
     // Check each PR with an associated task ID
-    for (pr_number, task_id) in &snap.pr.pr_task_associations {
+    for (pr_number, task_id) in snap.pr.pr_task_index.pr_task_pairs() {
         // PR is closed if it's not in the open set and wasn't merged
-        let is_closed = !open_set.contains(pr_number);
-        let is_merged = snap.pr.merged_pr_numbers.contains(pr_number);
+        let is_closed = !open_set.contains(&pr_number);
+        let is_merged = snap.pr.merged_pr_numbers.contains(&pr_number);
 
         if is_closed && !is_merged {
             // Check if the task is still in_progress (not already completed)
@@ -340,39 +340,38 @@ pub(super) fn detect_abandoned_pr_tasks(
                 // Before resetting, check if the work was already completed by a DIFFERENT PR.
                 // This prevents resetting tasks when a duplicate PR is closed but a sibling
                 // PR for the same task was already merged.
-                let work_already_landed = {
-                    // Find the task once and reuse it
-                    let task = snap.all_tasks.iter().find(|t| t.id == *task_id);
+                let work_already_landed =
+                    {
+                        // Find the task once and reuse it
+                        let task = snap.all_tasks.iter().find(|t| t.id == task_id);
 
-                    // Check if task status is completed
-                    let task_completed = task
-                        .map(|t| matches!(t.status, crate::tasks::TaskStatus::Completed))
-                        .unwrap_or(false);
+                        // Check if task status is completed
+                        let task_completed = task
+                            .map(|t| matches!(t.status, crate::tasks::TaskStatus::Completed))
+                            .unwrap_or(false);
 
-                    // Check if any other PR associated with this task was merged
-                    let has_merged_sibling =
-                        snap.pr
-                            .pr_task_associations
-                            .iter()
-                            .any(|(other_pr, other_task_id)| {
+                        // Check if any other PR associated with this task was merged
+                        let has_merged_sibling = snap.pr.pr_task_index.pr_task_pairs().any(
+                            |(other_pr, other_task_id)| {
                                 other_task_id == task_id
                                     && other_pr != pr_number
-                                    && snap.pr.merged_pr_numbers.contains(other_pr)
-                            });
+                                    && snap.pr.merged_pr_numbers.contains(&other_pr)
+                            },
+                        );
 
-                    // Check if task.pr field points to a merged PR
-                    let task_pr_merged = task
-                        .and_then(|t| t.pr)
-                        .map(|pr| snap.pr.merged_pr_numbers.contains(&pr))
-                        .unwrap_or(false);
+                        // Check if task.pr field points to a merged PR
+                        let task_pr_merged = task
+                            .and_then(|t| t.pr)
+                            .map(|pr| snap.pr.merged_pr_numbers.contains(&pr))
+                            .unwrap_or(false);
 
-                    task_completed || has_merged_sibling || task_pr_merged
-                };
+                        task_completed || has_merged_sibling || task_pr_merged
+                    };
 
                 if !work_already_landed {
                     effects.push(Effect::ResetAbandonedTask {
-                        task_id: task_id.clone(),
-                        pr_number: *pr_number,
+                        task_id: task_id.to_string(),
+                        pr_number,
                         dir_key: dir_key.to_string(),
                     });
                 }
@@ -393,7 +392,7 @@ pub(super) fn detect_abandoned_pr_tasks(
 fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pf.number,
-        &snap.pr.pr_task_associations,
+        snap.pr.pr_task_index.pr_to_task_map(),
         &snap.session_task_map,
         &snap.sessions,
     )
@@ -4148,7 +4147,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
         // Skip if there's already an in_progress task linked to this PR.
         // If we previously nudged the lead about this PR, clear the record so
         // re-nudging is possible if the task later completes without merging.
-        if snap.pr.pr_task_associations.contains_key(&pr_number) {
+        if snap.pr.pr_task_index.pr_has_task(&pr_number) {
             if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
                 effects.push(Effect::ClearOrphanedPrLeadNudge { pr_number });
             }
@@ -4217,9 +4216,9 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for (task_id_str, &pr_number) in &snap.pr.github_open_pr_task_ids {
+    for (task_id_str, pr_number) in snap.pr.pr_task_index.github_task_pr_pairs() {
         // Find the task by ID
-        let task = snap.all_tasks.iter().find(|t| &t.id == task_id_str);
+        let task = snap.all_tasks.iter().find(|t| t.id == task_id_str);
 
         // Only emit if the link is missing or points to the wrong PR.
         // Skip completed tasks — their PR may still be open (e.g., manual close),
@@ -4232,7 +4231,7 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
 
         if needs_link {
             effects.push(Effect::SetTaskPr {
-                task_id: task_id_str.clone(),
+                task_id: task_id_str.to_string(),
                 pr_number,
                 dir_key: snap.dir_key.clone(),
             });

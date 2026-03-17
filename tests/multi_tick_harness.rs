@@ -33,7 +33,7 @@ use midtown::auth::AuthProvider;
 use midtown::coworker::{Coworker, CoworkerStatus};
 use midtown::daemon::Effect;
 use midtown::daemon::SessionRecord;
-use midtown::daemon::snapshot::{ProcessHealth, WorldSnapshot};
+use midtown::daemon::snapshot::{PrTaskIndex, ProcessHealth, WorldSnapshot};
 use midtown::tasks::{Task, TaskStatus};
 
 /// A test harness for simulating multiple daemon ticks.
@@ -78,7 +78,11 @@ impl MultiTickHarness {
     /// Create a new harness from a JSON snapshot fixture.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         let mut snapshot: WorldSnapshot = serde_json::from_str(json)?;
-        snapshot.fixup_legacy_fields();
+        // Inline fixup_legacy_fields (it's #[cfg(test)] on the lib crate,
+        // not visible to integration tests).
+        if snapshot.project_name.is_empty() && !snapshot.dir_key.is_empty() {
+            snapshot.project_name = snapshot.dir_key.clone();
+        }
         Ok(Self { snapshot })
     }
 
@@ -688,12 +692,28 @@ impl MultiTickHarness {
         self.snapshot.pending_tasks_without_owners.push(task);
 
         // Track the PR → task association so reconcile_orphaned_prs
-        // won't create a duplicate task for the same PR on the next tick
+        // won't create a duplicate task for the same PR on the next tick.
+        // Rebuild PrTaskIndex from existing data plus the new association.
         if let Some(pr_number) = pr {
-            self.snapshot.pr.pr_task_associations.insert(
-                pr_number,
+            let mut session_map: std::collections::HashMap<String, u64> = self
+                .snapshot
+                .pr
+                .pr_task_index
+                .pr_task_pairs()
+                .map(|(pr, task)| (task.to_string(), pr))
+                .collect();
+            let github_map: std::collections::HashMap<String, u64> = self
+                .snapshot
+                .pr
+                .pr_task_index
+                .github_task_pr_pairs()
+                .map(|(task, pr)| (task.to_string(), pr))
+                .collect();
+            session_map.insert(
                 format!("harness-{}", self.snapshot.all_tasks.len()),
+                pr_number,
             );
+            self.snapshot.pr.pr_task_index = PrTaskIndex::from_task_maps(session_map, github_map);
         }
     }
 }

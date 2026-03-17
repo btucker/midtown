@@ -60,9 +60,9 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         // Emit a workflow event so channel scripts can react to the dead reviewer.
         let reviewer_task_id = snap
             .pr
-            .pr_task_associations
-            .get(&restart.pr_number)
-            .cloned();
+            .pr_task_index
+            .task_for_pr(restart.pr_number)
+            .map(|s| s.to_string());
         let reviewer_channel = snap.channel_for_pr_or_default(restart.pr_number);
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {

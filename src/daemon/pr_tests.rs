@@ -639,9 +639,10 @@ fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.in_progress_tasks = in_progress_tasks;
-    snap.pr
-        .pr_task_associations
-        .insert(100u64, "100".to_string());
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("100".to_string(), 100u64)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
 
     // PR 100 is in the open list
     let open_pr_numbers = vec![100u64];
@@ -690,12 +691,12 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
     snap.all_tasks = vec![task];
 
     // PR associations: both PRs are associated with the same task
-    snap.pr
-        .pr_task_associations
-        .insert(968u64, "1158".to_string()); // merged PR
-    snap.pr
-        .pr_task_associations
-        .insert(999u64, "1158".to_string()); // duplicate PR (closed)
+    // Note: PrTaskIndex reverse map only supports one PR per task (from session_task_to_pr).
+    // Use session map for the merged PR and github map for the duplicate.
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("1158".to_string(), 968u64)].into_iter().collect(),
+        [("1158".to_string(), 999u64)].into_iter().collect(),
+    );
 
     // PR #968 is merged, PR #999 is NOT merged
     snap.pr.merged_pr_numbers.insert(968u64);
@@ -1329,9 +1330,10 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
 
     // A task now exists for this PR (PR left orphaned state)
-    snap.pr
-        .pr_task_associations
-        .insert(42, "task-abc".to_string());
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("task-abc".to_string(), 42u64)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
 
     // Tick: PR has a task, nudge record should be cleared
     let effects_with_task = reconcile_orphaned_prs(&snap);
@@ -1351,7 +1353,7 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
 
     // Simulate effect applied: nudge record cleared, task gone (task completed without merge)
     snap.pr.orphaned_pr_lead_nudges_sent.remove(&42);
-    snap.pr.pr_task_associations.remove(&42);
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::default();
 
     // Tick: PR is orphaned again — lead should be re-nudged
     let effects_re_orphaned = reconcile_orphaned_prs(&snap);
@@ -1612,7 +1614,10 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     snap.reviewer.reviewed_prs.insert(43);
 
     // PR #43 has an active task association — it is NOT orphaned
-    snap.pr.pr_task_associations.insert(43, "999".to_string());
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("999".to_string(), 43u64)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
 
     // Call reconcile_orphaned_prs
     let effects = reconcile_orphaned_prs(&snap);
@@ -2111,7 +2116,10 @@ async fn test_poll_prs_session_based_owner_resolution() {
     let mut snap = minimal_snapshot_for_test();
 
     // Set up session data: PR #42 → task "123" → session "sess-abc" → current_name "madison"
-    snap.pr.pr_task_associations = [(42, "123".to_string())].into_iter().collect();
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("123".to_string(), 42u64)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
     snap.session_task_map = [("123".to_string(), "sess-abc".to_string())]
         .into_iter()
         .collect();
@@ -2852,9 +2860,10 @@ fn test_collect_pr_task_link_effects_links_unlinked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("100".to_string(), 42);
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        std::collections::HashMap::new(),
+        [("100".to_string(), 42u64)].into_iter().collect(),
+    );
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -2898,9 +2907,10 @@ fn test_collect_pr_task_link_effects_skips_already_linked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("200".to_string(), 99);
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        std::collections::HashMap::new(),
+        [("200".to_string(), 99u64)].into_iter().collect(),
+    );
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -2952,9 +2962,10 @@ fn test_collect_pr_task_link_effects_skips_completed_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("400".to_string(), 88);
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        std::collections::HashMap::new(),
+        [("400".to_string(), 88u64)].into_iter().collect(),
+    );
 
     let effects = collect_pr_task_link_effects(&snap);
 
@@ -2986,9 +2997,10 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("300".to_string(), 77); // actual open PR
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        std::collections::HashMap::new(),
+        [("300".to_string(), 77u64)].into_iter().collect(),
+    ); // actual open PR
 
     let effects = collect_pr_task_link_effects(&snap);
 

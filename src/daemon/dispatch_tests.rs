@@ -211,15 +211,9 @@ fn test_is_task_pr_protected_with_explicit_pr_association() {
         created_at: None,
     };
 
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
     let active_names = active_names_for(&task);
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &HashMap::new(),
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
     assert!(
         result,
         "task should NOT be pr-protected when explicit pr field is None, even if merged PR mentioned in text"
@@ -231,13 +225,7 @@ fn test_is_task_pr_protected_with_explicit_pr_association() {
         ..task
     };
 
-    let result = !is_task_pr_protected(
-        &task_with_pr,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &HashMap::new(),
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task_with_pr, &merged_prs, &pr_task_index, &active_names);
     assert!(
         !result,
         "task should be pr-protected when explicit pr field matches merged PR"
@@ -2039,7 +2027,8 @@ fn make_reconcile_snapshot(
 ) -> snapshot::WorldSnapshot {
     let mut snap = snapshot::minimal_snapshot_for_test();
     snap.coworkers.active_names = active_names;
-    snap.pr.tasks_with_open_prs = tasks_with_open_prs;
+    snap.pr.pr_task_index =
+        snapshot::PrTaskIndex::from_task_maps(tasks_with_open_prs, HashMap::new());
     snap.in_progress_tasks = in_progress_tasks;
     snap
 }
@@ -2140,9 +2129,9 @@ fn test_reset_orphaned_tasks_github_open_pr_task_ids_protects() {
 
     let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
     // github_open_pr_task_ids populated from GitHub API (authoritative)
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("1422".to_string(), 1211u64);
+    let mut github_map = HashMap::new();
+    github_map.insert("1422".to_string(), 1211u64);
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_map);
 
     let effects = reset_orphaned_tasks(&snap);
 
@@ -2186,15 +2175,11 @@ fn test_reset_orphaned_tasks_github_open_pr_task_ids_inactive_owner() {
 
     let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
     // github_open_pr_task_ids populated from GitHub API (authoritative, survives restart)
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("1422".to_string(), 1211u64);
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("1428".to_string(), 1212u64);
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("1429".to_string(), 1210u64);
+    let mut github_map = HashMap::new();
+    github_map.insert("1422".to_string(), 1211u64);
+    github_map.insert("1428".to_string(), 1212u64);
+    github_map.insert("1429".to_string(), 1210u64);
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_map);
 
     let effects = reset_orphaned_tasks(&snap);
 
@@ -2370,9 +2355,9 @@ fn test_reset_orphaned_tasks_ownerless_with_github_open_pr_task_ids_protects() {
     let active_names = HashSet::new();
 
     let mut snap = make_reconcile_snapshot(in_progress, tasks_with_open_prs, active_names);
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("200".to_string(), 99); // Task is tracked by GitHub as having open PR #99
+    let mut github_map = HashMap::new();
+    github_map.insert("200".to_string(), 99u64); // Task is tracked by GitHub as having open PR #99
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_map);
 
     let effects = reset_orphaned_tasks(&snap);
     assert!(
@@ -2730,16 +2715,10 @@ fn test_is_task_pr_protected_skips_completed_tasks() {
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
     let active_names = active_names_for(&completed_task);
     assert!(
-        is_task_pr_protected(
-            &completed_task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names,
-        ),
+        is_task_pr_protected(&completed_task, &merged_prs, &pr_task_index, &active_names,),
         "Completed task should be treated as pr-protected (not recoverable)"
     );
 }
@@ -2765,18 +2744,12 @@ fn test_is_task_pr_protected_with_contextual_pr_mention_in_subject() {
 
     // PR #923 is merged, but it's not associated with task !1120
     let merged_prs: HashSet<u64> = [923].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     // With explicit PR associations: should be pr-protected because task.pr = Some(923) and PR #923 is merged
     let active_names = active_names_for(&task);
     assert!(
-        is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task whose PR is already merged should be pr-protected (explicit pr field)"
     );
 }
@@ -2800,18 +2773,12 @@ fn test_is_task_pr_protected_with_contextual_pr_mention_in_description() {
 
     // PR #925 is merged, but it's not associated with task !1121
     let merged_prs: HashSet<u64> = [925].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     // With explicit PR associations: should be pr-protected because task.pr = Some(925) and PR #925 is merged
     let active_names = active_names_for(&task);
     assert!(
-        is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task whose PR is already merged should be pr-protected (explicit pr field)"
     );
 }
@@ -2840,18 +2807,13 @@ fn test_is_task_pr_protected_with_open_pr_via_github_title() {
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new(); // Empty (stale after daemon restart)
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("1233".to_string(), 1089u64); // PR #1089 has [Midtown !1233]
+    let pr_task_index =
+        snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_open_pr_task_ids);
 
     let active_names = active_names_for(&task);
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &github_open_pr_task_ids,
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
 
     assert!(
         !result,
@@ -2878,17 +2840,10 @@ fn test_is_task_pr_protected_when_github_title_has_no_match() {
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new();
-    let github_open_pr_task_ids = HashMap::new(); // No title matches
+    let pr_task_index = snapshot::PrTaskIndex::default(); // No title matches
     let active_names = active_names_for(&task);
 
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &github_open_pr_task_ids,
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
 
     assert!(
         result,
@@ -2916,18 +2871,13 @@ fn test_is_task_pr_protected_github_title_takes_precedence_over_no_pr_field() {
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new(); // Stale after restart
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("55".to_string(), 200u64);
+    let pr_task_index =
+        snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_open_pr_task_ids);
     let active_names = active_names_for(&task);
 
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &github_open_pr_task_ids,
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
 
     assert!(
         !result,
@@ -2952,16 +2902,10 @@ fn test_is_task_pr_protected_allows_active_in_progress_task() {
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
     let active_names = active_names_for(&task);
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Active in-progress task with no merged PR should not be pr-protected"
     );
 }
@@ -2986,16 +2930,10 @@ fn test_is_task_pr_protected_allows_task_with_unmerged_pr() {
     // The GitHub API check will fail (PR not found) but the function
     // should be conservative and allow recovery.
     let merged_prs: HashSet<u64> = [900, 910].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
     let active_names = active_names_for(&task);
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task whose PR is NOT yet merged should not be pr-protected"
     );
 }
@@ -3019,18 +2957,12 @@ fn test_is_task_pr_protected_with_bare_hash_pr_reference() {
     };
 
     let merged_prs: HashSet<u64> = [904].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     // With explicit PR associations: should be pr-protected because task.pr = Some(904) and PR #904 is merged
     let active_names = active_names_for(&task);
     assert!(
-        is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task whose PR (#904) is already merged should be pr-protected (explicit pr field)"
     );
 }
@@ -3056,16 +2988,10 @@ fn test_is_task_pr_protected_recovers_multi_pr_with_only_some_merged() {
 
     // Only #901 is merged; #902 and #903 are still open
     let merged_prs: HashSet<u64> = [901].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
     let active_names = active_names_for(&task);
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task with multi-PR reference where only SOME PRs are merged should not be pr-protected"
     );
 }
@@ -3092,18 +3018,12 @@ fn test_is_task_pr_protected_with_multi_pr_when_all_merged() {
 
     // All PRs are merged, but they're not the task's canonical PR
     let merged_prs: HashSet<u64> = [901, 902, 903].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     // New behavior: should NOT be pr-protected because pr field is None (contextual mentions only)
     let active_names = active_names_for(&task);
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task with no explicit pr field should not be pr-protected (auto-completion will handle cleanup)"
     );
 }
@@ -3129,18 +3049,12 @@ fn test_is_task_pr_protected_with_pr_in_subject_only() {
     };
 
     let merged_prs: HashSet<u64> = [905].into_iter().collect();
-    let tasks_with_open_prs = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     // New behavior: should NOT be pr-protected because pr field is None (contextual mentions only)
     let active_names = active_names_for(&task);
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &HashMap::new(),
-            &active_names
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names),
         "Task with no explicit pr field should not be pr-protected (auto-completion will handle cleanup)"
     );
 }
@@ -3219,7 +3133,10 @@ fn test_unowned_pending_task_with_open_pr_is_dispatched() {
             created_at: Some(SystemTime::now()),
         }],
         pr: snapshot::SnapshotPrState {
-            tasks_with_open_prs,
+            pr_task_index: snapshot::PrTaskIndex::from_task_maps(
+                tasks_with_open_prs,
+                HashMap::new(),
+            ),
             ..Default::default()
         },
         // PR-protection should NOT block unowned pending tasks — only in_progress
@@ -3271,7 +3188,10 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
             created_at: Some(SystemTime::now()),
         }],
         pr: snapshot::SnapshotPrState {
-            github_open_pr_task_ids,
+            pr_task_index: snapshot::PrTaskIndex::from_task_maps(
+                HashMap::new(),
+                github_open_pr_task_ids,
+            ),
             ..Default::default()
         },
         // PR-protection should NOT block unowned pending tasks — only in_progress
@@ -3648,16 +3568,10 @@ fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
     let merged_prs = HashSet::new(); // PR #1156 is NOT merged
     let mut tasks_with_open_prs = HashMap::new();
     tasks_with_open_prs.insert("1313".to_string(), 1156u64); // Task has open PR #1156
-    let github_open_pr_task_ids = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::from_task_maps(tasks_with_open_prs, HashMap::new());
     let active_names = active_names_for(&task);
 
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &github_open_pr_task_ids,
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
 
     assert!(
         !result,
@@ -3684,18 +3598,13 @@ fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_github_open_pr_task_ids
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new(); // Empty (stale after daemon restart)
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("1313".to_string(), 1156u64); // Found via GitHub PR title
+    let pr_task_index =
+        snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_open_pr_task_ids);
     let active_names = active_names_for(&task);
 
-    let result = !is_task_pr_protected(
-        &task,
-        &merged_prs,
-        &tasks_with_open_prs,
-        &github_open_pr_task_ids,
-        &active_names,
-    );
+    let result = !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names);
 
     assert!(
         !result,
@@ -3727,20 +3636,15 @@ fn test_is_task_pr_protected_allows_pending_task_with_open_pr_no_active_session(
     };
 
     let merged_prs = HashSet::new();
-    let tasks_with_open_prs = HashMap::new();
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("2281".to_string(), 42u64);
+    let pr_task_index =
+        snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_open_pr_task_ids);
 
     let active_names: HashSet<String> = HashSet::new(); // No active session
 
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &github_open_pr_task_ids,
-            &active_names,
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names,),
         "Pending task with open PR but no active session should NOT be pr-protected"
     );
 }
@@ -3765,18 +3669,12 @@ fn test_is_task_pr_protected_allows_in_progress_task_with_open_pr_no_active_sess
     let merged_prs = HashSet::new();
     let mut tasks_with_open_prs = HashMap::new();
     tasks_with_open_prs.insert("2281".to_string(), 42u64);
-    let github_open_pr_task_ids = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::from_task_maps(tasks_with_open_prs, HashMap::new());
 
     let active_names: HashSet<String> = HashSet::new(); // Owner not active
 
     assert!(
-        !is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &github_open_pr_task_ids,
-            &active_names,
-        ),
+        !is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names,),
         "In-progress task with open PR but no active owner session should NOT be pr-protected"
     );
 }
@@ -3801,19 +3699,13 @@ fn test_is_task_pr_protected_blocks_task_with_open_pr_and_active_session() {
     let merged_prs = HashSet::new();
     let mut tasks_with_open_prs = HashMap::new();
     tasks_with_open_prs.insert("2281".to_string(), 42u64);
-    let github_open_pr_task_ids = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::from_task_maps(tasks_with_open_prs, HashMap::new());
 
     let mut active_names: HashSet<String> = HashSet::new();
     active_names.insert("lexington".to_string()); // Owner IS active
 
     assert!(
-        is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &github_open_pr_task_ids,
-            &active_names,
-        ),
+        is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names,),
         "In-progress task with open PR and active owner session SHOULD be pr-protected"
     );
 }
@@ -3839,19 +3731,12 @@ fn test_is_task_pr_protected_merged_pr_inactive_owner_still_protected() {
 
     let mut merged_prs = HashSet::new();
     merged_prs.insert(42u64);
-    let tasks_with_open_prs = HashMap::new();
-    let github_open_pr_task_ids = HashMap::new();
+    let pr_task_index = snapshot::PrTaskIndex::default();
 
     let active_names: HashSet<String> = HashSet::new(); // Owner NOT active
 
     assert!(
-        is_task_pr_protected(
-            &task,
-            &merged_prs,
-            &tasks_with_open_prs,
-            &github_open_pr_task_ids,
-            &active_names,
-        ),
+        is_task_pr_protected(&task, &merged_prs, &pr_task_index, &active_names,),
         "Task with merged PR should be protected even when owner session is inactive"
     );
 }
@@ -3915,9 +3800,9 @@ fn test_reset_orphaned_tasks_ownerless_task_with_github_open_pr_is_skipped() {
         "".to_string(),
     )];
     let mut snap = make_reconcile_snapshot(in_progress, HashMap::new(), HashSet::new());
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("1474".to_string(), 999u64);
+    let mut github_map = HashMap::new();
+    github_map.insert("1474".to_string(), 999u64);
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_map);
 
     let effects = reset_orphaned_tasks(&snap);
 
