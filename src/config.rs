@@ -336,7 +336,7 @@ pub struct ProjectConfig {
     pub chat_min_width: Option<u16>,
 
     /// Maximum number of in-progress tasks (default: 8)
-    #[serde(default, alias = "max_in_progress_tasks")]
+    #[serde(default, alias = "max_coworkers")]
     pub max_in_progress_tasks: Option<usize>,
 
     /// User display name shown in chat and @mentions (default: "user")
@@ -870,7 +870,15 @@ impl GlobalConfig {
         }
 
         match std::fs::read_to_string(&path) {
-            Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+            Ok(contents) => {
+                if contents.contains("max_coworkers") && !contents.contains("max_in_progress_tasks")
+                {
+                    tracing::warn!(
+                        "Config uses deprecated 'max_coworkers' key. Please rename to 'max_in_progress_tasks'."
+                    );
+                }
+                toml::from_str(&contents).unwrap_or_default()
+            }
             Err(_) => Self::default(),
         }
     }
@@ -1033,6 +1041,12 @@ fn load_project_config(dir_key: &str) -> Option<ProjectConfig> {
     }
 
     let contents = std::fs::read_to_string(&path).ok()?;
+
+    if contents.contains("max_coworkers") && !contents.contains("max_in_progress_tasks") {
+        tracing::warn!(
+            "Config uses deprecated 'max_coworkers' key. Please rename to 'max_in_progress_tasks'."
+        );
+    }
 
     // Try the new structured format first (with [project], [default], [daemon] sections)
     if let Ok(full) = toml::from_str::<FullProjectConfig>(&contents) {
@@ -2379,7 +2393,7 @@ bin_command = "midtown"
 
         // Write initial config with user comments
         let initial_toml = r#"# Project configuration for my awesome project
-# This comment explains the max_coworkers setting
+# This comment explains the max_in_progress_tasks setting
 [project]
 name = "testproj"
 repos = ["/tmp/testproj"]
@@ -2407,7 +2421,7 @@ webhook_port = 47024
             "Top-level comment should be preserved"
         );
         assert!(
-            saved_contents.contains("# This comment explains the max_coworkers setting"),
+            saved_contents.contains("# This comment explains the max_in_progress_tasks setting"),
             "Section comment should be preserved"
         );
         assert!(

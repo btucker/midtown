@@ -8,6 +8,7 @@
 mod chat;
 mod constants;
 mod dispatch;
+pub(crate) mod dispatch_priority;
 pub(crate) mod effects;
 pub(crate) mod events;
 mod health;
@@ -299,6 +300,12 @@ impl Default for DaemonConfig {
                 }
             })
             .unwrap_or(DEFAULT_MAX_IN_PROGRESS_TASKS);
+
+        if std::env::var("MIDTOWN_MAX_COWORKERS").is_ok() {
+            tracing::warn!(
+                "MIDTOWN_MAX_COWORKERS is deprecated. Use MIDTOWN_MAX_IN_PROGRESS_TASKS instead."
+            );
+        }
 
         let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
