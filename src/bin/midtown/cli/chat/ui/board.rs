@@ -553,7 +553,7 @@ fn draw_coworker_status(f: &mut Frame, app: &mut App, area: Rect) {
 
     // project lead and channel leads are already excluded upstream by build_coworkers_data
     let active_count = active_coworkers.len();
-    let header = format!("Coworkers ({}/{})", active_count, app.max_coworkers);
+    let header = format!("Coworkers ({}/{})", active_count, app.max_in_progress_tasks);
     let palette = app.theme.palette();
     let header_paragraph = Paragraph::new(Line::from(vec![Span::styled(
         header,
@@ -1198,7 +1198,7 @@ mod tests {
                 cw
             },
         ];
-        app.max_coworkers = 4;
+        app.max_in_progress_tasks = 4;
 
         terminal
             .draw(|f| {
@@ -1341,7 +1341,7 @@ mod tests {
                 cw
             },
         ];
-        app.max_coworkers = 4;
+        app.max_in_progress_tasks = 4;
 
         let mut returned_tasks_area = None;
 
@@ -1396,7 +1396,7 @@ mod tests {
                 cw
             },
         ];
-        app.max_coworkers = 4;
+        app.max_in_progress_tasks = 4;
 
         let mut returned_tasks_area = None;
 
@@ -1446,7 +1446,7 @@ mod tests {
                 cw
             },
         ];
-        app.max_coworkers = 4;
+        app.max_in_progress_tasks = 4;
 
         let mut returned_tasks_area = None;
 

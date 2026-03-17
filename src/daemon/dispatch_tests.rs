@@ -3226,8 +3226,9 @@ fn test_unowned_pending_task_with_open_pr_is_dispatched() {
         // tasks during orphan recovery. Pending tasks with open PRs (e.g., "rebase
         // and land PR #X") must still be dispatchable.
         pr_protected_tasks: ["2050".to_string()].into_iter().collect(),
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -3276,8 +3277,9 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
         // PR-protection should NOT block unowned pending tasks — only in_progress
         // tasks during orphan recovery.
         pr_protected_tasks: ["2051".to_string()].into_iter().collect(),
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -3411,9 +3413,10 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
         }],
         // Lexington is NOT active - its session ended
         // Not at dev limit - allows spawning
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
         now_utc: now,
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -4096,7 +4099,7 @@ fn test_dispatch_via_sessions_no_session_respects_dev_limit() {
         HashMap::new(),
         HashMap::new(),
     );
-    snap.is_at_dev_limit = true;
+    snap.is_at_task_limit = true;
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
@@ -4351,8 +4354,9 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
         }],
         sessions,
         session_task_map,
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
@@ -4435,8 +4439,9 @@ fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
         }],
         sessions,
         session_task_map,
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
@@ -4512,8 +4517,9 @@ fn test_pending_task_with_running_session_skips_dispatch() {
         }],
         sessions,
         session_task_map,
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
@@ -4590,8 +4596,9 @@ fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
         // Without the fix, this check is missing in Path 2 and the task is re-spawned
         // on every 5s tick, causing infinite retry loops when sessions die repeatedly.
         recently_recovered_session_ids: ["sess-cool-1".to_string()].into_iter().collect(),
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };
 
@@ -4666,8 +4673,9 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
         }],
         sessions,
         session_task_map,
-        is_at_dev_limit: false,
-        is_at_coworker_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         stale_working_dir_sessions: ["sess-stale-wdir".to_string()].into_iter().collect(),
         ..make_session_dispatch_snapshot(vec![], HashMap::new(), HashMap::new())
     };

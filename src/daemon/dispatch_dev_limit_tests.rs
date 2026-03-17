@@ -1,90 +1,83 @@
-//! Tests for dev limit enforcement in task dispatch.
+//! Tests for task-based limit enforcement in task dispatch.
 //!
-//! These tests verify that the dev spawn cap equals max_coworkers and that
-//! REVIEW_HEADROOM allows reviewers to exceed max_coworkers (not reduce dev slots).
-
-use crate::daemon::constants::REVIEW_HEADROOM;
+//! These tests verify that the task limit (max_in_progress_tasks) correctly
+//! governs dispatch decisions. The old coworker-count-based limits
+//! (REVIEW_HEADROOM, is_at_dev_limit, is_at_coworker_limit) have been
+//! replaced by a single task-count-based limit.
 
 #[test]
-fn test_review_headroom_semantics() {
-    // REVIEW_HEADROOM allows reviewers to EXCEED max_coworkers — it does NOT reduce dev slots.
-    // With max_coworkers=8 and REVIEW_HEADROOM=2:
-    //   - dev_cap = max_coworkers = 8  (no subtraction)
-    //   - reviewer_cap = max_coworkers + REVIEW_HEADROOM = 10
-    let max_coworkers: usize = 8;
-    let dev_cap = max_coworkers; // new semantics: no subtraction
-    let reviewer_cap = max_coworkers + REVIEW_HEADROOM;
+fn test_task_limit_semantics() {
+    // max_in_progress_tasks is a single limit shared by all task types.
+    // No separate dev/reviewer caps or REVIEW_HEADROOM.
+    let max_in_progress_tasks: usize = 8;
+    let in_progress_count: usize = 7;
 
-    assert_eq!(
-        dev_cap, 8,
-        "Dev cap should equal max_coworkers (REVIEW_HEADROOM no longer reduces dev slots)"
-    );
-    assert_eq!(
-        reviewer_cap, 10,
-        "Reviewer cap should be max_coworkers + REVIEW_HEADROOM"
-    );
-    assert_eq!(REVIEW_HEADROOM, 2, "REVIEW_HEADROOM should be 2");
+    let is_at_limit = in_progress_count >= max_in_progress_tasks;
+    assert!(!is_at_limit, "7 < 8 → not at limit");
+
+    let in_progress_count: usize = 8;
+    let is_at_limit = in_progress_count >= max_in_progress_tasks;
+    assert!(is_at_limit, "8 >= 8 → at limit");
 }
 
 #[test]
 fn test_spawn_count_within_tick() {
     // This test documents the expected behavior for spawn limiting within a tick.
     //
-    // Scenario: 7 active dev coworkers, 3 pending unowned tasks.
-    // With max_coworkers=8, dev_cap=8 (no REVIEW_HEADROOM subtraction).
-    // - Snapshot shows is_at_dev_limit = false (7 < 8)
+    // Scenario: 7 in-progress tasks, 3 pending unowned tasks.
+    // With max_in_progress_tasks=8:
+    // - Snapshot shows is_at_task_limit = false (7 < 8)
     // - Loop processes tasks one by one
     //
-    // Without per-spawn counter: Loop checks is_at_dev_limit ONCE, spawns all 3 tasks.
-    // Result: 7 + 3 = 10 coworkers, exceeding dev cap of 8.
+    // Without per-spawn counter: Loop checks is_at_task_limit ONCE, spawns all 3 tasks.
+    // Result: 7 + 3 = 10 in-progress, exceeding limit of 8.
     //
     // With per-spawn counter: after each spawn decision, re-check:
     //   - spawns_this_tick = 0
     //   - Process task 1: spawns_this_tick = 1, total = 8 (at cap, STOP)
     //   - Tasks 2 and 3 deferred to next tick
 
-    let active_count = 7;
+    let in_progress_count = 7;
     let pending_count = 3;
-    let dev_cap = 8; // = max_coworkers (no REVIEW_HEADROOM subtraction)
+    let task_cap = 8;
 
     // Without per-spawn counter: all tasks spawn
     let spawned_without_counter = pending_count; // 3
-    let total_without_counter = active_count + spawned_without_counter; // 10
+    let total_without_counter = in_progress_count + spawned_without_counter; // 10
     assert!(
-        total_without_counter > dev_cap,
-        "Bug: spawning exceeds dev cap"
+        total_without_counter > task_cap,
+        "Bug: spawning exceeds task limit"
     );
 
     // With per-spawn counter: only spawn until cap
-    let spawned_with_counter = (dev_cap - active_count).min(pending_count); // 1
-    let total_with_counter = active_count + spawned_with_counter; // 8
+    let spawned_with_counter = (task_cap - in_progress_count).min(pending_count); // 1
+    let total_with_counter = in_progress_count + spawned_with_counter; // 8
     assert_eq!(
-        total_with_counter, dev_cap,
-        "Fix: spawning stops at dev cap"
+        total_with_counter, task_cap,
+        "Fix: spawning stops at task limit"
     );
 }
 
 #[test]
 fn test_spawn_limit_edge_cases() {
-    // dev_cap = max_coworkers (8), no REVIEW_HEADROOM subtraction
-    let dev_cap = 8;
+    let task_cap: usize = 8;
 
     // Edge case 1: Already at cap
-    let active = 8;
-    let allowed = (dev_cap - active).max(0);
+    let in_progress = 8;
+    let allowed = task_cap.saturating_sub(in_progress);
     assert_eq!(allowed, 0, "No spawns allowed when at cap");
 
     // Edge case 2: One below cap
-    let active = 7;
-    let allowed = (dev_cap - active).max(0);
+    let in_progress = 7;
+    let allowed = task_cap.saturating_sub(in_progress);
     assert_eq!(allowed, 1, "Exactly 1 spawn allowed when 1 below cap");
 
-    // Edge case 3: Empty (no active coworkers)
-    let active = 0;
-    let allowed = (dev_cap - active).max(0);
+    // Edge case 3: Empty (no in-progress tasks)
+    let in_progress = 0;
+    let allowed = task_cap.saturating_sub(in_progress);
     assert_eq!(
         allowed, 8,
-        "Up to dev_cap spawns allowed when starting from 0"
+        "Up to task_cap spawns allowed when starting from 0"
     );
 }
 
@@ -119,24 +112,39 @@ fn make_pending_task(id: &str) -> crate::tasks::Task {
     }
 }
 
-/// Build a minimal WorldSnapshot for dev limit tests.
-fn make_dev_limit_snapshot(
+/// Build a minimal WorldSnapshot for task limit tests.
+///
+/// When `is_at_task_limit` is true, populates `in_progress_tasks` from running
+/// coworkers and sets `max_in_progress_tasks` equal to that count, so the
+/// per-spawn counter in `dispatch_unowned_pending_tasks` agrees with the flag.
+/// When false, leaves `in_progress_tasks` empty and uses the default cap.
+fn make_task_limit_snapshot(
     running: Vec<crate::coworker::Coworker>,
     pending_tasks: Vec<crate::tasks::Task>,
-    is_at_dev_limit: bool,
+    is_at_task_limit: bool,
 ) -> crate::daemon::snapshot::WorldSnapshot {
     let active_names: std::collections::HashSet<String> =
         running.iter().map(|cw| cw.name.to_lowercase()).collect();
     let mut snap = crate::daemon::snapshot::minimal_snapshot_for_test();
-    snap.coworkers.running_coworkers = running;
+    snap.coworkers.running_coworkers = running.clone();
     snap.coworkers.active_names = active_names;
-    snap.is_at_dev_limit = is_at_dev_limit;
+    snap.is_at_task_limit = is_at_task_limit;
+    if is_at_task_limit {
+        // Populate in_progress_tasks so per-spawn counter also blocks dispatch.
+        let in_progress_tasks: Vec<(String, String, String)> = running
+            .iter()
+            .enumerate()
+            .map(|(i, cw)| (format!("{}", i), format!("Task {}", i), cw.name.clone()))
+            .collect();
+        snap.max_in_progress_tasks = in_progress_tasks.len();
+        snap.in_progress_tasks = in_progress_tasks;
+    }
     snap.pending_tasks_without_owners = pending_tasks;
     snap
 }
 
-/// Make a test DaemonState with the given max_coworkers setting.
-fn make_test_state_with_max(max_coworkers: usize) -> crate::daemon::DaemonState {
+/// Make a test DaemonState with the given max_in_progress_tasks setting.
+fn make_test_state_with_max(max_in_progress_tasks: usize) -> crate::daemon::DaemonState {
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -177,7 +185,7 @@ fn make_test_state_with_max(max_coworkers: usize) -> crate::daemon::DaemonState 
         vec![base_dir.clone()],
         channel_router,
         None,
-        max_coworkers,
+        max_in_progress_tasks,
         None,
         "main".to_string(),
         shutdown_tx,
@@ -185,19 +193,17 @@ fn make_test_state_with_max(max_coworkers: usize) -> crate::daemon::DaemonState 
     .expect("daemon state")
 }
 
-/// When a headless lead is running, it should NOT consume a dev slot.
+/// When the lead is running, dispatch should still work if task limit is not hit.
 ///
-/// Scenario: max_coworkers=8 → dev_cap=8 (no REVIEW_HEADROOM subtraction).
-/// Lead (headless) + 7 real coworkers = 8 in running_coworkers.
-/// Bug: running_coworkers.len()=8 ≥ dev_cap=8 → no task effects dispatched.
-/// Fix: lead excluded → effective_count=7 < 8 → task effect IS emitted.
+/// The lead session name is the repo name ("test-repo"), not "lead".
+/// Previously this tested coworker-count exclusion. Now we test that
+/// the task-count-based limit works regardless of which coworkers are running.
 #[test]
-fn test_lead_does_not_count_against_dev_cap() {
+fn test_lead_does_not_affect_task_limit_dispatch() {
     let state = make_test_state_with_max(8);
 
     // Register 7 real coworkers in CoworkerManager so next_available_name()
     // skips them and returns the 8th available name for the new task.
-    // This ensures the dispatch loop hits the "fresh spawn" code path.
     for name in &[
         "lexington",
         "park",
@@ -213,7 +219,6 @@ fn test_lead_does_not_count_against_dev_cap() {
     }
 
     // 7 real coworkers + 1 headless lead = 8 total in running_coworkers
-    // The lead session name is the repo name ("test-repo"), not "lead"
     let running = vec![
         make_running_coworker("test-repo"),
         make_running_coworker("lexington"),
@@ -227,13 +232,12 @@ fn test_lead_does_not_count_against_dev_cap() {
 
     let pending = vec![make_pending_task("99")];
 
-    // is_at_dev_limit=false because lead doesn't count (7 real coworkers < dev_cap=8)
-    let snap = make_dev_limit_snapshot(running, pending, false);
+    // Task limit is based on in-progress task count, not coworker count.
+    // is_at_task_limit=false means we're below the task limit.
+    let snap = make_task_limit_snapshot(running, pending, false);
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
-    // With the bug: current_coworker_count=8 (includes lead) ≥ dev_cap=8 → no effects.
-    // After the fix: lead excluded → effective_count=7 < 8 → AssignAndSpawn IS emitted.
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
@@ -244,128 +248,16 @@ fn test_lead_does_not_count_against_dev_cap() {
     });
     assert!(
         has_task_effect,
-        "Expected a task dispatch effect but got none. The lead should not count against \
-         the dev cap. Effects: {:?}",
+        "Expected a task dispatch effect when below task limit. Effects: {:?}",
         effects
     );
 }
 
-/// Channel leads should not count against the dev limit.
-///
-/// Scenario: max_coworkers=3, 3 running sessions: "lexington" (dev), "web" (channel lead),
-/// "features" (channel lead). Only lexington should count toward the dev cap.
+/// When task limit is reached, no dispatch should occur.
 #[test]
-fn test_channel_leads_excluded_from_dev_limit() {
-    let state = make_test_state_with_max(3);
-
-    // Register all 3 running sessions
-    for name in &["lexington", "web", "features"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let channel_lead_names: std::collections::HashSet<String> =
-        ["web".to_string(), "features".to_string()]
-            .into_iter()
-            .collect();
-
-    // Only 1 real dev coworker (lexington) < max_coworkers=3 → not at dev limit
-    assert!(
-        !state.is_at_dev_limit(&channel_lead_names),
-        "Channel leads should not count toward dev limit"
-    );
-
-    // Without channel_lead_names, all 3 would count → at dev limit (3 >= 3)
-    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
-    assert!(
-        state.is_at_dev_limit(&empty),
-        "Without exclusion, all 3 running sessions count toward dev limit"
-    );
-}
-
-/// Channel leads should not count against the absolute coworker limit.
-///
-/// Scenario: max_coworkers=2, REVIEW_HEADROOM=2, absolute cap = 4.
-/// 4 running sessions: "lexington", "park" (devs), "web", "auth" (channel leads).
-/// Only 2 devs < 4 absolute cap → not at coworker limit.
-#[test]
-fn test_channel_leads_excluded_from_coworker_limit() {
-    let state = make_test_state_with_max(2);
-
-    for name in &["lexington", "park", "web", "auth"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let channel_lead_names: std::collections::HashSet<String> =
-        ["web".to_string(), "auth".to_string()]
-            .into_iter()
-            .collect();
-
-    // 2 devs < max_coworkers(2) + REVIEW_HEADROOM(2) = 4 → not at coworker limit
-    assert!(
-        !state.is_at_coworker_limit(&channel_lead_names),
-        "Channel leads should not count toward coworker limit"
-    );
-}
-
-/// has_available_coworker_slot should respect channel lead exclusion.
-#[test]
-fn test_has_available_slot_excludes_channel_leads() {
-    let state = make_test_state_with_max(3);
-
-    // Register 3 sessions: 1 dev + 2 channel leads
-    for name in &["lexington", "web", "features"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let channel_lead_names: std::collections::HashSet<String> =
-        ["web".to_string(), "features".to_string()]
-            .into_iter()
-            .collect();
-
-    // Only 1 dev coworker < absolute cap, and names are available
-    assert!(
-        state.has_available_coworker_slot(&channel_lead_names),
-        "Should have available slot when channel leads are excluded"
-    );
-}
-
-/// Both lead AND channel leads should be excluded simultaneously.
-#[test]
-fn test_lead_and_channel_leads_both_excluded() {
-    let state = make_test_state_with_max(3);
-
-    // 5 running sessions: lead (named after repo) + 2 devs + 2 channel leads
-    // The lead session name is the repo name ("test-repo"), not "lead"
-    for name in &["test-repo", "lexington", "park", "web", "auth"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let channel_lead_names: std::collections::HashSet<String> =
-        ["web".to_string(), "auth".to_string()]
-            .into_iter()
-            .collect();
-
-    // Only 2 real dev coworkers (lexington, park) < max_coworkers=3 → not at dev limit
-    assert!(
-        !state.is_at_dev_limit(&channel_lead_names),
-        "Lead and channel leads should both be excluded from dev limit"
-    );
-}
-
-/// When the lead is NOT in running_coworkers, dev cap (= max_coworkers) behaves normally.
-#[test]
-fn test_dev_cap_without_lead_unaffected() {
+fn test_no_dispatch_at_task_limit() {
     let state = make_test_state_with_max(8);
 
-    // Register 8 real coworkers — all slots at dev_cap=8 are consumed.
     for name in &[
         "lexington",
         "park",
@@ -381,7 +273,6 @@ fn test_dev_cap_without_lead_unaffected() {
             .insert_for_testing(make_running_coworker(name));
     }
 
-    // 8 real coworkers, no lead → at dev_cap=8
     let running = vec![
         make_running_coworker("lexington"),
         make_running_coworker("park"),
@@ -395,12 +286,11 @@ fn test_dev_cap_without_lead_unaffected() {
 
     let pending = vec![make_pending_task("99")];
 
-    // is_at_dev_limit=true: 8 real coworkers ≥ dev_cap=8
-    let snap = make_dev_limit_snapshot(running, pending, true);
+    // is_at_task_limit=true: 8 in-progress tasks >= max_in_progress_tasks=8
+    let snap = make_task_limit_snapshot(running, pending, true);
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
-    // No task dispatch effects: truly at cap with no lead to discount.
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
@@ -411,125 +301,15 @@ fn test_dev_cap_without_lead_unaffected() {
     });
     assert!(
         !has_task_effect,
-        "Expected no task dispatch when truly at dev cap (8 real coworkers, no lead). \
-         Effects: {:?}",
+        "Expected no task dispatch when at task limit. Effects: {:?}",
         effects
     );
 }
 
-/// Channel leads should not consume dev slots in the dispatch coworker count.
-///
-/// Scenario: max_coworkers=2, 3 running sessions: "lexington" (dev), "auth" (channel lead),
-/// "web" (channel lead). The dispatch loop's `current_coworker_count` must only count
-/// lexington → 1 dev < dev_cap=2 → task dispatch IS emitted.
+/// When a legacy "lead" session is running, dispatch should work normally
+/// based on task count, not coworker count.
 #[test]
-fn test_dispatch_excludes_channel_leads_from_dev_count() {
-    let state = make_test_state_with_max(2);
-
-    // Register the dev coworker in CoworkerManager so next_available_name()
-    // skips "lexington" and returns another name for the new task.
-    state
-        .coworkers
-        .insert_for_testing(make_running_coworker("lexington"));
-
-    // 3 running sessions: 1 dev + 2 channel leads
-    let running = vec![
-        make_running_coworker("lexington"),
-        make_running_coworker("auth"),
-        make_running_coworker("web"),
-    ];
-
-    let pending = vec![make_pending_task("99")];
-
-    // Build snapshot with channel_lead_sessions populated so dispatch excludes them
-    let mut snap = make_dev_limit_snapshot(running, pending, false);
-    snap.channel_lead_sessions
-        .insert("auth".to_string(), "session-auth-123".to_string());
-    snap.channel_lead_sessions
-        .insert("web".to_string(), "session-web-456".to_string());
-
-    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
-
-    // Only 1 dev coworker (lexington) < dev_cap=2 → task dispatch IS emitted.
-    // Without the fix, channel leads would inflate the count to 3 ≥ 2 → no dispatch.
-    let has_task_effect = effects.iter().any(|e| {
-        matches!(
-            e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
-                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
-                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
-        )
-    });
-    assert!(
-        has_task_effect,
-        "Expected task dispatch effect: channel leads must not count toward dev cap. \
-         Effects: {:?}",
-        effects
-    );
-}
-
-// ============================================================================
-// Regression tests: legacy "lead" session excluded from dev limit
-//
-// Before the consolidation fix, is_at_dev_limit() and is_at_coworker_limit()
-// only excluded sessions named after the repo (state.project_name). Legacy
-// sessions named "lead" were incorrectly counted as dev slots.
-// ============================================================================
-
-/// Legacy "lead" sessions should not count against the dev limit.
-///
-/// Scenario: max_coworkers=3, 3 running sessions: "lead" (legacy), "york", "madison".
-/// Bug: "lead" counted as a dev coworker → at_dev_limit=true.
-/// Fix: "lead" is excluded like the repo-named lead → at_dev_limit=false.
-#[test]
-fn test_legacy_lead_does_not_count_against_dev_limit() {
-    let state = make_test_state_with_max(3);
-
-    for name in &["lead", "york", "madison"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // With fix: "lead" is excluded → 2 real devs < max=3 → not at dev limit
-    assert!(
-        !state.is_at_dev_limit(&empty),
-        "Legacy 'lead' session should not count toward dev limit; only york and madison are devs"
-    );
-}
-
-/// Legacy "lead" sessions should not count against the absolute coworker limit.
-///
-/// Scenario: max_coworkers=1, REVIEW_HEADROOM=2, absolute cap=3.
-/// 3 sessions: "lead" (legacy), "york" (dev), "amsterdam" (reviewer).
-/// Bug: "lead" counted → at_coworker_limit=true.
-/// Fix: "lead" excluded → 2 non-lead sessions < cap=3 → not at coworker limit.
-#[test]
-fn test_legacy_lead_does_not_count_against_coworker_limit() {
-    let state = make_test_state_with_max(1);
-
-    for name in &["lead", "york", "amsterdam"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let empty: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // max=1 + REVIEW_HEADROOM=2 → absolute cap=3
-    // With fix: "lead" excluded → 2 real sessions (york + amsterdam) < cap=3 → not at limit
-    assert!(
-        !state.is_at_coworker_limit(&empty),
-        "Legacy 'lead' session should not count toward absolute coworker limit"
-    );
-}
-
-/// When a legacy "lead" session is running, spawn_for_pending_tasks should
-/// still dispatch work (lead does not inflate the running coworker count).
-#[test]
-fn test_dispatch_excludes_legacy_lead_from_dev_count() {
+fn test_dispatch_with_legacy_lead() {
     let state = make_test_state_with_max(3);
 
     // Register 2 real coworkers in CoworkerManager
@@ -548,13 +328,11 @@ fn test_dispatch_excludes_legacy_lead_from_dev_count() {
 
     let pending = vec![make_pending_task("99")];
 
-    // is_at_dev_limit=false because (after fix) "lead" doesn't count
-    let snap = make_dev_limit_snapshot(running, pending, false);
+    // is_at_task_limit=false: task limit governs, not coworker count
+    let snap = make_task_limit_snapshot(running, pending, false);
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
-    // Only 2 real dev coworkers < dev_cap=3 → task dispatch IS emitted.
-    // Without the fix: effective_count=3 ("lead" counted) ≥ dev_cap=3 → no dispatch.
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
@@ -565,7 +343,7 @@ fn test_dispatch_excludes_legacy_lead_from_dev_count() {
     });
     assert!(
         has_task_effect,
-        "Expected task dispatch: legacy 'lead' must not count toward dev cap. Effects: {:?}",
+        "Expected task dispatch: task limit not reached. Effects: {:?}",
         effects
     );
 }

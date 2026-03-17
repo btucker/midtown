@@ -4708,7 +4708,7 @@ fn log_pr_decision_writes_valid_jsonl() {
         ctx: &ctx,
         owner_is_active: true,
         owner_is_idle: false,
-        at_dev_limit: false,
+        at_task_limit: false,
         source: "polling",
     });
 
@@ -4722,7 +4722,7 @@ fn log_pr_decision_writes_valid_jsonl() {
     assert_eq!(entry["issue"], "approved");
     assert_eq!(entry["owner_active"], true);
     assert_eq!(entry["owner_idle"], false);
-    assert_eq!(entry["at_dev_limit"], false);
+    assert_eq!(entry["at_task_limit"], false);
     assert_eq!(entry["has_active_reviewer"], false);
     assert_eq!(entry["task_id"], "7");
     assert_eq!(entry["channel"], "installer");
@@ -4766,7 +4766,7 @@ fn log_pr_decision_appends_multiple_entries() {
             ctx: &ctx,
             owner_is_active: false,
             owner_is_idle: false,
-            at_dev_limit: false,
+            at_task_limit: false,
             source: "webhook",
         });
     }

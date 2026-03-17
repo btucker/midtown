@@ -39,15 +39,14 @@ pub(super) async fn handle_coworker_spawn(
         let ps = state.persistent_state.lock().await;
         ps.channel_lead_names()
     };
-    if state.is_at_dev_limit(&channel_lead_names) {
+    if state.is_at_task_limit() {
         return Response::error(
             id,
             RpcError::new(
                 -32603,
                 format!(
-                    "Dev coworkers limit ({}) reached (reserving {} slots for reviewers). Adjust with MIDTOWN_MAX_COWORKERS or max_coworkers in config.toml",
-                    state.max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1),
-                    REVIEW_HEADROOM
+                    "In-progress task limit ({}) reached. Adjust with MIDTOWN_MAX_IN_PROGRESS_TASKS or max_in_progress_tasks in config.toml",
+                    state.max_in_progress_tasks
                 ),
             ),
         );
@@ -1084,7 +1083,7 @@ fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
 /// current (microsecond latency). The TUI polls this at 1–2s to keep the
 /// coworker status panel up-to-date without delay.
 ///
-/// Returns: coworkers, max_coworkers, lead_working, tool_activity,
+/// Returns: coworkers, max_in_progress_tasks, lead_working, tool_activity,
 ///          channel_leads, channel_leads_working.
 pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) -> Response {
     let (coworkers_data, channel_lead_names) = build_coworkers_data(state).await;
@@ -1102,7 +1101,7 @@ pub(crate) async fn handle_coworkers_status(id: RequestId, state: &DaemonState) 
         id,
         serde_json::json!({
             "coworkers": coworkers_data,
-            "max_coworkers": state.max_coworkers,
+            "max_in_progress_tasks": state.max_in_progress_tasks,
             "lead_working": lead_working,
             "tool_activity": tool_activity,
             "channel_leads": channel_leads,

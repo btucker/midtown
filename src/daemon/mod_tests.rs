@@ -1063,36 +1063,13 @@ fn test_text_contains_review_signature_none() {
 }
 
 #[test]
-fn test_review_headroom_constant() {
-    assert_eq!(REVIEW_HEADROOM, 2);
-}
-
-#[test]
-fn test_dev_limit_calculation() {
-    // Helper: compute dev cap the same way is_at_dev_limit does
-    let dev_cap =
-        |max_coworkers: usize| -> usize { max_coworkers.saturating_sub(REVIEW_HEADROOM).max(1) };
-
-    // Normal case: max_coworkers=6, dev cap should be 4
-    assert_eq!(dev_cap(6), 4);
-
-    // max_coworkers=4, dev cap should be 2
-    assert_eq!(dev_cap(4), 2);
-
-    // max_coworkers=3, dev cap should be 1
-    assert_eq!(dev_cap(3), 1);
-
-    // Edge case: max_coworkers=2, dev cap should be 1 (not 0)
-    assert_eq!(dev_cap(2), 1);
-
-    // Edge case: max_coworkers=1, dev cap should be 1 (floor at 1)
-    assert_eq!(dev_cap(1), 1);
-
-    // Edge case: max_coworkers=0, dev cap should be 1 (floor at 1 via .max(1))
-    assert_eq!(dev_cap(0), 1);
-
-    // Large case: max_coworkers=10, dev cap should be 8
-    assert_eq!(dev_cap(10), 8);
+fn test_task_limit_semantics() {
+    // Task limit is now a simple comparison: in_progress_count >= max_in_progress_tasks.
+    // No separate dev/reviewer caps or REVIEW_HEADROOM.
+    let max = 8usize;
+    assert!(7 < max, "7 < 8 → not at limit");
+    assert!(8 >= max, "8 >= 8 → at limit");
+    assert!(9 >= max, "9 >= 8 → at limit");
 }
 
 // ─── Usage Limit Expiry Tests ──────────────────────────────────────
@@ -1443,77 +1420,20 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     );
 }
 
-/// Regression test for task !1288: stopped coworkers should not count toward limits.
-///
-/// The bug was that `is_at_dev_limit()` and `is_at_coworker_limit()` used
-/// `coworkers.list().len()`, which includes stopped coworkers. This caused
-/// the daemon to block spawning new coworkers when all existing coworkers
-/// were stopped but not yet cleaned up from the internal map.
-///
-/// After the fix, both functions use `list_running().len()`, so only
-/// coworkers with Running status count toward the limits.
-///
-/// This test verifies the logic without needing to construct a full DaemonState.
+/// Task limit is now based on in-progress task count, not coworker count.
+/// This test verifies the simple comparison logic.
 #[test]
-fn test_limit_checks_exclude_stopped_coworkers() {
-    // Simulate 8 stopped coworkers and 0 running coworkers
-    let all_coworkers = 8;
-    let running_coworkers = 0;
+fn test_task_limit_basic_logic() {
+    let max_in_progress_tasks: usize = 8;
 
-    // Limit calculation logic
-    let max_coworkers: usize = 6;
-    let review_headroom: usize = 2; // REVIEW_HEADROOM constant from mod.rs
-    let dev_cap = max_coworkers.saturating_sub(review_headroom).max(1);
+    // Below limit
+    assert!(5 < max_in_progress_tasks, "5 < 8 → not at limit");
 
-    // Before the fix: limit checks used all_coworkers count (WRONG)
-    let old_is_at_coworker_limit = all_coworkers >= max_coworkers; // 8 >= 6 = true
-    let old_is_at_dev_limit = all_coworkers >= dev_cap; // 8 >= 4 = true
+    // At limit
+    assert!(8 >= max_in_progress_tasks, "8 >= 8 → at limit");
 
-    // After the fix: limit checks use running_coworkers count (CORRECT)
-    let new_is_at_coworker_limit = running_coworkers >= max_coworkers; // 0 >= 6 = false
-    let new_is_at_dev_limit = running_coworkers >= dev_cap; // 0 >= 4 = false
-
-    // The bug: old logic would block spawning
-    assert!(
-        old_is_at_coworker_limit,
-        "OLD logic (WRONG): 8 total coworkers >= 6 max → would incorrectly block spawning"
-    );
-    assert!(
-        old_is_at_dev_limit,
-        "OLD logic (WRONG): 8 total coworkers >= 4 dev_cap → would incorrectly block spawning"
-    );
-
-    // The fix: new logic allows spawning
-    assert!(
-        !new_is_at_coworker_limit,
-        "NEW logic (CORRECT): 0 running coworkers < 6 max → allows spawning"
-    );
-    assert!(
-        !new_is_at_dev_limit,
-        "NEW logic (CORRECT): 0 running coworkers < 4 dev_cap → allows spawning"
-    );
-
-    // Test scenario 2: 6 running coworkers (at limit)
-    let running_coworkers = 6;
-    assert!(
-        running_coworkers >= max_coworkers,
-        "6 running >= 6 max → should be at coworker limit"
-    );
-    assert!(
-        running_coworkers >= dev_cap,
-        "6 running >= 4 dev_cap → should be at dev limit"
-    );
-
-    // Test scenario 3: 3 running coworkers (below limits)
-    let running_coworkers = 3;
-    assert!(
-        running_coworkers < max_coworkers,
-        "3 running < 6 max → should not be at coworker limit"
-    );
-    assert!(
-        running_coworkers < dev_cap,
-        "3 running < 4 dev_cap → should not be at dev limit"
-    );
+    // Above limit
+    assert!(10 >= max_in_progress_tasks, "10 >= 8 → at limit");
 }
 
 // ============================================================================

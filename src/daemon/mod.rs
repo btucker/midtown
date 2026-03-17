@@ -40,7 +40,7 @@ mod webhook_fwd;
 
 use constants::*;
 pub use constants::{
-    DEFAULT_MAX_COWORKERS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
+    DEFAULT_MAX_IN_PROGRESS_TASKS, DEFAULT_PR_POLL_INTERVAL_SECS, DEFAULT_WEBHOOK_PORT,
     DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS, PR_NUDGE_COOLDOWN_SECS,
 };
 pub use state::DaemonPersistentState;
@@ -202,8 +202,8 @@ pub struct DaemonConfig {
     pub pr_poll_interval_secs: u64,
     /// Enable chat monitor for @mention routing. Default: true.
     pub chat_monitor_enabled: bool,
-    /// Maximum number of concurrent coworkers. Default: 16.
-    pub max_coworkers: usize,
+    /// Maximum number of in-progress tasks. Default: 8.
+    pub max_in_progress_tasks: usize,
     /// Explicit project name (from --project flag). Overrides auto-detection.
     pub project_name: Option<String>,
     /// GitHub username for `gh` CLI authentication.
@@ -285,18 +285,20 @@ impl Default for DaemonConfig {
                 .or(daemon_section.lead_session_refresh_interval_secs)
                 .unwrap_or(crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS);
 
-        // Max concurrent coworkers: env var > project config > global config > default (16)
-        let max_coworkers = std::env::var("MIDTOWN_MAX_COWORKERS")
+        // Max in-progress tasks: env var > project config > global config > default (8)
+        let max_in_progress_tasks = std::env::var("MIDTOWN_MAX_IN_PROGRESS_TASKS")
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| {
                 if project_name.is_empty() {
-                    crate::config::GlobalConfig::load().default.max_coworkers()
+                    crate::config::GlobalConfig::load()
+                        .default
+                        .max_in_progress_tasks()
                 } else {
-                    crate::config::get_project_config(&project_name).max_coworkers()
+                    crate::config::get_project_config(&project_name).max_in_progress_tasks()
                 }
             })
-            .unwrap_or(DEFAULT_MAX_COWORKERS);
+            .unwrap_or(DEFAULT_MAX_IN_PROGRESS_TASKS);
 
         let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
@@ -317,7 +319,7 @@ impl Default for DaemonConfig {
             webhook_restart_interval_secs,
             pr_poll_interval_secs,
             chat_monitor_enabled,
-            max_coworkers,
+            max_in_progress_tasks,
             project_name: None,
             github_user,
             lead_session_refresh_interval_secs,
@@ -478,8 +480,8 @@ pub(crate) struct DaemonState {
     persistent_state: Mutex<state::DaemonPersistentState>,
     /// Broadcast sender for pushing channel messages to WebSocket clients
     web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
-    /// Maximum number of concurrent coworkers
-    max_coworkers: usize,
+    /// Maximum number of in-progress tasks
+    max_in_progress_tasks: usize,
     /// Web Push notification manager for sending notifications to PWA clients
     /// (shared with the webserver to avoid race conditions on subscription storage)
     push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
@@ -1135,64 +1137,23 @@ impl DaemonState {
         crate::daemon::profile_pool::select_profile(&pool, &ps.profile_pool_state)
     }
 
-    /// Check if the daemon is at the absolute coworker limit (including reviewer headroom).
+    /// Check if the daemon is at the in-progress task limit.
     ///
-    /// Reviewers may exceed `max_coworkers` by up to `REVIEW_HEADROOM` slots,
-    /// so the absolute cap is `max_coworkers + REVIEW_HEADROOM`. This allows
-    /// reviewer spawning to proceed even when the dev cap is fully used.
+    /// Reads task status from disk. Used by RPC handlers (`rpc_coworker.rs`,
+    /// `chat.rs`) that operate outside the snapshot pipeline and don't have
+    /// access to a pre-computed snapshot. The snapshot pipeline uses
+    /// `snap.is_at_task_limit` (pre-computed from `in_progress_tasks.len()`)
+    /// for pure decision functions.
     ///
-    /// The lead (repo-named or legacy "lead") and channel leads are excluded:
-    /// they register in CoworkerManager but are not dev/reviewer slots.
-    fn is_at_coworker_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
-        let non_lead_count = self
-            .coworkers
-            .list_running()
+    /// Orphaned tasks (in-progress but no running coworker) DO count toward
+    /// the limit — orphan recovery will reassign or clear them.
+    fn is_at_task_limit(&self) -> bool {
+        let tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let in_progress_count = tasks
             .iter()
-            .filter(|cw| {
-                helpers::is_non_lead_coworker(&cw.name, &self.project_name, channel_lead_names)
-            })
+            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
             .count();
-        non_lead_count >= self.max_coworkers + REVIEW_HEADROOM
-    }
-
-    /// Check if the daemon is at the dev coworker limit.
-    ///
-    /// Dev cap equals `max_coworkers` — REVIEW_HEADROOM is NOT subtracted here.
-    /// Instead, `is_at_coworker_limit()` uses `max_coworkers + REVIEW_HEADROOM`
-    /// so reviewers can exceed the normal dev cap by up to REVIEW_HEADROOM slots.
-    ///
-    /// The lead (repo-named or legacy "lead") and channel leads are excluded:
-    /// they register in CoworkerManager but are not dev/reviewer slots.
-    fn is_at_dev_limit(&self, channel_lead_names: &std::collections::HashSet<String>) -> bool {
-        let non_lead_count = self
-            .coworkers
-            .list_running()
-            .iter()
-            .filter(|cw| {
-                helpers::is_non_lead_coworker(&cw.name, &self.project_name, channel_lead_names)
-            })
-            .count();
-        non_lead_count >= self.max_coworkers
-    }
-
-    /// Check if a coworker slot is available for spawning.
-    ///
-    /// This combines two checks:
-    /// 1. We're not at the max coworker limit (absolute cap)
-    /// 2. There's an available name in the name pool
-    ///
-    /// Use this for diagnostic messages and decisions about whether spawning
-    /// is possible. For actual spawning, use the individual checks to get
-    /// better error messages.
-    fn has_available_coworker_slot(
-        &self,
-        channel_lead_names: &std::collections::HashSet<String>,
-    ) -> bool {
-        !self.is_at_coworker_limit(channel_lead_names)
-            && self
-                .coworkers
-                .next_available_name_excluding(channel_lead_names)
-                .is_some()
+        in_progress_count >= self.max_in_progress_tasks
     }
 
     /// Check if a PR has at least one completed review.
@@ -1305,7 +1266,7 @@ impl DaemonState {
         all_repo_paths: Vec<PathBuf>,
         channel_router: crate::ChannelRouter,
         web_updates_tx: Option<tokio::sync::broadcast::Sender<WebUpdate>>,
-        max_coworkers: usize,
+        max_in_progress_tasks: usize,
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
         shutdown_tx: broadcast::Sender<()>,
@@ -1421,7 +1382,7 @@ impl DaemonState {
             cooldowns: std::sync::Mutex::new(crate::rules::CooldownTracker::new()),
             persistent_state: Mutex::new(persistent_state),
             web_updates_tx,
-            max_coworkers,
+            max_in_progress_tasks,
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
             last_pr_poll_hash: Mutex::new(0),
@@ -3111,7 +3072,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
             Some(coworker_manager.clone()),
             all_repo_paths.clone(),
             default_branch.clone(),
-            config.max_coworkers,
+            config.max_in_progress_tasks,
         )
         .await
         {
@@ -3151,16 +3112,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         all_repo_paths,
         channel_router,
         web_updates_tx,
-        config.max_coworkers,
+        config.max_in_progress_tasks,
         shared_push_manager,
         default_branch,
         shutdown_tx.clone(),
     )?);
     info!(
-        "Max coworkers limit: {} dev slots, {} reviewer headroom (absolute cap: {})",
-        config.max_coworkers,
-        REVIEW_HEADROOM,
-        config.max_coworkers + REVIEW_HEADROOM
+        "Max in-progress tasks limit: {}",
+        config.max_in_progress_tasks
     );
 
     // Recover coworker workflow state from their state files across daemon restarts.

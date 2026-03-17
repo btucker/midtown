@@ -28,14 +28,14 @@ mod tests {
         let reviewer = "park";
         let active_coworkers = vec!["york".to_string()];
         let idle_coworkers = vec!["york".to_string()];
-        let at_dev_limit = false;
+        let at_task_limit = false;
         let message = "Review feedback";
 
         let action = decide_pr_action(
             task_owner,
             &active_coworkers,
             &idle_coworkers,
-            at_dev_limit,
+            at_task_limit,
             message,
             PrActionContext::PrComment {
                 actor: reviewer.to_string(),
@@ -59,14 +59,14 @@ mod tests {
         let reviewer = "park";
         let active_coworkers = vec!["york".to_string()];
         let idle_coworkers = vec![]; // york is busy
-        let at_dev_limit = false;
+        let at_task_limit = false;
         let message = "Review feedback";
 
         let action = decide_pr_action(
             task_owner,
             &active_coworkers,
             &idle_coworkers,
-            at_dev_limit,
+            at_task_limit,
             message,
             PrActionContext::PrComment {
                 actor: reviewer.to_string(),
@@ -115,14 +115,14 @@ mod tests {
         let reviewer = "park";
         let active_coworkers = vec![]; // york is not active
         let idle_coworkers = vec![];
-        let at_dev_limit = false;
+        let at_task_limit = false;
         let message = "Review feedback";
 
         let action = decide_pr_action(
             task_owner,
             &active_coworkers,
             &idle_coworkers,
-            at_dev_limit,
+            at_task_limit,
             message,
             PrActionContext::PrComment {
                 actor: reviewer.to_string(),

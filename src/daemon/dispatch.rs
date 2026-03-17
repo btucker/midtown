@@ -13,7 +13,7 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
-use super::helpers::{get_merged_task_pr, is_non_lead_coworker, is_project_lead};
+use super::helpers::{get_merged_task_pr, is_project_lead};
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -480,7 +480,7 @@ where
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.coworkers.active_names,
-        at_dev_limit: snap.is_at_dev_limit,
+        at_task_limit: snap.is_at_task_limit,
         coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
@@ -963,8 +963,8 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     }
 
     // At dev limit — cannot spawn any more coworkers.
-    if snap.is_at_dev_limit {
-        debug!("At dev limit — skipping no-session fallback dispatch");
+    if snap.is_at_task_limit {
+        debug!("At task limit — skipping no-session fallback dispatch");
         return effects;
     }
 
@@ -988,7 +988,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
         active_names: &snap.coworkers.active_names,
-        at_dev_limit: snap.is_at_dev_limit,
+        at_task_limit: snap.is_at_task_limit,
         coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
@@ -1517,7 +1517,7 @@ fn dispatch_owned_pending_tasks(
             task_subject,
             owner,
             &snap.coworkers.active_names,
-            snap.is_at_dev_limit,
+            snap.is_at_task_limit,
             on_nudge_cooldown,
             is_owner_reviewer,
             has_in_progress_task,
@@ -1739,24 +1739,15 @@ fn dispatch_unowned_pending_tasks(
     // Track NEW spawns queued (for dev limit enforcement). Nudges to already-running
     // coworkers (grouped tasks) don't count — only fresh spawns.
     let mut spawns_queued_this_tick: usize = 0;
-    // Dev cap = max_coworkers (REVIEW_HEADROOM does NOT reduce dev slots).
-    let dev_cap = state.max_coworkers;
-    // Use running coworkers from snapshot (excludes lead and channel leads).
-    let channel_lead_names = snap.channel_lead_names();
-    let current_coworker_count = snap
-        .coworkers
-        .running_coworkers
-        .iter()
-        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.project_name, &channel_lead_names))
-        .count();
+    let in_progress_count = snap.in_progress_tasks.len();
+    let task_cap = snap.max_in_progress_tasks;
 
     for task in snap.pending_tasks_without_owners.iter() {
-        // Re-check dev limit after each spawn decision, accounting for spawns queued this tick.
-        let effective_count = current_coworker_count + spawns_queued_this_tick;
-        if effective_count >= dev_cap {
+        let effective_count = in_progress_count + spawns_queued_this_tick;
+        if effective_count >= task_cap {
             debug!(
-                "Dev coworkers limit reached ({}+{} >= {}), deferring unowned task !{}",
-                current_coworker_count, spawns_queued_this_tick, dev_cap, task.id
+                "In-progress task limit reached ({}+{} >= {}), deferring unowned task !{}",
+                in_progress_count, spawns_queued_this_tick, task_cap, task.id
             );
             break;
         }

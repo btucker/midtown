@@ -180,8 +180,8 @@ pub struct WebState {
     pub all_repo_paths: Vec<std::path::PathBuf>,
     /// Default branch name (e.g. "main" or "master")
     pub default_branch: String,
-    /// Maximum number of coworkers that can be spawned
-    pub max_coworkers: usize,
+    /// Maximum number of in-progress tasks
+    pub max_in_progress_tasks: usize,
     /// Cached GitHub repo full names (owner/repo) by repo path.
     /// Repo names never change during a session, so we cache indefinitely.
     pub repo_name_cache: std::sync::RwLock<std::collections::HashMap<std::path::PathBuf, String>>,
@@ -1401,7 +1401,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         "repo_full_name": repo_full_name,
         "repo_status": repo_status,
         "repo_statuses": repo_statuses,
-        "max_coworkers": state.max_coworkers,
+        "max_in_progress_tasks": state.max_in_progress_tasks,
         "user_display_name": user_display_name,
         "lead_working": lead_working,
         "channel_leads_working": channel_leads_working,

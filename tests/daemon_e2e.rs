@@ -1605,7 +1605,7 @@ fn test_global_config_generates_template() {
     let config: midtown::config::GlobalConfig =
         toml::from_str(&template).expect("Template should be valid TOML");
     assert!(
-        config.default.max_coworkers().is_none(),
+        config.default.max_in_progress_tasks().is_none(),
         "All options should be commented out (defaults)"
     );
 }

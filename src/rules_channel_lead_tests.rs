@@ -24,7 +24,7 @@ fn channel_lead_owned_task_is_skipped() {
         "some task",
         "ops",
         &HashSet::new(), // active_names
-        false,           // at_dev_limit
+        false,           // at_task_limit
         false,           // on_nudge_cooldown
         false,           // is_owner_reviewer
         false,           // has_in_progress_task
@@ -47,7 +47,7 @@ fn channel_lead_owned_task_not_orphan_recovered() {
     let ctx = OrphanRecoveryContext {
         in_progress: &tasks,
         active_names: &empty,
-        at_dev_limit: false,
+        at_task_limit: false,
         coworkers_with_open_prs: &empty,
         review_feedback_pr_coworkers: &empty,
         recently_stopped: &empty,

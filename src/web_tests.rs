@@ -55,7 +55,7 @@ async fn test_mobile_send_message_forwards_to_daemon() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -245,7 +245,7 @@ async fn test_coworker_nudge_returns_error() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -306,7 +306,7 @@ async fn test_coworker_nudge_not_supported_via_web_ui() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -369,7 +369,7 @@ async fn test_error_channel_backpressure() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -643,7 +643,7 @@ async fn test_answer_question_invalid_coworker_name() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -672,7 +672,7 @@ async fn test_answer_question_empty_answer() {
         push_manager: None,
         all_repo_paths: Vec::new(),
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
@@ -1041,7 +1041,7 @@ fn make_workflow_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> Ar
         push_manager: None,
         all_repo_paths: repo_paths,
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     })
 }
@@ -1327,7 +1327,7 @@ fn make_agents_md_state(dir_key: &str, repo_paths: Vec<std::path::PathBuf>) -> A
         push_manager: None,
         all_repo_paths: repo_paths,
         default_branch: "main".to_string(),
-        max_coworkers: 8,
+        max_in_progress_tasks: 8,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     })
 }
