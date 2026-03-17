@@ -8,26 +8,17 @@
 //! Run with: `cargo test --test pr_management_e2e`
 
 use serde_json::json;
-use std::collections::HashMap;
 
 // Re-exported types from daemon module
 use midtown::daemon::{PrIssueTracker, PrIssueType};
 
 // Helper functions for PR detection
 use midtown::daemon::helpers::{
-    coworker_from_branch, detect_pr_issues, is_auto_mergeable, text_contains_review_signature,
+    detect_pr_issues, is_auto_mergeable, text_contains_review_signature,
 };
 
 // Decision functions
 use midtown::rules::{PrAction, PrActionContext, decide_pr_action};
-
-/// Helper to build a branch_owners map for test PRs.
-fn branch_owners(entries: &[(&str, &str)]) -> HashMap<String, String> {
-    entries
-        .iter()
-        .map(|(branch, owner)| (branch.to_string(), owner.to_string()))
-        .collect()
-}
 
 // ---------------------------------------------------------------------------
 // Test 1: PR Needing Review Spawns Reviewer
@@ -65,16 +56,6 @@ fn pr_needing_review_spawns_reviewer() {
             PrIssueType::CiFailed | PrIssueType::MergeConflict | PrIssueType::ChangesRequested
         )),
         "PR needing review should have no blocking issues"
-    );
-
-    // Verify owner extraction works via branch_owners map
-    let map = branch_owners(&[("task-42-add-auth", "amsterdam")]);
-    let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch, &map);
-    assert_eq!(
-        owner,
-        Some("amsterdam".to_string()),
-        "should extract coworker name from branch via map"
     );
 
     // Verify this PR does NOT yet have a Claude review
@@ -341,11 +322,7 @@ fn pr_comment_nudges_owner() {
         "should detect changes_requested"
     );
 
-    // Owner extraction via map
-    let map = branch_owners(&[("task-60-logging", "amsterdam")]);
-    let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch, &map).expect("should extract owner");
-    assert_eq!(owner, "amsterdam");
+    let owner = "amsterdam".to_string();
 
     // Test the decision function: owner is active and idle → nudge
     let active_coworkers = vec!["amsterdam".to_string(), "york".to_string()];
@@ -368,21 +345,7 @@ fn pr_comment_nudges_owner() {
 /// Test that inactive owners are spawned (not nudged) for PR issues.
 #[test]
 fn pr_issue_spawns_inactive_owner() {
-    let pr = json!({
-        "number": 61,
-        "title": "feat: Database migration",
-        "headRefName": "task-61-db-migration",
-        "mergeable": "MERGEABLE",
-        "state": "OPEN",
-        "isDraft": false,
-        "reviewDecision": "CHANGES_REQUESTED",
-        "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]
-    });
-
-    let map = branch_owners(&[("task-61-db-migration", "lexington")]);
-    let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch, &map).expect("should extract owner");
-    assert_eq!(owner, "lexington");
+    let owner = "lexington".to_string();
 
     // lexington is NOT in active coworkers
     let active_coworkers = vec!["amsterdam".to_string()];
@@ -566,46 +529,6 @@ fn lead_branch_pr_comment_detection() {
     assert!(
         is_lead_branch(head_ref),
         "Should detect lead branch from PR data"
-    );
-
-    // Coworker extraction should return None for lead branches
-    let empty_map = HashMap::new();
-    let owner = coworker_from_branch(head_ref, &empty_map);
-    assert_eq!(
-        owner, None,
-        "Lead branches should not extract a coworker name"
-    );
-}
-
-/// Test that non-lead PRs resolve via branch_owners map.
-#[test]
-fn non_lead_branch_pr_resolves_via_map() {
-    use midtown::daemon::helpers::is_lead_branch;
-
-    let coworker_pr = json!({
-        "number": 501,
-        "title": "feat: Add feature",
-        "headRefName": "task-501-add-feature",
-        "mergeable": "MERGEABLE",
-        "state": "OPEN",
-        "isDraft": false,
-        "reviewDecision": "",
-        "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}]
-    });
-
-    let head_ref = coworker_pr["headRefName"].as_str().unwrap();
-    assert!(
-        !is_lead_branch(head_ref),
-        "Should NOT detect task branch as lead"
-    );
-
-    // Coworker extraction via map
-    let map = branch_owners(&[("task-501-add-feature", "madison")]);
-    let owner = coworker_from_branch(head_ref, &map);
-    assert_eq!(
-        owner,
-        Some("madison".to_string()),
-        "Should extract coworker from branch via map"
     );
 }
 

@@ -598,41 +598,6 @@ fn ci_not_passed_with_commit_status_error() {
 }
 
 // -------------------------------------------------------------------------
-// coworker_from_branch — resolves owner via branch_owners map
-// -------------------------------------------------------------------------
-
-#[test]
-fn coworker_from_branch_resolves_via_map() {
-    let mut map = std::collections::HashMap::new();
-    map.insert("task-42-fix-auth".to_string(), "lexington".to_string());
-    map.insert("review-pr-99".to_string(), "amsterdam".to_string());
-
-    assert_eq!(
-        coworker_from_branch("task-42-fix-auth", &map),
-        Some("lexington".to_string())
-    );
-    assert_eq!(
-        coworker_from_branch("review-pr-99", &map),
-        Some("amsterdam".to_string())
-    );
-}
-
-#[test]
-fn coworker_from_branch_returns_none_for_unknown() {
-    let map = std::collections::HashMap::new();
-    assert_eq!(
-        coworker_from_branch("unknown-branch", &map),
-        None,
-        "unknown branch should return None"
-    );
-    assert_eq!(
-        coworker_from_branch("main", &map),
-        None,
-        "main should return None"
-    );
-}
-
-// -------------------------------------------------------------------------
 // text_contains_review_signature — detects Claude reviews
 // -------------------------------------------------------------------------
 

@@ -178,10 +178,6 @@ fn test_no_duplicate_orphaned_pr_tasks() {
     });
     harness.snapshot_mut().pr.open_prs_data.push(orphan_pr);
     harness.snapshot_mut().reviewer.reviewed_prs.insert(8888);
-    harness
-        .snapshot_mut()
-        .worktree_branch_owners
-        .insert("task-999-test-orphan".to_string(), "broadway".to_string());
 
     // Tick 1: Reconcile should nudge the lead for the orphaned PR (not create a task)
     let effects1 = harness.tick(&DaemonEvent::PrPollTick);

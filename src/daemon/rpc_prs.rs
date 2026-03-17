@@ -644,7 +644,6 @@ pub(super) async fn handle_pr_review(
     // We pass the branch_owners_map so task-based branches (e.g. "task-42-...")
     // can be resolved to their author — preserving the self-review guard.
     let effects = super::pr::collect_reviewer_effects_with_source(
-        &snap.worktree_branch_owners,
         &snap.worktree_registry,
         &snap.coworkers.active_names,
         state,
