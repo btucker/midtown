@@ -712,7 +712,7 @@ impl MultiTickHarness {
                 format!("harness-{}", self.snapshot.all_tasks.len()),
                 pr_number,
             );
-            self.snapshot.pr.pr_task_index = PrTaskIndex::new(session_map, github_map);
+            self.snapshot.pr.pr_task_index = PrTaskIndex::from_task_maps(session_map, github_map);
         }
     }
 }

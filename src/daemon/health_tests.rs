@@ -2002,7 +2002,7 @@ fn test_dead_reviewer_respawn_inherits_task_channel() {
         .insert("lexington".to_string(), "sess-rev-200".to_string());
 
     // PR → task → channel chain
-    snap.pr.pr_task_index = snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(
         [(task_id.to_string(), pr_number)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
@@ -2407,7 +2407,7 @@ fn test_dead_reviewer_respawn_emits_coworker_stuck_workflow_event() {
         .insert("lexington".to_string(), "sess-rev-200".to_string());
 
     // PR → task → channel chain
-    snap.pr.pr_task_index = snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::from_task_maps(
         [(task_id.to_string(), pr_number)].into_iter().collect(),
         std::collections::HashMap::new(),
     );

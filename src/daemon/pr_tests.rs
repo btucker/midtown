@@ -638,7 +638,7 @@ fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.in_progress_tasks = in_progress_tasks;
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("100".to_string(), 100u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
@@ -692,7 +692,7 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
     // PR associations: both PRs are associated with the same task
     // Note: PrTaskIndex reverse map only supports one PR per task (from session_task_to_pr).
     // Use session map for the merged PR and github map for the duplicate.
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("1158".to_string(), 968u64)].into_iter().collect(),
         [("1158".to_string(), 999u64)].into_iter().collect(),
     );
@@ -1325,7 +1325,7 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
 
     // A task now exists for this PR (PR left orphaned state)
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("task-abc".to_string(), 42u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
@@ -1609,7 +1609,7 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     snap.reviewer.reviewed_prs.insert(43);
 
     // PR #43 has an active task association — it is NOT orphaned
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("999".to_string(), 43u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
@@ -2109,7 +2109,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
     let mut snap = minimal_snapshot_for_test();
 
     // Set up session data: PR #42 → task "123" → session "sess-abc" → current_name "madison"
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("123".to_string(), 42u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
@@ -2844,7 +2844,7 @@ fn test_collect_pr_task_link_effects_links_unlinked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("100".to_string(), 42u64)].into_iter().collect(),
     );
@@ -2891,7 +2891,7 @@ fn test_collect_pr_task_link_effects_skips_already_linked_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("200".to_string(), 99u64)].into_iter().collect(),
     );
@@ -2946,7 +2946,7 @@ fn test_collect_pr_task_link_effects_skips_completed_task() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("400".to_string(), 88u64)].into_iter().collect(),
     );
@@ -2981,7 +2981,7 @@ fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
 
     let mut snap = minimal_snapshot_for_test();
     snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::new(
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("300".to_string(), 77u64)].into_iter().collect(),
     ); // actual open PR

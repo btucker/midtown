@@ -72,10 +72,30 @@ pub struct PrTaskIndex {
 }
 
 impl PrTaskIndex {
-    /// Build a new index from the two data sources.
+    /// Build a new index from session-derived and GitHub-title-derived data.
     ///
-    /// The `pr_to_task` reverse map is derived from `session_task_to_pr` automatically.
+    /// `pr_to_task` is built directly from sessions (not by reversing `session_task_to_pr`)
+    /// because `session_task_to_pr` is many-to-one (multiple sessions with different PRs
+    /// can map to the same task, but only one PR survives in the task→PR HashMap). Building
+    /// `pr_to_task` directly preserves all PR→task associations.
     pub fn new(
+        session_task_to_pr: HashMap<String, u64>,
+        github_task_to_pr: HashMap<String, u64>,
+        pr_to_task: HashMap<u64, String>,
+    ) -> Self {
+        Self {
+            session_task_to_pr,
+            github_task_to_pr,
+            pr_to_task,
+        }
+    }
+
+    /// Convenience constructor that derives `pr_to_task` by reversing `session_task_to_pr`.
+    ///
+    /// Safe when each task maps to at most one PR (the common case in tests). In production,
+    /// prefer `new()` with an independently-built `pr_to_task` from session records to avoid
+    /// losing associations when multiple PRs map to the same task.
+    pub fn from_task_maps(
         session_task_to_pr: HashMap<String, u64>,
         github_task_to_pr: HashMap<String, u64>,
     ) -> Self {
@@ -83,11 +103,7 @@ impl PrTaskIndex {
             .iter()
             .map(|(task, &pr)| (pr, task.clone()))
             .collect();
-        Self {
-            session_task_to_pr,
-            github_task_to_pr,
-            pr_to_task,
-        }
+        Self::new(session_task_to_pr, github_task_to_pr, pr_to_task)
     }
 
     /// Look up the PR number for a task from session data.
@@ -1013,7 +1029,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let pr_task_index = {
         let ps = state.persistent_state.lock().await;
         let session_task_to_pr = super::state::task_to_pr_map_from_sessions(&ps.sessions);
-        PrTaskIndex::new(session_task_to_pr, github_open_pr_task_ids)
+        let pr_to_task = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        PrTaskIndex::new(session_task_to_pr, github_open_pr_task_ids, pr_to_task)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────

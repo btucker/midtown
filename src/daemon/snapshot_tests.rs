@@ -802,14 +802,14 @@ fn test_pr_task_index_deserializes_from_old_field_names() {
     let _pair_count = snap.pr.pr_task_index.pr_task_pairs().count();
 }
 
-/// Verify PrTaskIndex::new() derives pr_to_task from session_task_to_pr.
+/// Verify PrTaskIndex::from_task_maps() derives pr_to_task from session_task_to_pr.
 #[test]
-fn test_pr_task_index_new_derives_reverse_map() {
+fn test_pr_task_index_from_task_maps_derives_reverse_map() {
     let session: HashMap<String, u64> = [("task-1".to_string(), 100), ("task-2".to_string(), 200)]
         .into_iter()
         .collect();
     let github: HashMap<String, u64> = [("task-3".to_string(), 300)].into_iter().collect();
-    let index = PrTaskIndex::new(session, github);
+    let index = PrTaskIndex::from_task_maps(session, github);
 
     assert_eq!(index.session_pr_for_task("task-1"), Some(100));
     assert_eq!(index.session_pr_for_task("task-2"), Some(200));
@@ -819,4 +819,25 @@ fn test_pr_task_index_new_derives_reverse_map() {
     assert!(index.task_has_pr("task-1"));
     assert!(index.task_has_pr("task-3")); // github source
     assert!(!index.task_has_pr("task-999"));
+}
+
+/// Verify PrTaskIndex::new() preserves all PR→task pairs even when multiple PRs map to one task.
+#[test]
+fn test_pr_task_index_new_preserves_multiple_prs_per_task() {
+    let session: HashMap<String, u64> = [("42".to_string(), 200)].into_iter().collect(); // only latest PR survives
+    let github: HashMap<String, u64> = HashMap::new();
+    // But pr_to_task built directly from sessions has both
+    let pr_to_task: HashMap<u64, String> = [(100, "42".to_string()), (200, "42".to_string())]
+        .into_iter()
+        .collect();
+    let index = PrTaskIndex::new(session, github, pr_to_task);
+
+    // session_task_to_pr only has the latest
+    assert_eq!(index.session_pr_for_task("42"), Some(200));
+    // but pr_to_task has both
+    assert_eq!(index.task_for_pr(100), Some("42"));
+    assert_eq!(index.task_for_pr(200), Some("42"));
+    // pr_task_pairs iterates all PR→task associations
+    let pairs: Vec<_> = index.pr_task_pairs().collect();
+    assert_eq!(pairs.len(), 2);
 }

@@ -2523,8 +2523,10 @@ pub fn should_recover_task_test_helper(
     if let Some(owner) = &task.owner {
         active_names.insert(owner.to_lowercase());
     }
-    let pr_task_index =
-        snapshot::PrTaskIndex::new(tasks_with_open_prs.clone(), github_open_pr_task_ids.clone());
+    let pr_task_index = snapshot::PrTaskIndex::from_task_maps(
+        tasks_with_open_prs.clone(),
+        github_open_pr_task_ids.clone(),
+    );
     !is_task_pr_protected(task, merged_pr_numbers, &pr_task_index, &active_names)
 }
 
