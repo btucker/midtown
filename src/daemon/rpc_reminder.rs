@@ -24,6 +24,7 @@ pub(super) async fn handle_reminder_create(
     let reminder_id = ps.reminders.add(
         crate::reminders::ReminderTrigger::AllWorkMerged,
         message.to_string(),
+        crate::reminders::RepeatPolicy::Once,
     );
 
     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {

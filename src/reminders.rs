@@ -1,8 +1,9 @@
 //! Reminder system for the midtown daemon.
 //!
-//! Supports one-shot reminders that fire when a trigger condition is met.
+//! Supports reminders that fire when a trigger condition is met.
 //! Currently supports the `AllWorkMerged` trigger, which fires when there are
 //! no pending/in_progress tasks and no coworkers with open PRs.
+//! Reminders can fire once, a fixed number of times, or indefinitely.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,31 @@ impl std::fmt::Display for ReminderTrigger {
     }
 }
 
-/// A one-shot reminder that fires when its trigger condition is met.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// How many times a reminder can fire.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepeatPolicy {
+    /// Fire once (default, backward compatible with old `fired: bool`)
+    #[default]
+    Once,
+    /// Fire N additional times after the first (N+1 total fires).
+    /// E.g., Times(3) fires 4 times total, matching `--repeat 3` CLI semantics.
+    Times(u32),
+    /// Fire indefinitely
+    Indefinite,
+}
+
+impl std::fmt::Display for RepeatPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RepeatPolicy::Once => write!(f, "once"),
+            RepeatPolicy::Times(n) => write!(f, "{}x more", n),
+            RepeatPolicy::Indefinite => write!(f, "indefinite"),
+        }
+    }
+}
+
+/// A reminder that fires when its trigger condition is met.
+#[derive(Debug, Clone, Serialize)]
 pub struct Reminder {
     /// Unique identifier (short hex string)
     pub id: String,
@@ -38,8 +62,82 @@ pub struct Reminder {
     pub message: String,
     /// When the reminder was created
     pub created_at: DateTime<Utc>,
-    /// Whether the reminder has already fired
-    pub fired: bool,
+    /// How many times this reminder should fire
+    #[serde(default)]
+    pub repeat_policy: RepeatPolicy,
+    /// How many times the reminder has fired so far
+    #[serde(default)]
+    pub fire_count: u32,
+}
+
+/// Intermediary for backward-compatible deserialization.
+/// Handles both old format (`fired: bool`) and new format (`repeat_policy` + `fire_count`).
+#[derive(Deserialize)]
+struct ReminderRaw {
+    id: String,
+    trigger: ReminderTrigger,
+    message: String,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    repeat_policy: RepeatPolicy,
+    #[serde(default)]
+    fire_count: u32,
+    #[serde(default)]
+    fired: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for Reminder {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = ReminderRaw::deserialize(deserializer)?;
+        let fire_count = if raw.fire_count > 0 {
+            raw.fire_count
+        } else if raw.fired == Some(true) {
+            1
+        } else {
+            0
+        };
+        Ok(Reminder {
+            id: raw.id,
+            trigger: raw.trigger,
+            message: raw.message,
+            created_at: raw.created_at,
+            repeat_policy: raw.repeat_policy,
+            fire_count,
+        })
+    }
+}
+
+impl Reminder {
+    /// Whether this reminder can still fire.
+    pub fn is_active(&self) -> bool {
+        match self.repeat_policy {
+            RepeatPolicy::Once => self.fire_count == 0,
+            RepeatPolicy::Times(n) => self.fire_count <= n,
+            RepeatPolicy::Indefinite => true,
+        }
+    }
+
+    /// Human-readable description of remaining fires.
+    pub fn fires_remaining(&self) -> String {
+        match self.repeat_policy {
+            RepeatPolicy::Once => {
+                if self.fire_count == 0 {
+                    "1 fire remaining".to_string()
+                } else {
+                    "exhausted".to_string()
+                }
+            }
+            RepeatPolicy::Times(n) => {
+                let total = n.saturating_add(1);
+                let remaining = total.saturating_sub(self.fire_count);
+                format!("{}/{} fires remaining", remaining, total)
+            }
+            RepeatPolicy::Indefinite => format!("\u{221e} (fired {} times)", self.fire_count),
+        }
+    }
 }
 
 /// Persistent state for reminders.
@@ -81,14 +179,20 @@ impl ReminderState {
     }
 
     /// Add a new reminder and return its ID.
-    pub fn add(&mut self, trigger: ReminderTrigger, message: String) -> String {
+    pub fn add(
+        &mut self,
+        trigger: ReminderTrigger,
+        message: String,
+        repeat_policy: RepeatPolicy,
+    ) -> String {
         let id = generate_short_id();
         self.reminders.push(Reminder {
             id: id.clone(),
             trigger,
             message,
             created_at: Utc::now(),
-            fired: false,
+            repeat_policy,
+            fire_count: 0,
         });
         id
     }
@@ -100,9 +204,9 @@ impl ReminderState {
         self.reminders.len() < before
     }
 
-    /// Get all active (unfired) reminders.
+    /// Get all active (unfired or still repeating) reminders.
     pub fn active(&self) -> Vec<&Reminder> {
-        self.reminders.iter().filter(|r| !r.fired).collect()
+        self.reminders.iter().filter(|r| r.is_active()).collect()
     }
 }
 
@@ -147,19 +251,27 @@ mod tests {
     #[test]
     fn test_add_reminder() {
         let mut state = ReminderState::default();
-        let id = state.add(ReminderTrigger::AllWorkMerged, "Cut release".to_string());
+        let id = state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Cut release".to_string(),
+            RepeatPolicy::Once,
+        );
         assert!(!id.is_empty());
         assert_eq!(state.reminders.len(), 1);
         assert_eq!(state.active().len(), 1);
         assert_eq!(state.reminders[0].message, "Cut release");
         assert_eq!(state.reminders[0].trigger, ReminderTrigger::AllWorkMerged);
-        assert!(!state.reminders[0].fired);
+        assert_eq!(state.reminders[0].fire_count, 0);
     }
 
     #[test]
     fn test_cancel_reminder() {
         let mut state = ReminderState::default();
-        let id = state.add(ReminderTrigger::AllWorkMerged, "Test".to_string());
+        let id = state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Test".to_string(),
+            RepeatPolicy::Once,
+        );
         assert_eq!(state.reminders.len(), 1);
 
         assert!(state.cancel(&id));
@@ -172,9 +284,17 @@ mod tests {
     #[test]
     fn test_active_excludes_fired() {
         let mut state = ReminderState::default();
-        state.add(ReminderTrigger::AllWorkMerged, "Active".to_string());
-        state.add(ReminderTrigger::AllWorkMerged, "Fired".to_string());
-        state.reminders[1].fired = true;
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Active".to_string(),
+            RepeatPolicy::Once,
+        );
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Fired".to_string(),
+            RepeatPolicy::Once,
+        );
+        state.reminders[1].fire_count = 1;
 
         let active = state.active();
         assert_eq!(active.len(), 1);
@@ -187,18 +307,26 @@ mod tests {
         let path = dir.path().join("reminders.json");
 
         let mut state = ReminderState::default();
-        state.add(ReminderTrigger::AllWorkMerged, "Release v1".to_string());
-        state.add(ReminderTrigger::AllWorkMerged, "Deploy".to_string());
-        state.reminders[1].fired = true;
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Release v1".to_string(),
+            RepeatPolicy::Once,
+        );
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Deploy".to_string(),
+            RepeatPolicy::Once,
+        );
+        state.reminders[1].fire_count = 1;
 
         state.save(&path).unwrap();
 
         let loaded = ReminderState::load(&path).unwrap();
         assert_eq!(loaded.reminders.len(), 2);
         assert_eq!(loaded.reminders[0].message, "Release v1");
-        assert!(!loaded.reminders[0].fired);
+        assert_eq!(loaded.reminders[0].fire_count, 0);
         assert_eq!(loaded.reminders[1].message, "Deploy");
-        assert!(loaded.reminders[1].fired);
+        assert_eq!(loaded.reminders[1].fire_count, 1);
     }
 
     #[test]
@@ -224,5 +352,115 @@ mod tests {
         let coworkers = vec!["park".to_string()];
         let result = evaluate_trigger(&ReminderTrigger::AllWorkMerged, &coworkers);
         assert!(!result, "Should not fire when coworkers have open PRs");
+    }
+
+    #[test]
+    fn test_repeat_policy_default_is_once() {
+        let policy = RepeatPolicy::default();
+        assert_eq!(policy, RepeatPolicy::Once);
+    }
+
+    #[test]
+    fn test_active_with_repeat_once_after_fire() {
+        let mut state = ReminderState::default();
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Test".to_string(),
+            RepeatPolicy::Once,
+        );
+        state.reminders[0].fire_count = 1;
+        assert!(
+            state.active().is_empty(),
+            "Once reminder with fire_count=1 should be inactive"
+        );
+    }
+
+    #[test]
+    fn test_active_with_repeat_times() {
+        let mut state = ReminderState::default();
+        // Times(3) means 3 additional fires = 4 total
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Test".to_string(),
+            RepeatPolicy::Times(3),
+        );
+        state.reminders[0].fire_count = 3;
+        assert_eq!(
+            state.active().len(),
+            1,
+            "Times(3) with fire_count=3 still has 1 fire left"
+        );
+
+        state.reminders[0].fire_count = 4;
+        assert!(
+            state.active().is_empty(),
+            "Times(3) with fire_count=4 should be exhausted"
+        );
+    }
+
+    #[test]
+    fn test_active_with_repeat_indefinite() {
+        let mut state = ReminderState::default();
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Test".to_string(),
+            RepeatPolicy::Indefinite,
+        );
+        state.reminders[0].fire_count = 100;
+        assert_eq!(
+            state.active().len(),
+            1,
+            "Indefinite reminder is always active"
+        );
+    }
+
+    #[test]
+    fn test_backward_compat_fired_true_deserializes() {
+        // Old format: { "fired": true } with no repeat_policy/fire_count
+        let json = r#"{
+            "id": "abc123",
+            "trigger": {"type": "AllWorkMerged"},
+            "message": "old reminder",
+            "created_at": "2026-01-01T00:00:00Z",
+            "fired": true
+        }"#;
+        let reminder: Reminder = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            reminder.fire_count, 1,
+            "fired:true should map to fire_count=1"
+        );
+        assert_eq!(reminder.repeat_policy, RepeatPolicy::Once);
+    }
+
+    #[test]
+    fn test_backward_compat_fired_false_deserializes() {
+        let json = r#"{
+            "id": "abc123",
+            "trigger": {"type": "AllWorkMerged"},
+            "message": "old reminder",
+            "created_at": "2026-01-01T00:00:00Z",
+            "fired": false
+        }"#;
+        let reminder: Reminder = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            reminder.fire_count, 0,
+            "fired:false should map to fire_count=0"
+        );
+    }
+
+    #[test]
+    fn test_new_format_roundtrip() {
+        let mut state = ReminderState::default();
+        state.add(
+            ReminderTrigger::AllWorkMerged,
+            "Test".to_string(),
+            RepeatPolicy::Times(5),
+        );
+        state.reminders[0].fire_count = 2;
+
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: ReminderState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.reminders[0].repeat_policy, RepeatPolicy::Times(5));
+        assert_eq!(loaded.reminders[0].fire_count, 2);
     }
 }

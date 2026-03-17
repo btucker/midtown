@@ -342,7 +342,8 @@ fn test_fired_reminder_nudges_lead() {
         trigger: ReminderTrigger::AllWorkMerged,
         message: "Cut new release".to_string(),
         created_at: chrono::Utc::now(),
-        fired: false,
+        repeat_policy: crate::reminders::RepeatPolicy::Once,
+        fire_count: 0,
     };
     let fired = vec![&reminder];
 

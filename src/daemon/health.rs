@@ -852,7 +852,9 @@ fn build_reminder_effects(
 ) -> Vec<Effect> {
     let fired: Vec<&crate::reminders::Reminder> = reminders
         .iter()
-        .filter(|r| !r.fired && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers))
+        .filter(|r| {
+            r.is_active() && crate::reminders::evaluate_trigger(&r.trigger, open_pr_coworkers)
+        })
         .collect();
     effects_for_fired_reminders(&fired, dir_key, default_channel)
 }
