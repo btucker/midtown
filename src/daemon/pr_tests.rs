@@ -5313,7 +5313,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
     // from name selection via `reserved_names`. Register only the overflow
     // names (minus one) as coworkers so they're excluded via `used_names`.
     // This leaves exactly ONE overflow name available while staying under
-    // the coworker limit (6 registered < max_coworkers + REVIEW_HEADROOM = 10).
+    // the task limit (6 registered < max_in_progress_tasks = 8).
     //
     // Without the fix, both PRs see the same single overflow name and both
     // get assigned it. With the fix, the first PR claims it and the

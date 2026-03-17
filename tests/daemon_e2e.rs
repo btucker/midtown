@@ -552,8 +552,8 @@ fn test_daemon_rpc_status_returns_complete_daemon_state() {
         "Status should include active_coworkers count"
     );
     assert!(
-        result["max_coworkers"].is_number(),
-        "Status should include max_coworkers"
+        result["max_in_progress_tasks"].is_number(),
+        "Status should include max_in_progress_tasks"
     );
     assert!(
         result["max_dev_coworkers"].is_number(),
