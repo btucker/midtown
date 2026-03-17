@@ -11,10 +11,10 @@ fn test_main_lead_system_prompt_loads() {
 #[test]
 fn test_coworker_system_prompt_substitutes_name() {
     let prompt = coworker_system_prompt("lexington", "midtown", None);
-    // {name} should be replaced in Layer 2 (common.md) content
+    // New frontmatter uses $MIDTOWN_SESSION_ID instead of {name}
     assert!(
-        prompt.contains("<!-- midtown: lexington -->"),
-        "Coworker prompt should have {{name}} replaced in GitHub frontmatter"
+        prompt.contains("<!-- midtown session:$MIDTOWN_SESSION_ID -->"),
+        "Coworker prompt should contain session-based frontmatter"
     );
     assert!(!prompt.contains("{name}"));
 }
@@ -111,8 +111,8 @@ fn test_common_prompt_included_in_coworker() {
 fn test_common_prompt_name_substitution_in_lead() {
     let prompt = main_lead_system_prompt("midtown");
     assert!(
-        prompt.contains("<!-- midtown: midtown -->"),
-        "Lead prompt should have {{name}} replaced with project_name in common content"
+        prompt.contains("<!-- midtown session:$MIDTOWN_SESSION_ID -->"),
+        "Lead prompt should contain session-based frontmatter"
     );
     assert!(
         !prompt.contains("{name}"),
@@ -128,8 +128,8 @@ fn test_common_prompt_name_substitution_in_lead() {
 fn test_common_prompt_name_substitution_in_coworker() {
     let prompt = coworker_system_prompt("broadway", "midtown", None);
     assert!(
-        prompt.contains("<!-- midtown: broadway -->"),
-        "Coworker prompt should have {{name}} replaced in common content"
+        prompt.contains("<!-- midtown session:$MIDTOWN_SESSION_ID -->"),
+        "Coworker prompt should contain session-based frontmatter in common content"
     );
 }
 
@@ -408,8 +408,8 @@ fn test_coworker_prompt_requires_issue_comment_reviews() {
         "Coworker prompt should contain the pre-merge checklist section"
     );
     assert!(
-        prompt.contains("<!-- midtown:"),
-        "Coworker prompt should mention the frontmatter signature so reviewers are detected"
+        prompt.contains("<!-- midtown session:"),
+        "Coworker prompt should mention the session frontmatter signature so reviewers are detected"
     );
     assert!(
         prompt.contains("merge"),
