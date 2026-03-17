@@ -1403,6 +1403,22 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
             pr: None,
             created_at: None,
         }],
+        // Session for task 49 so resolve_grouped_name can find broadway via session
+        sessions: [(
+            "sess-broadway".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-broadway".to_string(),
+                task_id: Some("49".to_string()),
+                current_name: Some("broadway".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect(),
+        session_task_map: [("49".to_string(), "sess-broadway".to_string())]
+            .into_iter()
+            .collect(),
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -2177,6 +2193,34 @@ fn test_grouped_task_skips_if_already_assigned() {
     let mut snap: snapshot::WorldSnapshot =
         serde_json::from_str(fixture).expect("deserialize captured snapshot");
     snap.fixup_legacy_fields();
+
+    // The fixture predates session-based ownership. Add a session for york's
+    // in-progress task so resolve_grouped_name can discover the owner via session.
+    let york_task_id = snap
+        .all_tasks
+        .iter()
+        .find(|t| {
+            t.owner.as_deref() == Some("york")
+                && t.status == crate::tasks::TaskStatus::InProgress
+                && (t.subject.contains("PR #912")
+                    || t.description
+                        .as_ref()
+                        .is_some_and(|d| d.contains("PR #912")))
+        })
+        .map(|t| t.id.clone())
+        .expect("fixture should have york's PR #912 task");
+    snap.sessions.insert(
+        "sess-york".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-york".to_string(),
+            task_id: Some(york_task_id.clone()),
+            current_name: Some("york".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            ..Default::default()
+        },
+    );
+    snap.session_task_map
+        .insert(york_task_id, "sess-york".to_string());
 
     // Verify fixture prerequisites: york is active and busy, task !1107 is pending
     assert!(

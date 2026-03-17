@@ -524,17 +524,11 @@ The daemon receives real-time GitHub events via webhooks (PR creation, reviews, 
 
 ### PR Coworker Attribution
 
-PR-to-coworker resolution uses a unified 3-step pipeline across both webhook and polling paths:
+PR-to-coworker resolution uses session-based lookup exclusively: PR# → task → session → `current_name`. If no session owns the PR, the owner is `None` and the daemon falls back to notifying `@user`.
 
-1. **Session-based** (PR# → task → session → current_name): Look up the active session for the task that owns this PR.
-2. **Task metadata** (PR#, title, or branch → task → owner): Search tasks by `task.pr` number, by task ID extracted from the PR title, or by task ID extracted from the branch name.
-3. **Branch-based** (`coworker_from_branch`): Look up the branch name in the `worktree_branch_owners` map from the worktree registry. Resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names.
+Webhooks call `resolve_pr_owner_from_state()` (async, reads `DaemonState` locks). Polling calls `resolve_pr_owner()` (pure, operates on snapshot data). Both use session-only resolution.
 
-If all three steps fail, the owner is `None` and the daemon falls back to notifying `@user`.
-
-Webhooks call `resolve_pr_owner_from_state()` (async, reads `DaemonState` locks). Polling calls `resolve_pr_owner()` (pure, operates on snapshot data). Both use the same 3-step chain.
-
-Key functions: `resolve_pr_owner()` (pr.rs, session + task metadata + branch), `resolve_pr_owner_from_state()` (pr.rs, async wrapper), `resolve_pr_owner_from_task_metadata()` (pr.rs, task lookup), `coworker_from_branch()` (helpers.rs, pure map lookup), `determine_pr_coworker()` (webhook.rs, frontmatter extraction for `PrOpenedInfo` only).
+Key functions: `resolve_pr_owner()` (pr.rs, session-only), `resolve_pr_owner_from_state()` (pr.rs, async wrapper), `coworker_from_branch()` (helpers.rs, branch → coworker map lookup, used for comment notifications and reviewer effects), `determine_pr_coworker()` (webhook.rs, frontmatter extraction for `PrOpenedInfo` only).
 
 ### PR Decision Logging
 

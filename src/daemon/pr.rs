@@ -345,11 +345,8 @@ pub(super) fn detect_abandoned_pr_tasks(
 
 /// Resolve the owner of a PR from snapshot data.
 ///
-/// Tries task-based resolution first (PR# → task → session → current_name,
-/// then task metadata from PR title/branch/task.pr field), then branch-based
-/// lookup via the worktree registry's branch_owners map as a fallback for
-/// external/manual PRs.
-/// Returns `None` if no path yields an owner.
+/// Uses session-based resolution only: PR# → task → session → current_name.
+/// Returns `None` if no session owns the PR.
 fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
     resolve_pr_owner_from_session(
         pf.number,
@@ -357,65 +354,12 @@ fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
         &snap.session_task_map,
         &snap.sessions,
     )
-    .or_else(|| {
-        resolve_pr_owner_from_task_metadata(pf.number, pf.title, pf.head_ref, &snap.all_tasks)
-    })
-    .or_else(|| coworker_from_branch(pf.head_ref, &snap.worktree_branch_owners))
-}
-
-fn extract_task_id_from_head_ref(head_ref: &str) -> Option<u64> {
-    head_ref
-        .rsplit('/')
-        .next()
-        .and_then(|branch| branch.strip_prefix("task-"))
-        .and_then(|rest| rest.split('-').next())
-        .and_then(|task_id| task_id.parse().ok())
-}
-
-fn resolve_pr_owner_from_task_metadata(
-    pr_number: u64,
-    title: &str,
-    head_ref: &str,
-    all_tasks: &[crate::tasks::Task],
-) -> Option<String> {
-    let owner_for_task_id = |task_id: u64, all_tasks: &[crate::tasks::Task]| {
-        let task_id_str = task_id.to_string();
-        all_tasks
-            .iter()
-            .find(|task| task.id == task_id_str && task.owner.is_some())
-            .and_then(|task| task.owner.clone())
-    };
-
-    if let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(title)
-        && let Some(owner) = owner_for_task_id(task_id, all_tasks)
-    {
-        return Some(owner);
-    }
-
-    if let Some(task_id) = extract_task_id_from_head_ref(head_ref)
-        && let Some(owner) = owner_for_task_id(task_id, all_tasks)
-    {
-        return Some(owner);
-    }
-
-    all_tasks
-        .iter()
-        .find(|task| task.pr == Some(pr_number) && task.owner.is_some())
-        .and_then(|task| task.owner.clone())
 }
 
 /// Resolve PR owner from persistent state (used by webhook handlers).
 ///
-/// Locks persistent_state once, tries session → task metadata → branch.
-async fn resolve_pr_owner_from_state(
-    state: &DaemonState,
-    pr_number: u64,
-    title: &str,
-    head_ref: Option<&str>,
-) -> Option<String> {
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
-    let head = head_ref.unwrap_or("");
-
+/// Locks persistent_state once, uses session-based resolution only.
+async fn resolve_pr_owner_from_state(state: &DaemonState, pr_number: u64) -> Option<String> {
     let ps = state.persistent_state.lock().await;
     let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
@@ -430,26 +374,12 @@ async fn resolve_pr_owner_from_state(
         })
         .collect();
 
-    let branch_owners: HashMap<String, String> = ps
-        .worktree_registry
-        .all_assignments()
-        .values()
-        .filter_map(|assignment| {
-            assignment
-                .current_coworker
-                .as_ref()
-                .map(|owner| (assignment.branch_name.clone(), owner.clone()))
-        })
-        .collect();
-
     resolve_pr_owner_from_session(
         pr_number,
         &pr_task_associations,
         &session_task_map,
         &ps.sessions,
     )
-    .or_else(|| resolve_pr_owner_from_task_metadata(pr_number, title, head, &all_tasks))
-    .or_else(|| coworker_from_branch(head, &branch_owners))
 }
 
 // ============================================================================
@@ -736,8 +666,7 @@ async fn process_pr_issue_nudges(
             continue;
         }
 
-        // Session-first, task metadata fallback, then branch prefix fallback.
-        // PR# → task → session → name → branch prefix → None.
+        // Session-based resolution: PR# → task → session → current_name.
         let owner_opt = resolve_pr_owner(&pf, snap);
         let issues = detect_pr_issues(pr);
 
@@ -2362,14 +2291,12 @@ async fn collect_review_complete_effects(
     pr_number: u64,
     pr: &serde_json::Value,
     state: &DaemonState,
-    all_tasks: &[crate::tasks::Task],
     pr_task_associations: &HashMap<u64, String>,
     session_task_map: &HashMap<String, String>,
     sessions: &HashMap<String, super::state::SessionRecord>,
     is_at_task_limit: bool,
     active_coworkers: &[String],
     idle_coworkers: &[String],
-    branch_owners: &std::collections::HashMap<String, String>,
     pre_fetched_review_content: &HashMap<u64, String>,
     pr_ctx: &PrContext,
 ) -> Option<Vec<Effect>> {
@@ -2492,11 +2419,7 @@ async fn collect_review_complete_effects(
     );
 
     let owner =
-        resolve_pr_owner_from_session(pr_number, pr_task_associations, session_task_map, sessions)
-            .or_else(|| {
-                resolve_pr_owner_from_task_metadata(pr_number, pf.title, pf.head_ref, all_tasks)
-            })
-            .or_else(|| coworker_from_branch(pf.head_ref, branch_owners));
+        resolve_pr_owner_from_session(pr_number, pr_task_associations, session_task_map, sessions);
 
     if let Some(owner) = owner {
         let action = crate::rules::decide_pr_action(
@@ -2703,14 +2626,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             pr_number,
             pr,
             state,
-            &all_tasks,
             &pr_task_associations,
             &session_task_map,
             &sessions,
             is_at_task_limit,
             &active_coworkers,
             &idle_coworkers,
-            branch_owners,
             pre_fetched_review_content,
             &pr_ctx,
         )
@@ -3239,7 +3160,7 @@ pub(super) async fn handle_pr_comment_nudge(
     }
 
     // Resolve owner via session/task/branch data.
-    let owner = resolve_pr_owner_from_state(state, pr_number, "", branch.as_deref()).await;
+    let owner = resolve_pr_owner_from_state(state, pr_number).await;
 
     let Some(mut owner) = owner else {
         debug!("PR #{} has no coworker owner, skipping nudge", pr_number);
@@ -3584,7 +3505,7 @@ pub(super) async fn handle_webhook_review_state_change(
     }
 
     // Resolve owner via session/task/branch data.
-    let owner = resolve_pr_owner_from_state(state, pr_number, "", None).await;
+    let owner = resolve_pr_owner_from_state(state, pr_number).await;
 
     let Some(owner) = owner else {
         debug!(
@@ -3691,8 +3612,7 @@ pub(super) async fn handle_webhook_ci_failure(
     }
 
     // Resolve owner via session/task/branch data.
-    let owner =
-        resolve_pr_owner_from_state(state, pr_number, "", failure.head_ref.as_deref()).await;
+    let owner = resolve_pr_owner_from_state(state, pr_number).await;
 
     let Some(owner) = owner else {
         warn!(

@@ -732,7 +732,9 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
 
                 let decision = SpawnDecision {
                     task_id: task_id.clone(),
-                    session_mode: crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+                    session_mode: crate::launch::SessionMode::ResumeSession(
+                        record.session_id.clone(),
+                    ),
                     preferred_name: Some(coworker_name.clone()),
                     cooldown_category: "session_dispatch".to_string(),
                 };
@@ -1113,7 +1115,7 @@ fn dispatch_owned_pending_tasks(
 
 /// Resolve a coworker name for an unowned task by checking grouping strategies.
 ///
-/// Priority: in-memory PR map > in-memory blockedBy map > disk PR owner >
+/// Priority: in-memory PR map > in-memory blockedBy map > session-based PR owner >
 ///           disk blockedBy relationship > None (allocate fresh name).
 fn resolve_grouped_name(
     task: &crate::tasks::Task,
@@ -1160,7 +1162,7 @@ fn resolve_grouped_name(
                         .as_ref()
                         .is_some_and(|d| d.contains(&pr_pattern)))
         }) {
-            // Prefer session-based lookup (source of truth).
+            // Session-based lookup (source of truth).
             if let Some(session) = snap.find_session_for_task(&t.id)
                 && let Some(name) = session
                     .current_name
@@ -1172,17 +1174,6 @@ fn resolve_grouped_name(
                     task.id, pr_num, name
                 );
                 return Some(name.clone());
-            }
-            // Fallback: use task owner when session mapping is unavailable
-            // (e.g., after daemon restart before session reconciliation).
-            if let Some(ref owner) = t.owner
-                && !owner.is_empty()
-            {
-                info!(
-                    "Task !{} references PR #{} - assigning to task owner {} (text match, no session)",
-                    task.id, pr_num, owner
-                );
-                return Some(owner.clone());
             }
         }
     }

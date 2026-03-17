@@ -602,10 +602,38 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
         );
     }
 
-    // Create snapshot with york's branch in worktree_branch_owners
+    // Create snapshot with york's session owning a task linked to PR #100
     let mut snap = minimal_snapshot_for_test();
     snap.worktree_branch_owners
         .insert("york/test-branch".to_string(), "york".to_string());
+    // Add a task linked to PR #100 and a session for york
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "t100".to_string(),
+        subject: "Test task for PR #100".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: Some("york".to_string()),
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(100),
+        created_at: None,
+    });
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("t100".to_string(), 100u64)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
+    snap.sessions.insert(
+        "sess-york".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-york".to_string(),
+            task_id: Some("t100".to_string()),
+            current_name: Some("york".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            ..Default::default()
+        },
+    );
+    snap.session_task_map
+        .insert("t100".to_string(), "sess-york".to_string());
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
@@ -880,7 +908,7 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
     });
 
     let mut snap = minimal_snapshot_for_test();
-    // Provide a task so the owner resolves via task metadata from PR title
+    // Provide a task + session so the owner resolves via session
     snap.all_tasks.push(crate::tasks::Task {
         id: "5151".to_string(),
         subject: "Fix CI flake".to_string(),
@@ -889,9 +917,25 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
         description: None,
         blocked_by: vec![],
         channel: None,
-        pr: None,
+        pr: Some(pr_number),
         created_at: None,
     });
+    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+        [("5151".to_string(), pr_number)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
+    snap.sessions.insert(
+        "sess-york".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-york".to_string(),
+            task_id: Some("5151".to_string()),
+            current_name: Some("york".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            ..Default::default()
+        },
+    );
+    snap.session_task_map
+        .insert("5151".to_string(), "sess-york".to_string());
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     {
@@ -1966,44 +2010,23 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
 }
 
 #[test]
-fn test_resolve_pr_owner_chain_uses_task_pr_field() {
+fn test_resolve_pr_owner_returns_none_without_session() {
+    // Without a session mapping, resolution returns None (no task metadata fallback).
     let pr_task_associations: HashMap<u64, String> = HashMap::new();
     let session_task_map: HashMap<String, String> = HashMap::new();
     let sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
-    let branch_owners: HashMap<String, String> = HashMap::new();
-    let all_tasks = vec![crate::tasks::Task {
-        id: "2047".to_string(),
-        subject: "fix some issue".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
-        description: None,
-        blocked_by: vec![],
-        channel: None,
-        pr: Some(2047),
-        created_at: None,
-    }];
 
     let result =
-        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
-            .or_else(|| {
-                resolve_pr_owner_from_task_metadata(
-                    2047,
-                    "fix coworker bug",
-                    "some/branch",
-                    &all_tasks,
-                )
-            })
-            .or_else(|| coworker_from_branch("some/branch", &branch_owners));
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions);
 
     assert_eq!(
-        result,
-        Some("york".to_string()),
-        "Resolution chain should fall back to task.pr owner when session data is missing"
+        result, None,
+        "Should return None when no session owns the PR"
     );
 }
 
 #[test]
-fn test_resolve_pr_owner_chain_prefers_session_over_task_pr_field() {
+fn test_resolve_pr_owner_uses_session_current_name() {
     let pr_task_associations: HashMap<u64, String> =
         [(2047, "555".to_string())].into_iter().collect();
     let session_task_map: HashMap<String, String> = [("555".to_string(), "sess-xyz".to_string())]
@@ -2024,38 +2047,14 @@ fn test_resolve_pr_owner_chain_prefers_session_over_task_pr_field() {
     )]
     .into_iter()
     .collect();
-    let branch_owners: HashMap<String, String> =
-        [("task-2047-fix".to_string(), "park".to_string())]
-            .into_iter()
-            .collect();
-    let all_tasks = vec![crate::tasks::Task {
-        id: "555".to_string(),
-        subject: "task title".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
-        description: None,
-        blocked_by: vec![],
-        channel: None,
-        pr: Some(2047),
-        created_at: None,
-    }];
 
     let result =
-        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions)
-            .or_else(|| {
-                resolve_pr_owner_from_task_metadata(
-                    2047,
-                    "Midtown !2047 something",
-                    "task-2047-fix",
-                    &all_tasks,
-                )
-            })
-            .or_else(|| coworker_from_branch("task-2047-fix", &branch_owners));
+        resolve_pr_owner_from_session(2047, &pr_task_associations, &session_task_map, &sessions);
 
     assert_eq!(
         result,
         Some("madison".to_string()),
-        "Session-derived owner should still win over task metadata and branch fallback"
+        "Session current_name should be the PR owner"
     );
 }
 
