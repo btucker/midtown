@@ -241,8 +241,7 @@ fn test_lead_does_not_affect_task_limit_dispatch() {
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
-                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+            crate::daemon::effects::Effect::SpawnForTask { .. }
                 | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
@@ -291,8 +290,7 @@ fn test_no_dispatch_at_task_limit() {
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
-                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+            crate::daemon::effects::Effect::SpawnForTask { .. }
                 | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
@@ -412,7 +410,7 @@ fn test_no_idle_coworkers_defers_at_task_limit() {
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+            crate::daemon::effects::Effect::SpawnForTask { .. }
                 | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
@@ -455,7 +453,7 @@ fn test_reviewer_task_deferred_at_task_limit() {
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+            crate::daemon::effects::Effect::SpawnForTask { .. }
                 | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });
@@ -496,8 +494,7 @@ fn test_dispatch_with_legacy_lead() {
     let has_task_effect = effects.iter().any(|e| {
         matches!(
             e,
-            crate::daemon::effects::Effect::AssignAndSpawn { .. }
-                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+            crate::daemon::effects::Effect::SpawnForTask { .. }
                 | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
         )
     });

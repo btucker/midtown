@@ -605,7 +605,7 @@ impl DaemonPersistentState {
 
     /// Look up the bound thread ID for a task from `task_thread_id`.
     ///
-    /// Used by both the `SpawnSession` effect path and `spawn_coworker()` to
+    /// Used by both the `SpawnForTask` effect path and `spawn_coworker()` to
     /// resolve a task's announcement thread so channel posts are auto-tagged.
     pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
         task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())

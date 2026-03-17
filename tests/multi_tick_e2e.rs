@@ -536,14 +536,14 @@ fn test_session_dispatch_resumes_stopped_session() {
 
     let effects = harness.tick(&DaemonEvent::TaskDispatchTick);
 
-    // dispatch_via_sessions should emit SpawnCoworkerWithCallbacks with ResumeSession
+    // dispatch_via_sessions should emit SpawnForTask with ResumeSession
     // because the session exists but is stopped.
     let resume_spawns: Vec<_> = effects
         .iter()
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                Effect::SpawnForTask { config, .. }
                     if matches!(config.session_mode, SessionMode::ResumeSession(_))
             )
         })
@@ -551,7 +551,7 @@ fn test_session_dispatch_resumes_stopped_session() {
 
     assert!(
         !resume_spawns.is_empty(),
-        "Should emit SpawnCoworkerWithCallbacks(ResumeSession) for a stopped session"
+        "Should emit SpawnForTask(ResumeSession) for a stopped session"
     );
 }
 
@@ -562,7 +562,7 @@ fn test_session_dispatch_resumes_stopped_session() {
 /// `record.is_running == true` and not re-spawn.
 ///
 /// The harness's `tick()` automatically applies effects via `apply_effects()`. The
-/// `SpawnCoworkerWithCallbacks` handler in `apply_effects` now updates
+/// `SpawnForTask` handler in `apply_effects` now updates
 /// `sessions[id].is_running = true` when `session_mode == ResumeSession`, so no
 /// manual `resume_session` call is needed between ticks.
 #[test]
@@ -581,7 +581,7 @@ fn test_session_dispatch_no_duplicate_resumes_across_ticks() {
     harness.create_session("session-dedup", &task_id, Some("madison"));
     harness.stop_session("session-dedup");
 
-    // Tick 1: should produce a SpawnCoworkerWithCallbacks(ResumeSession) effect.
+    // Tick 1: should produce a SpawnForTask(ResumeSession) effect.
     // tick() automatically calls apply_effects(), which updates sessions[id].is_running
     // to true so dispatch_via_sessions sees the session as running on tick 2.
     let effects1 = harness.tick(&DaemonEvent::TaskDispatchTick);
@@ -591,7 +591,7 @@ fn test_session_dispatch_no_duplicate_resumes_across_ticks() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                Effect::SpawnForTask { config, .. }
                     if matches!(config.session_mode, SessionMode::ResumeSession(_))
             )
         })
@@ -604,7 +604,7 @@ fn test_session_dispatch_no_duplicate_resumes_across_ticks() {
     );
 
     // Tick 2: apply_effects already marked the session as running via the
-    // SpawnCoworkerWithCallbacks handler — no manual resume_session call needed.
+    // SpawnForTask handler — no manual resume_session call needed.
     let effects2 = harness.tick(&DaemonEvent::TaskDispatchTick);
 
     let spawn_count_2 = effects2
@@ -612,7 +612,7 @@ fn test_session_dispatch_no_duplicate_resumes_across_ticks() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { config, .. }
+                Effect::SpawnForTask { config, .. }
                     if matches!(config.session_mode, SessionMode::ResumeSession(_))
             )
         })

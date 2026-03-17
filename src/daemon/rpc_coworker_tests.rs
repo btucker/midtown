@@ -1656,6 +1656,7 @@ fn test_prompt_composition_task_only() {
         "42",
         "Fix auth bug",
         "",
+        false,
     ));
 
     let base_prompt = match (&None::<String>, &task_prompt) {
@@ -1679,6 +1680,7 @@ fn test_prompt_composition_prompt_and_task() {
         "42",
         "Fix auth bug",
         "",
+        false,
     ));
 
     let base_prompt = match (&user_prompt, &task_prompt) {
@@ -1704,6 +1706,7 @@ fn test_prompt_composition_agent_task_and_prompt() {
         "42",
         "Fix auth bug",
         "",
+        false,
     ));
     let agent_system_prompt = "You are a security-focused reviewer.";
 

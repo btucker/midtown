@@ -152,6 +152,7 @@ pub(super) async fn handle_coworker_spawn(
             &t.id,
             &t.subject,
             &plan_section,
+            false,
         ))
     } else {
         None
@@ -263,7 +264,7 @@ pub(super) async fn handle_coworker_spawn(
             state.broadcast_coworker_update(&config.name, "running", None);
 
             // If --task was provided, execute task assignment effects and update
-            // the task file on disk (same as dispatch + AssignAndSpawn do)
+            // the task file on disk (same as dispatch + SpawnForTask do)
             if let (Some(tid), Some((worktree_id, _))) = (&task_id, &task_worktree) {
                 // Update task file on disk: set owner and transition to in_progress
                 if let Err(e) = crate::tasks::update_task_owner(tid, &config.name) {

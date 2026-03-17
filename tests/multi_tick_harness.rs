@@ -24,7 +24,7 @@
 //! let effects2 = harness.tick(&DaemonEvent::TaskDispatchTick);
 //!
 //! // Verify no duplicates
-//! assert!(effects2.iter().all(|e| !matches!(e, Effect::AssignAndSpawn { .. })));
+//! assert!(effects2.iter().all(|e| !matches!(e, Effect::SpawnForTask { .. })));
 //! ```
 
 use chrono::Utc;
@@ -105,7 +105,7 @@ impl MultiTickHarness {
             "attached_coworkers": {},
             "in_progress_tasks": [],
             "busy_coworkers": [],
-            "coworker_task_assignments": {},
+            "name_task_assignments": {},
             "all_tasks": [],
             "pending_tasks_with_owners": [],
             "pending_tasks_without_owners": [],
@@ -347,12 +347,40 @@ impl MultiTickHarness {
     pub fn apply_effects(&mut self, effects: &[Effect]) {
         for effect in effects {
             match effect {
-                Effect::AssignAndSpawn { task_id, owner, .. } => {
-                    self.assign_task(task_id, owner);
+                Effect::SpawnForTask {
+                    task_id,
+                    preferred_name,
+                    config,
+                    ..
+                } => {
+                    let name = preferred_name
+                        .clone()
+                        .unwrap_or_else(|| format!("coworker-for-{}", task_id));
+                    self.assign_task(task_id, &name);
+                    // If resuming a session, mark it running in sessions map so
+                    // dispatch_via_sessions sees it correctly on the next tick.
+                    if let midtown::launch::SessionMode::ResumeSession(ref session_id) =
+                        config.session_mode
+                    {
+                        if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
+                            record.is_running = true;
+                            record.current_name = Some(name.clone());
+                        }
+                        self.snapshot
+                            .coworkers
+                            .active_session_ids
+                            .insert(session_id.clone());
+                        self.snapshot
+                            .session_name_map
+                            .insert(session_id.clone(), name.clone());
+                        self.snapshot
+                            .name_session_map
+                            .insert(name, session_id.clone());
+                    }
                 }
                 Effect::RecordTaskAssignment { coworker, task_id } => {
                     self.snapshot
-                        .coworker_task_assignments
+                        .name_task_assignments
                         .insert(coworker.to_lowercase(), task_id.clone());
                     self.snapshot.busy_coworkers.insert(coworker.to_lowercase());
                 }
@@ -441,54 +469,7 @@ impl MultiTickHarness {
                     // Cooldowns are tracked in DaemonState, not WorldSnapshot.
                     // Cannot simulate without DaemonState.
                 }
-                // Session-centric effects (new model)
-                Effect::SpawnSession {
-                    session_id,
-                    task_id,
-                    preferred_name,
-                    is_reviewer,
-                    ..
-                } => {
-                    let name = preferred_name.clone().unwrap_or_else(|| {
-                        panic!(
-                            "SpawnSession in apply_effects requires preferred_name — provide one in the test"
-                        )
-                    });
-                    if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
-                        record.is_running = true;
-                        record.current_name = Some(name.clone());
-                    } else {
-                        let record = SessionRecord {
-                            session_id: session_id.clone(),
-                            task_id: Some(task_id.clone()),
-                            current_name: Some(name.clone()),
-                            preferred_name: preferred_name.clone(),
-                            is_reviewer: *is_reviewer,
-                            coworker_type: if *is_reviewer {
-                                "reviewer".to_string()
-                            } else {
-                                "dev".to_string()
-                            },
-                            is_running: true,
-                            resume_on_startup: !is_reviewer,
-                            ..Default::default()
-                        };
-                        self.snapshot.sessions.insert(session_id.clone(), record);
-                    }
-                    self.snapshot
-                        .session_task_map
-                        .insert(task_id.clone(), session_id.clone());
-                    self.snapshot
-                        .session_name_map
-                        .insert(session_id.clone(), name.clone());
-                    self.snapshot
-                        .name_session_map
-                        .insert(name, session_id.clone());
-                    self.snapshot
-                        .coworkers
-                        .active_session_ids
-                        .insert(session_id.clone());
-                }
+                // Session-centric effects
                 Effect::ShutdownSession { session_id, .. } => {
                     if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
                         let name = record.current_name.take();
@@ -551,7 +532,7 @@ impl MultiTickHarness {
 
         self.snapshot.busy_coworkers.insert(owner.to_lowercase());
         self.snapshot
-            .coworker_task_assignments
+            .name_task_assignments
             .insert(owner.to_lowercase(), task_id.to_string());
     }
 
@@ -614,7 +595,7 @@ impl MultiTickHarness {
             health.is_alive = false;
             health.exit_code = Some(0);
         }
-        self.snapshot.coworker_task_assignments.remove(&name_lower);
+        self.snapshot.name_task_assignments.remove(&name_lower);
         self.snapshot.reviewer.active_reviewers.remove(&name_lower);
 
         // Remove from active_coworkers and running_coworkers
@@ -666,7 +647,7 @@ impl MultiTickHarness {
                         .any(|(_, _, o)| o.to_lowercase() == owner_lower)
                     {
                         self.snapshot.busy_coworkers.remove(&owner_lower);
-                        self.snapshot.coworker_task_assignments.remove(&owner_lower);
+                        self.snapshot.name_task_assignments.remove(&owner_lower);
                     }
                 }
                 break;

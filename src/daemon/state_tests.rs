@@ -674,7 +674,7 @@ fn test_fork_bound_threads_cleaned_up_on_name_reuse() {
     fork_bound_threads.remove("riverside");
 
     // Simulate: name "riverside" reused for a new task WITHOUT thread binding
-    // (SpawnSession only inserts when bound_thread_id.is_some())
+    // (SpawnForTask only inserts when bound_thread_id.is_some())
     let new_bound_thread_id: Option<String> = None;
     if let Some(tid) = new_bound_thread_id {
         fork_bound_threads.insert("riverside".to_string(), tid);

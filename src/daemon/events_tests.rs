@@ -101,9 +101,9 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
     }
 }
 
-fn make_assign_and_spawn(name: &str) -> Effect {
+fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
     let config = LaunchConfig {
-        name: name.to_string(),
+        name: String::new(), // name allocated at execution time
         session_mode: SessionMode::Fresh,
         role: CoworkerRole::Coworker,
         initial_prompt: None,
@@ -120,10 +120,10 @@ fn make_assign_and_spawn(name: &str) -> Effect {
         cwd_subdir: None,
         agent_name_override: None,
     };
-    Effect::AssignAndSpawn {
-        task_id: "1".to_string(),
-        owner: name.to_string(),
+    Effect::SpawnForTask {
+        task_id: task_id.to_string(),
         dir_key: "test".to_string(),
+        preferred_name: Some(name.to_string()),
         config,
         on_success: vec![],
         on_failure: vec![],
@@ -144,57 +144,53 @@ fn dedup_removes_duplicate_spawn_with_callbacks() {
 
 #[test]
 fn dedup_across_spawn_variants() {
-    // AssignAndSpawn and SpawnCoworkerWithCallbacks for the same coworker
+    // SpawnForTask and SpawnCoworkerWithCallbacks for the same coworker
     // should deduplicate (first one wins).
     let effects = vec![
-        make_assign_and_spawn("lexington"),
+        make_spawn_for_task("lexington", "1"),
         make_spawn_with_callbacks("lexington"), // same coworker, different variant
         make_spawn("park"),
     ];
 
     let deduped = dedup_spawn_effects(effects);
     assert_eq!(deduped.len(), 2, "Should keep first lexington + park");
-    // First effect should be the AssignAndSpawn (it came first)
+    // First effect should be the SpawnForTask (it came first)
     assert!(
-        matches!(&deduped[0], Effect::AssignAndSpawn { config, .. } if config.name == "lexington"),
-        "First effect should be AssignAndSpawn for lexington"
+        matches!(&deduped[0], Effect::SpawnForTask { preferred_name, .. } if preferred_name.as_deref() == Some("lexington")),
+        "First effect should be SpawnForTask for lexington"
     );
 }
 
 #[test]
 fn dedup_preserves_registry_effects_from_dropped_spawns() {
     // Issue #8 from PR #752 review: When two tasks are assigned to the same
-    // coworker in one tick, the second AssignAndSpawn is dropped entirely,
+    // coworker in one tick, the second SpawnForTask is dropped entirely,
     // losing its RegisterWorktreeAssignment effect.
     use crate::worktree_registry::WorktreeAssignment;
 
-    let config1 = LaunchConfig {
-        name: "lexington".to_string(),
-        session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
-        initial_prompt: None,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: None,
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: None,
-        auth_provider: crate::auth::AuthProvider::Claude,
-        escalation_target: None,
-        task_id: None,
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
-    };
-
-    let config2 = config1.clone();
-
     // First spawn with task-123 worktree assignment
-    let spawn1 = Effect::AssignAndSpawn {
+    let spawn1 = Effect::SpawnForTask {
         task_id: "123".to_string(),
-        owner: "lexington".to_string(),
         dir_key: "test".to_string(),
-        config: config1,
+        preferred_name: Some("lexington".to_string()),
+        config: LaunchConfig {
+            name: String::new(),
+            session_mode: SessionMode::Fresh,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+            escalation_target: None,
+            task_id: None,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+            agent_name_override: None,
+        },
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
                 worktree_id: "task-123-foo".to_string(),
@@ -210,11 +206,28 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
     };
 
     // Second spawn with task-456 worktree assignment (different task, same coworker)
-    let spawn2 = Effect::AssignAndSpawn {
+    let spawn2 = Effect::SpawnForTask {
         task_id: "456".to_string(),
-        owner: "lexington".to_string(),
         dir_key: "test".to_string(),
-        config: config2,
+        preferred_name: Some("lexington".to_string()),
+        config: LaunchConfig {
+            name: String::new(),
+            session_mode: SessionMode::Fresh,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+            escalation_target: None,
+            task_id: None,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+            agent_name_override: None,
+        },
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
                 worktree_id: "task-456-bar".to_string(),
@@ -238,7 +251,7 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::AssignAndSpawn { .. }
+                Effect::SpawnForTask { .. }
                     | Effect::SpawnCoworker(_)
                     | Effect::SpawnCoworkerWithCallbacks { .. }
             )
@@ -277,76 +290,69 @@ fn dedup_preserves_registry_effects_from_dropped_spawns() {
 fn dedup_prevents_double_spawn_for_same_task() {
     // Bug: Orphan recovery spawns "amsterdam" for task 123, then task dispatch
     // spawns "york" for the same task in the same tick. Dedup only checks coworker
-    // name, so both spawns go through.
+    // name, so both spawns go through. Task ID dedup is the backstop.
     use crate::worktree_registry::WorktreeAssignment;
 
-    let config_amsterdam = LaunchConfig {
-        name: "amsterdam".to_string(),
-        session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
-        initial_prompt: None,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: None,
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: None,
-        auth_provider: crate::auth::AuthProvider::Claude,
-        escalation_target: None,
-        task_id: None,
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
-    };
-
-    let config_york = LaunchConfig {
-        name: "york".to_string(),
-        session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
-        initial_prompt: None,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: None,
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: None,
-        auth_provider: crate::auth::AuthProvider::Claude,
-        escalation_target: None,
-        task_id: None,
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
-    };
-
-    // Orphan recovery spawns amsterdam for task 123
-    let orphan_spawn = Effect::SpawnCoworkerWithCallbacks {
-        config: config_amsterdam,
-        on_success: vec![
-            Effect::RecordTaskAssignment {
-                coworker: "amsterdam".to_string(),
-                task_id: "123".to_string(),
+    // Orphan recovery spawns amsterdam for task 123 via SpawnForTask
+    let orphan_spawn = Effect::SpawnForTask {
+        task_id: "123".to_string(),
+        dir_key: "test".to_string(),
+        preferred_name: Some("amsterdam".to_string()),
+        config: LaunchConfig {
+            name: String::new(),
+            session_mode: SessionMode::Fresh,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+            escalation_target: None,
+            task_id: None,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+            agent_name_override: None,
+        },
+        on_success: vec![Effect::RegisterWorktreeAssignment {
+            assignment: WorktreeAssignment {
+                worktree_id: "task-123-foo".to_string(),
+                branch_name: "task-123-foo".to_string(),
+                task_id: Some("123".to_string()),
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
             },
-            Effect::RegisterWorktreeAssignment {
-                assignment: WorktreeAssignment {
-                    worktree_id: "task-123-foo".to_string(),
-                    branch_name: "task-123-foo".to_string(),
-                    task_id: Some("123".to_string()),
-                    current_coworker: None,
-                    pr_number: None,
-                    created_at: chrono::Utc::now(),
-                    completed_at: None,
-                },
-            },
-        ],
+        }],
         on_failure: vec![],
     };
 
     // Task dispatch spawns york for task 123 (same task, different coworker)
-    let dispatch_spawn = Effect::AssignAndSpawn {
+    let dispatch_spawn = Effect::SpawnForTask {
         task_id: "123".to_string(),
-        owner: "york".to_string(),
         dir_key: "test".to_string(),
-        config: config_york,
+        preferred_name: Some("york".to_string()),
+        config: LaunchConfig {
+            name: String::new(),
+            session_mode: SessionMode::Fresh,
+            role: CoworkerRole::Coworker,
+            initial_prompt: None,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model: "sonnet".to_string(),
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider: crate::auth::AuthProvider::Claude,
+            escalation_target: None,
+            task_id: None,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+            agent_name_override: None,
+        },
         on_success: vec![Effect::RegisterWorktreeAssignment {
             assignment: WorktreeAssignment {
                 worktree_id: "task-123-bar".to_string(),
@@ -370,7 +376,7 @@ fn dedup_prevents_double_spawn_for_same_task() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::AssignAndSpawn { .. }
+                Effect::SpawnForTask { .. }
                     | Effect::SpawnCoworker(_)
                     | Effect::SpawnCoworkerWithCallbacks { .. }
             )
@@ -392,54 +398,18 @@ fn dedup_prevents_double_spawn_for_same_task() {
         "Both worktree registrations should be preserved"
     );
 
-    // The task assignment from the kept spawn should be preserved (in its on_success callbacks)
-    let task_assignments: Vec<&str> = deduped
-        .iter()
-        .flat_map(|e| match e {
-            Effect::RecordTaskAssignment { task_id, .. } => vec![task_id.as_str()],
-            Effect::SpawnCoworkerWithCallbacks { on_success, .. }
-            | Effect::AssignAndSpawn { on_success, .. } => on_success
-                .iter()
-                .filter_map(|sub| {
-                    if let Effect::RecordTaskAssignment { task_id, .. } = sub {
-                        Some(task_id.as_str())
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            _ => vec![],
-        })
-        .collect();
-    assert_eq!(
-        task_assignments.len(),
-        1,
-        "Should have exactly one task assignment for task 123 (from the kept spawn's callbacks)"
+    // Verify the kept spawn is for amsterdam (first one wins)
+    assert!(
+        matches!(&deduped[0], Effect::SpawnForTask { preferred_name, .. } if preferred_name.as_deref() == Some("amsterdam")),
+        "First spawn should be kept (amsterdam)"
     );
-    assert_eq!(task_assignments[0], "123");
 }
 
 #[test]
-fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
-    let mut config_amsterdam = LaunchConfig {
-        name: "amsterdam".to_string(),
-        session_mode: SessionMode::Resume,
-        role: CoworkerRole::Coworker,
-        initial_prompt: Some("resume task".to_string()),
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: Some("/tmp/task-123-amsterdam".into()),
-        model: "sonnet".to_string(),
-        channel: None,
-        auth_profile_dir: None,
-        auth_provider: crate::auth::AuthProvider::Claude,
-        escalation_target: None,
-        task_id: None,
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
-    };
-    config_amsterdam.apply_task_model(&std::collections::HashMap::new(), "123");
+fn dedup_prevents_double_spawn_for_same_task_across_variants() {
+    // SpawnForTask and SpawnCoworkerWithCallbacks (with task assignment callback)
+    // for the same task should deduplicate by task ID.
+    let spawn_for_task = make_spawn_for_task("amsterdam", "123");
 
     let config_york = LaunchConfig {
         name: "york".to_string(),
@@ -459,28 +429,16 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         cwd_subdir: None,
         agent_name_override: None,
     };
-
-    let spawn_session = Effect::SpawnSession {
-        session_id: "sess-2045".to_string(),
-        task_id: "123".to_string(),
-        working_dir: std::path::PathBuf::from("/tmp/task-123"),
-        initial_prompt: "resume task".to_string(),
-        preferred_name: Some("amsterdam".to_string()),
-        is_reviewer: false,
-        resume: true,
-        config: Box::new(config_amsterdam),
-    };
-
-    let assign_spawn = Effect::AssignAndSpawn {
-        task_id: "123".to_string(),
-        owner: "york".to_string(),
-        dir_key: "test".to_string(),
+    let spawn_with_callbacks = Effect::SpawnCoworkerWithCallbacks {
         config: config_york,
-        on_success: vec![],
+        on_success: vec![Effect::RecordTaskAssignment {
+            coworker: "york".to_string(),
+            task_id: "123".to_string(),
+        }],
         on_failure: vec![],
     };
 
-    let effects = vec![spawn_session, assign_spawn];
+    let effects = vec![spawn_for_task, spawn_with_callbacks];
     let deduped = dedup_spawn_effects(effects);
 
     let spawn_count = deduped
@@ -488,19 +446,18 @@ fn dedup_prevents_double_spawn_for_same_task_with_spawn_session() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::AssignAndSpawn { .. }
+                Effect::SpawnForTask { .. }
                     | Effect::SpawnCoworker(_)
                     | Effect::SpawnCoworkerWithCallbacks { .. }
-                    | Effect::SpawnSession { .. }
             )
         })
         .count();
     assert_eq!(
         spawn_count, 1,
-        "Should have only one spawn effect for task 123 even across SpawnSession"
+        "Should have only one spawn effect for task 123 across variants"
     );
     assert!(
-        matches!(&deduped[0], Effect::SpawnSession { session_id, .. } if session_id == "sess-2045"),
+        matches!(&deduped[0], Effect::SpawnForTask { .. }),
         "First spawn effect should be kept"
     );
 }

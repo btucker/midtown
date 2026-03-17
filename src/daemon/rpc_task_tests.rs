@@ -230,7 +230,7 @@ fn test_task_thread_id_not_stored_when_none() {
 
 /// When no explicit `thread_id` is provided, task_thread_id should default
 /// to the announcement message ID after the task-created message is posted.
-/// This ensures SpawnSession picks up a bound_thread_id so coworker messages
+/// This ensures SpawnForTask picks up a bound_thread_id so coworker messages
 /// auto-route to the task announcement thread.
 #[test]
 fn test_task_thread_id_defaults_to_announcement_message_id() {

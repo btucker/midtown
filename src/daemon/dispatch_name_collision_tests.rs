@@ -117,24 +117,12 @@ fn test_dispatch_excludes_active_session_names() {
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // The task should still be dispatched (overflow names are available).
-    // Check both AssignAndSpawn and NudgeSessionWithCallbacks — before the fix,
+    // Check both SpawnForTask and NudgeSessionWithCallbacks — before the fix,
     // "park" would be allocated and since it's in active_names, dispatch would
     // try to nudge it (wrong session).
-    let assigned_name = effects.iter().find_map(|e| match e {
-        effects::Effect::AssignAndSpawn { owner, .. } => Some(owner.clone()),
-        effects::Effect::NudgeSessionWithCallbacks { .. } => {
-            // If a nudge was emitted, the coworker name was allocated from the
-            // task_coworker_map — we can't directly extract it here, but the
-            // presence of a nudge for a task we didn't expect means "park" was used.
-            None
-        }
-        _ => None,
-    });
-
-    // With the fix, an overflow name should be allocated (not "park").
-    // Without the fix, "park" gets allocated and since it's in active_names,
-    // dispatch emits a NudgeSessionWithCallbacks instead of AssignAndSpawn.
-    // Either way, "park" should never be the allocated name.
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, effects::Effect::SpawnForTask { .. }));
 
     // Check no nudge was emitted (which would mean "park" was incorrectly allocated
     // as a running coworker and nudged)
@@ -143,13 +131,20 @@ fn test_dispatch_excludes_active_session_names() {
         .any(|e| matches!(e, effects::Effect::NudgeSessionWithCallbacks { .. }));
 
     assert!(
-        assigned_name.is_some() || !has_nudge,
-        "Expected task to be dispatched via AssignAndSpawn (overflow names available), \
+        has_spawn || !has_nudge,
+        "Expected task to be dispatched via SpawnForTask (overflow names available), \
          not via a nudge to a wrong session. Before fix: 'park' was allocated from \
          CoworkerManager (appeared free) then nudged because it was in active_names."
     );
 
-    if let Some(name) = &assigned_name {
+    // Verify the preferred_name on the SpawnForTask is not "park"
+    if let Some(effects::Effect::SpawnForTask {
+        preferred_name: Some(name),
+        ..
+    }) = effects
+        .iter()
+        .find(|e| matches!(e, effects::Effect::SpawnForTask { .. }))
+    {
         assert_ne!(
             name.as_str(),
             "park",

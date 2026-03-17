@@ -4,9 +4,9 @@
 /// after a daemon restart (git pull + cargo build + midtown restart).
 ///
 /// Before restart: 8+ coworkers with task assignments.
-/// After restart: only 1 coworker in coworker_task_assignments map.
+/// After restart: only 1 coworker in name_task_assignments map.
 ///
-/// The bug occurs because coworker_task_assignments is an in-memory HashMap
+/// The bug occurs because name_task_assignments is an in-memory HashMap
 /// that is initialized empty on daemon startup, and task ownership information
 /// from disk (task files' owner field) is never restored to this map.
 use std::collections::{HashMap, HashSet};
@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 ///
 /// The captured snapshot shows the BEFORE state (bug present):
 /// - `all_tasks`: 7 tasks with owner field set (lexington, park, york, vernon, etc.)
-/// - `coworker_task_assignments`: Only has 1 entry (park)
+/// - `name_task_assignments`: Only has 1 entry (park)
 ///
 /// This test verifies that:
 /// 1. The snapshot captured the bug state correctly (missing assignments)
@@ -28,7 +28,7 @@ fn test_task_assignments_lost_after_restart() {
     );
     let snapshot: serde_json::Value = serde_json::from_str(snapshot_json).unwrap();
 
-    // Extract coworker_task_assignments (the in-memory map BEFORE the fix)
+    // Extract name_task_assignments (the in-memory map BEFORE the fix)
     let assignments_map = snapshot["coworker_task_assignments"].as_object().unwrap();
 
     // Extract all tasks with owners and in_progress status
@@ -52,7 +52,7 @@ fn test_task_assignments_lost_after_restart() {
         in_progress_with_owners.len()
     );
     println!(
-        "But coworker_task_assignments only had {} entries (bug state)",
+        "But name_task_assignments only had {} entries (bug state)",
         assignments_map.len()
     );
 
@@ -100,7 +100,7 @@ fn test_task_assignments_lost_after_restart() {
     );
 }
 
-/// Helper function to rebuild coworker_task_assignments from task storage.
+/// Helper function to rebuild name_task_assignments from task storage.
 ///
 /// This is what the daemon startup should do to restore assignments after restart.
 #[test]

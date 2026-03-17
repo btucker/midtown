@@ -340,14 +340,16 @@ pub enum Effect {
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
     },
-    /// Spawn a coworker for a pending task.
+    /// Unified spawn effect for tasks.
     ///
-    /// Records an in-memory task assignment for busy tracking and writes
-    /// ownership + in_progress status directly to disk.
-    AssignAndSpawn {
+    /// Allocates a coworker name (preferring `preferred_name` if available),
+    /// writes task ownership + in_progress status to disk, then spawns.
+    /// On success, executes `on_success` effects. On failure, resets the
+    /// task to pending and executes `on_failure` effects.
+    SpawnForTask {
         task_id: String,
-        owner: String,
         dir_key: String,
+        preferred_name: Option<String>,
         config: crate::launch::LaunchConfig,
         on_success: Vec<Effect>,
         on_failure: Vec<Effect>,
@@ -650,23 +652,7 @@ pub enum Effect {
         on_success: Vec<Effect>,
     },
 
-    // ── Session-centric effects (new model) ─────────────────────────────
-    /// Spawn a new session for a task. Allocates a name from the NamePool.
-    ///
-    /// This is the session-centric counterpart to `SpawnCoworker` / `AssignAndSpawn`.
-    /// The key difference: `SpawnSession` allocates the name from the NamePool at
-    /// execution time (not at decision time), keeping the decision functions pure.
-    SpawnSession {
-        session_id: String,
-        task_id: String,
-        working_dir: std::path::PathBuf,
-        initial_prompt: String,
-        preferred_name: Option<String>,
-        is_reviewer: bool,
-        resume: bool,
-        config: Box<crate::launch::LaunchConfig>,
-    },
-
+    // ── Session-centric effects ─────────────────────────────────────────
     /// Shut down a running session. Releases the name back to the NamePool.
     ///
     /// Session-centric counterpart to `ShutdownCoworker`. Looks up the session's
@@ -797,11 +783,8 @@ pub(crate) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
 
     for effect in effects {
         match effect {
-            // Fresh and session-aware spawns.
-            Effect::AssignAndSpawn { task_id, .. } => {
-                ids.insert(task_id.clone());
-            }
-            Effect::SpawnSession { task_id, .. } => {
+            // Task-based spawns.
+            Effect::SpawnForTask { task_id, .. } => {
                 ids.insert(task_id.clone());
             }
 
@@ -1247,7 +1230,7 @@ async fn cleanup_worktree_and_notify(
 /// to prevent rapid-fire nudges within a single tick (e.g., when CI green,
 /// review complete, and merge conflict each independently nudge the same coworker).
 ///
-/// Spawn effects (`AssignAndSpawn`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
+/// Spawn effects (`SpawnForTask`, `SpawnCoworkerWithCallbacks`, `SpawnCoworker`,
 /// `EnsureWorktree`) are parallelized using `tokio::spawn` to avoid sequential
 /// blocking during startup when processing multiple pending tasks. Non-spawn effects
 /// execute sequentially as before. This keeps the daemon responsive to RPC requests
@@ -1696,9 +1679,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 on_failure,
             } => {
                 // DM separators are posted by the caller in on_success effects,
-                // not here. For task-based spawns the separator was posted by
-                // AssignAndSpawn or SpawnSession; for reviewer spawns it is
-                // included directly in the on_success vector (see pr.rs).
+                // not here. For task-based spawns the separator is posted by
+                // SpawnForTask; for reviewer spawns it is included directly
+                // in the on_success vector (see pr.rs).
                 //
                 // Clear in-flight markers for task IDs claimed by this effect.
                 let task_ids: Vec<String> = extract_claimed_task_ids_from_effects(&on_success)
@@ -1724,22 +1707,38 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     state.clear_task_spawn_in_flight(task_id);
                 }
             }
-            Effect::AssignAndSpawn {
+            Effect::SpawnForTask {
                 task_id,
-                owner,
                 dir_key,
-                config,
+                preferred_name,
+                mut config,
                 on_success,
                 on_failure,
             } => {
-                // Spawn the coworker and set ownership + in_progress on disk.
-                let name = config.name.clone();
+                // 1. Allocate name from pool
+                let channel_lead_names = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.channel_lead_names()
+                };
+                let name = {
+                    let mut pool = state.name_pool.lock().unwrap();
+                    pool.allocate_excluding(preferred_name.as_deref(), &channel_lead_names)
+                };
+                let Some(name) = name else {
+                    warn!("SpawnForTask: no available names for task !{}", task_id);
+                    state.clear_task_spawn_in_flight(&task_id);
+                    continue;
+                };
+
+                // 2. Update config with allocated name
+                config.name = name.clone();
+
+                // 3. Spawn via state.spawn_coworker
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
-                        info!("Spawned coworker {} successfully", name);
-                        // Clear in-flight marker on success
-                        state.clear_task_spawn_in_flight(&task_id);
-                        // Update sessions[].task_id — the single source of truth.
+                        info!("SpawnForTask: spawned {} for task !{}", name, task_id);
+
+                        // Update task_to_session mapping
                         let maybe_session_id =
                             state.name_to_session.lock().unwrap().get(&name).cloned();
                         if let Some(session_id) = maybe_session_id {
@@ -1754,44 +1753,53 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 .insert(task_id.clone(), session_id);
                             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
-                                    "Failed to save persistent state after AssignAndSpawn task_id update: {}",
+                                    "Failed to save persistent state after SpawnForTask task_id update: {}",
                                     e
                                 );
                             }
                         }
-                        // Set task owner on disk so status and owner are consistent
-                        if let Err(e) = crate::tasks::update_task_owner(&task_id, &owner) {
+
+                        // Set task owner on disk
+                        if let Err(e) = crate::tasks::update_task_owner(&task_id, &name) {
                             warn!(
-                                "Failed to set task !{} owner to {} after spawn: {}",
-                                task_id, owner, e
+                                "SpawnForTask: failed to set task !{} owner to {}: {}",
+                                task_id, name, e
                             );
                         }
-                        // Transition task from pending to in_progress now that the coworker is running
+
+                        // Transition task from pending to in_progress
                         if let Err(e) =
                             crate::tasks::set_task_in_progress_for_repo(&task_id, &dir_key)
                         {
                             warn!(
-                                "Failed to set task !{} to in_progress after spawn: {}",
+                                "SpawnForTask: failed to set task !{} to in_progress: {}",
                                 task_id, e
                             );
                         }
-                        // Post task divider to the coworker's DM channel
+
+                        // Post DM separator
                         let task_subject = crate::tasks::read_tasks_for_repo(Some(&dir_key))
                             .into_iter()
                             .find(|t| t.id == task_id)
                             .map(|t| t.subject);
                         let separator_effect = build_dm_separator_effect(
-                            &owner,
+                            &name,
                             &task_id,
                             task_subject.as_deref().filter(|s| !s.is_empty()),
                         );
                         Box::pin(execute_effects(vec![separator_effect], state)).await;
+
+                        // Clear in-flight marker on success
+                        state.clear_task_spawn_in_flight(&task_id);
+
+                        // Execute on_success callbacks
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
-                        warn!("Failed to spawn coworker {}: {}", name, e);
-                        // Clear in-flight marker on failure (no disk rollback needed)
+                        warn!("SpawnForTask: failed to spawn for task !{}: {}", task_id, e);
+                        // Clear in-flight marker on failure
                         state.clear_task_spawn_in_flight(&task_id);
+                        // Execute on_failure callbacks
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
                 }
@@ -2989,216 +2997,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             // ── Session-centric effects ──────────────────────────────────
-            Effect::SpawnSession {
-                session_id,
-                task_id,
-                working_dir,
-                initial_prompt,
-                preferred_name,
-                is_reviewer,
-                resume,
-                mut config,
-            } => {
-                let task_id = task_id.clone();
-                // 1. Allocate name from NamePool
-                let channel_lead_names = {
-                    let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_names()
-                };
-                let name = {
-                    let mut pool = state.name_pool.lock().unwrap();
-                    pool.allocate_excluding(preferred_name.as_deref(), &channel_lead_names)
-                };
-                let Some(name) = name else {
-                    warn!("No available names for SpawnSession {}", session_id);
-                    state.clear_task_spawn_in_flight(&task_id);
-                    continue;
-                };
-
-                // 2. Update config with allocated name
-                config.name = name.clone();
-                if !resume {
-                    config.session_mode = crate::launch::SessionMode::Fresh;
-                } else {
-                    config.session_mode =
-                        crate::launch::SessionMode::ResumeSession(session_id.clone());
-                }
-                config.working_dir = Some(working_dir.clone());
-                config.initial_prompt = Some(initial_prompt.clone());
-
-                // 3. Spawn via state.spawn_coworker (handles worktree, register, session manager)
-                match state.spawn_coworker(&config).await {
-                    Ok(_) => {
-                        info!(
-                            "SpawnSession: spawned session {} as {} for task !{}",
-                            session_id, name, task_id
-                        );
-
-                        // 4. Update task_to_session (name↔session maps already set by spawn_coworker)
-                        {
-                            state
-                                .task_to_session
-                                .lock()
-                                .unwrap()
-                                .insert(task_id.clone(), session_id.clone());
-                        }
-
-                        // 5. Update SessionRecord in persistent state
-                        {
-                            let mut ps = state.persistent_state.lock().await;
-                            // Mark any old session records with this name as not running
-                            // and clear their current_name. Names are reused from the
-                            // pool, so previous sessions for this name may still have
-                            // is_running=true if they weren't properly cleaned up
-                            // (e.g., after daemon restart). Clearing current_name
-                            // prevents ambiguous lookups where multiple records share
-                            // the same name (e.g., insight handler's find-by-name).
-                            let mut displaced_ids: Vec<String> = Vec::new();
-                            for record in ps.sessions.values_mut() {
-                                if record.session_id != session_id
-                                    && (record.preferred_name.as_deref() == Some(&name)
-                                        || record.current_name.as_deref() == Some(&name))
-                                {
-                                    if record.is_running {
-                                        record.is_running = false;
-                                        displaced_ids.push(record.session_id.clone());
-                                    }
-                                    record.current_name = None;
-                                }
-                            }
-                            for sid in &displaced_ids {
-                                ps.close_spans_for_session(sid);
-                            }
-                            // Look up task_thread_id so coworker posts route to the
-                            // task's thread. This is set either explicitly via --thread-id
-                            // or auto-defaulted to the task announcement message ID.
-                            let bound_thread_id = ps.resolve_bound_thread_id(Some(&task_id));
-                            // Populate in-memory cache so handle_channel_post can auto-tag
-                            // the coworker's posts without touching persistent state.
-                            if let Some(ref tid) = bound_thread_id {
-                                state
-                                    .fork_bound_threads
-                                    .lock()
-                                    .unwrap()
-                                    .insert(name.clone(), tid.clone());
-                            }
-                            let record =
-                                ps.sessions.entry(session_id.clone()).or_insert_with(|| {
-                                    crate::daemon::state::SessionRecord {
-                                        session_id: session_id.clone(),
-                                        task_id: Some(task_id.clone()),
-                                        current_name: Some(name.clone()),
-                                        preferred_name: preferred_name
-                                            .clone()
-                                            .or_else(|| Some(name.clone())),
-                                        working_dir: working_dir.to_string_lossy().to_string(),
-                                        branch: None,
-                                        pr_number: None,
-                                        initial_prompt: Some(initial_prompt.clone()),
-                                        is_reviewer,
-                                        coworker_type: if is_reviewer {
-                                            "reviewer".to_string()
-                                        } else {
-                                            "dev".to_string()
-                                        },
-                                        is_running: true,
-                                        created_at: chrono::Utc::now(),
-                                        resume_on_startup: !is_reviewer,
-                                        bound_thread_id: bound_thread_id.clone(),
-                                        last_active: chrono::Utc::now(),
-                                        purpose: initial_prompt
-                                            .chars()
-                                            .take(120)
-                                            .collect::<String>(),
-                                        pid: None,
-                                        channel: config.channel.clone(),
-                                        provider: Some(config.auth_provider),
-                                        platform: Some(crate::platform::Platform::from_provider(
-                                            config.auth_provider,
-                                        )),
-                                        profile: None, // Resolved at spawn time, not available here
-                                    }
-                                });
-                            record.current_name = Some(name.clone());
-                            record.is_running = true;
-                            // Update working_dir to the actual path used for this spawn.
-                            // This clears any stale path that was overridden at dispatch time
-                            // (e.g., when the recorded working_dir no longer existed on disk).
-                            record.working_dir = working_dir.to_string_lossy().to_string();
-                            if bound_thread_id.is_some() {
-                                record.bound_thread_id = bound_thread_id;
-                            }
-                            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                                warn!("Failed to save persistent state after SpawnSession: {}", e);
-                            }
-                        }
-
-                        record_session_recovery_cooldown(&state.cooldowns, &session_id, resume);
-
-                        // Post session separator to the coworker's DM channel.
-                        // Post a DM separator so the user sees a task header in
-                        // the coworker's DM channel (applies to all sessions
-                        // including reviewers).
-                        {
-                            let task_subject =
-                                crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()))
-                                    .into_iter()
-                                    .find(|t| t.id == task_id)
-                                    .map(|t| t.subject);
-                            let separator_effect =
-                                build_dm_separator_effect(&name, &task_id, task_subject.as_deref());
-                            Box::pin(execute_effects(vec![separator_effect], state)).await;
-                        }
-
-                        state.broadcast_coworker_update(&name, "running", None);
-                    }
-                    Err(e) => {
-                        let err_msg = e.to_string();
-                        warn!("SpawnSession failed for {}: {}", session_id, err_msg);
-                        if err_msg.contains("Specified working_dir does not exist") {
-                            warn!(
-                                "SpawnSession cleanup: clearing stale task/session binding for task !{} (session {}) after missing working_dir",
-                                task_id, session_id
-                            );
-                            let cleared = clear_stale_task_session_binding(
-                                state,
-                                &task_id,
-                                Some(&session_id),
-                            )
-                            .await;
-                            if cleared == 0 {
-                                debug!(
-                                    "SpawnSession cleanup: no matching stale bindings found for task !{}",
-                                    task_id
-                                );
-                            }
-                            if let Err(reset_err) = crate::tasks::reset_task_to_pending_for_repo(
-                                &task_id,
-                                state.paths.dir_key(),
-                            ) {
-                                warn!(
-                                    "SpawnSession cleanup: failed to reset task !{} to pending: {}",
-                                    task_id, reset_err
-                                );
-                            }
-                        }
-                        // Record spawn failure cooldown so the next tick doesn't
-                        // immediately retry this coworker (prevents infinite retry
-                        // loops when worktree creation fails — see !2172).
-                        {
-                            let mut cooldowns = state.cooldowns.lock().unwrap();
-                            cooldowns.record("spawn_failure", &name);
-                        }
-                        // Release name back since spawn failed
-                        {
-                            let mut pool = state.name_pool.lock().unwrap();
-                            pool.release(&name);
-                        }
-                    }
-                }
-                state.clear_task_spawn_in_flight(&task_id);
-            }
-
             Effect::ShutdownSession { session_id, reason } => {
                 // Look up name from session_to_name
                 let name = state
@@ -4462,19 +4260,6 @@ async fn post_plugin_error(state: &DaemonState, channel: &str, detail: &str) {
     }
 }
 
-/// Record the `session_recovered` cooldown for resume spawns to prevent rapid retries.
-fn record_session_recovery_cooldown(
-    cooldowns: &std::sync::Mutex<crate::rules::CooldownTracker>,
-    session_id: &str,
-    resume: bool,
-) {
-    if !resume {
-        return;
-    }
-    let mut guard = cooldowns.lock().unwrap();
-    guard.record("session_recovered", session_id);
-}
-
 async fn spawn_with_resume_fallback(
     state: &DaemonState,
     dir_key: &str,
@@ -4655,7 +4440,7 @@ async fn respawn_fork(
     {
         let mut ps = state.persistent_state.lock().await;
         // Clear current_name/preferred_name on any old session records that
-        // still claim this name. Same cleanup as SpawnSession (PR #1819) —
+        // still claim this name. Same cleanup as SpawnForTask (PR #1819) —
         // prevents ambiguous find-by-name lookups when multiple records share
         // the same name. Must check both fields because rpc_auth.rs matches
         // sessions by either preferred_name or current_name.

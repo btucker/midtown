@@ -419,33 +419,16 @@ async fn get_installed_plugins() -> Result<HashSet<String>, String> {
     Ok(ids)
 }
 
-/// Unified cache for PR-to-coworker mappings.
+/// Raw PR data from GitHub polling.
 ///
-/// Replaces the previous separate fields (`cached_open_pr_branches`,
-/// `cached_merged_pr_coworkers`) with a single struct. Merged refresh timing
-/// uses the shared `CooldownTracker` rather than a standalone timestamp.
+/// Stores only GitHub API response data — no coworker ownership inference.
+/// PR ownership is derived from `SessionRecord.pr_number` at snapshot time.
 #[derive(Default)]
-struct PrCoworkerCache {
-    /// Coworker names extracted from open PR branch names.
-    /// Updated every PR poll tick (~30s).
-    open_pr_owners: HashSet<String>,
-    /// Coworker names from recently merged PR branch names.
-    /// Updated every `MERGED_PRS_FETCH_INTERVAL_SECS` (5 minutes via CooldownTracker).
-    merged_pr_owners: HashSet<String>,
-    /// Full branch names from recently merged PRs (e.g., "york/feature-x").
-    /// Used for precise orphan filtering - avoids hiding genuinely orphaned
-    /// worktrees when the same coworker has other merged PRs.
-    merged_pr_branches: HashSet<String>,
+struct PrPollData {
     /// PR numbers of recently merged PRs. Used by task dispatch to skip
     /// tasks that reference a PR that's already merged (e.g., "Address
     /// review feedback on PR #709" when PR #709 is merged).
     merged_pr_numbers: HashSet<u64>,
-    /// Coworker names whose open PR has all CI checks passing.
-    /// Used by snapshot to determine PR break eligibility.
-    ci_passed_pr_owners: HashSet<String>,
-    /// Coworker names whose open PR has CI passed AND has review feedback to address.
-    /// Used by snapshot for idle shutdown protection (prevents spawn→idle→break loop).
-    review_feedback_pr_owners: HashSet<String>,
     /// Count of open PRs that need review (not draft, no completed review).
     /// Updated every PR poll tick. Used to prioritize PR reviews over new task pickup.
     prs_needing_review: usize,
@@ -505,8 +488,8 @@ pub(crate) struct DaemonState {
     /// This doesn't reduce API calls, but avoids redundant lock acquisition and issue detection
     /// when the PR state hasn't changed between poll cycles.
     last_pr_poll_hash: Mutex<u64>,
-    /// Unified cache for PR-to-coworker mappings (open + merged + CI status).
-    pr_coworker_cache: std::sync::RwLock<PrCoworkerCache>,
+    /// Raw PR data from GitHub polling (open + merged PR data, no ownership inference).
+    pr_poll_data: std::sync::RwLock<PrPollData>,
     /// Coworker stop times keyed by lowercase name.
     /// Tracks when coworkers were sent on a break (shutdown). Used by workflow
     /// features that need to know the last activity time of inactive coworkers.
@@ -527,17 +510,17 @@ pub(crate) struct DaemonState {
     /// Used by the PR poll task to determine webhook health: if recent,
     /// polling uses a relaxed interval; if stale or absent, polling is aggressive.
     last_webhook_event_at: Mutex<Option<tokio::time::Instant>>,
-    /// Task IDs with pending `AssignAndSpawn` effects that haven't completed yet.
+    /// Task IDs with pending spawn effects that haven't completed yet.
     ///
     /// Prevents the task-level spawn race condition where two ticks both see the same
-    /// pending task and generate duplicate `AssignAndSpawn` effects. The race occurs
+    /// pending task and generate duplicate `SpawnForTask` effects. The race occurs
     /// because:
-    /// 1. Tick 1 evaluates, sees pending task, generates `AssignAndSpawn`
+    /// 1. Tick 1 evaluates, sees pending task, generates `SpawnForTask`
     /// 2. Effects start executing (disk write + spawn takes time)
     /// 3. Tick 2 fires, collects snapshot that still shows task as pending
-    /// 4. Tick 2 generates another `AssignAndSpawn` for the same task
+    /// 4. Tick 2 generates another `SpawnForTask` for the same task
     ///
-    /// Fix: After `evaluate_tick`, scan returned effects for `AssignAndSpawn` and
+    /// Fix: After `evaluate_tick`, scan returned effects for `SpawnForTask` and
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
@@ -725,7 +708,7 @@ pub(crate) struct DaemonState {
     ///
     /// Populated in five places:
     /// 1. `handle_session_fork` — when a fork is created
-    /// 2. `SpawnSession` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
+    /// 2. `SpawnForTask` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
     /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
     /// 4. `spawn_coworker()` — for non-reviewer coworkers with a `bound_thread_id`
     /// 5. `handle_coworker_spawn` (`rpc_coworker.rs`) — when `--thread` is passed to call-in
@@ -1402,7 +1385,7 @@ impl DaemonState {
             push_manager,
             usage_limit_nudge_at: Mutex::new(None),
             last_pr_poll_hash: Mutex::new(0),
-            pr_coworker_cache: std::sync::RwLock::new(PrCoworkerCache::default()),
+            pr_poll_data: std::sync::RwLock::new(PrPollData::default()),
             coworker_stop_times: std::sync::RwLock::new(HashMap::new()),
             stuck_tracker: Mutex::new(StuckConditionTracker::new()),
             ci_notification_buffer: Mutex::new(trackers::CiNotificationBuffer::new()),
@@ -1695,7 +1678,7 @@ impl DaemonState {
                 _ => "dev".to_string(),
             };
             let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
-            // Look up bound thread from task_thread_id — mirrors SpawnSession path
+            // Look up bound thread from task_thread_id — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
             let bound_thread_id = ps.resolve_bound_thread_id(config.task_id.as_deref());
             ps.upsert_session_running(
@@ -1783,14 +1766,14 @@ impl DaemonState {
                 .is_some_and(|dn| dn.eq_ignore_ascii_case(from))
     }
 
-    /// Check if a task has a pending `AssignAndSpawn` effect that hasn't completed yet.
+    /// Check if a task has a pending spawn effect that hasn't completed yet.
     ///
     /// Used by `spawn_for_pending_tasks` to avoid generating duplicate effects.
     pub(crate) fn is_task_spawn_in_flight(&self, task_id: &str) -> bool {
         self.in_flight_task_spawns.lock().unwrap().contains(task_id)
     }
 
-    /// Mark a task as having a pending `AssignAndSpawn` effect.
+    /// Mark a task as having a pending spawn effect.
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     pub(crate) fn mark_task_spawn_in_flight(&self, task_id: &str) {
@@ -1802,7 +1785,7 @@ impl DaemonState {
 
     /// Clear the in-flight marker for a task after its spawn or nudge effect completes.
     ///
-    /// Called from `execute_effects` when `AssignAndSpawn` or
+    /// Called from `execute_effects` when `SpawnForTask` or
     /// `NudgeSessionWithCallbacks` (with `RecordTaskAssignment`) succeeds or fails.
     pub(crate) fn clear_task_spawn_in_flight(&self, task_id: &str) {
         self.in_flight_task_spawns.lock().unwrap().remove(task_id);
@@ -1827,7 +1810,7 @@ impl DaemonState {
     ///
     /// Derives the mapping by iterating running sessions with task bindings.
     /// Used by snapshot collection and RPC handlers.
-    pub(crate) async fn get_coworker_task_assignments(&self) -> HashMap<String, String> {
+    pub(crate) async fn get_name_task_assignments(&self) -> HashMap<String, String> {
         let n2s = self.name_to_session.lock().unwrap().clone();
         let ps = self.persistent_state.lock().await;
         n2s.iter()
@@ -1839,19 +1822,29 @@ impl DaemonState {
             .collect()
     }
 
-    /// Get busy coworkers from both disk-based task storage and session records.
+    /// Get names of coworkers with in-progress tasks, derived from sessions.
     ///
-    /// This is the canonical way to check busy status. Merges disk-based
-    /// in_progress task owners with session-record-derived assignments.
-    pub(crate) async fn get_all_busy_coworkers(&self) -> Vec<String> {
-        let mut busy: HashSet<String> =
-            crate::tasks::get_busy_coworkers_for_repo(self.paths.dir_key())
-                .into_iter()
-                .map(|n| n.to_lowercase())
-                .collect();
-        let assignments = self.get_coworker_task_assignments().await;
-        busy.extend(assignments.into_keys());
-        busy.into_iter().collect()
+    /// A coworker is "busy" if its session has a `task_id` pointing to an
+    /// in-progress task. This uses sessions as the source of truth instead
+    /// of reading task file owners.
+    pub(crate) async fn get_busy_session_names(&self) -> HashSet<String> {
+        let ps = self.persistent_state.lock().await;
+        let all_tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let in_progress_ids: HashSet<String> = all_tasks
+            .iter()
+            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .map(|t| t.id.clone())
+            .collect();
+        ps.sessions
+            .values()
+            .filter(|s| {
+                s.task_id
+                    .as_deref()
+                    .is_some_and(|tid| in_progress_ids.contains(tid))
+            })
+            .filter_map(|s| s.current_name.clone())
+            .map(|n| n.to_lowercase())
+            .collect()
     }
 
     /// Clear the task_id from all session records matching a given task ID.
@@ -1938,7 +1931,7 @@ impl DaemonState {
     /// Test helper: set up a mock session with a task assignment.
     ///
     /// Creates a session record and name→session mapping so that
-    /// `get_task_id_for_coworker` and `get_coworker_task_assignments` work.
+    /// `get_task_id_for_coworker` and `get_name_task_assignments` work.
     #[cfg(test)]
     pub(crate) async fn set_test_task_assignment(&self, coworker: &str, task_id: &str) {
         let session_id = format!("test-session-{}", coworker.to_lowercase());
@@ -2277,7 +2270,7 @@ impl DaemonState {
     ///
     /// Called after `evaluate_tick` returns effects, before `execute_effects`.
     /// This prevents the next tick from generating duplicate spawns/nudges for the same task.
-    /// Covers `AssignAndSpawn` (fresh spawns), `SpawnSession`, `NudgeSessionWithCallbacks`,
+    /// Covers `SpawnForTask`, `NudgeSessionWithCallbacks`,
     /// and `SpawnCoworkerWithCallbacks` that contain a `RecordTaskAssignment` in on_success.
     pub(crate) fn mark_in_flight_spawns_from_effects(&self, effects: &[effects::Effect]) {
         for task_id in effects::extract_claimed_task_ids_from_effects(effects) {
@@ -3320,17 +3313,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // structure changes that require restarting the Python plugin daemon.
     let mut plugin_scan_interval = interval(std::time::Duration::from_secs(5));
     plugin_scan_interval.tick().await;
-
-    // Nudge any coworkers discovered on startup to continue their tasks.
-    // This runs once at startup after the daemon has fully initialized.
-    // Data gathering + pure decision → effects executed in background task.
-    {
-        let state = Arc::clone(&state);
-        tokio::spawn(async move {
-            let nudge_effects = dispatch::gather_discovered_coworker_nudges(&state).await;
-            effects::execute_effects(nudge_effects, &state).await;
-        });
-    }
 
     // Spawn dedicated RPC listener task so connection acceptance is never
     // blocked by long-running tick handlers (PR polling, task dispatch, etc.).

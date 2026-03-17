@@ -1320,10 +1320,9 @@ fn test_grouped_tasks_should_not_duplicate_nudge_to_running_coworker() {
 #[test]
 fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     // mark_in_flight_spawns_from_effects must track task IDs from:
-    // 1. AssignAndSpawn (Case 2 fresh spawns)
-    // 2. NudgeCoworkerWithCallbacks with RecordTaskAssignment (Case 2 nudges)
-    // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (Case 1 owned spawns)
-    // 4. SpawnSession (session-centric recovery/retry path)
+    // 1. SpawnForTask (unified task spawn path)
+    // 2. NudgeSessionWithCallbacks with RecordTaskAssignment (nudges)
+    // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (non-task spawns like reviewers)
     let effects = vec![
         effects::Effect::nudge_session_with_callbacks(
             "sess-pleasant-1",
@@ -1333,12 +1332,12 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
                 task_id: "873".to_string(),
             }],
         ),
-        effects::Effect::AssignAndSpawn {
+        effects::Effect::SpawnForTask {
             task_id: "874".to_string(),
-            owner: "park".to_string(),
             dir_key: "test-repo".to_string(),
+            preferred_name: Some("park".to_string()),
             config: crate::launch::LaunchConfig::coworker(
-                "park".to_string(),
+                String::new(),
                 "test-repo".to_string(),
                 crate::launch::SessionMode::Fresh,
                 None,
@@ -1361,21 +1360,19 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             }],
             on_failure: vec![],
         },
-        effects::Effect::SpawnSession {
-            session_id: "sess-amsterdam-1".to_string(),
+        effects::Effect::SpawnForTask {
             task_id: "876".to_string(),
-            working_dir: "/tmp/worktree-876".into(),
-            initial_prompt: "resume task".to_string(),
+            dir_key: "test-repo".to_string(),
             preferred_name: Some("amsterdam".to_string()),
-            is_reviewer: false,
-            resume: true,
-            config: Box::new(crate::launch::LaunchConfig::coworker(
-                "amsterdam".to_string(),
+            config: crate::launch::LaunchConfig::coworker(
+                String::new(),
                 "test-repo".to_string(),
-                crate::launch::SessionMode::Resume,
+                crate::launch::SessionMode::Fresh,
                 Some("resume task".to_string()),
                 Some("876".to_string()),
-            )),
+            ),
+            on_success: vec![],
+            on_failure: vec![],
         },
     ];
 
@@ -1384,10 +1381,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     let mut in_flight_tasks = HashSet::new();
     for effect in &effects {
         match effect {
-            effects::Effect::AssignAndSpawn { task_id, .. } => {
-                in_flight_tasks.insert(task_id.clone());
-            }
-            effects::Effect::SpawnSession { task_id, .. } => {
+            effects::Effect::SpawnForTask { task_id, .. } => {
                 in_flight_tasks.insert(task_id.clone());
             }
             effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
@@ -1404,11 +1398,11 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
 
     assert!(
         in_flight_tasks.contains("873"),
-        "NudgeCoworkerWithCallbacks with RecordTaskAssignment should be tracked"
+        "NudgeSessionWithCallbacks with RecordTaskAssignment should be tracked"
     );
     assert!(
         in_flight_tasks.contains("874"),
-        "AssignAndSpawn should be tracked"
+        "SpawnForTask should be tracked"
     );
     assert!(
         in_flight_tasks.contains("875"),
@@ -1416,7 +1410,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     );
     assert!(
         in_flight_tasks.contains("876"),
-        "SpawnSession should be tracked"
+        "SpawnForTask (resume) should be tracked"
     );
 }
 

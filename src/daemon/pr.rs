@@ -20,17 +20,6 @@ use super::helpers::*;
 use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
 
-/// Get list of coworker names who have open PRs.
-///
-/// Coworkers with open PRs should NEVER be sent on a break.
-///
-/// Uses cached data from the latest `poll_prs_for_issues` call.
-/// Returns empty on the first tick before the poll populates the cache.
-pub(super) fn get_coworkers_with_open_prs(state: &DaemonState) -> Vec<String> {
-    let cache = state.pr_coworker_cache.read().unwrap();
-    cache.open_pr_owners.iter().cloned().collect()
-}
-
 /// Resolve a PR's owner via the session-centric path:
 /// PR number → task_id → session_id → session.current_name (or preferred_name).
 ///
@@ -167,17 +156,15 @@ impl PrContext {
 /// polling less frequently saves significant API calls.
 const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 
-/// Get coworker names that have recently merged PRs.
+/// Fetch recently merged PRs from GitHub and cache the raw data.
 ///
-/// Uses a time-based cache to reduce API calls. Merged PR status is only refreshed
+/// Uses a time-based cooldown to reduce API calls. Merged PR status is only refreshed
 /// every 5 minutes since merge events aren't time-critical.
 ///
-/// The `branch_owners` map (from the worktree registry) is needed to resolve
-/// task-based branch names (e.g., "task-42-fix-auth") to coworker names.
-pub(super) fn get_coworkers_with_merged_prs(
-    state: &DaemonState,
-    branch_owners: &HashMap<String, String>,
-) -> HashSet<String> {
+/// Returns `(merged_pr_numbers, merged_prs_data)` — raw GitHub data without
+/// coworker ownership derivation. Ownership is resolved at snapshot time via
+/// `SessionRecord.pr_number`.
+pub(super) fn fetch_merged_pr_data(state: &DaemonState) -> (HashSet<u64>, Vec<serde_json::Value>) {
     // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
     let needs_refresh = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -189,8 +176,11 @@ pub(super) fn get_coworkers_with_merged_prs(
     };
 
     if !needs_refresh {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        return cache.merged_pr_owners.clone();
+        let cache = state.pr_poll_data.read().unwrap();
+        return (
+            cache.merged_pr_numbers.clone(),
+            cache.merged_prs_data.clone(),
+        );
     }
 
     // Fetch from API (include title and mergedAt for RPC cache)
@@ -207,71 +197,42 @@ pub(super) fn get_coworkers_with_merged_prs(
         ])
         .output();
 
-    let (coworker_names, branch_names, pr_numbers, merged_prs_data): (
-        HashSet<String>,
-        HashSet<String>,
-        HashSet<u64>,
-        Vec<serde_json::Value>,
-    ) = match output {
+    let (pr_numbers, merged_prs_data): (HashSet<u64>, Vec<serde_json::Value>) = match output {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
-                let branches: HashSet<String> = prs
-                    .iter()
-                    .filter_map(|pr| {
-                        pr.get("headRefName")
-                            .and_then(|r| r.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .collect();
-                let coworkers: HashSet<String> = branches
-                    .iter()
-                    .filter_map(|b| coworker_from_branch(b, branch_owners))
-                    .collect();
                 let numbers: HashSet<u64> = prs
                     .iter()
                     .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
                     .collect();
-                // Store full PR data for RPC cache (includes number, headRefName, title, mergedAt)
-                (coworkers, branches, numbers, prs)
+                (numbers, prs)
             } else {
-                (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
+                (HashSet::new(), Vec::new())
             }
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
+            (HashSet::new(), Vec::new())
         }
         Err(e) => {
             warn!("Failed to execute gh pr list (merged): {}", e);
-            (HashSet::new(), HashSet::new(), HashSet::new(), Vec::new())
+            (HashSet::new(), Vec::new())
         }
     };
 
     // Update cache
     {
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.merged_pr_owners = coworker_names.clone();
-        cache.merged_pr_branches = branch_names;
-        cache.merged_pr_numbers = pr_numbers;
-        cache.merged_prs_data = merged_prs_data;
+        let mut cache = state.pr_poll_data.write().unwrap();
+        cache.merged_pr_numbers = pr_numbers.clone();
+        cache.merged_prs_data = merged_prs_data.clone();
     }
     {
         let mut cooldowns = state.cooldowns.lock().unwrap();
         cooldowns.record("merged_pr_fetch", "global");
     }
 
-    coworker_names
-}
-
-/// Get PR numbers of recently merged PRs from cache.
-///
-/// Used by task dispatch to skip tasks referencing merged PRs.
-/// Data is populated by `get_coworkers_with_merged_prs()` as a side effect.
-pub(super) fn get_merged_pr_numbers(state: &DaemonState) -> HashSet<u64> {
-    let cache = state.pr_coworker_cache.read().unwrap();
-    cache.merged_pr_numbers.clone()
+    (pr_numbers, merged_prs_data)
 }
 
 /// Compute a time-aware hash of PR data for caching purposes.
@@ -582,20 +543,6 @@ async fn update_pr_caches(
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Cache open PR owners for reuse by get_coworkers_with_open_prs
-    {
-        let owners: HashSet<String> = prs
-            .iter()
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.open_pr_owners = owners;
-    }
-
     // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
     {
         let tasks = &snap.all_tasks;
@@ -627,23 +574,8 @@ async fn update_pr_caches(
             })
             .collect();
 
-        let mut cache = state.pr_coworker_cache.write().unwrap();
+        let mut cache = state.pr_poll_data.write().unwrap();
         cache.open_prs_data = formatted_prs;
-    }
-
-    // Cache coworker names whose PRs have all CI checks passing (for PR break decisions)
-    {
-        let ci_passed: HashSet<String> = prs
-            .iter()
-            .filter(|pr| all_ci_checks_passed(pr))
-            .filter_map(|pr| {
-                pr.get("headRefName")
-                    .and_then(|r| r.as_str())
-                    .and_then(|branch| coworker_from_branch(branch, &snap.worktree_branch_owners))
-            })
-            .collect();
-        let mut cache = state.pr_coworker_cache.write().unwrap();
-        cache.ci_passed_pr_owners = ci_passed;
         cache.pr_poll_initialized = true;
     }
 
@@ -873,13 +805,11 @@ async fn process_pr_issue_nudges(
 
 /// Update review status caches after processing PR issues.
 ///
-/// Pre-collects review status, computes prs_needing_review count, and caches
-/// coworker names whose PRs have CI passed + review feedback.
+/// Computes prs_needing_review count and caches it in PrPollData.
 fn update_review_status_cache(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
-    branch_owners: &HashMap<String, String>,
 ) {
     let prs_needing_review: usize = prs
         .iter()
@@ -892,24 +822,8 @@ fn update_review_status_cache(
         })
         .count();
 
-    let review_feedback: HashSet<String> = prs
-        .iter()
-        .filter(|pr| {
-            let pf = PrFields::from_json(pr);
-            all_ci_checks_passed(pr)
-                && reviewed_prs.contains(&pf.number)
-                && pf.review_decision() != "APPROVED"
-        })
-        .filter_map(|pr| {
-            pr.get("headRefName")
-                .and_then(|r| r.as_str())
-                .and_then(|branch| coworker_from_branch(branch, branch_owners))
-        })
-        .collect();
-
-    let mut cache = state.pr_coworker_cache.write().unwrap();
+    let mut cache = state.pr_poll_data.write().unwrap();
     cache.prs_needing_review = prs_needing_review;
-    cache.review_feedback_pr_owners = review_feedback;
 }
 
 /// Detect external/fork PRs from polling data and record them in persistent state.
@@ -1158,7 +1072,7 @@ pub(super) async fn poll_prs_for_issues(
     // Auto-spawn reviewers for PRs that need review
     effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
 
-    update_review_status_cache(state, &prs, &reviewed_prs, &snap.worktree_branch_owners);
+    update_review_status_cache(state, &prs, &reviewed_prs);
 
     // Nudge PR owners when CI turns green and they have review feedback to address.
     // This covers the case where a coworker is waiting for CI while feedback awaits.
@@ -1962,7 +1876,7 @@ async fn silent_coworker_scenario(
     tracker: &mut super::trackers::StuckConditionTracker,
     state: &DaemonState,
 ) -> u32 {
-    let busy_coworkers = state.get_all_busy_coworkers().await;
+    let busy_coworkers = state.get_busy_session_names().await;
     let records = state.coworker_records.read().await;
     let mut nudge_count = 0;
 
@@ -2658,10 +2572,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers().await;
+    let busy_coworkers = state.get_busy_session_names().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
-        .filter(|c| !busy_coworkers.contains(*c))
+        .filter(|c| !busy_coworkers.contains(c.as_str()))
         .cloned()
         .collect();
 
@@ -3563,10 +3477,10 @@ pub(super) async fn handle_pr_comment_nudge(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers().await;
+    let busy_coworkers = state.get_busy_session_names().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
-        .filter(|c| !busy_coworkers.contains(*c))
+        .filter(|c| !busy_coworkers.contains(c.as_str()))
         .cloned()
         .collect();
 
@@ -3698,10 +3612,10 @@ pub(super) async fn handle_webhook_review_state_change(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers().await;
+    let busy_coworkers = state.get_busy_session_names().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
-        .filter(|c| !busy_coworkers.contains(*c))
+        .filter(|c| !busy_coworkers.contains(c.as_str()))
         .cloned()
         .collect();
 
@@ -3800,10 +3714,10 @@ pub(super) async fn handle_webhook_ci_failure(
         .iter()
         .map(|c| c.name.clone())
         .collect();
-    let busy_coworkers = state.get_all_busy_coworkers().await;
+    let busy_coworkers = state.get_busy_session_names().await;
     let idle_coworkers: Vec<String> = active_coworkers
         .iter()
-        .filter(|c| !busy_coworkers.contains(*c))
+        .filter(|c| !busy_coworkers.contains(c.as_str()))
         .cloned()
         .collect();
 
@@ -4323,9 +4237,12 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    for coworker_name in &snap.pr.coworkers_with_open_prs {
+    let open_pr_coworkers = snap.sessions_with_open_prs();
+    let merged_pr_coworkers = snap.sessions_with_merged_prs();
+
+    for coworker_name in &open_pr_coworkers {
         // Skip the coworker(s) whose PR just merged
-        if snap.pr.coworkers_with_merged_prs.contains(coworker_name) {
+        if merged_pr_coworkers.contains(coworker_name) {
             continue;
         }
 
@@ -4406,7 +4323,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ClearSavedSessionId { .. } => "ClearSavedSessionId",
         Effect::ClearSessionWorkingDir { .. } => "ClearSessionWorkingDir",
         Effect::SpawnCoworkerWithCallbacks { .. } => "SpawnCoworkerWithCallbacks",
-        Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
         Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
         Effect::AdvanceCronEvalTimestamps { .. } => "AdvanceCronEvalTimestamps",
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
@@ -4446,7 +4362,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::NudgeChannelLead { .. } => "NudgeChannelLead",
         Effect::NudgeSession { .. } => "NudgeSession",
         Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
-        Effect::SpawnSession { .. } => "SpawnSession",
         Effect::ShutdownSession { .. } => "ShutdownSession",
         Effect::RecordSession { .. } => "RecordSession",
         Effect::ReleaseName { .. } => "ReleaseName",
@@ -4461,6 +4376,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::CreateReviewTask { .. } => "CreateReviewTask",
         Effect::CreateTaskSessionSpan { .. } => "CreateTaskSessionSpan",
         Effect::CloseTaskSessionSpan { .. } => "CloseTaskSessionSpan",
+        Effect::SpawnForTask { .. } => "SpawnForTask",
     }
 }
 
@@ -4661,8 +4577,9 @@ fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
 /// Called from `evaluate_tick(PrPollTick)`.
 pub async fn check_for_rebase_regressions(snap: &WorldSnapshot) -> Vec<Effect> {
     let mut effects = Vec::new();
+    let open_pr_coworkers = snap.sessions_with_open_prs();
 
-    for coworker_name in &snap.pr.coworkers_with_open_prs {
+    for coworker_name in &open_pr_coworkers {
         // Skip coworkers on cooldown
         if snap
             .rebase_regression_cooldown_names

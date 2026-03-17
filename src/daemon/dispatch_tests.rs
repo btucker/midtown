@@ -124,8 +124,7 @@ fn test_orphan_recovery_skips_legacy_lead_owner() {
         .filter(|e| {
             matches!(
                 e,
-                crate::daemon::effects::Effect::AssignAndSpawn { .. }
-                    | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                crate::daemon::effects::Effect::SpawnForTask { .. }
                     | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
             )
         })
@@ -983,206 +982,6 @@ fn test_decide_stale_branch_cleanup_stale_branch_cleanup() {
 }
 
 // ======================================================================
-// decide_discovered_coworker_nudges tests
-// ======================================================================
-
-#[test]
-fn test_discovered_nudges_empty() {
-    let effects =
-        decide_discovered_coworker_nudges(&[], &HashMap::new(), &HashMap::new(), &HashMap::new());
-    assert!(effects.is_empty());
-}
-
-#[test]
-fn test_discovered_nudges_task_owner() {
-    let discovered = vec!["lexington".to_string()];
-    let mut owner_tasks = HashMap::new();
-    owner_tasks.insert(
-        "lexington".to_string(),
-        ("42".to_string(), "Fix auth bug".to_string(), None),
-    );
-    let reviewer_prs = HashMap::new();
-
-    let name_session_map =
-        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &name_session_map,
-    );
-    // NudgeSession + PostToChannel
-    assert_eq!(effects.len(), 2);
-    match &effects[0] {
-        Effect::NudgeSession {
-            session_id, reason, ..
-        } => {
-            assert_eq!(session_id, "sess-lexington-1");
-            let msg = reason.to_nudge_message();
-            assert!(msg.contains("task !42"), "nudge should reference task ID");
-            assert!(
-                msg.contains("Fix auth bug"),
-                "nudge should include task subject"
-            );
-        }
-        _ => panic!("Expected NudgeSession"),
-    }
-    match &effects[1] {
-        Effect::PostToChannel {
-            sender, message, ..
-        } => {
-            assert_eq!(sender, "midtown");
-            assert!(message.contains("lexington"));
-            assert!(message.contains("task !42"));
-        }
-        _ => panic!("Expected PostToChannel"),
-    }
-}
-
-#[test]
-fn test_discovered_nudges_reviewer() {
-    let discovered = vec!["park".to_string()];
-    let owner_tasks = HashMap::new();
-    let mut reviewer_prs = HashMap::new();
-    reviewer_prs.insert("park".to_string(), 99);
-    let name_session_map = HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
-
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &name_session_map,
-    );
-    // NudgeSession + PostToChannel
-    assert_eq!(effects.len(), 2);
-    match &effects[0] {
-        Effect::NudgeSession { session_id, .. } => {
-            assert_eq!(session_id, "sess-park-1");
-        }
-        _ => panic!("Expected NudgeSession"),
-    }
-    match &effects[1] {
-        Effect::PostToChannel { message, .. } => {
-            assert!(message.contains("PR #99"));
-        }
-        _ => panic!("Expected PostToChannel"),
-    }
-}
-
-#[test]
-fn test_discovered_nudges_no_assignment() {
-    let discovered = vec!["broadway".to_string()];
-    let owner_tasks = HashMap::new();
-    let reviewer_prs = HashMap::new();
-
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &HashMap::new(),
-    );
-    assert!(
-        effects.is_empty(),
-        "Coworker with no task or review should produce no effects"
-    );
-}
-
-#[test]
-fn test_discovered_nudges_mixed() {
-    let discovered = vec![
-        "lexington".to_string(), // has task
-        "park".to_string(),      // has review
-        "broadway".to_string(),  // no assignment
-    ];
-    let mut owner_tasks = HashMap::new();
-    owner_tasks.insert(
-        "lexington".to_string(),
-        ("42".to_string(), "Fix auth bug".to_string(), None),
-    );
-    let mut reviewer_prs = HashMap::new();
-    reviewer_prs.insert("park".to_string(), 99);
-
-    let name_session_map = HashMap::from([
-        ("lexington".to_string(), "sess-lexington-1".to_string()),
-        ("park".to_string(), "sess-park-1".to_string()),
-    ]);
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &name_session_map,
-    );
-    // lexington: NudgeSession + PostToChannel = 2
-    // park: NudgeSession + PostToChannel = 2
-    // broadway: nothing = 0
-    assert_eq!(effects.len(), 4);
-}
-
-#[test]
-fn test_discovered_nudges_task_takes_priority_over_review() {
-    // If a coworker has both a task and a review assignment,
-    // the task takes priority (task check comes first in code)
-    let discovered = vec!["lexington".to_string()];
-    let mut owner_tasks = HashMap::new();
-    owner_tasks.insert(
-        "lexington".to_string(),
-        ("42".to_string(), "Fix auth bug".to_string(), None),
-    );
-    let mut reviewer_prs = HashMap::new();
-    reviewer_prs.insert("lexington".to_string(), 99);
-    let name_session_map =
-        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
-
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &name_session_map,
-    );
-    assert_eq!(effects.len(), 2);
-    // Should nudge about the task, not the review
-    match &effects[0] {
-        Effect::NudgeSession { reason, .. } => {
-            let msg = reason.to_nudge_message();
-            assert!(msg.contains("task !42"), "nudge should reference task ID");
-        }
-        _ => panic!("Expected NudgeSession"),
-    }
-}
-
-#[test]
-fn test_discovered_nudges_routes_to_task_channel() {
-    let discovered = vec!["lexington".to_string()];
-    let mut owner_tasks = HashMap::new();
-    owner_tasks.insert(
-        "lexington".to_string(),
-        (
-            "42".to_string(),
-            "Fix auth bug".to_string(),
-            Some("feature-auth".to_string()),
-        ),
-    );
-    let reviewer_prs = HashMap::new();
-    let name_session_map =
-        HashMap::from([("lexington".to_string(), "sess-lexington-1".to_string())]);
-
-    let effects = decide_discovered_coworker_nudges(
-        &discovered,
-        &owner_tasks,
-        &reviewer_prs,
-        &name_session_map,
-    );
-    assert_eq!(effects.len(), 2);
-    // Discovered coworker nudges are operational — they route to the ops channel
-    match &effects[1] {
-        Effect::PostToChannel { channel, .. } => {
-            assert_eq!(channel, &Some("ops".to_string()));
-        }
-        _ => panic!("Expected PostToChannel"),
-    }
-}
-
-// ======================================================================
 // WorktreeRegistry integration tests
 // ======================================================================
 
@@ -1212,10 +1011,10 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
     let effects = spawn_for_pending_tasks(&snap, &state);
 
     // Pre-spawn effects (EnsureWorktree, RegisterWorktreeAssignment) are top-level,
-    // followed by AssignAndSpawn with post-spawn effects in on_success.
+    // followed by SpawnForTask with post-spawn effects in on_success.
     assert!(
         effects.len() >= 2,
-        "Should have pre-spawn effects + AssignAndSpawn"
+        "Should have pre-spawn effects + SpawnForTask"
     );
 
     // EnsureWorktree should be a top-level effect (before spawn)
@@ -1235,28 +1034,27 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
         "Should have top-level RegisterWorktreeAssignment"
     );
 
-    let assign_and_spawn = effects
+    let spawn_for_task = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn {
+            if let Effect::SpawnForTask {
                 task_id,
-                owner,
                 on_success,
                 ..
             } = e
             {
-                Some((task_id, owner, on_success))
+                Some((task_id, on_success))
             } else {
                 None
             }
         })
-        .expect("Should have AssignAndSpawn effect");
+        .expect("Should have SpawnForTask effect");
 
-    assert_eq!(assign_and_spawn.0, "42");
+    assert_eq!(spawn_for_task.0, "42");
 
     // BindCoworkerToWorktree stays in on_success (runs after spawn)
-    let bind_count = assign_and_spawn
-        .2
+    let bind_count = spawn_for_task
+        .1
         .iter()
         .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { .. }))
         .count();
@@ -1308,17 +1106,17 @@ fn test_spawn_for_pending_tasks_reuses_worktree_for_owned_task() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnCoworkerWithCallbacks effect (for owned pending tasks, uses this variant)
+    // Find the SpawnForTask effect (for owned pending tasks)
     let spawn_effect = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+            if let Effect::SpawnForTask { on_success, .. } = e {
                 Some(on_success)
             } else {
                 None
             }
         })
-        .expect("Should have SpawnCoworkerWithCallbacks effect for owned pending task");
+        .expect("Should have SpawnForTask effect for owned pending task");
 
     // Should NOT generate RegisterWorktreeAssignment (worktree already exists)
     // SHOULD generate BindCoworkerToWorktree (rebind to new owner)
@@ -1376,14 +1174,14 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Count how many SpawnCoworkerWithCallbacks effects are generated for broadway
+    // Count how many SpawnForTask effects are generated for broadway
     let spawn_count = effects
         .iter()
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { config, .. }
-                    if config.name.to_lowercase() == "broadway"
+                Effect::SpawnForTask { preferred_name, .. }
+                    if preferred_name.as_ref().is_some_and(|n| n.to_lowercase() == "broadway")
             )
         })
         .count();
@@ -1400,7 +1198,7 @@ fn test_spawn_for_pending_tasks_skips_when_owner_has_pending_task() {
 
 #[test]
 fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
-    // Verify that SpawnCoworkerWithCallbacks from the SpawnOwner branch
+    // Verify that SpawnForTask from the SpawnOwner branch
     // includes RecordTaskAssignment in on_success, enabling
     // mark_in_flight_spawns_from_effects() to track it across ticks.
     let snap = snapshot::WorldSnapshot {
@@ -1415,29 +1213,25 @@ fn test_spawn_owner_includes_record_task_assignment_for_cross_tick_dedup() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnCoworkerWithCallbacks effect
+    // Find the SpawnForTask effect
     let spawn_effect = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+            if let Effect::SpawnForTask { on_success, .. } = e {
                 Some(on_success)
             } else {
                 None
             }
         })
-        .expect("Should have SpawnCoworkerWithCallbacks for broadway");
+        .expect("Should have SpawnForTask for broadway");
 
     // Verify RecordTaskAssignment is in on_success
-    let has_record = spawn_effect.iter().any(|e| {
-        matches!(
-            e,
-            Effect::RecordTaskAssignment { coworker, task_id }
-                if coworker == "broadway" && task_id == "42"
-        )
-    });
+    let has_record = spawn_effect
+        .iter()
+        .any(|e| matches!(e, Effect::RecordTaskAssignment { task_id, .. } if task_id == "42"));
     assert!(
         has_record,
-        "SpawnCoworkerWithCallbacks on_success must include RecordTaskAssignment \
+        "SpawnForTask on_success must include RecordTaskAssignment \
          for cross-tick spawn deduplication"
     );
 }
@@ -1461,7 +1255,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
     let effects_tick1 = spawn_for_pending_tasks(&snap, &state);
     let spawn_count_tick1 = effects_tick1
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
     assert_eq!(spawn_count_tick1, 1, "Tick 1 should spawn broadway");
 
@@ -1474,7 +1268,7 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
     let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
     let spawn_count_tick2 = effects_tick2
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
     assert_eq!(
         spawn_count_tick2, 0,
@@ -1539,10 +1333,9 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
     let broadway_spawns = effects
         .iter()
         .filter(|e| match e {
-            Effect::SpawnCoworkerWithCallbacks { config, .. } => {
-                config.name.to_lowercase() == "broadway"
-            }
-            Effect::AssignAndSpawn { owner, .. } => owner.to_lowercase() == "broadway",
+            Effect::SpawnForTask { preferred_name, .. } => preferred_name
+                .as_ref()
+                .is_some_and(|n| n.to_lowercase() == "broadway"),
             Effect::NudgeSessionWithCallbacks { session_id, .. } => {
                 session_id.to_lowercase().contains("broadway")
             }
@@ -1616,15 +1409,15 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Count AssignAndSpawn effects targeting broadway
+    // Count SpawnForTask effects targeting broadway
     let broadway_spawns = effects
         .iter()
-        .filter(|e| matches!(e, Effect::AssignAndSpawn { owner, .. } if owner.to_lowercase() == "broadway"))
+        .filter(|e| matches!(e, Effect::SpawnForTask { preferred_name, .. } if preferred_name.as_ref().is_some_and(|n| n.to_lowercase() == "broadway")))
         .count();
 
     assert_eq!(
         broadway_spawns, 1,
-        "Should generate exactly ONE AssignAndSpawn for broadway when two unowned tasks \
+        "Should generate exactly ONE SpawnForTask for broadway when two unowned tasks \
          both group to it via PR number. Intra-Case-2 dedup should prevent the second spawn. \
          Got {} spawns.",
         broadway_spawns
@@ -1634,7 +1427,7 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
 #[test]
 fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
     // Test the pure decision pattern: verify that spawn_for_pending_tasks
-    // correctly skips a task when coworker_task_assignments (in WorldSnapshot)
+    // correctly skips a task when name_task_assignments (in WorldSnapshot)
     // shows the owner is already assigned to that specific task.
     // This test verifies the refactored code uses the snapshot data
     // (pure decision) rather than calling state.is_coworker_assigned_to_task()
@@ -1650,7 +1443,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
             "broadway".to_string(),
         )],
         // KEY: broadway is already assigned to task !42 in the snapshot
-        coworker_task_assignments: assignments,
+        name_task_assignments: assignments,
         ..snapshot::minimal_snapshot_for_test()
     };
 
@@ -1662,7 +1455,7 @@ fn test_spawn_for_pending_tasks_skips_via_snapshot_assignment_check() {
         effects.len(),
         0,
         "Should generate no effects when owner is already assigned to the task \
-         (verified via coworker_task_assignments in snapshot)"
+         (verified via name_task_assignments in snapshot)"
     );
 }
 
@@ -1689,8 +1482,8 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
                 "42",
@@ -1702,10 +1495,10 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         }
     });
 
-    // Pre-spawn effects (EnsureWorktree) are top-level, then SpawnCoworkerWithCallbacks
+    // Pre-spawn effects (EnsureWorktree) are top-level, then SpawnForTask
     assert!(
         effects.len() >= 2,
-        "Should have pre-spawn EnsureWorktree + SpawnCoworkerWithCallbacks"
+        "Should have pre-spawn EnsureWorktree + SpawnForTask"
     );
 
     // EnsureWorktree should be a top-level effect (before spawn)
@@ -1728,11 +1521,11 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
         "Should NOT register worktree again (already exists)"
     );
 
-    // Verify SpawnCoworkerWithCallbacks has working_dir set to the existing worktree
+    // Verify SpawnForTask has working_dir set to the existing worktree
     let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks {
+            if let Effect::SpawnForTask {
                 config, on_success, ..
             } = e
             {
@@ -1741,7 +1534,7 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
                 None
             }
         })
-        .expect("Should have SpawnCoworkerWithCallbacks");
+        .expect("Should have SpawnForTask");
 
     let (config, on_success) = spawn;
 
@@ -1754,9 +1547,10 @@ fn test_orphan_recovery_reuses_existing_task_worktree() {
     );
 
     // BindCoworkerToWorktree stays in on_success (runs after spawn)
+    // Note: coworker name is empty placeholder — SpawnForTask fills it at execution time
     let bind_count = on_success
         .iter()
-        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { worktree_id, coworker } if worktree_id == "task-42-add-auth-endpoint" && coworker == "lexington"))
+        .filter(|e| matches!(e, Effect::BindCoworkerToWorktree { worktree_id, .. } if worktree_id == "task-42-add-auth-endpoint"))
         .count();
     assert_eq!(
         bind_count, 1,
@@ -1776,12 +1570,17 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
             "Add auth endpoint".to_string(),
             "lexington".to_string(),
         )],
+        all_tasks: vec![in_progress_task_for_lookup(
+            "42",
+            "Add auth endpoint",
+            "lexington",
+        )],
         // No worktree registered
         ..snapshot::minimal_snapshot_for_test()
     };
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
                 "42",
@@ -1794,10 +1593,10 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
     });
 
     // Pre-spawn effects (EnsureWorktree, RegisterWorktreeAssignment) are top-level,
-    // followed by SpawnCoworkerWithCallbacks with post-spawn effects in on_success.
+    // followed by SpawnForTask with post-spawn effects in on_success.
     assert!(
         effects.len() >= 3,
-        "Should have EnsureWorktree + RegisterWorktreeAssignment + SpawnCoworkerWithCallbacks"
+        "Should have EnsureWorktree + RegisterWorktreeAssignment + SpawnForTask"
     );
 
     // EnsureWorktree should be a top-level effect (before spawn)
@@ -1830,7 +1629,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
     let spawn = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks {
+            if let Effect::SpawnForTask {
                 config, on_success, ..
             } = e
             {
@@ -1839,7 +1638,7 @@ fn test_orphan_recovery_creates_new_worktree_when_none_exists() {
                 None
             }
         })
-        .expect("Should have SpawnCoworkerWithCallbacks");
+        .expect("Should have SpawnForTask");
 
     let (config, on_success) = spawn;
 
@@ -1898,10 +1697,10 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Pre-spawn EnsureWorktree is top-level, then AssignAndSpawn
+    // Pre-spawn EnsureWorktree is top-level, then SpawnForTask
     assert!(
         effects.len() >= 2,
-        "Should have pre-spawn EnsureWorktree + AssignAndSpawn"
+        "Should have pre-spawn EnsureWorktree + SpawnForTask"
     );
 
     // EnsureWorktree should be a top-level effect (before spawn)
@@ -1931,10 +1730,10 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
         "Should NOT re-register existing worktree"
     );
 
-    let assign_and_spawn = effects
+    let spawn_for_task = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn {
+            if let Effect::SpawnForTask {
                 config, on_success, ..
             } = e
             {
@@ -1943,9 +1742,9 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
                 None
             }
         })
-        .expect("Should have AssignAndSpawn");
+        .expect("Should have SpawnForTask");
 
-    let (config, on_success) = assign_and_spawn;
+    let (config, on_success) = spawn_for_task;
 
     // Working dir should point to the EXISTING worktree
     let expected_path =
@@ -1996,17 +1795,12 @@ fn test_orphan_recovery_skips_pr_protected_task() {
     // Mark the task as PR-protected (e.g. its PR was merged)
     snap.pr_protected_tasks.insert("42".to_string());
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |_| None);
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |_| None);
 
-    let has_spawn = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::SpawnCoworker(_)
-                | Effect::AssignAndSpawn { .. }
-        )
-    });
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { .. } | Effect::SpawnCoworker(_)));
     assert!(
         !has_spawn,
         "Should NOT recover task !42 — it's PR-protected (merged PR). Got: {:?}",
@@ -2413,7 +2207,7 @@ fn test_grouped_task_skips_if_already_assigned() {
     // Tick 2: Task !1107 is still pending, york is busy with !1107 now.
     // The assignment is reflected in the snapshot (derived from sessions[].task_id).
     let snap_tick2 = snapshot::WorldSnapshot {
-        coworker_task_assignments: {
+        name_task_assignments: {
             let mut assignments = HashMap::new();
             assignments.insert("york".to_string(), "1107".to_string());
             assignments
@@ -2434,7 +2228,7 @@ fn test_grouped_task_skips_if_already_assigned() {
 #[test]
 fn test_spawn_coworker_with_callbacks_records_task_assignment() {
     // Regression test for spawn loop bug (Case 1: pending task with owner).
-    // When a coworker isn't running but has a pending task, SpawnCoworkerWithCallbacks
+    // When a coworker isn't running but has a pending task, SpawnForTask
     // must include RecordTaskAssignment in on_success to prevent re-spawning every tick.
     //
     // Note: The captured fixture snapshot-spawn-loop-york-1110 doesn't contain
@@ -2461,17 +2255,17 @@ fn test_spawn_coworker_with_callbacks_records_task_assignment() {
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Tick 1: generates SpawnCoworkerWithCallbacks with RecordTaskAssignment
+    // Tick 1: generates SpawnForTask with RecordTaskAssignment
     let effects = spawn_for_pending_tasks(&snap, &state);
     let spawn_count = effects
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
     assert_eq!(spawn_count, 1, "Tick 1 should spawn york");
 
     // Verify the effect has RecordTaskAssignment in on_success
     let has_record_assignment = effects.iter().any(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
+        if let Effect::SpawnForTask { on_success, .. } = e {
             on_success
                 .iter()
                 .any(|e| matches!(e, Effect::RecordTaskAssignment { .. }))
@@ -2481,7 +2275,7 @@ fn test_spawn_coworker_with_callbacks_records_task_assignment() {
     });
     assert!(
         has_record_assignment,
-        "SpawnCoworkerWithCallbacks should have RecordTaskAssignment in on_success"
+        "SpawnForTask should have RecordTaskAssignment in on_success"
     );
 
     // Mark in-flight (daemon does this between evaluate_tick and execute_effects)
@@ -2541,10 +2335,10 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
         "NudgeOwner on_success should include RecordTaskAssignment"
     );
 
-    // Tick 2: Create a new snapshot that includes the assignment in coworker_task_assignments.
-    // The guard should use snap.coworker_task_assignments to prevent re-nudge (pure decision pattern).
+    // Tick 2: Create a new snapshot that includes the assignment in name_task_assignments.
+    // The guard should use snap.name_task_assignments to prevent re-nudge (pure decision pattern).
     let snap_tick2 = snapshot::WorldSnapshot {
-        coworker_task_assignments: {
+        name_task_assignments: {
             let mut assignments = HashMap::new();
             assignments.insert("york".to_string(), "1107".to_string());
             assignments
@@ -2622,7 +2416,7 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
 
     let spawn_count = effects
         .iter()
-        .filter(|e| matches!(e, Effect::AssignAndSpawn { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
 
     assert!(
@@ -3089,17 +2883,17 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the AssignAndSpawn effect and check its LaunchConfig
+    // Find the SpawnForTask effect and check its LaunchConfig
     let spawn_config = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn { config, .. } = e {
+            if let Effect::SpawnForTask { config, .. } = e {
                 Some(config)
             } else {
                 None
             }
         })
-        .expect("Should have AssignAndSpawn effect");
+        .expect("Should have SpawnForTask effect");
 
     // LaunchConfig.model should be just "opus" (not "claude/opus")
     assert_eq!(
@@ -3154,14 +2948,9 @@ fn test_unowned_pending_task_with_open_pr_is_dispatched() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    let has_spawn = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::AssignAndSpawn { .. }
-                | Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::SpawnSession { .. }
-        )
-    });
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         has_spawn,
         "Task !2050 should be dispatched — PR-protection only applies to in_progress tasks (orphan recovery), not unowned pending tasks. Got effects: {:?}",
@@ -3208,14 +2997,9 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    let has_spawn = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::AssignAndSpawn { .. }
-                | Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::SpawnSession { .. }
-        )
-    });
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         has_spawn,
         "Task !2051 should be dispatched — PR-protection only applies to in_progress tasks (orphan recovery), not unowned pending tasks. Got effects: {:?}",
@@ -3246,7 +3030,7 @@ fn test_orphan_recovery_marks_task_in_flight() {
     };
 
     let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "1264" {
             Some(in_progress_task_for_lookup(
                 "1264",
@@ -3258,23 +3042,24 @@ fn test_orphan_recovery_marks_task_in_flight() {
         }
     });
 
-    // Should have SpawnCoworkerWithCallbacks effect
+    // Should have SpawnForTask effect
     let spawn_effect = effects
         .iter()
-        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
-        .expect("Should have SpawnCoworkerWithCallbacks effect");
+        .find(|e| matches!(e, Effect::SpawnForTask { .. }))
+        .expect("Should have SpawnForTask effect");
 
     // Extract on_success effects
-    let on_success = if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = spawn_effect {
+    let on_success = if let Effect::SpawnForTask { on_success, .. } = spawn_effect {
         on_success
     } else {
-        panic!("Expected SpawnCoworkerWithCallbacks");
+        panic!("Expected SpawnForTask");
     };
 
     // Should include RecordTaskAssignment in on_success
+    // Note: coworker name is empty placeholder — SpawnForTask fills it at execution time
     let has_record_assignment = on_success.iter().any(|e| {
-        matches!(e, Effect::RecordTaskAssignment { task_id, coworker }
-            if task_id == "999999" && coworker == "lexington")
+        matches!(e, Effect::RecordTaskAssignment { task_id, .. }
+            if task_id == "999999")
     });
 
     assert!(
@@ -3351,7 +3136,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
     let (state, _tmp, _guard) = make_test_state();
 
     // Simulate what events.rs does: collect orphan effects, then collect pending task effects
-    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "1420" {
             Some(in_progress_task_for_lookup(
                 "1420",
@@ -3366,15 +3151,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
     // Verify orphan recovery produces a spawn for task !1420
     let orphan_spawns: Vec<_> = orphan_effects
         .iter()
-        .filter(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
-                on_success.iter().any(|sub| {
-                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
-                })
-            } else {
-                false
-            }
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "1420"))
         .collect();
     assert_eq!(
         orphan_spawns.len(),
@@ -3401,17 +3178,7 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
     // Count spawn effects targeting task !1420
     let spawns_for_task_1420: Vec<_> = all_effects
         .iter()
-        .filter(|e| {
-            match e {
-            Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
-                on_success.iter().any(|sub| {
-                    matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "1420")
-                })
-            }
-            Effect::AssignAndSpawn { task_id, .. } => task_id == "1420",
-            _ => false,
-        }
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "1420"))
         .collect();
 
     assert_eq!(
@@ -3906,7 +3673,7 @@ fn test_dispatch_via_sessions_skips_running_session() {
 
 #[test]
 fn test_dispatch_via_sessions_recovers_stopped_session() {
-    // Session stopped for an in_progress task -- should emit SpawnCoworkerWithCallbacks.
+    // Session stopped for an in_progress task -- should emit SpawnForTask.
     let session = make_test_session_record(
         "sess-abc",
         Some("42"),
@@ -3931,12 +3698,12 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
-    // Should have at least a SpawnCoworkerWithCallbacks effect
+    // Should have a SpawnForTask effect with preferred_name "lexington"
     let has_spawn = effects.iter().any(|e| {
         matches!(
             e,
-            Effect::SpawnCoworkerWithCallbacks { config, .. }
-            if config.name == "lexington"
+            Effect::SpawnForTask { preferred_name: Some(name), .. }
+            if name == "lexington"
         )
     });
     assert!(
@@ -4048,21 +3815,17 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
     let effects = dispatch_via_sessions_for_test(&snap);
 
     // Verify the spawn uses the preferred name "park"
-    let spawn_config = effects.iter().find_map(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
-            Some(config)
-        } else {
-            None
-        }
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::SpawnForTask { preferred_name: Some(name), .. }
+            if name == "park"
+        )
     });
     assert!(
-        spawn_config.is_some(),
-        "Should have SpawnCoworkerWithCallbacks effect"
-    );
-    let config = spawn_config.unwrap();
-    assert_eq!(
-        config.name, "park",
-        "Spawn should use the session's preferred_name"
+        has_spawn,
+        "Should have SpawnForTask effect with preferred_name 'park', got: {:?}",
+        effects
     );
 }
 
@@ -4093,19 +3856,15 @@ fn test_dispatch_via_sessions_uses_session_working_dir() {
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
-    let spawn_config = effects.iter().find_map(|e| {
-        if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {
-            Some(config)
-        } else {
-            None
-        }
-    });
-    assert!(spawn_config.is_some(), "Should have a spawn effect");
-    let config = spawn_config.unwrap();
-    assert_eq!(
-        config.working_dir,
-        Some(std::path::PathBuf::from(&existing_path)),
-        "Spawn should use the session's working_dir when it exists on disk"
+    // SpawnForTask delegates working_dir to build_spawn_effects which uses
+    // prepare_task_worktree. Verify we get a spawn effect.
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
+    assert!(
+        has_spawn,
+        "Should have a SpawnForTask effect, got: {:?}",
+        effects
     );
 }
 
@@ -4218,17 +3977,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     // Verify no spawn targets task !42
     let pending_spawns_for_42: Vec<_> = pending_effects
         .iter()
-        .filter(|e| {
-            match e {
-                Effect::AssignAndSpawn { task_id, .. } => task_id == "42",
-                Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
-                    on_success.iter().any(|sub| {
-                        matches!(sub, Effect::RecordTaskAssignment { task_id, .. } if task_id == "42")
-                    })
-                }
-                _ => false,
-            }
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "42"))
         .collect();
 
     assert!(
@@ -4242,8 +3991,8 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
 #[test]
 fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
     // When a pending task has a stopped session from a previous attempt,
-    // spawn_for_pending_tasks should emit SpawnSession with resume: true
-    // instead of the normal AssignAndSpawn path.
+    // spawn_for_pending_tasks should emit SpawnForTask with ResumeSession mode
+    // instead of a fresh spawn.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -4285,43 +4034,37 @@ fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Should contain SpawnSession with resume: true (not AssignAndSpawn)
-    let spawn_session = effects
+    // Should contain SpawnForTask with ResumeSession mode
+    let spawn_for_task = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnSession {
-                session_id,
-                task_id,
-                resume,
-                ..
+            if let Effect::SpawnForTask {
+                task_id, config, ..
             } = e
             {
-                Some((session_id.clone(), task_id.clone(), *resume))
+                if matches!(
+                    config.session_mode,
+                    crate::launch::SessionMode::ResumeSession(_)
+                ) {
+                    Some(task_id.clone())
+                } else {
+                    None
+                }
             } else {
                 None
             }
         })
-        .expect("Should emit SpawnSession effect for pending task with stopped session");
+        .expect(
+            "Should emit SpawnForTask with ResumeSession for pending task with stopped session",
+        );
 
-    assert_eq!(spawn_session.0, "sess-resume-1", "session_id should match");
-    assert_eq!(spawn_session.1, "99", "task_id should match");
-    assert!(spawn_session.2, "resume should be true");
-
-    // Should NOT contain AssignAndSpawn (we bypassed normal dispatch)
-    let assign_and_spawn_count = effects
-        .iter()
-        .filter(|e| matches!(e, Effect::AssignAndSpawn { .. }))
-        .count();
-    assert_eq!(
-        assign_and_spawn_count, 0,
-        "Should not produce AssignAndSpawn when session-aware dispatch handles the task"
-    );
+    assert_eq!(spawn_for_task, "99", "task_id should match");
 }
 
 #[test]
 fn test_pending_task_with_running_session_skips_dispatch() {
     // When a pending task has a RUNNING session, dispatch should skip it entirely
-    // (no SpawnSession, no AssignAndSpawn).
+    // (no SpawnForTask).
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -4366,14 +4109,7 @@ fn test_pending_task_with_running_session_skips_dispatch() {
     // Should produce no spawn effects at all
     let spawn_effects: Vec<_> = effects
         .iter()
-        .filter(|e| {
-            matches!(
-                e,
-                Effect::SpawnSession { .. }
-                    | Effect::AssignAndSpawn { .. }
-                    | Effect::SpawnCoworkerWithCallbacks { .. }
-            )
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .collect();
 
     assert!(
@@ -4391,10 +4127,10 @@ fn test_pending_task_with_running_session_skips_dispatch() {
 /// a session dies repeatedly after recovery.
 ///
 /// Path 1 (`dispatch_via_sessions_with_task_lookup`) checks this cooldown at lines 817-826.
-/// Path 2 had no such check — fixed by adding the same guard before the SpawnSession emit.
+/// Path 2 had no such check — fixed by adding the same guard before the SpawnForTask emit.
 ///
 /// Fix: add `recently_recovered_session_ids` check before spawning in Path 2, and record
-/// the `session_recovered` cooldown in the SpawnSession success handler in effects.rs.
+/// the `session_recovered` cooldown in the SpawnForTask success handler in effects.rs.
 #[test]
 fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
     // Given: pending task !99 has stopped session "sess-cool-1" that was recently recovered
@@ -4442,18 +4178,11 @@ fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Then: must NOT emit SpawnSession or any other spawn — session was recently recovered.
+    // Then: must NOT emit SpawnForTask or any other spawn — session was recently recovered.
     // Without the fix, this fires on every tick causing an infinite loop.
     let spawn_effects: Vec<_> = effects
         .iter()
-        .filter(|e| {
-            matches!(
-                e,
-                Effect::SpawnSession { .. }
-                    | Effect::AssignAndSpawn { .. }
-                    | Effect::SpawnCoworkerWithCallbacks { .. }
-            )
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .collect();
     assert!(
         spawn_effects.is_empty(),
@@ -4470,7 +4199,7 @@ fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
 fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
     // When a session's recorded working_dir no longer exists on disk (e.g.,
     // the worktree was cleaned up), Path 2 should fall back to the fresh
-    // worktree path instead of passing the stale path to SpawnSession.
+    // worktree path instead of passing the stale path to SpawnForTask.
     use crate::tasks::{Task, TaskStatus};
     use std::time::SystemTime;
 
@@ -4520,20 +4249,20 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    let spawn_session = effects
+    let spawn_working_dir = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnSession { working_dir, .. } = e {
-                Some(working_dir.clone())
+            if let Effect::SpawnForTask { config, .. } = e {
+                config.working_dir.clone()
             } else {
                 None
             }
         })
-        .expect("Should emit SpawnSession for pending task with stopped session");
+        .expect("Should emit SpawnForTask for pending task with stopped session");
 
     // The stale working_dir should not be used
     assert_ne!(
-        spawn_session.to_string_lossy(),
+        spawn_working_dir.to_string_lossy(),
         stale_dir,
         "Should not use stale (non-existent) working_dir"
     );
@@ -4542,7 +4271,7 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
     let expected_worktree_dir =
         crate::paths::worktrees_dir_for_repo("test-repo").join("task-77-implement-caching-layer");
     assert_eq!(
-        spawn_session, expected_worktree_dir,
+        spawn_working_dir, expected_worktree_dir,
         "Should fall back to fresh worktree when recorded working_dir is stale"
     );
 }
@@ -4825,14 +4554,7 @@ fn test_owned_pending_task_skips_spawn_when_spawn_failure_cooldown_active() {
     // Must NOT emit any spawn effects when cooldown is active.
     let spawn_effects: Vec<_> = effects
         .iter()
-        .filter(|e| {
-            matches!(
-                e,
-                Effect::SpawnCoworkerWithCallbacks { .. }
-                    | Effect::AssignAndSpawn { .. }
-                    | Effect::SpawnSession { .. }
-            )
-        })
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .collect();
     assert!(
         spawn_effects.is_empty(),
@@ -4865,17 +4587,17 @@ fn test_owned_pending_task_spawn_failure_records_cooldown() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnCoworkerWithCallbacks and check its on_failure
+    // Find the SpawnForTask and check its on_failure
     let on_failure = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_failure, .. } = e {
+            if let Effect::SpawnForTask { on_failure, .. } = e {
                 Some(on_failure)
             } else {
                 None
             }
         })
-        .expect("Should emit SpawnCoworkerWithCallbacks for owned pending task");
+        .expect("Should emit SpawnForTask for owned pending task");
 
     // on_failure MUST contain RecordCooldown for spawn_failure
     let has_cooldown = on_failure.iter().any(|e| {
@@ -4897,7 +4619,7 @@ fn test_owned_pending_task_spawn_failure_records_cooldown() {
 
 #[test]
 fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
-    // Bug scenario: dispatch_unowned_pending_tasks produces AssignAndSpawn with
+    // Bug scenario: dispatch_unowned_pending_tasks produces SpawnForTask with
     // on_failure: vec![] — when the spawn fails, no cooldown is recorded and
     // the daemon retries every tick forever (same bug class as !2172).
     //
@@ -4924,17 +4646,17 @@ fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the AssignAndSpawn and check its on_failure
+    // Find the SpawnForTask and check its on_failure
     let on_failure = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+            if let Effect::SpawnForTask { on_failure, .. } = e {
                 Some(on_failure)
             } else {
                 None
             }
         })
-        .expect("Should emit AssignAndSpawn for unowned pending task");
+        .expect("Should emit SpawnForTask for unowned pending task");
 
     // on_failure MUST contain RecordCooldown for spawn_failure
     let has_cooldown = on_failure.iter().any(|e| {
@@ -4982,10 +4704,10 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
 
     // First: verify the task DOES get dispatched without cooldown
     let effects = spawn_for_pending_tasks(&snap, &state);
-    let has_assign = effects
+    let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::AssignAndSpawn { .. }));
-    assert!(has_assign, "Should emit AssignAndSpawn without cooldown");
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
+    assert!(has_spawn, "Should emit SpawnForTask without cooldown");
 
     // Now: put the first available coworker name in cooldown
     let channel_lead_names = snap.channel_lead_names();
@@ -5004,8 +4726,8 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
     // The task may still get dispatched to a different coworker name,
     // but verify the first name is NOT used.
     let dispatched_name = effects2.iter().find_map(|e| {
-        if let Effect::AssignAndSpawn { owner, .. } = e {
-            Some(owner.clone())
+        if let Effect::SpawnForTask { preferred_name, .. } = e {
+            preferred_name.clone()
         } else {
             None
         }
@@ -5040,17 +4762,17 @@ fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the SpawnCoworkerWithCallbacks and check its on_failure
+    // Find the SpawnForTask and check its on_failure
     let on_failure = effects
         .iter()
         .find_map(|e| {
-            if let Effect::SpawnCoworkerWithCallbacks { on_failure, .. } = e {
+            if let Effect::SpawnForTask { on_failure, .. } = e {
                 Some(on_failure)
             } else {
                 None
             }
         })
-        .expect("Should emit SpawnCoworkerWithCallbacks for owned pending task");
+        .expect("Should emit SpawnForTask for owned pending task");
 
     // on_failure MUST contain ResetTaskToPending for task 2059
     let has_reset = on_failure.iter().any(|e| {
@@ -5073,7 +4795,7 @@ fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
 
 #[test]
 fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
-    // Bug: assign_pending_tasks AssignAndSpawn on_failure lacks ResetTaskToPending.
+    // Bug: assign_pending_tasks SpawnForTask on_failure lacks ResetTaskToPending.
     // Without it, on spawn failure the task can cycle through all coworker names
     // (each getting a cooldown) before starting over when cooldowns expire.
     //
@@ -5101,17 +4823,17 @@ fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
 
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Find the AssignAndSpawn and check its on_failure
+    // Find the SpawnForTask and check its on_failure
     let on_failure = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn { on_failure, .. } = e {
+            if let Effect::SpawnForTask { on_failure, .. } = e {
                 Some(on_failure)
             } else {
                 None
             }
         })
-        .expect("Should emit AssignAndSpawn for unowned pending task");
+        .expect("Should emit SpawnForTask for unowned pending task");
 
     // on_failure MUST contain ResetTaskToPending for task 2059
     let has_reset = on_failure.iter().any(|e| {
@@ -5219,8 +4941,8 @@ fn test_orphan_recovery_dispatches_non_lead_driven_channel() {
     // skip it (active coworkers aren't considered orphans), making the test
     // produce empty effects for the wrong reason.
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup("42", "Add auth", "park"))
         } else {
@@ -5228,10 +4950,10 @@ fn test_orphan_recovery_dispatches_non_lead_driven_channel() {
         }
     });
     // Orphan recovery handles tasks without sessions and produces a
-    // SpawnCoworkerWithCallbacks effect for non-lead-driven channels.
+    // SpawnForTask effect for non-lead-driven channels.
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         has_spawn,
         "Non-lead-driven channel should produce spawn effect, got: {:?}",
@@ -5401,20 +5123,20 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
     let (state, _tmp, _guard) = make_test_state();
     let effects = spawn_for_pending_tasks(&snap, &state);
 
-    // Should produce an AssignAndSpawn effect for the reviewer task
-    let has_assign_and_spawn = effects
+    // Should produce a SpawnForTask effect for the reviewer task
+    let has_spawn_for_task = effects
         .iter()
-        .any(|e| matches!(e, Effect::AssignAndSpawn { task_id, .. } if task_id == "500"));
+        .any(|e| matches!(e, Effect::SpawnForTask { task_id, .. } if task_id == "500"));
 
     assert!(
-        has_assign_and_spawn,
-        "Reviewer task should produce AssignAndSpawn effect. Effects: {:#?}",
+        has_spawn_for_task,
+        "Reviewer task should produce SpawnForTask effect. Effects: {:#?}",
         effects
     );
 
     // The on_success should include reviewer-specific effects
     let on_success = effects.iter().find_map(|e| {
-        if let Effect::AssignAndSpawn {
+        if let Effect::SpawnForTask {
             on_success,
             task_id,
             ..
@@ -5483,7 +5205,7 @@ fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
 
     // Should NOT have PostPrComment (that's reviewer-specific)
     let has_post_pr_comment = effects.iter().any(|e| {
-        if let Effect::AssignAndSpawn { on_success, .. } = e {
+        if let Effect::SpawnForTask { on_success, .. } = e {
             on_success
                 .iter()
                 .any(|s| matches!(s, Effect::PostPrComment { .. }))
@@ -5549,8 +5271,8 @@ fn test_reviewer_task_not_grouped_with_implementation_coworker() {
 
     // The reviewer task should spawn a fresh coworker, not nudge park
     let spawned_as_fresh = effects.iter().any(|e| {
-        matches!(e, Effect::AssignAndSpawn { task_id, owner, .. }
-            if task_id == "601" && owner != "park")
+        matches!(e, Effect::SpawnForTask { task_id, preferred_name, .. }
+            if task_id == "601" && preferred_name.as_ref().is_none_or(|n| n != "park"))
     });
 
     assert!(
@@ -5621,9 +5343,14 @@ fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
 
     // Should spawn, but NOT as "riverside" (the PR author)
     let spawned = effects.iter().find_map(|e| {
-        if let Effect::AssignAndSpawn { task_id, owner, .. } = e {
+        if let Effect::SpawnForTask {
+            task_id,
+            preferred_name,
+            ..
+        } = e
+        {
             if task_id == "701" {
-                Some(owner.clone())
+                preferred_name.clone()
             } else {
                 None
             }
@@ -5634,7 +5361,7 @@ fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
 
     assert!(
         spawned.is_some(),
-        "Reviewer task should produce AssignAndSpawn. Effects: {:#?}",
+        "Reviewer task should produce SpawnForTask. Effects: {:#?}",
         effects
     );
     assert_ne!(
@@ -5676,7 +5403,7 @@ fn test_reviewer_create_span_before_post_pr_comment() {
     let on_success = effects
         .iter()
         .find_map(|e| {
-            if let Effect::AssignAndSpawn {
+            if let Effect::SpawnForTask {
                 on_success,
                 task_id,
                 ..
@@ -5691,7 +5418,7 @@ fn test_reviewer_create_span_before_post_pr_comment() {
                 None
             }
         })
-        .expect("Reviewer task should produce AssignAndSpawn");
+        .expect("Reviewer task should produce SpawnForTask");
 
     let span_pos = on_success
         .iter()

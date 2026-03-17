@@ -248,27 +248,6 @@ fn parse_task_json(content: &str) -> Result<Task, serde_json::Error> {
 
 // Convenience query functions
 
-/// Get names of coworkers who have in_progress tasks.
-pub fn get_busy_coworkers() -> Vec<String> {
-    read_tasks()
-        .into_iter()
-        .filter(|t| t.status == TaskStatus::InProgress)
-        .filter_map(|t| t.owner)
-        .collect()
-}
-
-/// Get names of coworkers who have in_progress tasks for a specific repo.
-///
-/// This is the preferred version for daemon usage where the repo name is already known,
-/// avoiding the need to detect it via git commands which may fail in background processes.
-pub fn get_busy_coworkers_for_repo(dir_key: &str) -> Vec<String> {
-    read_tasks_for_repo(Some(dir_key))
-        .into_iter()
-        .filter(|t| t.status == TaskStatus::InProgress)
-        .filter_map(|t| t.owner)
-        .collect()
-}
-
 /// Get in_progress tasks with their owners.
 ///
 /// Returns tuples of (task_id, owner_name).
@@ -337,41 +316,6 @@ pub fn extract_pr_number(text: &str) -> Option<String> {
 pub fn extract_pr_number_from_task(task: &Task) -> Option<String> {
     extract_pr_number(&task.subject)
         .or_else(|| task.description.as_deref().and_then(extract_pr_number))
-}
-
-/// Find the owner of an existing task (in_progress or pending-with-owner) that references the same PR.
-///
-/// Checks both subject and description for the PR number pattern.
-/// Used to group PR sub-tasks under the same coworker.
-pub fn find_pr_owner(pr_number: &str) -> Option<String> {
-    let tasks = read_tasks();
-    find_pr_owner_in_tasks(pr_number, &tasks)
-}
-
-/// Find the owner of a task referencing the given PR number within a provided task list.
-///
-/// This avoids re-reading tasks from disk when the caller already has them.
-pub fn find_pr_owner_in_tasks(pr_number: &str, tasks: &[Task]) -> Option<String> {
-    let pr_pattern = format!("PR #{}", pr_number);
-    for task in tasks {
-        if (task.status == TaskStatus::InProgress || task.status == TaskStatus::Pending)
-            && task.owner.is_some()
-        {
-            // Check subject
-            if task.subject.contains(&pr_pattern) {
-                return task.owner.clone();
-            }
-            // Check description
-            if task
-                .description
-                .as_ref()
-                .is_some_and(|desc| desc.contains(&pr_pattern))
-            {
-                return task.owner.clone();
-            }
-        }
-    }
-    None
 }
 
 /// Find the owner of a related task via blockedBy relationships.
@@ -1519,7 +1463,7 @@ mod tests {
 
         let tasks = read_tasks_from_dir(&tasks_dir);
 
-        // Simulate get_busy_coworkers logic
+        // Simulate busy coworker derivation from in-progress tasks
         let busy_coworkers: Vec<String> = tasks
             .into_iter()
             .filter(|t| t.status == TaskStatus::InProgress)
@@ -1582,7 +1526,7 @@ mod tests {
 
         let tasks = read_tasks_from_dir(&tasks_dir);
 
-        // Simulate get_busy_coworkers logic
+        // Simulate busy coworker derivation from in-progress tasks
         let busy_coworkers: Vec<String> = tasks
             .into_iter()
             .filter(|t| t.status == TaskStatus::InProgress)
@@ -1614,94 +1558,20 @@ mod tests {
     }
 
     #[test]
-    fn test_find_pr_owner_from_tasks() {
-        let tasks = vec![
-            Task {
-                id: "1".to_string(),
-                subject: "Review PR #42".to_string(),
-                status: TaskStatus::InProgress,
-                owner: Some("alice".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            },
-            Task {
-                id: "2".to_string(),
-                subject: "Score and filter issues for PR #42".to_string(),
-                status: TaskStatus::Pending,
-                owner: None,
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            },
-            Task {
-                id: "3".to_string(),
-                subject: "Post review comment on PR #99".to_string(),
-                status: TaskStatus::InProgress,
-                owner: Some("bob".to_string()),
-                description: None,
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            },
-        ];
-
-        // Use the new find_pr_owner_in_tasks function
-        assert_eq!(
-            find_pr_owner_in_tasks("42", &tasks),
-            Some("alice".to_string())
-        );
-        assert_eq!(
-            find_pr_owner_in_tasks("99", &tasks),
-            Some("bob".to_string())
-        );
-        assert_eq!(find_pr_owner_in_tasks("55", &tasks), None);
-    }
-
-    #[test]
-    fn test_find_pr_owner_from_description() {
-        // Tasks where the PR number is only in the description, not the subject
-        let tasks = vec![
-            Task {
-                id: "10".to_string(),
-                subject: "Code review PR #239".to_string(),
-                status: TaskStatus::InProgress,
-                owner: Some("vernon".to_string()),
-                description: Some("Review PR #239 changes".to_string()),
-                blocked_by: vec![],
-                channel: None,
-                pr: None,
-                created_at: None,
-            },
-            Task {
-                id: "11".to_string(),
-                subject: "Find relevant CLAUDE.md files".to_string(),
-                status: TaskStatus::Pending,
-                owner: None,
-                description: Some("Sub-task for PR #239 review".to_string()),
-                blocked_by: vec!["10".to_string()],
-                channel: None,
-                pr: None,
-                created_at: None,
-            },
-        ];
-
-        // The main task has PR #239 in its subject — should find vernon
-        assert_eq!(
-            find_pr_owner_in_tasks("239", &tasks),
-            Some("vernon".to_string())
-        );
-
+    fn test_find_pr_owner_from_description_extract() {
         // extract_pr_number_from_task should find PR number in description
-        assert_eq!(
-            extract_pr_number_from_task(&tasks[1]),
-            Some("239".to_string())
-        );
+        let task = Task {
+            id: "11".to_string(),
+            subject: "Find relevant CLAUDE.md files".to_string(),
+            status: TaskStatus::Pending,
+            owner: None,
+            description: Some("Sub-task for PR #239 review".to_string()),
+            blocked_by: vec!["10".to_string()],
+            channel: None,
+            pr: None,
+            created_at: None,
+        };
+        assert_eq!(extract_pr_number_from_task(&task), Some("239".to_string()));
     }
 
     #[test]
@@ -1801,27 +1671,6 @@ mod tests {
 
         // Task 100 has no blockedBy — should return None
         assert_eq!(find_owner_via_blocked_by(&tasks[0], &tasks), None);
-    }
-
-    #[test]
-    fn test_find_pr_owner_checks_description() {
-        // Verify find_pr_owner_in_tasks checks description too
-        let tasks = vec![Task {
-            id: "50".to_string(),
-            subject: "Some review task".to_string(),
-            status: TaskStatus::InProgress,
-            owner: Some("alice".to_string()),
-            description: Some("Reviewing PR #88 changes".to_string()),
-            blocked_by: vec![],
-            channel: None,
-            pr: None,
-            created_at: None,
-        }];
-
-        assert_eq!(
-            find_pr_owner_in_tasks("88", &tasks),
-            Some("alice".to_string())
-        );
     }
 
     #[test]

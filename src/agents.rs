@@ -395,15 +395,28 @@ pub fn task_footer(task_id: &str) -> String {
     )
 }
 
-/// Build the initial prompt for a fresh coworker task assignment.
+/// Build the initial prompt for a coworker task assignment.
 ///
-/// Used when a coworker is spawned fresh to work on a task.
+/// Used when a coworker is spawned to work on a task, either fresh or resuming.
+/// When `is_resume` is true, includes context about the previous session being
+/// interrupted and the worktree/branch being intact.
 /// The `plan_section` parameter is a pre-built string from `build_plan_prompt_section()`
 /// that may contain plan context and execution skill instructions (or be empty).
-pub fn coworker_task_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
+pub fn coworker_task_prompt(
+    task_id: &str,
+    subject: &str,
+    plan_section: &str,
+    is_resume: bool,
+) -> String {
     let footer = task_footer(task_id);
+    let resume_context = if is_resume {
+        " Your previous session was interrupted but your worktree and branch are still intact. \
+         Check your git status and get started!"
+    } else {
+        " Get started!"
+    };
     format!(
-        "You've been assigned task !{task_id}: {subject}. Get started!{plan_section}\n\n\
+        "You've been assigned task !{task_id}: {subject}.{resume_context}{plan_section}\n\n\
          {footer}"
     )
 }
@@ -417,20 +430,6 @@ pub fn coworker_claim_prompt(task_id: &str, subject: &str, plan_section: &str) -
     format!(
         "You've been assigned task !{task_id}: {subject}. \
          Run `midtown task claim {task_id}` to claim it, then get started!{plan_section}\n\n\
-         {footer}"
-    )
-}
-
-/// Build the initial prompt for recovering a coworker whose session was interrupted.
-///
-/// Used when a coworker's previous session died and needs to be resumed or
-/// respawned. The worktree and branch from the previous run are intact.
-pub fn coworker_recovery_prompt(task_id: &str, subject: &str, plan_section: &str) -> String {
-    let footer = task_footer(task_id);
-    format!(
-        "You've been assigned task !{task_id}: {subject}. \
-         Your previous session was interrupted but your worktree and branch are still intact. \
-         Check your git status and get started!{plan_section}\n\n\
          {footer}"
     )
 }

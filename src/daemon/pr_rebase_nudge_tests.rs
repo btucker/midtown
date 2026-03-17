@@ -1,19 +1,38 @@
 use super::collect_merge_rebase_nudge_effects;
 use crate::daemon::effects::Effect;
 use crate::daemon::snapshot::minimal_snapshot_for_test;
+use crate::daemon::state::SessionRecord;
+
+/// Helper: set up a coworker with an open PR in the snapshot.
+/// Adds session record with pr_number and matching open_prs_data entry.
+fn add_coworker_with_open_pr(
+    snap: &mut crate::daemon::snapshot::WorldSnapshot,
+    name: &str,
+    session_id: &str,
+    pr_number: u64,
+) {
+    snap.sessions.insert(
+        session_id.to_string(),
+        SessionRecord {
+            session_id: session_id.to_string(),
+            current_name: Some(name.to_string()),
+            pr_number: Some(pr_number),
+            ..Default::default()
+        },
+    );
+    snap.name_session_map
+        .insert(name.to_string(), session_id.to_string());
+    snap.pr
+        .open_prs_data
+        .push(serde_json::json!({"number": pr_number, "title": "test"}));
+}
 
 #[test]
 fn nudges_coworkers_with_open_prs_when_pr_merges() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.merged_pr_numbers.insert(100);
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.pr.coworkers_with_open_prs.insert("park".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
-    snap.name_session_map
-        .insert("park".to_string(), "session-2".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
+    add_coworker_with_open_pr(&mut snap, "park", "session-2", 201);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
@@ -59,17 +78,17 @@ fn nudges_coworkers_with_open_prs_when_pr_merges() {
 fn does_not_nudge_coworker_whose_pr_merged() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.merged_pr_numbers.insert(100);
+    // lexington has open PR #200 AND merged PR #100
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
+    // Also give lexington a merged PR
+    snap.sessions.get_mut("session-1").unwrap().pr_number = Some(100);
+    // Remove the open PR data for lexington and re-add with merged PR number
+    snap.pr.open_prs_data.clear();
     snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.pr.coworkers_with_open_prs.insert("park".to_string());
-    snap.pr
-        .coworkers_with_merged_prs
-        .insert("lexington".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
-    snap.name_session_map
-        .insert("park".to_string(), "session-2".to_string());
+        .open_prs_data
+        .push(serde_json::json!({"number": 100, "title": "merged pr"}));
+
+    add_coworker_with_open_pr(&mut snap, "park", "session-2", 201);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
@@ -89,14 +108,8 @@ fn does_not_nudge_coworker_whose_pr_merged() {
 fn does_not_nudge_coworkers_on_cooldown() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.merged_pr_numbers.insert(100);
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.pr.coworkers_with_open_prs.insert("park".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
-    snap.name_session_map
-        .insert("park".to_string(), "session-2".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
+    add_coworker_with_open_pr(&mut snap, "park", "session-2", 201);
     // lexington is on cooldown
     snap.merge_rebase_nudge_cooldown_names
         .insert("lexington".to_string());
@@ -119,13 +132,23 @@ fn does_not_nudge_coworkers_on_cooldown() {
 fn does_not_nudge_coworkers_without_sessions() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.merged_pr_numbers.insert(100);
+    // lexington has a session with open PR but no name_session_map entry
+    snap.sessions.insert(
+        "session-1".to_string(),
+        SessionRecord {
+            session_id: "session-1".to_string(),
+            current_name: Some("lexington".to_string()),
+            pr_number: Some(200),
+            ..Default::default()
+        },
+    );
     snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.pr.coworkers_with_open_prs.insert("park".to_string());
-    // Only park has a session
-    snap.name_session_map
-        .insert("park".to_string(), "session-2".to_string());
+        .open_prs_data
+        .push(serde_json::json!({"number": 200, "title": "test"}));
+    // No name_session_map entry for lexington — it has no active session mapping
+
+    // park has a proper session mapping
+    add_coworker_with_open_pr(&mut snap, "park", "session-2", 201);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
@@ -145,11 +168,7 @@ fn does_not_nudge_coworkers_without_sessions() {
 fn no_nudges_when_no_prs_merged() {
     let mut snap = minimal_snapshot_for_test();
     // No merged PRs
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
     assert!(effects.is_empty());
@@ -159,11 +178,7 @@ fn no_nudges_when_no_prs_merged() {
 fn nudge_message_contains_rebase_guidance() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.merged_pr_numbers.insert(42);
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
@@ -199,11 +214,7 @@ fn skips_already_processed_merged_prs() {
     // PR #100 merged but was already processed on a prior tick
     snap.pr.merged_pr_numbers.insert(100);
     snap.rebase_nudge_processed_prs.insert(100);
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 200);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
@@ -221,11 +232,7 @@ fn only_nudges_for_new_merged_prs_not_processed_ones() {
     snap.pr.merged_pr_numbers.insert(100);
     snap.pr.merged_pr_numbers.insert(200);
     snap.rebase_nudge_processed_prs.insert(100);
-    snap.pr
-        .coworkers_with_open_prs
-        .insert("lexington".to_string());
-    snap.name_session_map
-        .insert("lexington".to_string(), "session-1".to_string());
+    add_coworker_with_open_pr(&mut snap, "lexington", "session-1", 300);
 
     let effects = collect_merge_rebase_nudge_effects(&snap);
 
