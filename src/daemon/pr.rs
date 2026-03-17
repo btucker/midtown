@@ -3979,10 +3979,22 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             continue;
         }
 
-        // Skip if there's already an in_progress task linked to this PR.
+        // Skip if there's a task linked to this PR via any of three sources:
+        // 1. Session-derived associations (ephemeral — lost after session GC)
+        // 2. PR title parsing (`github_open_pr_task_ids` — stable while PR is open)
+        // 3. Task's own `pr` field on disk (persistent)
+        //
         // If we previously nudged the lead about this PR, clear the record so
         // re-nudging is possible if the task later completes without merging.
-        if snap.pr.pr_task_index.pr_has_task(&pr_number) {
+        let has_index_link = snap.pr.pr_task_index.pr_has_task(&pr_number);
+        let has_title_link = snap
+            .pr
+            .pr_task_index
+            .github_task_pr_pairs()
+            .any(|(_, pr)| pr == pr_number);
+        let has_task_pr_link = snap.all_tasks.iter().any(|t| t.pr == Some(pr_number));
+
+        if has_index_link || has_title_link || has_task_pr_link {
             if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
                 effects.push(Effect::ClearOrphanedPrLeadNudge { pr_number });
             }
