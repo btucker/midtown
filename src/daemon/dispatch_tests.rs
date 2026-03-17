@@ -4060,58 +4060,6 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
 }
 
 #[test]
-fn test_dispatch_via_sessions_handles_tasks_without_sessions() {
-    // In_progress task with no session_task_map entry -- should attempt fresh spawn
-    // (replacing orphan recovery behavior).
-    let snap = make_session_dispatch_snapshot(
-        vec![(
-            "42".to_string(),
-            "Add auth endpoint".to_string(),
-            "lexington".to_string(),
-        )],
-        HashMap::new(), // no sessions
-        HashMap::new(), // no session_task_map
-    );
-
-    let effects = dispatch_via_sessions_for_test(&snap);
-
-    // Should have a SpawnCoworkerWithCallbacks with Fresh session mode
-    let has_fresh_spawn = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. }
-            if matches!(&config.session_mode, crate::launch::SessionMode::Fresh))
-    });
-    assert!(
-        has_fresh_spawn,
-        "Should fresh-spawn for task without session record, got: {:?}",
-        effects
-    );
-}
-
-#[test]
-fn test_dispatch_via_sessions_no_session_proceeds_at_task_limit() {
-    // Orphan recovery (no-session fallback) should proceed even at the task
-    // limit — it replaces a dead coworker on an existing in-progress task,
-    // not a new assignment. Blocking recovery would create a deadlock.
-    let mut snap = make_session_dispatch_snapshot(
-        vec![(
-            "42".to_string(),
-            "Add auth".to_string(),
-            "lexington".to_string(),
-        )],
-        HashMap::new(),
-        HashMap::new(),
-    );
-    snap.is_at_task_limit = true;
-
-    let effects = dispatch_via_sessions_for_test(&snap);
-
-    assert!(
-        !effects.is_empty(),
-        "Orphan recovery should proceed at task limit"
-    );
-}
-
-#[test]
 fn test_dispatch_via_sessions_no_session_skips_merged_pr() {
     // Task with merged PR should not be recovered via fresh spawn.
     let mut snap = make_session_dispatch_snapshot(
@@ -5384,9 +5332,16 @@ fn test_orphan_recovery_dispatches_non_lead_driven_channel() {
     // skip it (active coworkers aren't considered orphans), making the test
     // produce empty effects for the wrong reason.
 
-    let effects = dispatch_via_sessions_for_test(&snap);
-    // Without lead-driven gating, the task enters the no-session fallback path
-    // and orphan recovery produces a SpawnCoworkerWithCallbacks effect.
+    let (state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+        if task_id == "42" {
+            Some(in_progress_task_for_lookup("42", "Add auth", "park"))
+        } else {
+            None
+        }
+    });
+    // Orphan recovery handles tasks without sessions and produces a
+    // SpawnCoworkerWithCallbacks effect for non-lead-driven channels.
     let has_spawn = effects
         .iter()
         .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));

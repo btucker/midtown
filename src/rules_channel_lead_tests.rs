@@ -47,8 +47,6 @@ fn channel_lead_owned_task_not_orphan_recovered() {
     let ctx = OrphanRecoveryContext {
         in_progress: &tasks,
         active_names: &empty,
-        coworkers_with_open_prs: &empty,
-        review_feedback_pr_coworkers: &empty,
         recently_stopped: &empty,
         attached_coworkers: &empty_map,
         channel_lead_names: &leads,

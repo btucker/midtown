@@ -930,8 +930,6 @@ pub(crate) struct OrphanRecovery {
 pub(crate) struct OrphanRecoveryContext<'a> {
     pub in_progress: &'a [(String, String, String)], // (task_id, task_subject, owner)
     pub active_names: &'a HashSet<String>,
-    pub coworkers_with_open_prs: &'a HashSet<String>,
-    pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub recently_stopped: &'a HashSet<String>,
     pub attached_coworkers: &'a HashMap<String, chrono::DateTime<chrono::Utc>>,
     pub channel_lead_names: &'a HashSet<String>,
@@ -944,13 +942,10 @@ impl OrphanRecoveryContext<'_> {
     /// - Owner is active (running session)
     /// - Owner is attached (interactive session)
     /// - Owner recently stopped (within grace period — task may not be marked done yet)
-    /// - Owner has an open PR awaiting review without feedback (recovery would loop)
     fn should_skip_owner(&self, owner_lower: &str) -> bool {
         self.active_names.contains(owner_lower)
             || self.attached_coworkers.contains_key(owner_lower)
             || self.recently_stopped.contains(owner_lower)
-            || (self.coworkers_with_open_prs.contains(owner_lower)
-                && !self.review_feedback_pr_coworkers.contains(owner_lower))
     }
 }
 
