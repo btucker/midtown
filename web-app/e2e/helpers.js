@@ -137,7 +137,7 @@ export const MOCK_STATUS = {
     { label: 'midtown', fullName: 'btucker/midtown' },
     { label: 'sdk', fullName: 'btucker/midtown-sdk' },
   ],
-  max_coworkers: 8,
+  max_in_progress_tasks: 8,
   coworkers: [
     {
       name: 'park',

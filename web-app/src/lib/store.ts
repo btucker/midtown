@@ -112,8 +112,8 @@ export const connected = writable<boolean>(false);
 // Coworker status
 export const coworkers = writable<Coworker[]>([]);
 
-// Maximum number of coworkers that can be spawned
-export const maxCoworkers = writable<number>(8);
+// Maximum number of in-progress tasks
+export const maxInProgressTasks = writable<number>(8);
 
 // Daemon status
 export const daemonStatus = writable<DaemonStatus | null>(null);
