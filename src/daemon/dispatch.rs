@@ -1742,7 +1742,27 @@ fn dispatch_unowned_pending_tasks(
     let in_progress_count = snap.in_progress_tasks.len();
     let task_cap = snap.max_in_progress_tasks;
 
-    for task in snap.pending_tasks_without_owners.iter() {
+    // Order pending tasks by dispatch priority before iterating.
+    let in_progress_ids: std::collections::HashSet<String> = snap
+        .in_progress_tasks
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .collect();
+    let prioritized_ids = crate::daemon::dispatch_priority::prioritize_pending_tasks(
+        &snap.pending_tasks_without_owners,
+        &in_progress_ids,
+        &snap.task_parent_map,
+        &snap.blocks_map,
+    );
+
+    for task_id in prioritized_ids.iter() {
+        let Some(task) = snap
+            .pending_tasks_without_owners
+            .iter()
+            .find(|t| &t.id == task_id)
+        else {
+            continue;
+        };
         let effective_count = in_progress_count + spawns_queued_this_tick;
         if effective_count >= task_cap {
             debug!(
