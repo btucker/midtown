@@ -930,7 +930,6 @@ pub(crate) struct OrphanRecovery {
 pub(crate) struct OrphanRecoveryContext<'a> {
     pub in_progress: &'a [(String, String, String)], // (task_id, task_subject, owner)
     pub active_names: &'a HashSet<String>,
-    pub at_task_limit: bool,
     pub coworkers_with_open_prs: &'a HashSet<String>,
     pub review_feedback_pr_coworkers: &'a HashSet<String>,
     pub recently_stopped: &'a HashSet<String>,
@@ -973,9 +972,11 @@ impl OrphanRecoveryContext<'_> {
 /// without review feedback. CI failures on open PRs are handled separately
 /// by the webhook/PR poll pathway.
 pub(crate) fn decide_orphan_recovery(ctx: &OrphanRecoveryContext<'_>) -> Option<OrphanRecovery> {
-    if ctx.at_task_limit {
-        return None;
-    }
+    // NOTE: We intentionally do NOT bail out when at_task_limit is true.
+    // Orphan recovery replaces a dead coworker on an existing in-progress task —
+    // it does not increase the in-progress count. Blocking recovery at the task
+    // limit would create a deadlock: the orphaned task keeps the count at the
+    // limit, and the limit prevents recovery from clearing the orphan.
 
     for (task_id, task_subject, owner) in ctx.in_progress {
         let owner_clean = owner.trim().trim_matches('"').to_string();

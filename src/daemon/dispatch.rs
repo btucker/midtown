@@ -480,7 +480,6 @@ where
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.coworkers.active_names,
-        at_task_limit: snap.is_at_task_limit,
         coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
@@ -962,11 +961,10 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         return effects;
     }
 
-    // At task limit — deferring dispatch.
-    if snap.is_at_task_limit {
-        debug!("At task limit — skipping no-session fallback dispatch");
-        return effects;
-    }
+    // NOTE: We intentionally do NOT check is_at_task_limit here.
+    // This is orphan recovery — it replaces a dead coworker on an existing
+    // in-progress task, not a new assignment. Blocking recovery at the task
+    // limit would create a deadlock (see decide_orphan_recovery comment).
 
     // Compute recently-stopped coworkers (within grace period).
     // When a coworker completes work and goes idle -> shutdown, the task may
@@ -988,7 +986,6 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
         active_names: &snap.coworkers.active_names,
-        at_task_limit: snap.is_at_task_limit,
         coworkers_with_open_prs: &snap.pr.coworkers_with_open_prs,
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,

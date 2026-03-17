@@ -286,10 +286,21 @@ impl Default for DaemonConfig {
                 .or(daemon_section.lead_session_refresh_interval_secs)
                 .unwrap_or(crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS);
 
-        // Max in-progress tasks: env var > project config > global config > default (8)
+        // Max in-progress tasks: env var > deprecated env var > project config > global config > default (8)
         let max_in_progress_tasks = std::env::var("MIDTOWN_MAX_IN_PROGRESS_TASKS")
             .ok()
             .and_then(|s| s.parse().ok())
+            .or_else(|| {
+                // Honor deprecated env var as migration fallback
+                if let Ok(val) = std::env::var("MIDTOWN_MAX_COWORKERS") {
+                    tracing::warn!(
+                        "MIDTOWN_MAX_COWORKERS is deprecated. Use MIDTOWN_MAX_IN_PROGRESS_TASKS instead."
+                    );
+                    val.parse().ok()
+                } else {
+                    None
+                }
+            })
             .or_else(|| {
                 if project_name.is_empty() {
                     crate::config::GlobalConfig::load()
@@ -300,12 +311,6 @@ impl Default for DaemonConfig {
                 }
             })
             .unwrap_or(DEFAULT_MAX_IN_PROGRESS_TASKS);
-
-        if std::env::var("MIDTOWN_MAX_COWORKERS").is_ok() {
-            tracing::warn!(
-                "MIDTOWN_MAX_COWORKERS is deprecated. Use MIDTOWN_MAX_IN_PROGRESS_TASKS instead."
-            );
-        }
 
         let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 

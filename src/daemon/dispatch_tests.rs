@@ -4088,8 +4088,10 @@ fn test_dispatch_via_sessions_handles_tasks_without_sessions() {
 }
 
 #[test]
-fn test_dispatch_via_sessions_no_session_respects_dev_limit() {
-    // Tasks without sessions should NOT spawn when at dev limit.
+fn test_dispatch_via_sessions_no_session_proceeds_at_task_limit() {
+    // Orphan recovery (no-session fallback) should proceed even at the task
+    // limit — it replaces a dead coworker on an existing in-progress task,
+    // not a new assignment. Blocking recovery would create a deadlock.
     let mut snap = make_session_dispatch_snapshot(
         vec![(
             "42".to_string(),
@@ -4104,9 +4106,8 @@ fn test_dispatch_via_sessions_no_session_respects_dev_limit() {
     let effects = dispatch_via_sessions_for_test(&snap);
 
     assert!(
-        effects.is_empty(),
-        "Should not spawn at dev limit, got: {:?}",
-        effects
+        !effects.is_empty(),
+        "Orphan recovery should proceed at task limit"
     );
 }
 
