@@ -1579,6 +1579,7 @@ fn dispatch_unowned_pending_tasks(
     let mut spawns_queued_this_tick: usize = 0;
     let in_progress_count = snap.in_progress_tasks.len();
     let task_cap = snap.max_in_progress_tasks;
+    let channel_lead_names = snap.channel_lead_names();
 
     // Order pending tasks by dispatch priority before iterating.
     let in_progress_ids: std::collections::HashSet<String> = snap
@@ -1601,14 +1602,9 @@ fn dispatch_unowned_pending_tasks(
         else {
             continue;
         };
-        let effective_count = in_progress_count + spawns_queued_this_tick;
-        if effective_count >= task_cap {
-            debug!(
-                "In-progress task limit reached ({}+{} >= {}), deferring unowned task !{}",
-                in_progress_count, spawns_queued_this_tick, task_cap, task.id
-            );
-            break;
-        }
+
+        // ── Stage 1: Unconditional skip/cleanup (no task limit gate) ─────────
+        // These operations don't consume slots and should run regardless of capacity.
 
         // Skip tasks already claimed by orphan recovery in this tick.
         if excluded_task_ids.contains(&task.id) {
@@ -1756,6 +1752,8 @@ fn dispatch_unowned_pending_tasks(
             }
         }
 
+        // ── Stage 2: Name resolution + task limit gate ────────────────────────
+
         // Check if this is a reviewer task — reviewers must always be fresh spawns
         // on isolated worktrees, never grouped with the implementation coworker.
         let is_reviewer_task = snap
@@ -1773,9 +1771,43 @@ fn dispatch_unowned_pending_tasks(
         };
 
         // Use grouped name if found, otherwise allocate a fresh coworker.
+        // When at task limit and no grouping match, try to reuse an idle coworker.
         let was_grouped = grouped_name.is_some();
+        let effective_count = in_progress_count + spawns_queued_this_tick;
+        let at_task_limit = effective_count >= task_cap;
+
         let coworker_name = if let Some(name) = grouped_name {
             name
+        } else if at_task_limit {
+            // At task limit — can't start new in-progress tasks. Check for an idle
+            // coworker (running session, no in-progress task) to reuse via nudge.
+            // Reviewer tasks always need a fresh spawn on an isolated worktree,
+            // so they cannot reuse idle coworkers.
+            if is_reviewer_task {
+                debug!(
+                    "Task limit reached ({}+{} >= {}), reviewer task !{} deferred",
+                    in_progress_count, spawns_queued_this_tick, task_cap, task.id
+                );
+                continue;
+            }
+            if let Some(name) = find_idle_coworker(
+                snap,
+                &channel_lead_names,
+                &names_assigned_this_tick,
+                owned_dispatched,
+            ) {
+                debug!(
+                    "Task limit reached but found idle coworker {} for task !{}",
+                    name, task.id
+                );
+                name
+            } else {
+                debug!(
+                    "Task limit reached ({}+{} >= {}) and no idle coworker, deferring task !{}",
+                    in_progress_count, spawns_queued_this_tick, task_cap, task.id
+                );
+                continue;
+            }
         } else {
             let mut excluded_names = snap.channel_lead_names();
             // Exclude all names with active sessions to prevent name collisions.
@@ -1799,7 +1831,7 @@ fn dispatch_unowned_pending_tasks(
                 .next_available_name_excluding(&excluded_names)
             else {
                 debug!("No available coworker slots for unowned task !{}", task.id);
-                break;
+                continue;
             };
             debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
             name
@@ -2158,6 +2190,35 @@ fn dispatch_unowned_pending_tasks(
     }
 
     effects
+}
+
+/// Find an idle coworker — one with a running session but no in-progress task.
+///
+/// Returns the name of an idle coworker that can be nudged to pick up a new task,
+/// or `None` if no idle coworker is available.
+fn find_idle_coworker(
+    snap: &snapshot::WorldSnapshot,
+    channel_lead_names: &HashSet<String>,
+    names_assigned_this_tick: &HashSet<String>,
+    owned_dispatched: &HashSet<String>,
+) -> Option<String> {
+    snap.coworkers
+        .active_names
+        .iter()
+        .find(|name| {
+            !snap.busy_coworkers.contains(*name)
+                && !snap.reviewer.active_reviewers.contains(*name)
+                && !names_assigned_this_tick.contains(*name)
+                && !owned_dispatched.contains(*name)
+                && !snap.spawn_failure_cooldown_names.contains(*name)
+                && !channel_lead_names.contains(*name)
+                && super::helpers::is_non_lead_coworker(
+                    name,
+                    &snap.project_name,
+                    channel_lead_names,
+                )
+        })
+        .cloned()
 }
 
 // ============================================================================
