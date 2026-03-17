@@ -1465,11 +1465,13 @@ fn test_cross_tick_dedup_skips_in_flight_owned_task() {
         .count();
     assert_eq!(spawn_count_tick1, 1, "Tick 1 should spawn broadway");
 
-    // Mark in-flight (normally done by the daemon between ticks)
-    state.mark_in_flight_spawns_from_effects(&effects_tick1);
-
-    // Simulate tick 2: should skip because task !42 is already in-flight
-    let effects_tick2 = spawn_for_pending_tasks(&snap, &state);
+    // Simulate tick 2: snapshot now includes in-flight task (pre-evaluated
+    // from DaemonState in production; set directly in tests).
+    let snap_tick2 = snapshot::WorldSnapshot {
+        in_flight_task_spawns: ["42".to_string()].into_iter().collect(),
+        ..snap
+    };
+    let effects_tick2 = spawn_for_pending_tasks(&snap_tick2, &state);
     let spawn_count_tick2 = effects_tick2
         .iter()
         .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
@@ -5259,8 +5261,7 @@ fn test_lead_driven_channel_still_auto_completes_merged_pr_tasks() {
     }];
     snap.pr.merged_pr_numbers.insert(100);
 
-    let (state, _tmp, _guard) = make_test_state();
-    let (effects, _) = dispatch_owned_pending_tasks(&snap, &state);
+    let (effects, _) = dispatch_owned_pending_tasks(&snap);
 
     // Should emit CompleteTask + ClearBlockedBy even though channel is lead-driven.
     assert!(

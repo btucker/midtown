@@ -619,6 +619,17 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub lead_worktree_freshness_cooldown_channels: HashSet<String>,
 
+    /// Task IDs that have a pending `AssignAndSpawn` or `SpawnCoworkerWithCallbacks`
+    /// effect from a previous tick that hasn't completed yet.
+    /// Pre-evaluated from `DaemonState::in_flight_task_spawns` so decision functions stay pure.
+    #[serde(default)]
+    pub in_flight_task_spawns: HashSet<String>,
+
+    /// Task IDs (formatted as `"pending-{task_id}"`) that are on the nudge cooldown.
+    /// Pre-evaluated from `state.cooldowns` (category `"task_nudge"`) so decision functions stay pure.
+    #[serde(default)]
+    pub task_nudge_cooldown_ids: HashSet<String>,
+
     /// Session IDs for which a recovery was recently attempted (and succeeded).
     /// Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed
     /// by session ID) so decision functions stay pure.
@@ -1494,6 +1505,27 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
+    // ── In-flight task spawns ──────────────────────────────────────────
+    // Snapshot the set of task IDs with pending spawn effects so
+    // dispatch_owned_pending_tasks stays pure (no DaemonState access).
+    let in_flight_task_spawns: HashSet<String> =
+        state.in_flight_task_spawns.lock().unwrap().clone();
+
+    // ── Per-task nudge cooldowns ─────────────────────────────────────
+    // Pre-evaluate nudge cooldowns for all pending tasks with owners so
+    // decide_pending_task_action can stay pure.
+    let task_nudge_cooldown_ids: HashSet<String> = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        pending_tasks_with_owners
+            .iter()
+            .filter(|(task_id, _, _)| {
+                let key = format!("pending-{}", task_id);
+                !cooldowns.check("task_nudge", &key, std::time::Duration::from_secs(300))
+            })
+            .map(|(task_id, _, _)| task_id.clone())
+            .collect()
+    };
+
     // ── Pre-evaluate stale working directories ──────────────────────────
     // Check which sessions have a non-empty working_dir that no longer exists
     // on disk. This moves the filesystem I/O out of decision functions so
@@ -1645,6 +1677,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         rebase_regression_cooldown_names,
         stale_channel_lead_worktrees,
         lead_worktree_freshness_cooldown_channels,
+        in_flight_task_spawns,
+        task_nudge_cooldown_ids,
         recently_recovered_session_ids,
         stale_working_dir_sessions,
         session_profile_map,
@@ -1725,6 +1759,8 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         rebase_regression_cooldown_names: HashSet::new(),
         stale_channel_lead_worktrees: HashSet::new(),
         lead_worktree_freshness_cooldown_channels: HashSet::new(),
+        in_flight_task_spawns: HashSet::new(),
+        task_nudge_cooldown_ids: HashSet::new(),
         recently_recovered_session_ids: HashSet::new(),
         stale_working_dir_sessions: HashSet::new(),
         session_profile_map: HashMap::new(),
