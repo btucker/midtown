@@ -810,30 +810,7 @@ async fn api_channel_history(
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
 
-            let mut reply_meta: std::collections::HashMap<
-                String,
-                (usize, ThreadReplySummary, Vec<String>),
-            > = std::collections::HashMap::new();
-            for msg in &messages {
-                if let Some(parent_id) = msg.thread_parent_id.as_ref() {
-                    let entry = reply_meta.entry(parent_id.clone()).or_insert((
-                        0,
-                        ThreadReplySummary {
-                            from: msg.from.clone(),
-                            timestamp: msg.timestamp.to_rfc3339(),
-                        },
-                        Vec::new(),
-                    ));
-                    entry.0 += 1;
-                    entry.1 = ThreadReplySummary {
-                        from: msg.from.clone(),
-                        timestamp: msg.timestamp.to_rfc3339(),
-                    };
-                    if !entry.2.contains(&msg.from) {
-                        entry.2.push(msg.from.clone());
-                    }
-                }
-            }
+            let mut reply_meta = compute_reply_meta(&messages);
 
             messages
                 .into_iter()
@@ -3289,6 +3266,41 @@ async fn api_list_directories(State(state): State<Arc<WebState>>) -> Json<serde_
 
     let list: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
     Json(serde_json::json!({ "directories": list }))
+}
+
+/// Compute thread reply metadata from a list of messages, excluding tool-only
+/// messages (empty content + non-empty tool_data) from the count.
+///
+/// Returns a map from parent message ID to (reply_count, last_reply_summary, participant_names).
+fn compute_reply_meta(
+    messages: &[crate::message::Message],
+) -> std::collections::HashMap<String, (usize, ThreadReplySummary, Vec<String>)> {
+    let mut meta: std::collections::HashMap<String, (usize, ThreadReplySummary, Vec<String>)> =
+        std::collections::HashMap::new();
+    for msg in messages {
+        if let Some(parent_id) = msg.thread_parent_id.as_ref() {
+            if msg.is_tool_only() {
+                continue;
+            }
+            let entry = meta.entry(parent_id.clone()).or_insert((
+                0,
+                ThreadReplySummary {
+                    from: msg.from.clone(),
+                    timestamp: msg.timestamp.to_rfc3339(),
+                },
+                Vec::new(),
+            ));
+            entry.0 += 1;
+            entry.1 = ThreadReplySummary {
+                from: msg.from.clone(),
+                timestamp: msg.timestamp.to_rfc3339(),
+            };
+            if !entry.2.contains(&msg.from) {
+                entry.2.push(msg.from.clone());
+            }
+        }
+    }
+    meta
 }
 
 #[path = "web_tests.rs"]
