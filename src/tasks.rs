@@ -1286,6 +1286,16 @@ fn create_task_in_dir(
 
     let tasks_dir_buf = tasks_dir.to_path_buf();
 
+    // Normalize empty/whitespace owner to None
+    let owner_opt = {
+        let trimmed = owner.trim().trim_matches('"');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    };
+
     // Acquire directory-level lock to prevent concurrent ID assignment races
     let lock_path = tasks_dir.join(".tasks.lock");
     let lock_file = std::fs::OpenOptions::new()
@@ -1302,7 +1312,7 @@ fn create_task_in_dir(
 
     // Check for duplicate: same subject + owner in any status
     for task in &existing {
-        if task.subject == subject && task.owner.as_deref() == Some(owner) {
+        if task.subject == subject && task.owner.as_deref() == owner_opt {
             let _ = lock_file.unlock();
             return Ok(task.id.clone());
         }
@@ -1317,12 +1327,16 @@ fn create_task_in_dir(
         .iter()
         .map(|s| s.as_str())
         .collect();
+    let owner_value = match owner_opt {
+        Some(o) => serde_json::json!(o),
+        None => serde_json::Value::Null,
+    };
     let mut task = serde_json::json!({
         "id": task_id,
         "subject": subject,
         "description": description,
         "status": "pending",
-        "owner": owner,
+        "owner": owner_value,
         "blockedBy": blocked_by_ids,
         "blocks": [],
         "activeForm": active_form,
@@ -3235,5 +3249,78 @@ mod tests {
         let content = std::fs::read_to_string(tasks_dir.join("902.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(parsed["channel"], "backend", "channel updated to new value");
+    }
+
+    #[test]
+    fn test_create_task_empty_owner_deduplicates() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        // First creation with empty owner (simulates daemon creating review task)
+        let id1 = create_task_in_dir(
+            tasks_dir,
+            "Review PR #123",
+            "desc",
+            "Reviewing PR #123",
+            "",
+            None,
+            None,
+            Some(123),
+        )
+        .unwrap();
+
+        // Second creation with same subject and empty owner should return same ID
+        let id2 = create_task_in_dir(
+            tasks_dir,
+            "Review PR #123",
+            "desc",
+            "Reviewing PR #123",
+            "",
+            None,
+            None,
+            Some(123),
+        )
+        .unwrap();
+
+        assert_eq!(id1, id2, "Duplicate unowned task should return existing ID");
+
+        // Verify only one task file exists
+        let tasks = read_tasks_from_dir(&tasks_dir.to_path_buf());
+        let review_tasks: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.subject == "Review PR #123")
+            .collect();
+        assert_eq!(
+            review_tasks.len(),
+            1,
+            "Should have exactly one task, not duplicates"
+        );
+    }
+
+    #[test]
+    fn test_create_task_empty_owner_writes_null() {
+        let temp_dir = TempDir::new().unwrap();
+        let tasks_dir = temp_dir.path();
+
+        let id = create_task_in_dir(
+            tasks_dir,
+            "Review PR #456",
+            "desc",
+            "Reviewing",
+            "",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Read raw JSON and verify owner is null, not ""
+        let content = std::fs::read_to_string(tasks_dir.join(format!("{}.json", id))).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(
+            parsed["owner"].is_null(),
+            "Empty owner should be written as null, got: {:?}",
+            parsed["owner"]
+        );
     }
 }
