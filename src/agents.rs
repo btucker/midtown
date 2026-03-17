@@ -30,7 +30,13 @@ const DEFAULT_COMMON_PROMPT: &str = include_str!("../agents/common.md");
 // ── Layer 3 compiled-in content ─────────────────────────────────
 
 /// Embedded default for the reviewer resume prompt template.
-const DEFAULT_REVIEWER_RESUME_PROMPT: &str = include_str!("../agents/reviewer-resume.md");
+const DEFAULT_REVIEWER_RESUME_PROMPT: &str = "\
+Resume reviewing PR #{pr_number}. The daemon was restarted and discovered you still running. Continue your code review where you left off.
+
+Follow the task verification, posting, refactor detection, and all other review instructions from your system prompt — they are already loaded.
+
+If you haven't already run the code review skill, run it now: {code_review_invocation}
+";
 
 /// Embedded default for the ops channel lead additional instructions.
 ///
