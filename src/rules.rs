@@ -974,7 +974,7 @@ pub(crate) fn decide_owned_pending_dispatch(
     // Prevents nudge loops where the same pending-with-owner task gets
     // re-nudged every time the 300s cooldown expires.
     if snap
-        .coworker_task_assignments
+        .name_task_assignments
         .get(&owner.to_lowercase())
         .is_some_and(|assigned_task_id| assigned_task_id == task_id)
     {

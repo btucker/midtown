@@ -48,7 +48,7 @@ fn test_dispatch_with_all_coworkers_stopped() {
     // instead of state.coworkers.list().len().
     //
     // Expected behavior: With 0 running coworkers and 8 pending tasks,
-    // spawn_for_pending_tasks should return AssignAndSpawn effects.
+    // spawn_for_pending_tasks should return SpawnForTask effects.
     //
     // Actual behavior before fix: The dispatcher checked state.coworkers.list().len()
     // which included stopped coworkers, incorrectly hitting the dev limit and

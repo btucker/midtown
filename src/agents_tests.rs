@@ -445,7 +445,7 @@ fn test_channel_lead_initial_prompt_structure() {
 
 #[test]
 fn test_coworker_task_prompt_contains_id_and_subject() {
-    let prompt = coworker_task_prompt("42", "Fix login bug", "");
+    let prompt = coworker_task_prompt("42", "Fix login bug", "", false);
     assert!(prompt.contains("task !42"));
     assert!(prompt.contains("Fix login bug"));
     assert!(prompt.contains("Get started!"));
@@ -455,7 +455,7 @@ fn test_coworker_task_prompt_contains_id_and_subject() {
 #[test]
 fn test_coworker_task_prompt_includes_plan_section() {
     let plan = "\n\n## Plan Context\nSome plan details here.";
-    let prompt = coworker_task_prompt("42", "Fix login bug", plan);
+    let prompt = coworker_task_prompt("42", "Fix login bug", plan, false);
     assert!(prompt.contains("## Plan Context"));
     assert!(prompt.contains("Some plan details here."));
 }
@@ -468,11 +468,18 @@ fn test_coworker_claim_prompt_includes_claim_command() {
 }
 
 #[test]
-fn test_coworker_recovery_prompt_mentions_intact_worktree() {
-    let prompt = coworker_recovery_prompt("42", "Fix login bug", "");
+fn test_coworker_task_prompt_resume_mentions_intact_worktree() {
+    let prompt = coworker_task_prompt("42", "Fix login bug", "", true);
     assert!(prompt.contains("worktree and branch are still intact"));
     assert!(prompt.contains("git status"));
     assert!(prompt.contains("task !42"));
+}
+
+#[test]
+fn test_coworker_task_prompt_fresh_does_not_mention_resume() {
+    let prompt = coworker_task_prompt("42", "Fix login bug", "", false);
+    assert!(!prompt.contains("interrupted"));
+    assert!(!prompt.contains("worktree and branch are still intact"));
 }
 
 #[test]
@@ -503,7 +510,7 @@ fn test_task_footer_contains_view_and_reply_instructions() {
 #[test]
 fn test_all_task_prompts_include_reply_instruction() {
     // Every task-related prompt should include the --task reply instruction
-    let task_prompt = coworker_task_prompt("7", "Build widget", "");
+    let task_prompt = coworker_task_prompt("7", "Build widget", "", false);
     assert!(
         task_prompt.contains("--task 7"),
         "Task prompt should include --task reply instruction"
@@ -515,10 +522,10 @@ fn test_all_task_prompts_include_reply_instruction() {
         "Claim prompt should include --task reply instruction"
     );
 
-    let recovery_prompt = coworker_recovery_prompt("7", "Build widget", "");
+    let resume_prompt = coworker_task_prompt("7", "Build widget", "", true);
     assert!(
-        recovery_prompt.contains("--task 7"),
-        "Recovery prompt should include --task reply instruction"
+        resume_prompt.contains("--task 7"),
+        "Resume prompt should include --task reply instruction"
     );
 
     let nudge_prompt = coworker_nudge_prompt("7", "Build widget");

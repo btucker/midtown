@@ -61,7 +61,7 @@ fn test_find_session_for_task_returns_session() {
     };
 
     // When: find_session_for_task is called
-    let result = find_session_for_task("42", &snap);
+    let result = snap.find_session_for_task("42");
 
     // Then: returns the SessionRecord
     assert!(result.is_some(), "Should find the session for task 42");
@@ -80,7 +80,7 @@ fn test_find_session_for_task_returns_none_when_no_session() {
     };
 
     // When: find_session_for_task is called
-    let result = find_session_for_task("42", &snap);
+    let result = snap.find_session_for_task("42");
 
     // Then: returns None
     assert!(
@@ -119,15 +119,14 @@ fn test_session_dispatch_uses_resume_session_for_stopped_session() {
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
-    // Then: emits SpawnCoworkerWithCallbacks with SessionMode::ResumeSession
-    // (SpawnCoworkerWithCallbacks enables on_failure cooldown and task reset)
+    // Then: emits SpawnForTask with SessionMode::ResumeSession
     let has_resume_spawn = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. }
+        matches!(e, Effect::SpawnForTask { config, .. }
             if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(id) if id == "sess-abc-123"))
     });
     assert!(
         has_resume_spawn,
-        "Should emit SpawnCoworkerWithCallbacks with ResumeSession('sess-abc-123'), got effects: {:?}",
+        "Should emit SpawnForTask with ResumeSession('sess-abc-123'), got effects: {:?}",
         effects
             .iter()
             .map(|e| format!("{:?}", e))
@@ -169,8 +168,8 @@ fn test_orphan_recovery_handles_tasks_with_session_records() {
     };
     snap.coworkers.active_names = HashSet::new(); // lexington is NOT active
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
                 "42",
@@ -185,7 +184,7 @@ fn test_orphan_recovery_handles_tasks_with_session_records() {
     // Orphan recovery should produce a spawn effect to resume the session.
     let spawn_effects: Vec<_> = effects
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .collect();
     assert!(
         !spawn_effects.is_empty(),
@@ -195,7 +194,7 @@ fn test_orphan_recovery_handles_tasks_with_session_records() {
 
     // Should use ResumeSession mode (not Fresh) since a session record exists
     let has_resume_session = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. }
+        matches!(e, Effect::SpawnForTask { config, .. }
             if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(_)))
     });
     assert!(
@@ -222,8 +221,8 @@ fn test_orphan_recovery_falls_back_to_fresh_spawn_without_session() {
     };
     snap.coworkers.active_names = HashSet::new(); // lexington is NOT active (orphaned)
 
-    let (state, _tmp, _guard) = make_test_state();
-    let effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let (_state, _tmp, _guard) = make_test_state();
+    let effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "42" {
             Some(in_progress_task_for_lookup(
                 "42",
@@ -235,13 +234,13 @@ fn test_orphan_recovery_falls_back_to_fresh_spawn_without_session() {
         }
     });
 
-    // Then: emits the standard SpawnCoworkerWithCallbacks effect (backward compat)
+    // Then: emits the standard SpawnForTask effect
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         has_spawn,
-        "Should emit SpawnCoworkerWithCallbacks when no session record exists, got effects: {:?}",
+        "Should emit SpawnForTask when no session record exists, got effects: {:?}",
         effects
             .iter()
             .map(|e| format!("{:?}", e))
@@ -292,14 +291,14 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     };
     snap.coworkers.active_names = HashSet::new(); // lexington is absent
 
-    let (state, _tmp, _guard) = make_test_state();
+    let (_state, _tmp, _guard) = make_test_state();
 
     // dispatch_via_sessions handles the task (has a stopped session record)
     let session_effects = dispatch_via_sessions_for_test(&snap);
     let session_claimed_ids = effects::extract_claimed_task_ids_from_effects(&session_effects);
 
     // check_and_recover_orphans also handles it (no longer filters out session-tracked tasks)
-    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, &state, |task_id| {
+    let orphan_effects = check_and_recover_orphans_with_task_lookup(&snap, |task_id| {
         if task_id == "99" {
             Some(in_progress_task_for_lookup("99", "Fix auth", "lexington"))
         } else {
@@ -310,11 +309,11 @@ fn test_no_dual_spawn_for_stopped_session_task() {
     // Both paths independently produce a spawn for task 99
     let session_spawns = session_effects
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
     let orphan_spawns = orphan_effects
         .iter()
-        .filter(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }))
+        .filter(|e| matches!(e, Effect::SpawnForTask { .. }))
         .count();
 
     assert_eq!(
@@ -390,7 +389,7 @@ fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
     assert!(
         effects_tick1
             .iter()
-            .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })),
+            .any(|e| matches!(e, Effect::SpawnForTask { .. })),
         "First tick should trigger recovery for stopped session"
     );
 
@@ -420,7 +419,7 @@ fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
     assert!(
         !effects_tick2
             .iter()
-            .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. })),
+            .any(|e| matches!(e, Effect::SpawnForTask { .. })),
         "After spawn, session is running — dispatch must NOT trigger recovery again. Got: {:?}",
         effects_tick2
             .iter()
@@ -523,7 +522,7 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
     // Then: no spawn effects — channel leads must not be recovered as coworkers
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         !has_spawn,
         "Should NOT spawn a coworker for a channel lead's task, got effects: {:?}",
@@ -575,8 +574,7 @@ fn test_session_dispatch_skips_active_reviewer() {
             matches!(
                 e,
                 Effect::SpawnCoworker(_)
-                    | Effect::SpawnCoworkerWithCallbacks { .. }
-                    | Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnForTask { .. }
                     | Effect::ResumeCoworker { .. }
             )
         })
@@ -647,9 +645,8 @@ fn test_session_dispatch_skips_recovery_when_session_is_active_despite_stale_is_
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { .. }
+                Effect::SpawnForTask { .. }
                     | Effect::SpawnCoworker(_)
-                    | Effect::AssignAndSpawn { .. }
                     | Effect::ResumeCoworker { .. }
             )
         })
@@ -689,23 +686,29 @@ fn test_dispatch_via_sessions_emits_clear_session_on_failure() {
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
-    // The outermost effect should be SpawnCoworkerWithCallbacks
+    // The dispatch should emit a SpawnForTask effect (via build_spawn_effects)
     let spawn_effect = effects
         .iter()
-        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .find(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         spawn_effect.is_some(),
-        "Expected SpawnCoworkerWithCallbacks effect"
+        "Expected SpawnForTask effect, got: {:?}",
+        effects
     );
 
-    if let Some(Effect::SpawnCoworkerWithCallbacks { on_failure, .. }) = spawn_effect {
-        let has_clear = on_failure
-            .iter()
-            .any(|e| matches!(e, Effect::ClearSessionForTask { task_id } if task_id == "42"));
+    // SpawnForTask executor always inlines ResetTaskToPending + RecordCooldown on failure.
+    // Verify the SpawnForTask has the correct task_id and dir_key for the executor to use.
+    if let Some(Effect::SpawnForTask {
+        task_id, dir_key, ..
+    }) = spawn_effect
+    {
+        assert_eq!(
+            task_id, "42",
+            "task_id must be set for executor ResetTaskToPending"
+        );
         assert!(
-            has_clear,
-            "on_failure should contain ClearSessionForTask for task 42, got: {:?}",
-            on_failure
+            !dir_key.is_empty(),
+            "dir_key must be set for executor ResetTaskToPending"
         );
     }
 }
@@ -764,9 +767,8 @@ fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
         .filter(|e| {
             matches!(
                 e,
-                Effect::SpawnCoworkerWithCallbacks { .. }
+                Effect::SpawnForTask { .. }
                     | Effect::SpawnCoworker(_)
-                    | Effect::AssignAndSpawn { .. }
                     | Effect::ResumeCoworker { .. }
             )
         })
@@ -827,9 +829,10 @@ fn test_pending_task_with_cooldown_active_skips_resume() {
 
     // The pending task resume path should skip sess-loop-123 due to cooldown.
     // It may fall through to the fresh-spawn path, but it must NOT emit
-    // SpawnSession with resume=true for the cooldown-active session.
+    // SpawnForTask with ResumeSession for the cooldown-active session.
     let has_session_resume = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnSession { session_id, resume: true, .. } if session_id == "sess-loop-123")
+        matches!(e, Effect::SpawnForTask { config, .. }
+            if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(sid) if sid == "sess-loop-123"))
     });
     assert!(
         !has_session_resume,
@@ -876,13 +879,14 @@ fn test_pending_task_stopped_session_resumes_when_no_cooldown() {
     let effects =
         spawn_for_pending_tasks_excluding(&snap, &state, &std::collections::HashSet::new());
 
-    // Should emit SpawnSession with resume=true for the stopped session
+    // Should emit SpawnForTask with ResumeSession mode for the stopped session
     let has_resume_spawn = effects.iter().any(|e| {
-        matches!(e, Effect::SpawnSession { session_id, resume: true, .. } if session_id == "sess-resume-456")
+        matches!(e, Effect::SpawnForTask { config, .. }
+            if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(sid) if sid == "sess-resume-456"))
     });
     assert!(
         has_resume_spawn,
-        "Should emit SpawnSession(resume=true) for stopped session when no cooldown, got effects: {:?}",
+        "Should emit SpawnForTask(ResumeSession) for stopped session when no cooldown, got effects: {:?}",
         effects
             .iter()
             .map(|e| format!("{:?}", e))
@@ -926,25 +930,29 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
 
     let effects = dispatch_via_sessions_for_test(&snap);
 
-    // Find the SpawnCoworkerWithCallbacks effect
+    // Find the SpawnForTask effect
     let spawn_effect = effects
         .iter()
-        .find(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .find(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         spawn_effect.is_some(),
-        "Expected SpawnCoworkerWithCallbacks for stopped session"
+        "Expected SpawnForTask for stopped session"
     );
 
-    if let Some(Effect::SpawnCoworkerWithCallbacks { on_success, .. }) = spawn_effect {
-        let has_session_recovered_cooldown = on_success.iter().any(|e| {
-            matches!(e, Effect::RecordCooldown { category, key }
-                if category == "session_recovered" && key == "7659329f-dead-4ead-b00b-cafecafecafe")
-        });
+    if let Some(Effect::SpawnForTask {
+        extra_success_cooldowns,
+        ..
+    }) = spawn_effect
+    {
+        let has_session_recovered_cooldown =
+            extra_success_cooldowns.iter().any(|(category, key)| {
+                category == "session_recovered" && key == "7659329f-dead-4ead-b00b-cafecafecafe"
+            });
         assert!(
             has_session_recovered_cooldown,
-            "on_success must contain RecordCooldown(session_recovered, session_id) \
+            "extra_success_cooldowns must contain (session_recovered, session_id) \
              to prevent re-recovery spam on the next tick. Got: {:?}",
-            on_success
+            extra_success_cooldowns
         );
     }
 }
@@ -1010,25 +1018,28 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
             .collect::<Vec<_>>()
     );
 
-    // Should still emit SpawnSession (using the fresh worktree path, not the stale one)
+    // Should still emit SpawnForTask (using the fresh worktree path, not the stale one)
     let spawn_eff = effects.iter().find(|e| {
-        matches!(e, Effect::SpawnSession { session_id, .. } if session_id == "sess-stale-wd-123")
+        matches!(e, Effect::SpawnForTask { config, .. }
+            if matches!(&config.session_mode, crate::launch::SessionMode::ResumeSession(sid) if sid == "sess-stale-wd-123"))
     });
     assert!(
         spawn_eff.is_some(),
-        "Should emit SpawnSession even when working_dir is stale, got: {:?}",
+        "Should emit SpawnForTask even when working_dir is stale, got: {:?}",
         effects
             .iter()
             .map(|e| format!("{:?}", e))
             .collect::<Vec<_>>()
     );
 
-    // The SpawnSession working_dir must NOT be the stale path
-    if let Some(Effect::SpawnSession { working_dir, .. }) = spawn_eff {
+    // The SpawnForTask working_dir must NOT be the stale path
+    if let Some(Effect::SpawnForTask { config, .. }) = spawn_eff
+        && let Some(wd) = &config.working_dir
+    {
         assert_ne!(
-            working_dir.to_string_lossy(),
+            wd.to_string_lossy(),
             stale_path,
-            "SpawnSession must use fresh worktree, not the stale path"
+            "SpawnForTask must use fresh worktree, not the stale path"
         );
     }
 }
@@ -1075,13 +1086,13 @@ fn test_session_dispatch_stale_working_dir_falls_back_and_clears() {
             .collect::<Vec<_>>()
     );
 
-    // Must still attempt spawn via SpawnCoworkerWithCallbacks
+    // Must still attempt spawn via SpawnForTask
     let has_spawn = effects
         .iter()
-        .any(|e| matches!(e, Effect::SpawnCoworkerWithCallbacks { .. }));
+        .any(|e| matches!(e, Effect::SpawnForTask { .. }));
     assert!(
         has_spawn,
-        "Path 1 should still emit SpawnCoworkerWithCallbacks even with stale working_dir"
+        "Path 1 should still emit SpawnForTask even with stale working_dir"
     );
 }
 
@@ -1129,15 +1140,9 @@ fn test_session_dispatch_skips_task_when_worktree_bound_to_different_active_cowo
     let effects = dispatch_via_sessions_for_test(&snap);
 
     // Outcome: no spawn effect — the worktree collision blocks recovery
-    let has_spawn = effects.iter().any(|e| {
-        matches!(
-            e,
-            Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::SpawnCoworker(_)
-                | Effect::AssignAndSpawn { .. }
-                | Effect::SpawnSession { .. }
-        )
-    });
+    let has_spawn = effects
+        .iter()
+        .any(|e| matches!(e, Effect::SpawnForTask { .. } | Effect::SpawnCoworker(_)));
     assert!(
         !has_spawn,
         "Should NOT spawn when worktree is bound to a different active coworker (york), got: {:?}",

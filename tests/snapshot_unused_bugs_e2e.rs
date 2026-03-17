@@ -646,7 +646,7 @@ fn test_double_assign_open_pr() {
                 e,
                 Effect::SpawnCoworker(..)
                     | Effect::SpawnCoworkerWithCallbacks { .. }
-                    | Effect::AssignAndSpawn { .. }
+                    | Effect::SpawnForTask { .. }
             )
         })
         .count();
@@ -787,7 +787,7 @@ fn test_pr_1164_still_no_reviewer_after_orphan_fix() {
             e,
             Effect::SpawnCoworker(..)
                 | Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::AssignAndSpawn { .. }
+                | Effect::SpawnForTask { .. }
                 | Effect::ResumeCoworker { .. }
         )
     });

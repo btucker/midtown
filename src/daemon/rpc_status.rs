@@ -101,7 +101,7 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // rather than stale data. The first open PR poll completes within ~5 seconds, so
     // this window is brief.
     let (pull_requests, merged_prs) = {
-        let cache = state.pr_coworker_cache.read().unwrap();
+        let cache = state.pr_poll_data.read().unwrap();
         if cache.pr_poll_initialized {
             (cache.open_prs_data.clone(), cache.merged_prs_data.clone())
         } else {

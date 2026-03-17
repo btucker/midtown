@@ -283,20 +283,11 @@ pub struct SnapshotCoworkerState {
 /// PR and GitHub state — open PRs, merge tracking, CI status, rate limits.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct SnapshotPrState {
-    /// Coworkers who have at least one open PR.
-    pub coworkers_with_open_prs: HashSet<String>,
-    /// Coworkers whose PR was recently merged.
-    pub coworkers_with_merged_prs: HashSet<String>,
     /// PR numbers of recently merged PRs. Used by task dispatch to skip
     /// tasks that reference a merged PR (e.g., "Address review feedback on PR #709").
     pub merged_pr_numbers: HashSet<u64>,
-    /// Coworkers whose open PR has all CI checks passing (eligible for PR break).
-    pub ci_passed_pr_coworkers: HashSet<String>,
-    /// Coworkers whose open PR has CI passed AND has review feedback to address.
-    /// These coworkers are protected from idle shutdown (prevents spawn→idle→break loop).
-    pub review_feedback_pr_coworkers: HashSet<String>,
     /// Open PR data (from last GitHub poll). Used by orphan PR reconciliation.
-    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
+    /// Pre-collected during snapshot so decision logic doesn't need to lock pr_poll_data.
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
     /// Unified PR↔task index from both SessionRecord and GitHub PR title sources.
@@ -419,8 +410,8 @@ pub struct WorldSnapshot {
     /// Coworker → task assignment mapping (from daemon in-memory tracking).
     /// Maps coworker name (lowercase) → task_id. Used by task dispatch to prevent
     /// re-assigning the same task to the same coworker (nudge/spawn loop prevention).
-    #[serde(default)]
-    pub coworker_task_assignments: HashMap<String, String>,
+    #[serde(default, alias = "coworker_task_assignments")]
+    pub name_task_assignments: HashMap<String, String>,
     /// All tasks from disk (for relationship lookups).
     pub all_tasks: Vec<Task>,
     /// Pending tasks that have an owner: `(task_id, subject, owner)`.
@@ -826,6 +817,42 @@ impl WorldSnapshot {
         None
     }
 
+    /// Get coworker names that have sessions with open PRs.
+    ///
+    /// Derived from `SessionRecord.pr_number` cross-referenced with `open_prs_data`.
+    /// Replaces the legacy `PrCoworkerCache.open_pr_owners` which derived ownership
+    /// from branch names.
+    pub fn sessions_with_open_prs(&self) -> HashSet<String> {
+        let open_pr_numbers: HashSet<u64> = self
+            .pr
+            .open_prs_data
+            .iter()
+            .filter_map(|pr| pr["number"].as_u64())
+            .collect();
+
+        self.sessions
+            .values()
+            .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .collect()
+    }
+
+    /// Get coworker names that have sessions with recently merged PRs.
+    ///
+    /// Derived from `SessionRecord.pr_number` cross-referenced with `merged_pr_numbers`.
+    /// Replaces the legacy `PrCoworkerCache.merged_pr_owners` which derived ownership
+    /// from branch names.
+    pub fn sessions_with_merged_prs(&self) -> HashSet<String> {
+        self.sessions
+            .values()
+            .filter(|s| {
+                s.pr_number
+                    .is_some_and(|pr| self.pr.merged_pr_numbers.contains(&pr))
+            })
+            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .collect()
+    }
+
     /// Populate debug context fields (channel messages and daemon logs).
     ///
     /// This is only called when capturing a snapshot for debugging, NOT during
@@ -971,13 +998,29 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 .push(task.id.clone());
         }
     }
-    let busy_coworkers: HashSet<String> =
-        state.get_all_busy_coworkers().await.into_iter().collect();
+    // Derive busy coworkers from sessions: any session with a task_id
+    // where the task is in_progress is considered busy.
+    let in_progress_task_ids: HashSet<&str> = in_progress_tasks
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect();
+    let busy_coworkers: HashSet<String> = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions
+            .values()
+            .filter(|s| {
+                s.task_id
+                    .as_deref()
+                    .is_some_and(|tid| in_progress_task_ids.contains(tid))
+            })
+            .filter_map(|s| s.current_name.clone())
+            .map(|n| n.to_lowercase())
+            .collect()
+    };
 
     // Coworker → task assignments, derived from sessions[].task_id.
     // The single source of truth for which coworker is assigned to which task.
-    let coworker_task_assignments: HashMap<String, String> =
-        state.get_coworker_task_assignments().await;
+    let name_task_assignments: HashMap<String, String> = state.get_name_task_assignments().await;
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
     // task-to-thread, task-to-message, task-to-parent, task-to-agent-type,
@@ -1010,35 +1053,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── PR / GitHub state ───────────────────────────────────────────────
-    // Build branch_owners early so get_coworkers_with_merged_prs can resolve
-    // task-based branches (e.g., "task-42-fix-auth") to coworker names.
-    let early_branch_owners: HashMap<String, String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.worktree_registry
-            .all_assignments()
-            .iter()
-            .filter_map(|(_, a)| {
-                a.current_coworker
-                    .as_ref()
-                    .map(|c| (a.branch_name.clone(), c.clone()))
-            })
-            .collect()
-    };
-    let coworkers_with_open_prs: HashSet<String> = super::pr::get_coworkers_with_open_prs(state)
-        .into_iter()
-        .collect();
-    let coworkers_with_merged_prs: HashSet<String> =
-        super::pr::get_coworkers_with_merged_prs(state, &early_branch_owners);
-    // Merged PR numbers are populated as a side effect of the above call.
-    let merged_pr_numbers = super::pr::get_merged_pr_numbers(state);
-    let (ci_passed_pr_coworkers, review_feedback_pr_coworkers, prs_needing_review, open_prs_data) = {
-        let cache = state.pr_coworker_cache.read().unwrap();
-        (
-            cache.ci_passed_pr_owners.clone(),
-            cache.review_feedback_pr_owners.clone(),
-            cache.prs_needing_review,
-            cache.open_prs_data.clone(),
-        )
+    // Fetch merged PR data (uses cooldown-based caching internally).
+    let (merged_pr_numbers, _merged_prs_data) = super::pr::fetch_merged_pr_data(state);
+    let (prs_needing_review, open_prs_data) = {
+        let cache = state.pr_poll_data.read().unwrap();
+        (cache.prs_needing_review, cache.open_prs_data.clone())
     };
 
     // Derive task→PR mapping from open_prs_data PR titles for orphan recovery.
@@ -1367,10 +1386,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         (orphan_active, session_active, on_cooldown)
     };
 
-    // Pre-evaluate merge-rebase nudge cooldowns for all coworkers with open PRs
+    // Pre-evaluate merge-rebase nudge cooldowns for all active coworkers.
+    // Checked against all active names; decision functions filter to open-PR coworkers.
     let merge_rebase_nudge_cooldown_names: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
-        coworkers_with_open_prs
+        active_names
             .iter()
             .filter(|name| {
                 !cooldowns.check(
@@ -1402,10 +1422,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
-    // Pre-evaluate rebase regression cooldowns for all coworkers with open PRs
+    // Pre-evaluate rebase regression cooldowns for all active coworkers.
+    // Checked against all active names; decision functions filter to open-PR coworkers.
     let rebase_regression_cooldown_names: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
-        coworkers_with_open_prs
+        active_names
             .iter()
             .filter(|name| {
                 !cooldowns.check(
@@ -1488,7 +1509,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // ── Per-session recovery cooldown ────────────────────────────────────
     // Build the set of session_ids for which a recovery was recently attempted.
     // Uses the "session_recovered" cooldown category (per-session-id key) set in
-    // on_success of SpawnCoworkerWithCallbacks by dispatch_via_sessions.
+    // on_success of SpawnForTask by dispatch_via_sessions.
     // This prevents re-recovery spam when a session dies quickly after recovery.
     let recently_recovered_session_ids: HashSet<String> = {
         let cooldowns = state.cooldowns.lock().unwrap();
@@ -1596,11 +1617,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             attached_coworkers,
         },
         pr: SnapshotPrState {
-            coworkers_with_open_prs,
-            coworkers_with_merged_prs,
             merged_pr_numbers,
-            ci_passed_pr_coworkers,
-            review_feedback_pr_coworkers,
             open_prs_data,
             pr_task_index,
             orphaned_pr_lead_nudges_sent,
@@ -1628,7 +1645,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         },
         in_progress_tasks,
         busy_coworkers,
-        coworker_task_assignments,
+        name_task_assignments,
         all_tasks,
         pending_tasks_with_owners,
         pending_tasks_without_owners,
@@ -1708,7 +1725,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         pr: SnapshotPrState::default(),
         reviewer: SnapshotReviewerState::default(),
         health: SnapshotHealthState::default(),
-        coworker_task_assignments: HashMap::new(),
+        name_task_assignments: HashMap::new(),
         in_progress_tasks: vec![],
         busy_coworkers: HashSet::new(),
         all_tasks: vec![],

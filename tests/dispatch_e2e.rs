@@ -1179,7 +1179,7 @@ fn no_duplicate_spawn_notifications_for_same_coworker_and_task() {
 /// After tick 1 assigns a task to pleasant and marks it in-flight, tick 2
 /// should produce zero assignments for that same task. This tests the
 /// `mark_in_flight_spawns_from_effects` fix which extends in-flight tracking
-/// to cover `NudgeCoworkerWithCallbacks` effects (not just `AssignAndSpawn`).
+/// to cover `NudgeCoworkerWithCallbacks` effects (not just `SpawnForTask`).
 ///
 /// Before the fix, nudge effects were not tracked, so the next tick would
 /// re-evaluate the same task and produce another nudge — causing the repeated

@@ -170,7 +170,7 @@ The `blocks_map` (`HashMap<String, Vec<String>>`) is the inverse of `Task.blocke
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
 
-**Task assignment persistence**: `sessions[].task_id` on `SessionRecord` is the single source of truth for coworker→task mapping. `RecordTaskAssignment` (emitted by both `SpawnSession` and `NudgeSessionWithCallbacks` callback chains) updates two things: (1) `sessions[].task_id` in `DaemonPersistentState` so that insight routing, busy tracking, and other session-aware features can resolve the task's channel, and (2) the `task_to_session` reverse map for dispatch lookups. The `WorldSnapshot::session_task_map` field (task_id → session_id) is built from session records during `collect_world_snapshot()`, enabling O(1) lookup of "which session is working on task X?" via `WorldSnapshot::find_session_for_task()`. The `WorldSnapshot::coworker_task_assignments` field is also derived from session records, ensuring dispatch decisions always reflect the persisted state.
+**Task assignment persistence**: `sessions[].task_id` on `SessionRecord` is the single source of truth for coworker→task mapping. `RecordTaskAssignment` (emitted by both `SpawnSession` and `NudgeSessionWithCallbacks` callback chains) updates two things: (1) `sessions[].task_id` in `DaemonPersistentState` so that insight routing, busy tracking, and other session-aware features can resolve the task's channel, and (2) the `task_to_session` reverse map for dispatch lookups. The `WorldSnapshot::session_task_map` field (task_id → session_id) is built from session records during `collect_world_snapshot()`, enabling O(1) lookup of "which session is working on task X?" via `WorldSnapshot::find_session_for_task()`. The `WorldSnapshot::name_task_assignments` field is also derived from session records, ensuring dispatch decisions always reflect the persisted state. The `WorldSnapshot::busy_coworkers` field is derived from sessions cross-referenced with in-progress tasks (not from task file owners).
 
 **Parent-child task grouping**: `DaemonPersistentState::task_parent` (`HashMap<String, String>`) maps child task ID → parent task ID. This is a UI-level grouping relationship for showing related tasks (e.g., a review follow-up task as a child of its implementation task). Child tasks can start while the parent is open — this is purely organizational, not a blocking dependency. The web UI renders parent-child relationships in the kanban board. Orphaned entries are pruned by the state garbage collector (`GarbageCollectState`).
 
@@ -524,17 +524,11 @@ The daemon receives real-time GitHub events via webhooks (PR creation, reviews, 
 
 ### PR Coworker Attribution
 
-PR-to-coworker resolution uses a unified 3-step pipeline across both webhook and polling paths:
+PR-to-coworker resolution uses session-based lookup exclusively: PR# → task → session → `current_name`. If no session owns the PR, the owner is `None` and the daemon falls back to notifying `@user`.
 
-1. **Session-based** (PR# → task → session → current_name): Look up the active session for the task that owns this PR.
-2. **Task metadata** (PR#, title, or branch → task → owner): Search tasks by `task.pr` number, by task ID extracted from the PR title, or by task ID extracted from the branch name.
-3. **Branch-based** (`coworker_from_branch`): Look up the branch name in the `worktree_branch_owners` map from the worktree registry. Resolves task-based branches (e.g., `task-42-fix-auth`) to coworker names.
+Webhooks call `resolve_pr_owner_from_state()` (async, reads `DaemonState` locks). Polling calls `resolve_pr_owner()` (pure, operates on snapshot data). Both use session-only resolution.
 
-If all three steps fail, the owner is `None` and the daemon falls back to notifying `@user`.
-
-Webhooks call `resolve_pr_owner_from_state()` (async, reads `DaemonState` locks). Polling calls `resolve_pr_owner()` (pure, operates on snapshot data). Both use the same 3-step chain.
-
-Key functions: `resolve_pr_owner()` (pr.rs, session + task metadata + branch), `resolve_pr_owner_from_state()` (pr.rs, async wrapper), `resolve_pr_owner_from_task_metadata()` (pr.rs, task lookup), `coworker_from_branch()` (helpers.rs, pure map lookup), `determine_pr_coworker()` (webhook.rs, frontmatter extraction for `PrOpenedInfo` only).
+Key functions: `resolve_pr_owner()` (pr.rs, session-only), `resolve_pr_owner_from_state()` (pr.rs, async wrapper), `coworker_from_branch()` (helpers.rs, branch → coworker map lookup, used for comment notifications and reviewer effects), `determine_pr_coworker()` (webhook.rs, frontmatter extraction for `PrOpenedInfo` only).
 
 ### PR Decision Logging
 

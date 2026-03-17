@@ -452,7 +452,7 @@ pub(super) async fn handle_task_create(
                 .insert(task_id.clone(), announcement_message_id.clone());
             // Default task_thread_id to the announcement message ID when no
             // thread_id was resolved (explicit --thread-id, or inherited from
-            // parent). This ensures SpawnSession picks up a bound_thread_id
+            // parent). This ensures SpawnForTask picks up a bound_thread_id
             // so coworker messages auto-route to the task's thread.
             if !ps.task_thread_id.contains_key(&task_id) {
                 ps.task_thread_id

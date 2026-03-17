@@ -308,7 +308,7 @@ pub async fn evaluate_tick(
 /// `spawn_for_pending_tasks_excluding`; this deduplication by task ID is a backstop.
 ///
 /// Handles all spawn-like effect variants: `SpawnCoworker`,
-/// `SpawnCoworkerWithCallbacks`, `AssignAndSpawn`, and `ResumeCoworker`.
+/// `SpawnCoworkerWithCallbacks`, `SpawnForTask`, and `ResumeCoworker`.
 /// Keeps the first spawn effect for each coworker name and task ID, drops duplicates.
 /// Non-spawn effects are always preserved.
 fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
@@ -321,16 +321,23 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
         let spawn_name = match &effect {
             Effect::SpawnCoworker(config) => Some(config.name.to_lowercase()),
             Effect::SpawnCoworkerWithCallbacks { config, .. } => Some(config.name.to_lowercase()),
-            Effect::AssignAndSpawn { config, .. } => Some(config.name.to_lowercase()),
+            Effect::SpawnForTask {
+                preferred_name,
+                config,
+                ..
+            } => Some(
+                preferred_name
+                    .as_deref()
+                    .unwrap_or(&config.name)
+                    .to_lowercase(),
+            ),
             Effect::ResumeCoworker { name, .. } => Some(name.to_lowercase()),
-            Effect::SpawnSession { config, .. } => Some(config.name.to_lowercase()),
             _ => None,
         };
 
         // Extract task ID if this is a task-related spawn
         let task_id = match &effect {
-            Effect::AssignAndSpawn { task_id, .. } => Some(task_id.clone()),
-            Effect::SpawnSession { task_id, .. } => Some(task_id.clone()),
+            Effect::SpawnForTask { task_id, .. } => Some(task_id.clone()),
             Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                 // Look for RecordTaskAssignment in on_success callbacks
                 on_success.iter().find_map(|e| {
@@ -366,10 +373,12 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
                 };
                 tracing::debug!("Deduplicated duplicate spawn effect for {}", reason);
 
-                // Extract and preserve registry effects from the dropped spawn
+                // Extract and preserve registry effects from the dropped spawn.
+                // SpawnForTask no longer carries on_success callbacks — its bookkeeping
+                // (including BindCoworkerToWorktree) is inlined in the executor after the
+                // real name is known, so there is nothing to hoist here.
                 let on_success_effects = match effect {
                     Effect::SpawnCoworkerWithCallbacks { on_success, .. } => on_success,
-                    Effect::AssignAndSpawn { on_success, .. } => on_success,
                     _ => vec![],
                 };
 
@@ -382,7 +391,8 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
             }
 
             // First spawn for this coworker - extract its registry effects and add to
-            // the top level, then reconstruct the spawn without those effects
+            // the top level, then reconstruct the spawn without those effects.
+            // SpawnForTask no longer carries on_success callbacks, so it passes through as-is.
             let (modified_effect, extracted_registry) = match effect {
                 Effect::SpawnCoworkerWithCallbacks {
                     config,
@@ -393,28 +403,6 @@ fn dedup_spawn_effects(effects: Vec<Effect>) -> Vec<Effect> {
                         on_success.into_iter().partition(is_registry_effect);
                     (
                         Effect::SpawnCoworkerWithCallbacks {
-                            config,
-                            on_success: other,
-                            on_failure,
-                        },
-                        registry,
-                    )
-                }
-                Effect::AssignAndSpawn {
-                    task_id,
-                    owner,
-                    dir_key,
-                    config,
-                    on_success,
-                    on_failure,
-                } => {
-                    let (registry, other): (Vec<_>, Vec<_>) =
-                        on_success.into_iter().partition(is_registry_effect);
-                    (
-                        Effect::AssignAndSpawn {
-                            task_id,
-                            owner,
-                            dir_key,
                             config,
                             on_success: other,
                             on_failure,

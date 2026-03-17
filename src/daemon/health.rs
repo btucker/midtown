@@ -833,7 +833,7 @@ pub(super) async fn check_and_fire_reminders(
     snap: &snapshot::WorldSnapshot,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    let open_pr_coworkers: Vec<String> = snap.pr.coworkers_with_open_prs.iter().cloned().collect();
+    let open_pr_coworkers: Vec<String> = snap.sessions_with_open_prs().into_iter().collect();
     let ps = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
 
