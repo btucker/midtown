@@ -447,6 +447,7 @@ fn test_dispatch_excludes_channel_leads_from_dev_count() {
         .insert("auth".to_string(), "session-auth-123".to_string());
     snap.channel_lead_sessions
         .insert("web".to_string(), "session-web-456".to_string());
+    snap.channel_lead_names = snap.channel_lead_sessions.keys().cloned().collect();
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 

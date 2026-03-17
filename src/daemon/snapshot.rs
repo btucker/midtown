@@ -369,6 +369,10 @@ pub struct WorldSnapshot {
     /// `NudgeChannelLead` effects without locking persistent state.
     #[serde(default)]
     pub channel_lead_sessions: HashMap<String, String>,
+    /// Pre-computed set of channel lead names (keys of `channel_lead_sessions`).
+    /// Avoids re-allocating a HashSet on every call to `channel_lead_names()`.
+    #[serde(default)]
+    pub channel_lead_names: HashSet<String>,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -633,9 +637,9 @@ impl WorldSnapshot {
         map
     }
 
-    /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
-    pub fn channel_lead_names(&self) -> HashSet<String> {
-        self.channel_lead_sessions.keys().cloned().collect()
+    /// Returns the pre-computed set of active channel lead names.
+    pub fn channel_lead_names(&self) -> &HashSet<String> {
+        &self.channel_lead_names
     }
 
     /// Backward-compatibility fixup for snapshots serialized before the
@@ -1047,8 +1051,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Dependency state ──────────────────────────────────────────────────
+    // Use the already-read `all_tasks` instead of re-reading from disk.
     let coworkers_with_unblocked_deps =
-        crate::tasks::get_coworkers_with_unblocked_dependents_for_repo(state.paths.dir_key());
+        crate::tasks::get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks);
 
     // ── Usage limit state ────────────────────────────────────────────────
     let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
@@ -1491,6 +1496,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_parent_map,
         task_agent_type_map,
         channel_lead_sessions,
+        channel_lead_names,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
         archived_channels,
@@ -1570,6 +1576,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
+        channel_lead_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),

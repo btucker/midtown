@@ -512,6 +512,7 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
         channel_lead_sessions: [("canal-lead".to_string(), "sess-cl-123".to_string())]
             .into_iter()
             .collect(),
+        channel_lead_names: ["canal-lead".to_string()].into_iter().collect(),
         ..snapshot::minimal_snapshot_for_test()
     };
     snap.coworkers.active_names = HashSet::new(); // canal-lead is NOT active

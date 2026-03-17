@@ -476,7 +476,6 @@ where
         .collect();
 
     // Decide which orphan (if any) to recover using pure decision function
-    let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &in_progress_tasks_active,
         active_names: &snap.coworkers.active_names,
@@ -485,7 +484,7 @@ where
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
-        channel_lead_names: &channel_lead_names,
+        channel_lead_names: snap.channel_lead_names(),
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
@@ -984,7 +983,6 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     // Use the same pure decision function from rules.rs that orphan recovery used.
     // This ensures identical filtering behavior (active check, attached check,
     // recently-stopped grace period, open PR without feedback check).
-    let channel_lead_names = snap.channel_lead_names();
     let orphan_ctx = crate::rules::OrphanRecoveryContext {
         in_progress: &tasks_without_sessions,
         active_names: &snap.coworkers.active_names,
@@ -993,7 +991,7 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         review_feedback_pr_coworkers: &snap.pr.review_feedback_pr_coworkers,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
-        channel_lead_names: &channel_lead_names,
+        channel_lead_names: snap.channel_lead_names(),
     };
     let recovery = match crate::rules::decide_orphan_recovery(&orphan_ctx) {
         Some(r) => r,
@@ -1742,12 +1740,11 @@ fn dispatch_unowned_pending_tasks(
     // Dev cap = max_coworkers (REVIEW_HEADROOM does NOT reduce dev slots).
     let dev_cap = state.max_coworkers;
     // Use running coworkers from snapshot (excludes lead and channel leads).
-    let channel_lead_names = snap.channel_lead_names();
     let current_coworker_count = snap
         .coworkers
         .running_coworkers
         .iter()
-        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.project_name, &channel_lead_names))
+        .filter(|cw| is_non_lead_coworker(&cw.name, &snap.project_name, snap.channel_lead_names()))
         .count();
 
     for task in snap.pending_tasks_without_owners.iter() {
@@ -1928,7 +1925,7 @@ fn dispatch_unowned_pending_tasks(
         let coworker_name = if let Some(name) = grouped_name {
             name
         } else {
-            let mut excluded_names = snap.channel_lead_names();
+            let mut excluded_names = snap.channel_lead_names().clone();
             // Exclude all names with active sessions to prevent name collisions.
             // CoworkerManager only knows about registered coworkers, but a session
             // may still be running after its coworker was cleaned up from the manager.
@@ -2139,9 +2136,8 @@ fn dispatch_unowned_pending_tasks(
             config.task_id = Some(task.id.clone());
 
             // Route escalation to channel lead if available
-            let channel_lead_names = snap.channel_lead_names();
             if let Some(ref channel_name) = config.channel
-                && channel_lead_names.contains(channel_name)
+                && snap.channel_lead_names().contains(channel_name)
             {
                 config.escalation_target = Some(channel_name.clone());
                 config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
