@@ -1235,45 +1235,6 @@ async fn cleanup_worktree_and_notify(
 /// blocking during startup when processing multiple pending tasks. Non-spawn effects
 /// execute sequentially as before. This keeps the daemon responsive to RPC requests
 /// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
-/// Substitute the coworker name placeholder (`""`) in spawn callback effects with
-/// the real allocated name.  Called by the `SpawnForTask` executor after the name
-/// pool has been consulted so that `on_success`/`on_failure` effects carry the
-/// actual coworker name rather than the empty placeholder written at decision time.
-fn substitute_coworker_name(effects: Vec<Effect>, name: &str) -> Vec<Effect> {
-    effects
-        .into_iter()
-        .map(|e| match e {
-            Effect::RecordTaskAssignment { coworker, task_id } if coworker.is_empty() => {
-                Effect::RecordTaskAssignment {
-                    coworker: name.to_string(),
-                    task_id,
-                }
-            }
-            Effect::BindCoworkerToWorktree {
-                worktree_id,
-                coworker,
-            } if coworker.is_empty() => Effect::BindCoworkerToWorktree {
-                worktree_id,
-                coworker: name.to_string(),
-            },
-            Effect::BroadcastCoworkerUpdate {
-                name: n,
-                status,
-                current_task,
-            } if n.is_empty() => Effect::BroadcastCoworkerUpdate {
-                name: name.to_string(),
-                status,
-                current_task,
-            },
-            Effect::RecordCooldown { category, key } if key.is_empty() => Effect::RecordCooldown {
-                category,
-                key: name.to_string(),
-            },
-            other => other,
-        })
-        .collect()
-}
-
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
@@ -1831,16 +1792,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Clear in-flight marker on success
                         state.clear_task_spawn_in_flight(&task_id);
 
-                        // Execute on_success callbacks with real coworker name substituted
-                        let on_success = substitute_coworker_name(on_success, &name);
+                        // Execute on_success callbacks
                         Box::pin(execute_effects(on_success, state)).await;
                     }
                     Err(e) => {
                         warn!("SpawnForTask: failed to spawn for task !{}: {}", task_id, e);
                         // Clear in-flight marker on failure
                         state.clear_task_spawn_in_flight(&task_id);
-                        // Execute on_failure callbacks with real coworker name substituted
-                        let on_failure = substitute_coworker_name(on_failure, &name);
+                        // Execute on_failure callbacks
                         Box::pin(execute_effects(on_failure, state)).await;
                     }
                 }
