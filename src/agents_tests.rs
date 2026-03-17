@@ -568,8 +568,8 @@ fn test_reviewer_launch_prompt_restart_includes_context() {
         "Respawn should note the restart number"
     );
     assert!(
-        prompt.contains("Review in progress"),
-        "Respawn should mention the placeholder comment"
+        prompt.contains("type:review-placeholder"),
+        "Respawn should mention the placeholder frontmatter format"
     );
     assert!(
         prompt.contains("review-pr-42"),

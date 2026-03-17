@@ -329,14 +329,14 @@ pub fn reviewer_launch_prompt(
         format!(
             "Review PR #{pr_number} — {invocation}\n\n\
              **NOTE (Restart #{restart_count})**: A previous reviewer started this review but \
-             did not complete it. Check if there's an existing \"Review in progress\" placeholder \
-             comment on PR #{pr_number} and update it with your final review results instead of \
+             did not complete it. Check if there's an existing placeholder \
+             comment on PR #{pr_number} (identified by `<!-- midtown task:... type:review-placeholder -->` \
+             frontmatter) and update it with your final review results instead of \
              posting a new comment:\n\
              ```bash\n\
              # Find the existing placeholder comment ID:\n\
              COMMENT_ID=$(gh pr view {pr_number} --json comments --jq \
-             '[.comments[] | select(.body | test(\"Review in progress by\")) | \
-             select(.body | test(\"midtown:\") | not)] | last | .url' | grep -o '[0-9]*$')\n\
+             '[.comments[] | select(.body | test(\"type:review-placeholder\"))] | last | .url' | grep -o '[0-9]*$')\n\
              # Then update it instead of posting new\n\
              ```\n\
              The review worktree (review-pr-{pr_number}) may already have the PR checked out.\
