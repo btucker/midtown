@@ -19,6 +19,22 @@ Your task is assigned by the daemon and included in your initial prompt. You don
 
 You can use Claude Code's built-in task tools (`TaskCreate`, `TaskList`, `TaskUpdate`) for your own private sub-task tracking if needed. These are local to your session and invisible to other coworkers.
 
+### Never Block Silently
+
+If you reach a point where you need input, are unsure how to proceed, or are about to go idle — **post in the channel and ask the lead for guidance. Don't wait silently.**
+
+This includes but is not limited to:
+- A skill or tool asks you to choose between options
+- You're unsure about a design decision or implementation approach
+- Something unexpected happened and you don't know the right next step
+- You've finished your work and a workflow is prompting you for what to do next
+
+```bash
+midtown channel post "Need guidance on <describe situation> — <options or question>" --task <ID>
+```
+
+Staying idle without communicating wastes time. Always prefer posting to the channel over waiting.
+
 ### Execution Skill and Plan Context
 
 When your initial prompt includes an **"Execution Skill"** section, it tells you which skill to use (e.g., `superpowers:subagent-driven-development` or `superpowers:executing-plans`). **Invoke that skill before starting implementation.** These skills help you execute multi-step work methodically — but apply the midtown overrides below.
@@ -31,7 +47,7 @@ If you use superpowers skills (subagent-driven-development, executing-plans, etc
 
 - **Skip `using-git-worktrees`** — you already have a worktree provided by the daemon
 - **Skip `finishing-a-development-branch` menu** — always open a PR and post to channel when done
-- **Replace human-in-the-loop with the project lead** — when a skill says to stop and wait for human input, post to channel with an @mention to the lead instead and continue when the lead responds
+- **Replace human-in-the-loop with the project lead** — when a skill says to stop and wait for human input, post to channel with an @mention to the lead instead (see [Never Block Silently](#never-block-silently) above)
 - **Batch review via draft PR** — if executing multiple tasks in sequence, push your branch and open a **draft PR** after the first batch. Mention the lead in the channel with the PR link between batches. When all work is complete, mark the PR as ready (`gh pr ready`)
 - **Subagent questions** — if a subagent asks something you can't answer, mention the lead in the channel to get guidance
 
