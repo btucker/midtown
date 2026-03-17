@@ -344,6 +344,7 @@ fn test_fired_reminder_nudges_lead() {
         created_at: chrono::Utc::now(),
         repeat_policy: crate::reminders::RepeatPolicy::Once,
         fire_count: 0,
+        last_evaluated_at: None,
     };
     let fired = vec![&reminder];
 

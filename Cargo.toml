@@ -92,6 +92,7 @@ base64ct = { version = "1", features = ["alloc"] }
 reqwest = { version = "0.12", features = ["rustls-tls", "json", "blocking", "multipart"], default-features = false }
 http = "1"
 shell-escape = "0.1.5"
+croner = "3"
 minimad-ratatui = { path = "crates/minimad-ratatui" }
 tempfile = "3.0"
 

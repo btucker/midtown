@@ -6,10 +6,12 @@
 //! Reminders can fire once, a fixed number of times, or indefinitely.
 
 use chrono::{DateTime, Utc};
+use croner::Cron;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
+use std::str::FromStr;
 use tracing::{debug, warn};
 
 /// Conditions that can trigger a reminder.
@@ -18,12 +20,15 @@ use tracing::{debug, warn};
 pub enum ReminderTrigger {
     /// Fire when all tasks are completed and all coworker PRs are merged.
     AllWorkMerged,
+    /// Fire on a cron schedule (evaluated in UTC).
+    CronUtc { cron_expr: String },
 }
 
 impl std::fmt::Display for ReminderTrigger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ReminderTrigger::AllWorkMerged => write!(f, "all-work-merged"),
+            ReminderTrigger::CronUtc { cron_expr } => write!(f, "cron-utc({})", cron_expr),
         }
     }
 }
@@ -68,6 +73,9 @@ pub struct Reminder {
     /// How many times the reminder has fired so far
     #[serde(default)]
     pub fire_count: u32,
+    /// Last time this reminder was evaluated (for cron window-based matching).
+    #[serde(default)]
+    pub last_evaluated_at: Option<DateTime<Utc>>,
 }
 
 /// Intermediary for backward-compatible deserialization.
@@ -84,6 +92,8 @@ struct ReminderRaw {
     fire_count: u32,
     #[serde(default)]
     fired: Option<bool>,
+    #[serde(default)]
+    last_evaluated_at: Option<DateTime<Utc>>,
 }
 
 impl<'de> Deserialize<'de> for Reminder {
@@ -106,6 +116,7 @@ impl<'de> Deserialize<'de> for Reminder {
             created_at: raw.created_at,
             repeat_policy: raw.repeat_policy,
             fire_count,
+            last_evaluated_at: raw.last_evaluated_at,
         })
     }
 }
@@ -193,6 +204,7 @@ impl ReminderState {
             created_at: Utc::now(),
             repeat_policy,
             fire_count: 0,
+            last_evaluated_at: None,
         });
         id
     }
@@ -223,6 +235,41 @@ pub fn evaluate_trigger(trigger: &ReminderTrigger, open_pr_coworkers: &[String])
             let has_prs = !open_pr_coworkers.is_empty();
             !has_work && !has_prs
         }
+        ReminderTrigger::CronUtc { .. } => {
+            // Cron triggers are evaluated via evaluate_cron_trigger with time windows,
+            // not through this condition-based path.
+            false
+        }
+    }
+}
+
+/// Validate a cron expression string.
+pub fn validate_cron_expression(expr: &str) -> Result<(), String> {
+    Cron::from_str(expr).map_err(|e| format!("Invalid cron expression: {}", e))?;
+    Ok(())
+}
+
+/// Evaluate whether a cron trigger should fire in the window (last_eval, now].
+pub fn evaluate_cron_trigger(
+    trigger: &ReminderTrigger,
+    last_evaluated_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> bool {
+    let cron_expr = match trigger {
+        ReminderTrigger::CronUtc { cron_expr } => cron_expr,
+        _ => return false,
+    };
+    let cron = match Cron::from_str(cron_expr) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to parse cron expression '{}': {}", cron_expr, e);
+            return false;
+        }
+    };
+    // Find the next occurrence after last_evaluated_at. If it falls <= now, fire.
+    match cron.find_next_occurrence(&last_evaluated_at, false) {
+        Ok(next) => next <= now,
+        Err(_) => false,
     }
 }
 
@@ -462,5 +509,87 @@ mod tests {
         let loaded: ReminderState = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.reminders[0].repeat_policy, RepeatPolicy::Times(5));
         assert_eq!(loaded.reminders[0].fire_count, 2);
+    }
+
+    #[test]
+    fn test_cron_utc_trigger_display() {
+        let trigger = ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        };
+        assert_eq!(format!("{}", trigger), "cron-utc(0 9 * * MON)");
+    }
+
+    #[test]
+    fn test_evaluate_cron_trigger_matching_time() {
+        use chrono::TimeZone;
+        // Monday 2026-03-16 09:00 UTC
+        let now = Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 0).unwrap();
+        let last_eval = now - chrono::Duration::seconds(30);
+        let trigger = ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        };
+        assert!(
+            evaluate_cron_trigger(&trigger, last_eval, now),
+            "Should fire at 09:00 on Monday"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_cron_trigger_no_match() {
+        use chrono::TimeZone;
+        // Monday 2026-03-16 09:01 UTC — the cron fires at 09:00, last_eval was 09:00:30
+        let now = Utc.with_ymd_and_hms(2026, 3, 16, 9, 1, 0).unwrap();
+        let last_eval = now - chrono::Duration::seconds(30);
+        let trigger = ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        };
+        assert!(
+            !evaluate_cron_trigger(&trigger, last_eval, now),
+            "Should not fire at 09:01 with last_eval at 09:00:30"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_cron_trigger_fires_within_window() {
+        use chrono::TimeZone;
+        // last_eval was 08:59:30, now is 09:00:15 — the 09:00 fire is within the window
+        let last_eval = Utc.with_ymd_and_hms(2026, 3, 16, 8, 59, 30).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+        let trigger = ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        };
+        assert!(
+            evaluate_cron_trigger(&trigger, last_eval, now),
+            "Should fire when cron time falls between last_eval and now"
+        );
+    }
+
+    #[test]
+    fn test_evaluate_cron_trigger_no_double_fire() {
+        use chrono::TimeZone;
+        // last_eval was 09:00:15 (after the fire), now is 09:00:45
+        let last_eval = Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 45).unwrap();
+        let trigger = ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        };
+        assert!(
+            !evaluate_cron_trigger(&trigger, last_eval, now),
+            "Should not double-fire in same minute"
+        );
+    }
+
+    #[test]
+    fn test_validate_cron_expression_valid() {
+        assert!(validate_cron_expression("0 9 * * MON").is_ok());
+        assert!(validate_cron_expression("*/5 * * * *").is_ok());
+        assert!(validate_cron_expression("0 0 1 1 *").is_ok());
+    }
+
+    #[test]
+    fn test_validate_cron_expression_invalid() {
+        assert!(validate_cron_expression("not a cron").is_err());
+        assert!(validate_cron_expression("").is_err());
+        assert!(validate_cron_expression("60 * * * *").is_err());
     }
 }
