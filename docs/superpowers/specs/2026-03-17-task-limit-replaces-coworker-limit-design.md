@@ -19,12 +19,15 @@ The current `max_coworkers` infrastructure limits concurrent Claude Code process
 - Env var: `MIDTOWN_MAX_IN_PROGRESS_TASKS` replaces `MIDTOWN_MAX_COWORKERS`.
 - CLI config key: `default.max_in_progress_tasks` replaces `default.max_coworkers`.
 - If old `max_coworkers` key is present in TOML, emit a deprecation warning at daemon startup. Do not silently map old to new (different semantics).
+- Note for users who relied on `REVIEW_HEADROOM`: previously `max_coworkers = 6` allowed up to 8 total processes (6 dev + 2 reviewer overflow). With `max_in_progress_tasks = 6`, all task types share the same 6 slots. Users who want equivalent throughput should set `max_in_progress_tasks` to their old effective ceiling (e.g., 8).
 
 ### DaemonState changes
 
 - `max_coworkers: usize` → `max_in_progress_tasks: usize`.
 - Remove `is_at_coworker_limit()`, `is_at_dev_limit()`, `has_available_coworker_slot()`.
 - Add single `is_at_task_limit(&self) -> bool` that counts in-progress tasks against `max_in_progress_tasks`.
+- `is_at_task_limit()` reads from the snapshot's `in_progress_tasks` vec (already computed during `collect_world_snapshot()`), not from disk — preserving the no-I/O-in-decision-functions convention.
+- Orphaned tasks (in-progress but no running coworker) DO count toward the limit. This is intentional: orphan recovery will either reassign or clear them, and counting them prevents overcommitting while recovery is in progress.
 
 ### WorldSnapshot changes
 
@@ -52,6 +55,10 @@ pub fn prioritize_pending_tasks(
 2. **Blockers** — task blocks at least one other task (appears as key in `blocked_by_map`).
 3. **FIFO** — everything else, ordered by creation time.
 
+### `blocked_by_map` construction
+
+The `Task` struct stores `blocked_by: Vec<String>` (prerequisites). The `blocked_by_map` inverts this: for each task X that appears in some task Y's `blocked_by`, map X → [Y, ...]. This inversion is computed during snapshot collection and added to `WorldSnapshot` as `blocks_map: HashMap<String, Vec<String>>`. Only pending/in-progress tasks participate — completed tasks are excluded.
+
 Key properties:
 - Pure function, no I/O — fits the `rules.rs` convention.
 - Testable in isolation.
@@ -63,6 +70,7 @@ Key properties:
 
 - Replace input list with `dispatch_priority::prioritize_pending_tasks(...)` applied to `snap.pending_tasks_without_owners`.
 - Replace dev cap check with task limit check: in-progress task count + spawns queued this tick >= `max_in_progress_tasks`.
+- The local limit re-derivation block (lines ~1742–1756: `dev_cap`, `current_coworker_count`, `effective_count >= dev_cap`) must be replaced — it does not use `snap.is_at_dev_limit` and will be missed by a simple grep. Replace with: `snap.in_progress_tasks.len() + spawns_queued_this_tick >= state.max_in_progress_tasks`.
 - Remove all `is_at_dev_limit` / `is_at_coworker_limit` / `REVIEW_HEADROOM` references.
 - `spawns_queued_this_tick` counter stays (prevents overshooting within a single tick).
 
@@ -76,16 +84,26 @@ Key properties:
 - `is_at_dev_limit` guard → `is_at_task_limit`.
 - `OrphanRecoveryContext.at_dev_limit` → `at_task_limit`.
 
+### `src/daemon/chat.rs`
+
+- `chat.rs:260` calls `state.is_at_dev_limit()` to gate mention handling — switch to `is_at_task_limit`.
+
 ### `src/daemon/rpc_coworker.rs`
 
+- `rpc_coworker.rs:42` calls `state.is_at_dev_limit()` directly on `DaemonState` (not snapshot). `is_at_task_limit()` remains a `DaemonState` method that reads from the shared task storage (already loaded in memory via the snapshot pipeline), so this call site works without changes beyond the rename.
 - Dev limit error message references `max_in_progress_tasks`.
+
+### `src/webhook.rs`
+
+- `start_webhook_server` takes `max_coworkers: usize` parameter and stores it in `WebhookState`. Update to `max_in_progress_tasks`.
+- Call site in `daemon/mod.rs` startup passes the new config field.
 
 ## UI & Status Changes
 
 ### CLI status (`response.rs`)
 
 - `max_coworkers: Option<usize>` → `max_in_progress_tasks: Option<usize>`.
-- Display: "Tasks (3/8 in progress)" style.
+- Display numerator changes from active coworker count to in-progress task count. These can differ (idle coworkers, orphaned tasks). Display: "Tasks (3/8 in progress)" style.
 
 ### Chat TUI (`chat/ui/board.rs`, `chat/app.rs`)
 
@@ -114,7 +132,7 @@ Key properties:
 
 ### Test updates
 
-- `dispatch_dev_limit_tests.rs` — rewritten for task-based limits.
+- `dispatch_dev_limit_tests.rs` → renamed to `dispatch_task_limit_tests.rs`, rewritten for task-based limits.
 - All snapshot fixtures: `is_at_coworker_limit` / `is_at_dev_limit` → `is_at_task_limit`.
 - `mod_tests.rs` — remove dev cap math tests, add task limit tests.
 - `config_tests.rs` / CLI config tests — rename key references.
