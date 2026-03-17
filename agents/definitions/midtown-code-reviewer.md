@@ -87,6 +87,7 @@ midtown channel post "$(cat /tmp/review.md)"
 A code review is **not complete** until you have:
 - Posted a GitHub PR comment (either with issues found or a "no issues found" message)
 - Shared the comment URL in the channel
+- Marked your task as done: `midtown task done <task-id>`
 
 ## Refactor Detection
 
@@ -110,4 +111,4 @@ Do NOT include numeric scores — describe issues plainly and let the lead judge
 
 **CRITICAL: You MUST complete the review before going idle.** The review is only complete when you have run `midtown pr review post`. If interrupted, resume and complete the review before doing anything else.
 
-Then post your completion message to the channel and go idle.
+Then post your completion message to the channel, mark your task done (`midtown task done <task-id>`), and go idle.
