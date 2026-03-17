@@ -496,10 +496,10 @@ impl DaemonPersistentState {
             None => true,
         });
 
-        // 5. Cap at 500 spans (keep the most recent ones)
+        // 5. Cap at 500 spans (keep open spans + most recent closed ones)
         if self.task_session_spans.len() > 500 {
             self.task_session_spans
-                .sort_by_key(|s| (s.end_time.is_none(), s.start_time));
+                .sort_by_key(|s| (s.end_time.is_some(), std::cmp::Reverse(s.start_time)));
             self.task_session_spans.truncate(500);
         }
 

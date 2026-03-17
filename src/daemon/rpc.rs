@@ -657,10 +657,30 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
         "reminder.create" => {
             let trigger = require_str!(params, "trigger", request.id);
             let message = require_str!(params, "message", request.id);
-            if trigger != "all-work-merged" {
-                Response::error(request.id, RpcError::invalid_params())
-            } else {
-                super::rpc_reminder::handle_reminder_create(request.id, message, state).await
+            let repeat = params
+                .and_then(|p| p.get("repeat"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            match trigger {
+                "all-work-merged" => {
+                    super::rpc_reminder::handle_reminder_create(
+                        request.id, trigger, message, None, repeat, state,
+                    )
+                    .await
+                }
+                "cron-utc" => {
+                    let cron_expr = require_str!(params, "cron_expr", request.id);
+                    super::rpc_reminder::handle_reminder_create(
+                        request.id,
+                        trigger,
+                        message,
+                        Some(cron_expr),
+                        repeat,
+                        state,
+                    )
+                    .await
+                }
+                _ => Response::error(request.id, RpcError::invalid_params()),
             }
         }
 

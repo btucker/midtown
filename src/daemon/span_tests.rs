@@ -413,3 +413,64 @@ fn test_gc_caps_at_500() {
         ps.task_session_spans.len()
     );
 }
+
+#[test]
+fn test_gc_cap_keeps_newest_and_open_spans() {
+    let mut ps = DaemonPersistentState::default();
+    let now = Utc::now();
+
+    // 3 open spans (should always survive the cap)
+    for i in 0..3usize {
+        let sess_id = format!("open-sess-{i}");
+        ps.task_session_spans.push(TaskSessionSpan {
+            task_id: format!("open-task-{i}"),
+            agent_name: "river".to_string(),
+            agent_type: "dev".to_string(),
+            session_id: sess_id.clone(),
+            start_time: now - Duration::seconds(1000 + i as i64),
+            end_time: None,
+        });
+        ps.sessions
+            .insert(sess_id.clone(), make_running_session(&sess_id));
+    }
+
+    // 600 closed spans — oldest (i=0) should be dropped, newest (i=599) kept
+    for i in 0..600usize {
+        ps.task_session_spans.push(TaskSessionSpan {
+            task_id: format!("closed-task-{i}"),
+            agent_name: "river".to_string(),
+            agent_type: "dev".to_string(),
+            session_id: format!("closed-sess-{i}"),
+            start_time: now - Duration::seconds(600 - i as i64),
+            end_time: Some(now - Duration::seconds(600 - i as i64 - 1)),
+        });
+    }
+
+    ps.apply_gc(&[], &[]);
+
+    assert_eq!(ps.task_session_spans.len(), 500);
+
+    // All 3 open spans must survive
+    let open_count = ps
+        .task_session_spans
+        .iter()
+        .filter(|s| s.end_time.is_none())
+        .count();
+    assert_eq!(open_count, 3, "All open spans must survive the cap");
+
+    // The newest closed span (i=599, start_time closest to now) should survive
+    assert!(
+        ps.task_session_spans
+            .iter()
+            .any(|s| s.task_id == "closed-task-599"),
+        "Newest closed span should survive"
+    );
+
+    // The oldest closed span (i=0) should be dropped
+    assert!(
+        !ps.task_session_spans
+            .iter()
+            .any(|s| s.task_id == "closed-task-0"),
+        "Oldest closed span should be dropped"
+    );
+}

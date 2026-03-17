@@ -157,6 +157,15 @@ The daemon uses a **session-centric model** where Claude Code sessions (keyed by
 
 **Path 2** (`spawn_for_pending_tasks_excluding`, `src/daemon/dispatch.rs`): Handles pending tasks whose stopped session has no active task assignment. Before building the `LaunchConfig`, it validates the recorded `working_dir` with `.exists()`: if the worktree has been cleaned up since the session last ran, Path 2 falls back to a freshly computed worktree path (from `prepare_task_worktree`) and logs a warning. The chosen path is passed as `working_dir` in the `SpawnSession` effect. On successful spawn, the `SpawnSession` handler in `effects.rs` updates `record.working_dir` with the actual path used — ensuring the stale path never persists into the next tick and preventing repeated fallback log spam.
 
+**Dispatch task limit** (`max_in_progress_tasks`): Replaces the former process-based `max_coworkers` limit. The limit is task-count-based: dispatch stops when `in_progress_tasks.len() + spawns_queued_this_tick >= max_in_progress_tasks`. All task types (dev, reviewer, ops, specialized) share the same limit — there is no separate `REVIEW_HEADROOM` or dev-vs-reviewer distinction. The `spawns_queued_this_tick` counter prevents overshooting within a single tick. `snap.is_at_task_limit` is pre-computed for pure decision functions; `DaemonState::is_at_task_limit()` reads from disk for RPC handlers outside the snapshot pipeline.
+
+**Dispatch priority** (`src/daemon/dispatch_priority.rs`): `prioritize_pending_tasks()` orders pending tasks before the dispatch loop iterates them. Three tiers (stable sort — FIFO within each tier):
+1. **Children of in-progress parents** — `task_parent_map[task_id]` exists and the parent is currently in-progress.
+2. **Blockers** — the task blocks at least one other task (appears in the inverted `blocks_map`).
+3. **FIFO** — everything else, ordered by creation time.
+
+The `blocks_map` (`HashMap<String, Vec<String>>`) is the inverse of `Task.blocked_by`: for each task X that appears in some task Y's `blocked_by`, map X → [Y, ...]. It is computed during snapshot collection and added to `WorldSnapshot`. Only pending/in-progress tasks participate — completed tasks are excluded.
+
 **In-memory reverse maps** on `DaemonState`:
 - `name_to_session` / `session_to_name` — bidirectional name↔session lookup
 - `task_to_session` — task→session mapping for dispatch decisions
@@ -601,7 +610,7 @@ The `midtown chat` command opens a split-panel interface with:
 - Real-time token usage and cost tracking
 
 **Data polling**:
-- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL. Response includes `lead_working` (bool), `channel_leads_working` (map of channel name → bool), `coworkers`, `max_coworkers`, and `channel_leads`.
+- **Coworker state** (2s): `coworkers.status` RPC — live in-memory data, no GraphQL. Response includes `lead_working` (bool), `channel_leads_working` (map of channel name → bool), `coworkers`, `max_in_progress_tasks`, and `channel_leads`.
 - **Task list** (5s): Local filesystem reads (`~/.claude/tasks/`) — nearly instant, no network.
 - **PR data** (30s): `prs.status` RPC — GitHub GraphQL, daemon-cached for 60s.
 - **Repo status** (60s): Direct `gh` CLI calls for commit/CI/release info.
@@ -1049,6 +1058,7 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 - `reviewer.reviewer_restart_counts: HashMap<u64, u32>` — Maps PR number to the number of times a reviewer has been restarted for that PR. Derived from `task_restart_count` (keyed by task ID) via `task_pr_number` during snapshot collection.
 - `reviewer.reviewer_escalations_posted: HashSet<u64>` — Tracks PRs for which a max-restart escalation warning has already been posted (prevents repeated spam).
 - `recently_recovered_session_ids: HashSet<String>` — (top-level) Session IDs for which a recovery was recently attempted and succeeded. Pre-evaluated from `state.cooldowns` (category `"session_recovered"`, keyed by session ID) so decision functions stay pure. Used by both `dispatch_via_sessions` (Path 1) and `spawn_for_pending_tasks` (Path 2) to skip re-recovery when a session dies quickly after being recovered, preventing log spam on every 5s tick.
+- `is_at_task_limit: bool` — (top-level) Pre-computed from `in_progress_tasks.len() >= max_in_progress_tasks` during `collect_world_snapshot()`. Used by pure decision functions in `dispatch.rs` and `pr.rs` to gate new spawns without performing I/O. All task types (dev, reviewer, ops) share this single limit — there is no separate `REVIEW_HEADROOM` or dev-vs-reviewer distinction. Orphaned tasks (in-progress but no running coworker) count toward the limit while recovery is in progress. For RPC handlers outside the snapshot pipeline, `DaemonState::is_at_task_limit()` reads from disk directly.
 - `pr_protected_tasks: HashSet<String>` — (top-level) Task IDs that should not be spawned or recovered due to PR status or task completion. Pre-computed from `all_tasks` during `collect_world_snapshot()` via `is_task_pr_protected()`. Checks (in order): (1) task completed → always protected; (2) merged PR (via `pr_task_index.session_pr_for_task()` or `task.pr` in merged cache) → always protected regardless of session state (prevents recovery-loops); (3) owner not in `active_names` → not protected by open PRs (allows dispatch of pending tasks or tasks whose owner went away); (4) task has an open PR (via `pr_task_index.session_pr_for_task()`); (5) GitHub PR title pattern match (via `pr_task_index.github_pr_for_task()`). Dispatch functions use `snap.pr_protected_tasks.contains()` instead of per-call-site guard functions.
 
 **DaemonState fields:**
@@ -1060,11 +1070,18 @@ When a reviewer is restarted (stuck or dead) and had previously posted a placeho
 
 ## Reminders
 
-The Lead can set reminders that trigger on specific conditions:
+The Lead can set reminders that trigger on specific conditions or cron schedules:
 
 ```bash
 # Remind me when all tasks are done and PRs merged
 midtown channel remind all-work-merged "Time to deploy!"
+
+# Cron-based reminder (UTC) — fires on schedule
+midtown channel remind cron "0 9 * * MON" "Monday standup"
+
+# Repeat policies: --repeat 0 (once, default for all-work-merged),
+#   --repeat -1 (indefinite, default for cron), --repeat N (N additional fires)
+midtown channel remind cron "*/30 * * * *" "Check deploy" --repeat 3
 
 # List active reminders
 midtown channel remind list
@@ -1073,7 +1090,13 @@ midtown channel remind list
 midtown channel remind cancel <id>
 ```
 
-Reminders are stored in `~/.midtown/projects/<repo>/reminders.json` and evaluated by the daemon each tick.
+**Trigger types:**
+- `AllWorkMerged` — fires when no pending/in-progress tasks and no open coworker PRs.
+- `CronUtc` — fires on a cron schedule (evaluated in UTC). Uses window-based matching: the daemon checks if the next cron occurrence after `last_evaluated_at` falls within the current tick window, preventing double-fires and missed fires across ~30s tick intervals.
+
+**Repeat policy:** Reminders can fire once (`RepeatPolicy::Once`), a fixed number of additional times (`Times(N)` = N+1 total fires), or indefinitely (`Indefinite`). The `fire_count` field tracks how many times a reminder has fired.
+
+Reminders are stored in `daemon-state.json` and evaluated by the daemon each tick.
 
 
 ## Self-Update (`midtown update`)

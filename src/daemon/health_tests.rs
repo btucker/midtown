@@ -111,8 +111,9 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: chrono::Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
@@ -279,8 +280,9 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: chrono::Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
@@ -338,7 +340,9 @@ fn test_fired_reminder_nudges_lead() {
         trigger: ReminderTrigger::AllWorkMerged,
         message: "Cut new release".to_string(),
         created_at: chrono::Utc::now(),
-        fired: false,
+        repeat_policy: crate::reminders::RepeatPolicy::Once,
+        fire_count: 0,
+        last_evaluated_at: None,
     };
     let fired = vec![&reminder];
 
@@ -479,8 +483,9 @@ fn test_check_for_usage_limits_with_reset_time() {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: chrono::Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
@@ -602,8 +607,9 @@ fn test_check_for_usage_limits_already_scheduled() {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: chrono::Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
@@ -760,8 +766,9 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         worktree_registry: crate::worktree_registry::WorktreeRegistry::default(),
         merged_pr_branches: HashMap::new(),
         lead_session_refresh_interval_secs: 5400,
-        is_at_coworker_limit: false,
-        is_at_dev_limit: false,
+        is_at_task_limit: false,
+        max_in_progress_tasks: 8,
+        blocks_map: HashMap::new(),
         now_utc: chrono::Utc::now(),
         dir_key: "test-repo".to_string(),
         project_name: "test-repo".to_string(),
@@ -3385,4 +3392,217 @@ fn build_reviewer_respawn_task_id_is_empty_when_no_matching_task() {
         span_task_id.unwrap().is_empty(),
         "CreateTaskSessionSpan.task_id should be empty when no matching review task exists in all_tasks"
     );
+}
+
+#[test]
+fn test_build_reminder_effects_respects_repeat_policy() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+
+    // Reminder with Times(2) that has already fired twice — 1 fire left
+    let reminder = Reminder {
+        id: "abc123".to_string(),
+        trigger: ReminderTrigger::AllWorkMerged,
+        message: "Test repeat".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Times(2),
+        fire_count: 2,
+        last_evaluated_at: None,
+    };
+    assert!(
+        reminder.is_active(),
+        "Times(2) with fire_count=2 should still be active (3 total fires)"
+    );
+}
+
+#[test]
+fn test_build_reminder_effects_skips_exhausted() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+
+    let reminder = Reminder {
+        id: "abc123".to_string(),
+        trigger: ReminderTrigger::AllWorkMerged,
+        message: "Exhausted".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Once,
+        fire_count: 1,
+        last_evaluated_at: None,
+    };
+    assert!(!reminder.is_active());
+
+    let reminders = vec![reminder];
+    let effects = build_reminder_effects(&reminders, &[], "test-repo", "test-repo");
+    assert!(
+        effects.is_empty(),
+        "Exhausted reminder should not produce effects"
+    );
+}
+
+#[test]
+fn test_cron_reminder_fires_in_window() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+    use chrono::TimeZone;
+
+    let now = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+    let last_eval = now - chrono::Duration::seconds(30);
+
+    let reminder = Reminder {
+        id: "cron1".to_string(),
+        trigger: ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        },
+        message: "Monday standup".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Indefinite,
+        fire_count: 0,
+        last_evaluated_at: Some(last_eval),
+    };
+
+    let reminders = vec![reminder];
+    let effects = build_reminder_effects_at(&reminders, &[], "test-repo", "test-repo", now);
+    // Should have PostToChannel + NudgeChannelLead + MarkRemindersFired
+    assert!(
+        effects.len() >= 3,
+        "Cron reminder should fire: got {} effects",
+        effects.len()
+    );
+}
+
+#[test]
+fn test_cron_reminder_no_fire_outside_window() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+    use chrono::TimeZone;
+
+    // 09:01 — cron was at 09:00, last_eval was 09:00:15 (after cron time)
+    let now = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 1, 0).unwrap();
+    let last_eval = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+
+    let reminder = Reminder {
+        id: "cron1".to_string(),
+        trigger: ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        },
+        message: "Monday standup".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Indefinite,
+        fire_count: 0,
+        last_evaluated_at: Some(last_eval),
+    };
+
+    let reminders = vec![reminder];
+    let effects = build_reminder_effects_at(&reminders, &[], "test-repo", "test-repo", now);
+    assert!(effects.is_empty(), "Cron should not fire outside window");
+}
+
+#[test]
+fn test_cron_with_repeat_times_fires_correct_number() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+    use chrono::TimeZone;
+
+    let last_eval = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 16, 8, 59, 30)
+        .unwrap();
+    let now = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+
+    // Cron with Times(2) — total 3 fires. Already fired twice.
+    let reminder = Reminder {
+        id: "cron-repeat".to_string(),
+        trigger: ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        },
+        message: "Standup".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Times(2),
+        fire_count: 2,
+        last_evaluated_at: Some(last_eval),
+    };
+
+    let reminders = vec![reminder.clone()];
+    let effects = build_reminder_effects_at(&reminders, &[], "test-repo", "test-repo", now);
+    assert!(!effects.is_empty(), "Should fire (3rd of 3 total)");
+
+    // Now simulate fire_count = 3 (exhausted)
+    let mut exhausted = reminder;
+    exhausted.fire_count = 3;
+    let reminders = vec![exhausted];
+    let effects = build_reminder_effects_at(&reminders, &[], "test-repo", "test-repo", now);
+    assert!(
+        effects.is_empty(),
+        "Should NOT fire (exhausted after 3 total)"
+    );
+}
+
+#[test]
+fn test_cron_with_indefinite_always_fires() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+    use chrono::TimeZone;
+
+    let last_eval = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 16, 8, 59, 30)
+        .unwrap();
+    let now = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+
+    let reminder = Reminder {
+        id: "cron-indef".to_string(),
+        trigger: ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        },
+        message: "Standup".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Indefinite,
+        fire_count: 999,
+        last_evaluated_at: Some(last_eval),
+    };
+
+    let reminders = vec![reminder];
+    let effects = build_reminder_effects_at(&reminders, &[], "test-repo", "test-repo", now);
+    assert!(
+        !effects.is_empty(),
+        "Indefinite should always fire when cron matches"
+    );
+}
+
+#[test]
+fn test_mixed_triggers_in_build_reminder_effects() {
+    use crate::reminders::{Reminder, ReminderTrigger, RepeatPolicy};
+    use chrono::TimeZone;
+
+    let last_eval = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 16, 8, 59, 30)
+        .unwrap();
+    let now = chrono::Utc.with_ymd_and_hms(2026, 3, 16, 9, 0, 15).unwrap();
+
+    let cron_reminder = Reminder {
+        id: "cron1".to_string(),
+        trigger: ReminderTrigger::CronUtc {
+            cron_expr: "0 9 * * MON".to_string(),
+        },
+        message: "Cron fires".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Indefinite,
+        fire_count: 0,
+        last_evaluated_at: Some(last_eval),
+    };
+
+    let condition_reminder = Reminder {
+        id: "awm1".to_string(),
+        trigger: ReminderTrigger::AllWorkMerged,
+        message: "Condition does not fire".to_string(),
+        created_at: chrono::Utc::now(),
+        repeat_policy: RepeatPolicy::Once,
+        fire_count: 0,
+        last_evaluated_at: None,
+    };
+
+    // AllWorkMerged won't fire because there are open PRs
+    let reminders = vec![cron_reminder, condition_reminder];
+    let effects = build_reminder_effects_at(
+        &reminders,
+        &["park".to_string()],
+        "test-repo",
+        "test-repo",
+        now,
+    );
+
+    // Only cron should fire (3 effects: PostToChannel, NudgeLead, MarkFired)
+    assert_eq!(effects.len(), 3, "Only cron reminder should fire");
 }

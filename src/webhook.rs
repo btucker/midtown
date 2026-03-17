@@ -296,7 +296,7 @@ pub async fn start_webhook_server(
     coworker_manager: Option<CoworkerManager>,
     all_repo_paths: Vec<std::path::PathBuf>,
     default_branch: String,
-    max_coworkers: usize,
+    max_in_progress_tasks: usize,
 ) -> crate::Result<(
     mpsc::Receiver<WebhookEvent>,
     broadcast::Sender<WebUpdate>,
@@ -341,7 +341,7 @@ pub async fn start_webhook_server(
         push_manager: push_manager.clone(),
         all_repo_paths,
         default_branch,
-        max_coworkers,
+        max_in_progress_tasks,
         repo_name_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
     });
 

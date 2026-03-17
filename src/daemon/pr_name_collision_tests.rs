@@ -126,6 +126,7 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
         &[pr],
         true, // is_polling_fallback
         &std::collections::HashMap::new(),
+        false, // not at task limit
     )
     .await;
 

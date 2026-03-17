@@ -46,8 +46,8 @@ struct DispatchSnapshotData {
     coworkers_with_open_prs: HashSet<String>,
     /// Coworkers assigned as reviewers.
     active_reviewers: HashSet<String>,
-    /// Whether we're at the dev coworker limit.
-    is_at_dev_limit: bool,
+    /// Whether we're at the task limit.
+    is_at_task_limit: bool,
     /// Current timestamp from snapshot.
     now_utc: DateTime<Utc>,
     /// Coworker start times for sorting (e.g., duplicate worker detection).
@@ -120,7 +120,7 @@ fn load_snapshot(json_str: &str) -> (Vec<CoworkerSnapshot>, DispatchSnapshotData
         })
         .unwrap_or_default();
 
-    let is_at_dev_limit = v["is_at_dev_limit"].as_bool().unwrap_or(false);
+    let is_at_task_limit = v["is_at_task_limit"].as_bool().unwrap_or(false);
 
     let now_utc =
         DateTime::parse_from_rfc3339(v["now_utc"].as_str().unwrap_or("1970-01-01T00:00:00Z"))
@@ -149,7 +149,7 @@ fn load_snapshot(json_str: &str) -> (Vec<CoworkerSnapshot>, DispatchSnapshotData
             busy_coworkers,
             coworkers_with_open_prs,
             active_reviewers,
-            is_at_dev_limit,
+            is_at_task_limit,
             now_utc,
             coworker_start_times,
         },
@@ -463,21 +463,21 @@ fn coworker_start_times_tracked() {
     }
 }
 
-/// Test that dev limit flag prevents spawning new coworkers.
+/// Test that task limit flag prevents spawning new coworkers.
 ///
-/// When is_at_dev_limit is true, the daemon should not spawn new
-/// development coworkers (reserving slots for reviewers).
+/// When is_at_task_limit is true, the daemon should not spawn new
+/// coworkers for pending tasks.
 #[test]
 fn dev_limit_blocks_new_spawns() {
     let fixture = include_str!("fixtures/snapshot/snapshot-20260203-152121.json");
     let (_, data) = load_snapshot(fixture);
 
-    // The is_at_dev_limit flag should be captured
+    // The is_at_task_limit flag should be captured
     // (its actual value depends on config and current state)
-    println!("is_at_dev_limit: {}", data.is_at_dev_limit);
+    println!("is_at_task_limit: {}", data.is_at_task_limit);
 
     // If at limit, verify we have the expected number of active coworkers
-    if data.is_at_dev_limit {
+    if data.is_at_task_limit {
         let dev_coworkers: Vec<_> = data
             .active_names
             .iter()
@@ -508,7 +508,7 @@ fn pending_unowned_task_would_be_assigned() {
 
     // If we have both pending unowned tasks AND idle coworkers AND not at dev limit,
     // the daemon should assign the task
-    if !pending_unowned.is_empty() && !idle.is_empty() && !data.is_at_dev_limit {
+    if !pending_unowned.is_empty() && !idle.is_empty() && !data.is_at_task_limit {
         println!(
             "Assignment would occur: {} pending unowned tasks, {} idle coworkers",
             pending_unowned.len(),
@@ -521,7 +521,7 @@ fn pending_unowned_task_would_be_assigned() {
             "No assignment: pending_unowned={}, idle={}, at_limit={}",
             pending_unowned.len(),
             idle.len(),
-            data.is_at_dev_limit
+            data.is_at_task_limit
         );
     }
 
@@ -580,7 +580,7 @@ fn task_triggers_spawn_when_no_idle() {
     let idle = get_idle_coworkers(&data);
 
     // Scenario: pending task but no idle coworkers
-    if !pending_unowned.is_empty() && idle.is_empty() && !data.is_at_dev_limit {
+    if !pending_unowned.is_empty() && idle.is_empty() && !data.is_at_task_limit {
         println!(
             "Spawn would trigger: {} pending tasks, 0 idle coworkers, not at limit",
             pending_unowned.len()
@@ -594,7 +594,7 @@ fn task_triggers_spawn_when_no_idle() {
         data.active_names.len(),
         data.busy_coworkers.len(),
         idle.len(),
-        data.is_at_dev_limit
+        data.is_at_task_limit
     );
 }
 

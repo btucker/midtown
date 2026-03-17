@@ -360,6 +360,12 @@ pub enum Effect {
         fired_ids: Vec<String>,
         dir_key: String,
     },
+    /// Advance `last_evaluated_at` for all cron reminders to prevent window accumulation.
+    /// Emitted every tick alongside any reminder effects.
+    AdvanceCronEvalTimestamps {
+        dir_key: String,
+        now: chrono::DateTime<chrono::Utc>,
+    },
     /// Record a PR issue nudge in the tracker (prevents repeated nudges).
     RecordPrNudge {
         pr_number: u64,
@@ -1794,12 +1800,31 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut ps = state.persistent_state.lock().await;
                 for reminder in &mut ps.reminders.reminders {
                     if fired_ids.contains(&reminder.id) {
-                        reminder.fired = true;
+                        reminder.fire_count += 1;
                     }
                 }
                 if let Err(e) = ps.save_for_repo(&dir_key) {
                     warn!(
                         "Failed to save daemon-state.json after firing reminders: {}",
+                        e
+                    );
+                }
+            }
+            Effect::AdvanceCronEvalTimestamps { dir_key, now } => {
+                let mut ps = state.persistent_state.lock().await;
+                let mut any_updated = false;
+                for reminder in &mut ps.reminders.reminders {
+                    if matches!(
+                        reminder.trigger,
+                        crate::reminders::ReminderTrigger::CronUtc { .. }
+                    ) {
+                        reminder.last_evaluated_at = Some(now);
+                        any_updated = true;
+                    }
+                }
+                if any_updated && let Err(e) = ps.save_for_repo(&dir_key) {
+                    warn!(
+                        "Failed to save daemon-state.json after updating cron eval timestamps: {}",
                         e
                     );
                 }

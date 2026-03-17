@@ -90,8 +90,8 @@ pub struct ToolActivityEntry {
 struct CoworkerStatusData {
     /// Active coworkers with their current status
     coworkers: Vec<CoworkerInfo>,
-    /// Maximum number of coworkers from daemon config
-    max_coworkers: usize,
+    /// Maximum number of in-progress tasks from daemon config
+    max_in_progress_tasks: usize,
     /// Whether the headless lead session is actively working
     lead_working: bool,
     /// Pending questions from coworkers waiting for user input
@@ -341,8 +341,8 @@ pub struct App {
     /// Set immediately on message submit; cleared when real tool activity arrives
     /// or after 30 seconds. Used to show spinner before channel lead responds.
     pub channel_lead_thinking: HashMap<String, std::time::Instant>,
-    /// Maximum number of coworkers allowed
-    pub max_coworkers: usize,
+    /// Maximum number of in-progress tasks allowed
+    pub max_in_progress_tasks: usize,
     /// Pending questions from coworkers waiting for user input
     pub pending_questions: Vec<PendingQuestion>,
     /// Repository name with owner (e.g., "btucker/midtown")
@@ -702,7 +702,7 @@ impl App {
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
-            max_coworkers: 10, // Default, will be updated from daemon
+            max_in_progress_tasks: 10, // Default, will be updated from daemon
             pending_questions: Vec::new(),
             repo_name,
             tasks_last_refresh: Instant::now() - TASK_REFRESH_INTERVAL, // Force initial refresh
@@ -920,7 +920,7 @@ impl App {
                 Ok(data) => {
                     self.update_coworker_status(data.coworkers);
                     self.lead_working = data.lead_working;
-                    self.max_coworkers = data.max_coworkers;
+                    self.max_in_progress_tasks = data.max_in_progress_tasks;
                     self.pending_questions = data.pending_questions;
                     self.channel_lead_names = data.channel_lead_names;
                     // Merge tool activity, preserving completed_at timestamps
@@ -1091,7 +1091,7 @@ impl App {
         thread::spawn(move || {
             let data = fetch_coworker_status_via_rpc().unwrap_or_else(|| CoworkerStatusData {
                 coworkers: Vec::new(),
-                max_coworkers: 10,
+                max_in_progress_tasks: 10,
                 lead_working: false,
                 pending_questions: Vec::new(),
                 channel_lead_names: Vec::new(),
@@ -3670,8 +3670,8 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
 
     let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
 
-    let max_coworkers = data
-        .get("max_coworkers")
+    let max_in_progress_tasks = data
+        .get("max_in_progress_tasks")
         .and_then(|v| v.as_u64())
         .map(|n| n as usize)
         .unwrap_or(10);
@@ -3784,7 +3784,7 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
 
     Some(CoworkerStatusData {
         coworkers,
-        max_coworkers,
+        max_in_progress_tasks,
         lead_working,
         pending_questions,
         channel_lead_names,
@@ -4142,7 +4142,7 @@ pub(super) mod tests {
             lead_working: false,
             tool_activity: HashMap::new(),
             channel_lead_thinking: HashMap::new(),
-            max_coworkers: 10, // Test default
+            max_in_progress_tasks: 10, // Test default
             pending_questions: Vec::new(),
             repo_name: "test".to_string(),
             tasks_last_refresh: Instant::now(),

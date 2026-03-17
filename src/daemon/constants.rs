@@ -6,8 +6,8 @@ use std::time::Duration;
 // Public API constants
 // ---------------------------------------------------------------------------
 
-/// Default maximum number of concurrent coworkers.
-pub const DEFAULT_MAX_COWORKERS: usize = 8;
+/// Default maximum number of in-progress tasks.
+pub const DEFAULT_MAX_IN_PROGRESS_TASKS: usize = 8;
 
 /// Default interval for restarting the webhook forwarder (5 minutes)
 pub const DEFAULT_WEBHOOK_RESTART_INTERVAL_SECS: u64 = 300;
@@ -156,9 +156,6 @@ pub(super) const API_ERROR_NUDGE_COOLDOWN: Duration = Duration::from_secs(90);
 /// with retries. This cooldown prevents repeatedly shutting down the same coworker
 /// and spamming notifications. Set to 5 minutes to allow time for the user to re-auth.
 pub(super) const AUTH_ERROR_SHUTDOWN_COOLDOWN: Duration = Duration::from_secs(300);
-
-/// Number of coworker slots reserved for reviewers.
-pub(super) const REVIEW_HEADROOM: usize = 2;
 
 /// TTL for the negative review cache in `is_pr_reviewed` (2 minutes).
 ///

@@ -704,24 +704,21 @@ async fn decide_and_build_pr_issue_effects(
     );
 
     // Extract all decision context from persistent state in one lock
-    let (mut pr_ctx, channel_lead_names) = {
+    let mut pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        (
-            PrContext::from_persistent_state(&ps, pr_number),
-            ps.channel_lead_names(),
-        )
+        PrContext::from_persistent_state(&ps, pr_number)
     };
 
     // Defense-in-depth: check reviewer_pr_assignments from snapshot (span-based).
     pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
 
     // Decide action using handoff-aware decision function (matches webhook path)
-    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let at_task_limit = snap.is_at_task_limit;
     let action = decide_pr_action(
         owner,
         active_coworkers,
         idle_coworkers,
-        at_dev_limit,
+        at_task_limit,
         &message,
         PrActionContext::PrIssue,
     );
@@ -741,7 +738,7 @@ async fn decide_and_build_pr_issue_effects(
         ctx: &pr_ctx,
         owner_is_active: active_coworkers.iter().any(|s| s == owner),
         owner_is_idle: idle_coworkers.iter().any(|s| s == owner),
-        at_dev_limit,
+        at_task_limit,
         source: "polling",
     });
 
@@ -1187,6 +1184,7 @@ pub(super) async fn poll_prs_for_issues(
             &reviewed_prs,
             &snap.worktree_branch_owners,
             review_mode,
+            snap.is_at_task_limit,
         )
         .await,
     );
@@ -1578,6 +1576,7 @@ async fn collect_stuck_condition_effects(
     reviewed_prs: &HashSet<u64>,
     branch_owners: &HashMap<String, String>,
     review_mode: crate::config::ReviewMode,
+    at_task_limit: bool,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let mut tracker = state.stuck_tracker.lock().await;
@@ -1606,7 +1605,11 @@ async fn collect_stuck_condition_effects(
             })
             .collect();
         let channel_lead_names = ps.channel_lead_names();
-        let has_available_slots = state.has_available_coworker_slot(&channel_lead_names);
+        let has_available_slots = !at_task_limit
+            && state
+                .coworkers
+                .next_available_name_excluding(&channel_lead_names)
+                .is_some();
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
@@ -2337,12 +2340,9 @@ async fn collect_comment_notification_effects(
         );
 
         // Extract all decision context from persistent state in one lock
-        let (pr_ctx, channel_lead_names) = {
+        let pr_ctx = {
             let ps = state.persistent_state.lock().await;
-            (
-                PrContext::from_persistent_state(&ps, pr_number),
-                ps.channel_lead_names(),
-            )
+            PrContext::from_persistent_state(&ps, pr_number)
         };
 
         // If the linked task is completed, create a follow-up task rather than
@@ -2380,7 +2380,7 @@ async fn collect_comment_notification_effects(
             &owner,
             active_coworkers,
             idle_coworkers,
-            state.is_at_dev_limit(&channel_lead_names),
+            snap.is_at_task_limit,
             &nudge_msg,
             crate::rules::PrActionContext::PrComment {
                 actor: "reviewer".to_string(), // Generic actor since we don't know the specific commenter from polling
@@ -2433,6 +2433,7 @@ async fn collect_reviewer_effects(
         prs,
         true, // is_polling_fallback
         pre_fetched_review_content,
+        snap.is_at_task_limit,
     )
     .await
 }
@@ -2451,7 +2452,7 @@ async fn collect_review_complete_effects(
     pr_task_associations: &HashMap<u64, String>,
     session_task_map: &HashMap<String, String>,
     sessions: &HashMap<String, super::state::SessionRecord>,
-    is_at_dev_limit: bool,
+    is_at_task_limit: bool,
     active_coworkers: &[String],
     idle_coworkers: &[String],
     branch_owners: &std::collections::HashMap<String, String>,
@@ -2588,7 +2589,7 @@ async fn collect_review_complete_effects(
             &owner,
             active_coworkers,
             idle_coworkers,
-            is_at_dev_limit,
+            is_at_task_limit,
             &nudge_msg,
             crate::rules::PrActionContext::ReviewComplete,
         );
@@ -2631,6 +2632,7 @@ async fn collect_review_complete_effects(
     Some(effects)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn collect_reviewer_effects_with_source(
     branch_owners: &std::collections::HashMap<String, String>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
@@ -2639,6 +2641,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     prs: &[serde_json::Value],
     is_polling_fallback: bool,
     pre_fetched_review_content: &HashMap<u64, String>,
+    at_task_limit: bool,
 ) -> Vec<Effect> {
     let mut effects: Vec<Effect> = Vec::new();
     let review_mode = crate::config::get_review_mode_for_repo(state.paths.dir_key());
@@ -2668,7 +2671,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         pr_task_associations,
         session_task_map,
         sessions,
-        is_at_dev_limit,
+        is_at_task_limit,
         task_channel,
         channel_workflow_channels,
         pr_last_webhook_event,
@@ -2688,8 +2691,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             .collect();
         let sessions = ps.sessions.clone();
         let pr_ctx = PrContext::routing_only(&ps);
-        let channel_lead_names = ps.channel_lead_names();
-        let is_at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+        let is_at_task_limit = at_task_limit;
         let task_channel = ps.task_channel.clone();
         let channel_workflow_channels: std::collections::HashSet<String> =
             ps.channel_workflows.keys().cloned().collect();
@@ -2701,7 +2703,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             pr_task_associations,
             session_task_map,
             sessions,
-            is_at_dev_limit,
+            is_at_task_limit,
             task_channel,
             channel_workflow_channels,
             pr_last_webhook_event,
@@ -2791,7 +2793,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             &pr_task_associations,
             &session_task_map,
             &sessions,
-            is_at_dev_limit,
+            is_at_task_limit,
             &active_coworkers,
             &idle_coworkers,
             branch_owners,
@@ -3571,21 +3573,18 @@ pub(super) async fn handle_pr_comment_nudge(
         .collect();
 
     // Extract all decision context from persistent state in one lock
-    let (pr_ctx, channel_lead_names) = {
+    let pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        (
-            PrContext::from_persistent_state(&ps, pr_number),
-            ps.channel_lead_names(),
-        )
+        PrContext::from_persistent_state(&ps, pr_number)
     };
 
     // Decide action using pure decision function with handoff support
-    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let at_task_limit = state.is_at_task_limit();
     let action = crate::rules::decide_pr_action(
         &owner,
         &active_coworkers,
         &idle_coworkers,
-        at_dev_limit,
+        at_task_limit,
         &nudge_msg,
         crate::rules::PrActionContext::PrComment {
             actor: activity.actor.clone(),
@@ -3617,7 +3616,7 @@ pub(super) async fn handle_pr_comment_nudge(
         ctx: &pr_ctx,
         owner_is_active: active_coworkers.contains(&owner),
         owner_is_idle: idle_coworkers.contains(&owner),
-        at_dev_limit,
+        at_task_limit,
         source: "webhook",
     });
 
@@ -3709,7 +3708,7 @@ pub(super) async fn handle_webhook_review_state_change(
         .collect();
 
     // Extract all decision context from persistent state in one lock
-    let (pr_ctx, channel_lead_names) = {
+    let pr_ctx = {
         let ps = state.persistent_state.lock().await;
         let mut ctx = PrContext::from_persistent_state(&ps, pr_number);
 
@@ -3718,15 +3717,15 @@ pub(super) async fn handle_webhook_review_state_change(
             ctx.has_active_reviewer = ps.active_reviewer_for_pr(pr_number).is_some();
         }
 
-        (ctx, ps.channel_lead_names())
+        ctx
     };
 
-    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let at_task_limit = state.is_at_task_limit();
     let action = crate::rules::decide_pr_action(
         &owner,
         &active_coworkers,
         &idle_coworkers,
-        at_dev_limit,
+        at_task_limit,
         &nudge_msg,
         crate::rules::PrActionContext::PrIssue,
     );
@@ -3748,7 +3747,7 @@ pub(super) async fn handle_webhook_review_state_change(
         ctx: &pr_ctx,
         owner_is_active: active_coworkers.contains(&owner),
         owner_is_idle: idle_coworkers.contains(&owner),
-        at_dev_limit,
+        at_task_limit,
         source: "webhook",
     });
 
@@ -3811,20 +3810,17 @@ pub(super) async fn handle_webhook_ci_failure(
         .collect();
 
     // Extract all decision context from persistent state in one lock
-    let (pr_ctx, channel_lead_names) = {
+    let pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        (
-            PrContext::from_persistent_state(&ps, pr_number),
-            ps.channel_lead_names(),
-        )
+        PrContext::from_persistent_state(&ps, pr_number)
     };
 
-    let at_dev_limit = state.is_at_dev_limit(&channel_lead_names);
+    let at_task_limit = state.is_at_task_limit();
     let action = crate::rules::decide_pr_action(
         &owner,
         &active_coworkers,
         &idle_coworkers,
-        at_dev_limit,
+        at_task_limit,
         &nudge_msg,
         crate::rules::PrActionContext::PrIssue,
     );
@@ -3846,7 +3842,7 @@ pub(super) async fn handle_webhook_ci_failure(
         ctx: &pr_ctx,
         owner_is_active: active_coworkers.contains(&owner),
         owner_is_idle: idle_coworkers.contains(&owner),
-        at_dev_limit,
+        at_task_limit,
         source: "webhook",
     });
 
@@ -4414,6 +4410,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::SpawnCoworkerWithCallbacks { .. } => "SpawnCoworkerWithCallbacks",
         Effect::AssignAndSpawn { .. } => "AssignAndSpawn",
         Effect::MarkRemindersFired { .. } => "MarkRemindersFired",
+        Effect::AdvanceCronEvalTimestamps { .. } => "AdvanceCronEvalTimestamps",
         Effect::RecordPrNudge { .. } => "RecordPrNudge",
         Effect::RecordPermanentPrNudge { .. } => "RecordPermanentPrNudge",
         Effect::RecordTaskAssignment { .. } => "RecordTaskAssignment",
@@ -4481,7 +4478,7 @@ struct PrDecisionEntry<'a> {
     ctx: &'a PrContext,
     owner_is_active: bool,
     owner_is_idle: bool,
-    at_dev_limit: bool,
+    at_task_limit: bool,
     /// "polling" or "webhook" — distinguishes the trigger source.
     source: &'a str,
 }
@@ -4508,7 +4505,7 @@ fn log_pr_decision(entry: &PrDecisionEntry<'_>) {
         "issue": entry.issue_type.to_string(),
         "owner_active": entry.owner_is_active,
         "owner_idle": entry.owner_is_idle,
-        "at_dev_limit": entry.at_dev_limit,
+        "at_task_limit": entry.at_task_limit,
         "has_active_reviewer": entry.ctx.has_active_reviewer,
         "task_id": task_id,
         "channel": channel,

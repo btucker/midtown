@@ -7,7 +7,7 @@
 //!    [default]
 //!    bin_command = "midtown"
 //!    chat_layout = "auto"
-//!    max_coworkers = 8
+//!    max_in_progress_tasks = 8
 //!
 //!    [plugins]
 //!    required = [
@@ -36,7 +36,7 @@
 //!    primary_repo = "/path/to/repo"
 //!
 //!    [default]
-//!    max_coworkers = 4
+//!    max_in_progress_tasks = 4
 //!    chat_layout = "split"
 //!
 //!    [daemon]
@@ -192,7 +192,7 @@ impl ProjectMetadata {
 /// repos = ["/path/to/repo"]
 ///
 /// [default]
-/// max_coworkers = 4
+/// max_in_progress_tasks = 4
 ///
 /// [daemon]
 /// webhook_port = 47023
@@ -263,7 +263,7 @@ impl FullProjectConfig {
                 auth_profiles: None,
             },
             default: ProjectConfig {
-                max_coworkers: Some(8),
+                max_in_progress_tasks: Some(8),
                 ..ProjectConfig::default()
             },
             daemon: DaemonSection::default(),
@@ -335,9 +335,9 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub chat_min_width: Option<u16>,
 
-    /// Maximum number of concurrent coworkers (default: 8)
-    #[serde(default)]
-    pub max_coworkers: Option<usize>,
+    /// Maximum number of in-progress tasks (default: 8)
+    #[serde(default, alias = "max_coworkers")]
+    pub max_in_progress_tasks: Option<usize>,
 
     /// User display name shown in chat and @mentions (default: "user")
     #[serde(default)]
@@ -362,7 +362,7 @@ impl ProjectConfig {
                 .or_else(|| self.bin_command.clone()),
             chat_layout: other.chat_layout.or(self.chat_layout),
             chat_min_width: other.chat_min_width.or(self.chat_min_width),
-            max_coworkers: other.max_coworkers.or(self.max_coworkers),
+            max_in_progress_tasks: other.max_in_progress_tasks.or(self.max_in_progress_tasks),
             user_display_name: other
                 .user_display_name
                 .clone()
@@ -388,9 +388,9 @@ impl ProjectConfig {
         self.chat_min_width.unwrap_or(160)
     }
 
-    /// Get max_coworkers, or None if not configured (falls back to daemon default).
-    pub fn max_coworkers(&self) -> Option<usize> {
-        self.max_coworkers
+    /// Get max_in_progress_tasks, or None if not configured (falls back to daemon default).
+    pub fn max_in_progress_tasks(&self) -> Option<usize> {
+        self.max_in_progress_tasks
     }
 
     /// Get user display name, or None if not configured (falls back to "user").
@@ -870,7 +870,15 @@ impl GlobalConfig {
         }
 
         match std::fs::read_to_string(&path) {
-            Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
+            Ok(contents) => {
+                if contents.contains("max_coworkers") && !contents.contains("max_in_progress_tasks")
+                {
+                    tracing::warn!(
+                        "Config uses deprecated 'max_coworkers' key. Please rename to 'max_in_progress_tasks'."
+                    );
+                }
+                toml::from_str(&contents).unwrap_or_default()
+            }
             Err(_) => Self::default(),
         }
     }
@@ -940,8 +948,8 @@ impl GlobalConfig {
 # Minimum terminal width (columns) before auto layout switches to bottom
 # chat_min_width = 160
 
-# Maximum concurrent coworkers
-# max_coworkers = 8
+# Maximum concurrent in-progress tasks
+# max_in_progress_tasks = 8
 
 # Your display name shown in chat and @mentions (default: "user")
 # user_display_name = "Ben"
@@ -1024,7 +1032,7 @@ impl GlobalConfig {
 ///
 /// Returns None if the file doesn't exist.
 /// Supports both the new structured format (with `[project]`, `[default]`, `[daemon]` sections)
-/// and the legacy flat format (top-level keys like `bin_command`, `max_coworkers`).
+/// and the legacy flat format (top-level keys like `bin_command`, `max_in_progress_tasks`).
 fn load_project_config(dir_key: &str) -> Option<ProjectConfig> {
     let path = project_config_path(dir_key);
 
@@ -1034,13 +1042,19 @@ fn load_project_config(dir_key: &str) -> Option<ProjectConfig> {
 
     let contents = std::fs::read_to_string(&path).ok()?;
 
+    if contents.contains("max_coworkers") && !contents.contains("max_in_progress_tasks") {
+        tracing::warn!(
+            "Config uses deprecated 'max_coworkers' key. Please rename to 'max_in_progress_tasks'."
+        );
+    }
+
     // Try the new structured format first (with [project], [default], [daemon] sections)
     if let Ok(full) = toml::from_str::<FullProjectConfig>(&contents) {
         // If the [default] section has any values, use the structured format
         if full.default.bin_command.is_some()
             || full.default.chat_layout.is_some()
             || full.default.chat_min_width.is_some()
-            || full.default.max_coworkers.is_some()
+            || full.default.max_in_progress_tasks.is_some()
             || full.project.name.is_some()
             || full.project.auth_profile.is_some()
             || full
@@ -1484,7 +1498,7 @@ bin_command = "custom-command"
             bin_command: Some("midtown".to_string()),
             chat_layout: Some(ChatLayout::Auto),
             chat_min_width: Some(160),
-            max_coworkers: Some(8),
+            max_in_progress_tasks: Some(8),
             user_display_name: None,
             theme: None,
         };
@@ -1493,7 +1507,7 @@ bin_command = "custom-command"
             bin_command: Some("custom".to_string()),
             chat_layout: None, // Not overridden
             chat_min_width: Some(200),
-            max_coworkers: None, // Not overridden
+            max_in_progress_tasks: None, // Not overridden
             user_display_name: None,
             theme: None,
         };
@@ -1503,16 +1517,16 @@ bin_command = "custom-command"
         assert_eq!(merged.bin_command(), "custom"); // Overridden
         assert_eq!(merged.chat_layout(), ChatLayout::Auto); // From global
         assert_eq!(merged.chat_min_width(), 200); // Overridden
-        assert_eq!(merged.max_coworkers(), Some(8)); // From global
+        assert_eq!(merged.max_in_progress_tasks(), Some(8)); // From global
     }
 
     #[test]
-    fn test_merge_configs_max_coworkers_override() {
+    fn test_merge_configs_max_in_progress_tasks_override() {
         let global = ProjectConfig {
             bin_command: Some("midtown".to_string()),
             chat_layout: None,
             chat_min_width: None,
-            max_coworkers: Some(8),
+            max_in_progress_tasks: Some(8),
             user_display_name: None,
             theme: None,
         };
@@ -1521,13 +1535,13 @@ bin_command = "custom-command"
             bin_command: None,
             chat_layout: None,
             chat_min_width: None,
-            max_coworkers: Some(4),
+            max_in_progress_tasks: Some(4),
             user_display_name: None,
             theme: None,
         };
 
         let merged = global.merge(&project);
-        assert_eq!(merged.max_coworkers(), Some(4)); // Project overrides global
+        assert_eq!(merged.max_in_progress_tasks(), Some(4)); // Project overrides global
     }
 
     #[test]
@@ -1626,30 +1640,30 @@ bin_command = "midtown"
     }
 
     #[test]
-    fn test_max_coworkers_parse() {
+    fn test_max_in_progress_tasks_parse() {
         let toml = r#"
 [default]
-max_coworkers = 8
+max_in_progress_tasks = 8
 "#;
         let config: GlobalConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.default.max_coworkers(), Some(8));
+        assert_eq!(config.default.max_in_progress_tasks(), Some(8));
     }
 
     #[test]
-    fn test_max_coworkers_project_config() {
+    fn test_max_in_progress_tasks_project_config() {
         let toml = r#"
 bin_command = "midtown"
-max_coworkers = 4
+max_in_progress_tasks = 4
 "#;
         let config: ProjectConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.max_coworkers(), Some(4));
+        assert_eq!(config.max_in_progress_tasks(), Some(4));
         assert_eq!(config.bin_command(), "midtown");
     }
 
     #[test]
-    fn test_max_coworkers_default_none() {
+    fn test_max_in_progress_tasks_default_none() {
         let config = ProjectConfig::default();
-        assert_eq!(config.max_coworkers(), None);
+        assert_eq!(config.max_in_progress_tasks(), None);
     }
 
     #[test]
@@ -1850,7 +1864,7 @@ repos = ["/path/to/repo"]
 primary_repo = "/path/to/repo"
 
 [default]
-max_coworkers = 4
+max_in_progress_tasks = 4
 chat_layout = "split"
 
 [daemon]
@@ -1860,7 +1874,7 @@ webhook_port = 47023
 
         assert_eq!(config.project.name(), Some("midtown"));
         assert_eq!(config.project.primary_repo(), Some("/path/to/repo"));
-        assert_eq!(config.default.max_coworkers(), Some(4));
+        assert_eq!(config.default.max_in_progress_tasks(), Some(4));
         assert_eq!(config.default.chat_layout(), ChatLayout::Split);
         assert_eq!(config.daemon.webhook_port, Some(47023));
     }
@@ -1872,7 +1886,7 @@ webhook_port = 47023
         assert_eq!(config.project.name(), Some("myapp"));
         assert_eq!(config.project.primary_repo(), Some("/home/user/myapp"));
         assert_eq!(config.project.repos(), vec!["/home/user/myapp"]);
-        assert_eq!(config.default.max_coworkers(), Some(8));
+        assert_eq!(config.default.max_in_progress_tasks(), Some(8));
         assert!(config.daemon.webhook_port.is_none());
     }
 
@@ -1884,7 +1898,7 @@ webhook_port = 47023
 
         assert!(config.project.name().is_none());
         assert!(config.project.repos().is_empty());
-        assert!(config.default.max_coworkers().is_none());
+        assert!(config.default.max_in_progress_tasks().is_none());
         assert!(config.daemon.webhook_port.is_none());
     }
 
@@ -2135,7 +2149,7 @@ name = "solo"
         let config: GlobalConfig = toml::from_str(&template).unwrap();
         // All values should be defaults since everything is commented out
         assert!(config.default.bin_command.is_none());
-        assert!(config.default.max_coworkers.is_none());
+        assert!(config.default.max_in_progress_tasks.is_none());
         assert!(config.plugins.required.is_empty());
         assert!(config.daemon.webhook_port.is_none());
         assert!(config.webserver.tls_cert.is_none());
@@ -2154,7 +2168,7 @@ name = "solo"
         assert!(template.contains("tls_cert"));
         assert!(template.contains("tls_key"));
         assert!(template.contains("[execution]"));
-        assert!(template.contains("max_coworkers"));
+        assert!(template.contains("max_in_progress_tasks"));
         assert!(template.contains("webhook_port"));
         assert!(template.contains("chat_layout"));
         assert!(template.contains("github_user"));
@@ -2379,7 +2393,7 @@ bin_command = "midtown"
 
         // Write initial config with user comments
         let initial_toml = r#"# Project configuration for my awesome project
-# This comment explains the max_coworkers setting
+# This comment explains the max_in_progress_tasks setting
 [project]
 name = "testproj"
 repos = ["/tmp/testproj"]
@@ -2387,7 +2401,7 @@ primary_repo = "/tmp/testproj"
 
 [default]
 # Set to 4 for my machine's capacity
-max_coworkers = 4
+max_in_progress_tasks = 4
 
 [daemon]
 # Custom webhook port
@@ -2407,7 +2421,7 @@ webhook_port = 47024
             "Top-level comment should be preserved"
         );
         assert!(
-            saved_contents.contains("# This comment explains the max_coworkers setting"),
+            saved_contents.contains("# This comment explains the max_in_progress_tasks setting"),
             "Section comment should be preserved"
         );
         assert!(
@@ -2428,7 +2442,7 @@ webhook_port = 47024
         // Verify existing values are preserved
         let reloaded = FullProjectConfig::load_from(&path).unwrap();
         assert_eq!(reloaded.project.name(), Some("testproj"));
-        assert_eq!(reloaded.default.max_coworkers(), Some(4));
+        assert_eq!(reloaded.default.max_in_progress_tasks(), Some(4));
         assert_eq!(reloaded.default.user_display_name(), Some("Alice"));
         assert_eq!(reloaded.daemon.webhook_port, Some(47024));
     }
@@ -2681,7 +2695,7 @@ auth_profile = "old@example.com"
 [default]
 bin_command = "cargo run --"
 chat_layout = "split"
-max_coworkers = 8
+max_in_progress_tasks = 8
 user_display_name = "OldUser"
 
 [daemon]
@@ -2695,7 +2709,7 @@ webhook_secret = "old-secret"
         config.project.auth_profile = None;
         config.default.bin_command = None;
         config.default.chat_layout = None;
-        config.default.max_coworkers = None;
+        config.default.max_in_progress_tasks = None;
         config.default.user_display_name = None;
         config.daemon.webhook_port = None;
         config.daemon.webhook_secret = None;
@@ -2716,8 +2730,8 @@ webhook_secret = "old-secret"
             "chat_layout should be removed when set to None"
         );
         assert!(
-            !saved_contents.contains("max_coworkers"),
-            "max_coworkers should be removed when set to None"
+            !saved_contents.contains("max_in_progress_tasks"),
+            "max_in_progress_tasks should be removed when set to None"
         );
         assert!(
             !saved_contents.contains("user_display_name"),
@@ -2737,7 +2751,7 @@ webhook_secret = "old-secret"
         assert_eq!(reloaded.project.auth_profile, None);
         assert_eq!(reloaded.default.bin_command, None);
         assert_eq!(reloaded.default.chat_layout, None);
-        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.max_in_progress_tasks, None);
         assert_eq!(reloaded.default.user_display_name, None);
         assert_eq!(reloaded.daemon.webhook_port, None);
         assert_eq!(reloaded.daemon.webhook_secret, None);
@@ -2753,7 +2767,7 @@ webhook_secret = "old-secret"
         let initial_toml = r#"[default]
 bin_command = "midtown"
 chat_layout = "split"
-max_coworkers = 8
+max_in_progress_tasks = 8
 user_display_name = "OldUser"
 
 [daemon]
@@ -2771,7 +2785,7 @@ auth_profile = "old@example.com"
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         config.default.bin_command = None;
         config.default.chat_layout = None;
-        config.default.max_coworkers = None;
+        config.default.max_in_progress_tasks = None;
         config.default.user_display_name = None;
         config.daemon.webhook_port = None;
         config.daemon.webhook_secret = None;
@@ -2790,8 +2804,8 @@ auth_profile = "old@example.com"
             "chat_layout should be removed when set to None"
         );
         assert!(
-            !saved_contents.contains("max_coworkers"),
-            "max_coworkers should be removed when set to None"
+            !saved_contents.contains("max_in_progress_tasks"),
+            "max_in_progress_tasks should be removed when set to None"
         );
         assert!(
             !saved_contents.contains("user_display_name"),
@@ -2819,7 +2833,7 @@ auth_profile = "old@example.com"
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(reloaded.default.bin_command, None);
         assert_eq!(reloaded.default.chat_layout, None);
-        assert_eq!(reloaded.default.max_coworkers, None);
+        assert_eq!(reloaded.default.max_in_progress_tasks, None);
         assert_eq!(reloaded.default.user_display_name, None);
         assert_eq!(reloaded.daemon.webhook_port, None);
         assert_eq!(reloaded.daemon.webhook_secret, None);
