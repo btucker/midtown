@@ -605,8 +605,12 @@ pub(super) async fn handle_task_update(
 
         // Apply plan mapping
         if let Some(plan_path) = plan {
-            ps.task_plan
-                .insert(task_id.to_string(), plan_path.to_string());
+            if plan_path.is_empty() {
+                ps.task_plan.remove(task_id);
+            } else {
+                ps.task_plan
+                    .insert(task_id.to_string(), plan_path.to_string());
+            }
             needs_save = true;
         }
 
