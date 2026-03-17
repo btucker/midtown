@@ -13,7 +13,7 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
-use super::helpers::{get_merged_task_pr, is_project_lead};
+use super::helpers::is_project_lead;
 use super::{DaemonState, snapshot};
 
 // ============================================================================
@@ -42,16 +42,6 @@ pub fn build_push_deep_link(
 // ============================================================================
 // Lead-driven channel helpers
 // ============================================================================
-
-/// Returns true if a task belongs to a lead-driven channel.
-///
-/// Lead-driven channels skip automatic coworker dispatch — the channel lead
-/// manages coworker lifecycle manually.
-fn is_task_in_lead_driven_channel(task_id: &str, snap: &snapshot::WorldSnapshot) -> bool {
-    snap.task_channel
-        .get(task_id)
-        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
-}
 
 // ============================================================================
 // Spawn callback helpers
@@ -714,233 +704,155 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
     }
 
     let mut effects = Vec::new();
+    let mut tasks_without_sessions: Vec<(String, String, String)> = Vec::new();
 
     for (task_id, task_subject, owner) in &snap.in_progress_tasks {
-        // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
-        // these are not managed by the coworker dispatch loop.
-        if owner.is_empty()
-            || is_project_lead(owner, &snap.project_name)
-            || snap
-                .channel_lead_sessions
-                .contains_key(&owner.to_lowercase())
-        {
-            continue;
-        }
+        let action = crate::rules::decide_session_recovery(task_id, task_subject, owner, snap);
 
-        // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-        if is_task_in_lead_driven_channel(task_id, snap) {
-            debug!(
-                "Task !{}: skipping session recovery — channel is lead-driven",
-                task_id
-            );
-            continue;
-        }
-
-        // Check if this task has a session record.
-        let record = match snap.find_session_for_task(task_id) {
-            Some(r) => r,
-            None => {
-                if snap.session_task_map.contains_key(task_id) {
-                    warn!(
-                        "Session for task !{} referenced in session_task_map but not found in sessions map",
-                        task_id
-                    );
+        match action {
+            crate::rules::SessionRecoveryAction::Skip {
+                ref reason,
+                stale_session_ref,
+            } => {
+                if stale_session_ref {
+                    warn!("{}", reason);
+                } else {
+                    debug!("{}", reason);
                 }
-                // No session record — handled by check_and_recover_orphans.
                 continue;
             }
-        };
+            crate::rules::SessionRecoveryAction::FallbackToOrphan {
+                task_id: ref tid,
+                task_subject: ref subj,
+                owner: ref o,
+            } => {
+                tasks_without_sessions.push((tid.clone(), subj.clone(), o.clone()));
+                continue;
+            }
+            crate::rules::SessionRecoveryAction::Recover {
+                ref task_id,
+                ref task_subject,
+                ref coworker_name,
+                ref session_id,
+            } => {
+                // Look up the session record (guaranteed to exist since decide_session_recovery
+                // returned Recover, but use guard for safety).
+                let record = match snap.find_session_for_task(task_id) {
+                    Some(r) => r,
+                    None => continue,
+                };
 
-        // If the session is running (either by persisted flag or live in active_session_ids),
-        // the task is handled — skip.
-        //
-        // active_session_ids is checked in addition to is_running because spawn_coworker
-        // uses or_insert_with for existing session records, leaving is_running=false even
-        // after a successful resume. The live process check ensures we don't loop on the
-        // same stopped-session record every tick while the coworker is actually running.
-        if record.is_running
-            || snap
-                .coworkers
-                .active_session_ids
-                .contains(&record.session_id)
-        {
-            debug!(
-                "Task !{} has running session {} -- no recovery needed",
-                task_id, record.session_id
-            );
-            continue;
-        }
+                info!(
+                    "Session dispatch: recovering task !{} via stopped session {} (preferred_name: {})",
+                    task_id, session_id, coworker_name
+                );
 
-        // Skip if a recovery was recently attempted for this session (per-session cooldown).
-        //
-        // Without this guard, when a session dies within a single tick window (5s) after a
-        // successful recovery spawn, the next tick sees is_running=false and active_session_ids
-        // empty — and fires recovery again. The global SESSION_DISPATCH_COOLDOWN (2s) always
-        // expires before the next 5s tick, providing no protection between ticks.
-        //
-        // The "session_recovered" cooldown (SESSION_RECOVERED_COOLDOWN) is set per-session-id
-        // in on_success. If the session_id is in recently_recovered_session_ids, a recovery
-        // was already attempted recently — skip to prevent the log spam described in !1709.
-        if snap
-            .recently_recovered_session_ids
-            .contains(&record.session_id)
-        {
-            debug!(
-                "Task !{} has recently-recovered session {} -- skipping re-recovery (cooldown active)",
-                task_id, record.session_id
-            );
-            continue;
-        }
+                let plan_section = build_plan_prompt_section(task_id, snap);
+                let prompt =
+                    crate::agents::coworker_recovery_prompt(task_id, task_subject, &plan_section);
 
-        // Session is stopped -- attempt recovery using session data.
-        // Use preferred_name for name continuity.
-        let coworker_name = record
-            .preferred_name
-            .as_deref()
-            .or(record.current_name.as_deref())
-            .unwrap_or(owner);
+                // Prepare worktree and check for collision (post-decision guard).
+                let wt = prepare_task_worktree(task_id, task_subject, &snap.dir_key, snap);
+                if let Some(bound_coworker) =
+                    snap.worktree_collision(&wt.worktree_id, coworker_name)
+                {
+                    debug!(
+                        "Session dispatch: skipping task !{} because worktree {} is bound to active coworker {}",
+                        task_id, wt.worktree_id, bound_coworker
+                    );
+                    continue;
+                }
 
-        // Skip if this coworker is currently serving as a reviewer.
-        // A coworker can have a stopped task session AND a running reviewer session.
-        // Resuming the task session would interrupt their review work.
-        if snap
-            .reviewer
-            .active_reviewers
-            .contains(&coworker_name.to_lowercase())
-        {
-            debug!(
-                "Session dispatch: skipping task !{} — coworker {} is an active reviewer",
-                task_id, coworker_name
-            );
-            continue;
-        }
+                let mut config = crate::launch::LaunchConfig::coworker(
+                    coworker_name.to_string(),
+                    snap.dir_key.clone(),
+                    crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
+                    Some(prompt),
+                    Some(task_id.clone()),
+                );
+                // Prefer the session's recorded working_dir (actual location on disk).
+                // Staleness is pre-evaluated in WorldSnapshot::stale_working_dir_sessions.
+                let working_dir = if !record.working_dir.is_empty()
+                    && !snap.stale_working_dir_sessions.contains(&record.session_id)
+                {
+                    std::path::PathBuf::from(&record.working_dir)
+                } else if !record.working_dir.is_empty() {
+                    warn!(
+                        "Session {}: recorded working_dir {:?} no longer exists; \
+                         falling back to fresh worktree for task !{}",
+                        record.session_id, record.working_dir, task_id
+                    );
+                    effects.push(effects::Effect::ClearSessionWorkingDir {
+                        session_id: record.session_id.clone(),
+                    });
+                    wt.path.clone()
+                } else {
+                    wt.path.clone()
+                };
+                config.working_dir = Some(working_dir);
 
-        // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
-        if snap
-            .spawn_failure_cooldown_names
-            .contains(&coworker_name.to_lowercase())
-        {
-            debug!(
-                "Spawn failure cooldown active for {} -- skipping session dispatch for task !{}",
-                coworker_name, task_id
-            );
-            continue;
-        }
+                let channel = snap
+                    .all_tasks
+                    .iter()
+                    .find(|t| t.id == *task_id)
+                    .and_then(|t| t.channel.clone());
+                config.channel = channel.clone();
 
-        info!(
-            "Session dispatch: recovering task !{} via stopped session {} (preferred_name: {})",
-            task_id, record.session_id, coworker_name
-        );
+                config.apply_task_model(&snap.task_model_map, task_id);
 
-        let plan_section = build_plan_prompt_section(task_id, snap);
-        let prompt = crate::agents::coworker_recovery_prompt(task_id, task_subject, &plan_section);
-
-        // Prepare worktree (reuse existing or create new) and build config.
-        // Uses prepare_task_worktree to keep the worktree registry current and
-        // emit EnsureWorktree / BindCoworkerToWorktree effects.
-        let wt = prepare_task_worktree(task_id, task_subject, &snap.dir_key, snap);
-        if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, coworker_name) {
-            debug!(
-                "Session dispatch: skipping task !{} because worktree {} is bound to active coworker {}",
-                task_id, wt.worktree_id, bound_coworker
-            );
-            continue;
-        }
-
-        let mut config = crate::launch::LaunchConfig::coworker(
-            coworker_name.to_string(),
-            snap.dir_key.clone(),
-            crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
-            Some(prompt),
-            Some(task_id.clone()),
-        );
-        // Prefer the session's recorded working_dir (actual location on disk).
-        // Fall back to the computed worktree path from the registry.
-        // Staleness is pre-evaluated in WorldSnapshot::stale_working_dir_sessions
-        // during collect_world_snapshot() — no filesystem I/O here.
-        let working_dir = if !record.working_dir.is_empty()
-            && !snap.stale_working_dir_sessions.contains(&record.session_id)
-        {
-            std::path::PathBuf::from(&record.working_dir)
-        } else if !record.working_dir.is_empty() {
-            warn!(
-                "Session {}: recorded working_dir {:?} no longer exists; \
-                 falling back to fresh worktree for task !{}",
-                record.session_id, record.working_dir, task_id
-            );
-            effects.push(effects::Effect::ClearSessionWorkingDir {
-                session_id: record.session_id.clone(),
-            });
-            wt.path.clone()
-        } else {
-            wt.path.clone()
-        };
-        config.working_dir = Some(working_dir);
-
-        let channel = snap
-            .all_tasks
-            .iter()
-            .find(|t| t.id == *task_id)
-            .and_then(|t| t.channel.clone());
-        config.channel = channel.clone();
-
-        config.apply_task_model(&snap.task_model_map, task_id);
-
-        let mut on_success = spawn_success_effects(
-            coworker_name.to_string(),
-            task_id.clone(),
-            wt.worktree_id,
-            format!(
-                "Session dispatch: recovered task !{} via session {} (coworker {})",
-                task_id, record.session_id, coworker_name
-            ),
-        );
-        let insert_pos = on_success.len() - 1;
-        on_success.insert(
-            insert_pos,
-            Effect::RecordCooldown {
-                category: "session_dispatch".to_string(),
-                key: "global".to_string(),
-            },
-        );
-        // Per-session-id cooldown: prevents re-recovery on the next tick even if the
-        // session dies quickly. The recently_recovered_session_ids snapshot field checks
-        // this cooldown and skips recovery while it's active (see !1709 fix).
-        on_success.insert(
-            insert_pos + 1,
-            Effect::RecordCooldown {
-                category: "session_recovered".to_string(),
-                key: record.session_id.clone(),
-            },
-        );
-
-        // Prepend worktree setup effects (EnsureWorktree + optional registration)
-        let mut pre_spawn = wt.pre_spawn_effects;
-        pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
-            config,
-            on_success,
-            on_failure: {
-                let mut v = vec![Effect::ClearSessionForTask {
-                    task_id: task_id.clone(),
-                }];
-                v.extend(spawn_failure_effects(
+                let mut on_success = spawn_success_effects(
                     coworker_name.to_string(),
                     task_id.clone(),
-                    snap.dir_key.clone(),
+                    wt.worktree_id,
                     format!(
-                        "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
-                        task_id,
-                        coworker_name,
-                        SPAWN_FAILURE_COOLDOWN.as_secs()
+                        "Session dispatch: recovered task !{} via session {} (coworker {})",
+                        task_id, record.session_id, coworker_name
                     ),
-                ));
-                v
-            },
-        });
-        effects.extend(pre_spawn);
+                );
+                let insert_pos = on_success.len() - 1;
+                on_success.insert(
+                    insert_pos,
+                    Effect::RecordCooldown {
+                        category: "session_dispatch".to_string(),
+                        key: "global".to_string(),
+                    },
+                );
+                on_success.insert(
+                    insert_pos + 1,
+                    Effect::RecordCooldown {
+                        category: "session_recovered".to_string(),
+                        key: record.session_id.clone(),
+                    },
+                );
 
-        // Only spawn one coworker per tick (same rate limiting as orphan recovery)
-        break;
+                let mut pre_spawn = wt.pre_spawn_effects;
+                pre_spawn.push(Effect::SpawnCoworkerWithCallbacks {
+                    config,
+                    on_success,
+                    on_failure: {
+                        let mut v = vec![Effect::ClearSessionForTask {
+                            task_id: task_id.clone(),
+                        }];
+                        v.extend(spawn_failure_effects(
+                            coworker_name.to_string(),
+                            task_id.clone(),
+                            snap.dir_key.clone(),
+                            format!(
+                                "Task !{} reset to pending - session dispatch for {} failed (backing off for {}s)",
+                                task_id,
+                                coworker_name,
+                                SPAWN_FAILURE_COOLDOWN.as_secs()
+                            ),
+                        ));
+                        v
+                    },
+                });
+                effects.extend(pre_spawn);
+
+                // Only spawn one coworker per tick (same rate limiting as orphan recovery)
+                break;
+            }
+        }
     }
 
     // No-session tasks are now handled by check_and_recover_orphans, which
@@ -1248,7 +1160,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         snap.coworkers.running_coworkers.len()
     );
 
-    let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap, state);
+    let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap);
 
     effects.extend(dispatch_unowned_pending_tasks(
         snap,
@@ -1275,99 +1187,38 @@ pub(super) fn spawn_for_pending_tasks_excluding(
 /// deduplication with `dispatch_unowned_pending_tasks`).
 fn dispatch_owned_pending_tasks(
     snap: &snapshot::WorldSnapshot,
-    state: &DaemonState,
 ) -> (Vec<effects::Effect>, HashSet<String>) {
     let mut effects = Vec::new();
     let mut coworkers_dispatched_this_tick: HashSet<String> = HashSet::new();
 
     for (task_id, task_subject, owner) in snap.pending_tasks_with_owners.iter() {
-        // Skip tasks whose explicit PR field references a merged PR.
-        // IMPORTANT: This must run before the lead-driven check so merged-PR
-        // auto-complete works regardless of channel mode.
-        if let Some(pr_num) =
-            get_merged_task_pr(task_id, &snap.all_tasks, &snap.pr.merged_pr_numbers)
-        {
-            info!(
-                "Auto-completing stale task !{}: PR #{} has been merged",
-                task_id, pr_num
-            );
-            effects.push(Effect::CompleteTask {
-                task_id: task_id.clone(),
-                dir_key: snap.dir_key.clone(),
-            });
-            effects.push(Effect::ClearBlockedBy {
-                completed_task_id: task_id.clone(),
-                dir_key: snap.dir_key.clone(),
-            });
-            continue;
-        }
-
-        // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-        if is_task_in_lead_driven_channel(task_id, snap) {
-            debug!(
-                "Task !{}: skipping owned pending dispatch — channel is lead-driven",
-                task_id
-            );
-            continue;
-        }
-
-        // Skip tasks that already have an in-flight spawn from a previous tick.
-        if state.is_task_spawn_in_flight(task_id) {
-            debug!(
-                "Task !{} already has in-flight spawn, skipping duplicate",
-                task_id
-            );
-            continue;
-        }
-
-        // Skip if this owner is already assigned to THIS SPECIFIC TASK.
-        // Prevents nudge loops where the same pending-with-owner task gets
-        // re-nudged every time the 300s cooldown expires.
-        if snap
-            .coworker_task_assignments
-            .get(&owner.to_lowercase())
-            .is_some_and(|assigned_task_id| assigned_task_id == task_id)
-        {
-            debug!(
-                "Task !{}: skipping {} (already assigned to this task)",
-                task_id, owner
-            );
-            continue;
-        }
-
-        let task_key = format!("pending-{}", task_id);
-        let on_nudge_cooldown = {
-            let cooldowns = state.cooldowns.lock().unwrap();
-            !cooldowns.check("task_nudge", &task_key, Duration::from_secs(300))
-        };
-
-        let is_owner_reviewer = snap
-            .reviewer
-            .active_reviewers
-            .contains(&owner.to_lowercase());
-        let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
-        let is_channel_lead = snap
-            .channel_lead_sessions
-            .contains_key(&owner.to_lowercase());
-
-        let action = crate::rules::decide_pending_task_action(
-            task_id,
-            task_subject,
-            owner,
-            &snap.coworkers.active_names,
-            snap.is_at_task_limit,
-            on_nudge_cooldown,
-            is_owner_reviewer,
-            has_in_progress_task,
-            is_channel_lead,
-        );
+        let action =
+            crate::rules::decide_owned_pending_dispatch(task_id, task_subject, owner, snap);
 
         match action {
+            crate::rules::PendingTaskAction::AutoComplete {
+                ref task_id,
+                pr_num,
+            } => {
+                info!(
+                    "Auto-completing stale task !{}: PR #{} has been merged",
+                    task_id, pr_num
+                );
+                effects.push(Effect::CompleteTask {
+                    task_id: task_id.clone(),
+                    dir_key: snap.dir_key.clone(),
+                });
+                effects.push(Effect::ClearBlockedBy {
+                    completed_task_id: task_id.clone(),
+                    dir_key: snap.dir_key.clone(),
+                });
+            }
             crate::rules::PendingTaskAction::NudgeOwner {
                 owner: ref o,
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
+                let task_key = format!("pending-{}", tid);
                 let session_id = snap
                     .name_session_map
                     .get(&o.to_lowercase())
@@ -1382,7 +1233,7 @@ fn dispatch_owned_pending_tasks(
                     on_success: vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
-                            key: task_key.clone(),
+                            key: task_key,
                         },
                         Effect::RecordTaskAssignment {
                             coworker: o.clone(),
@@ -1396,7 +1247,8 @@ fn dispatch_owned_pending_tasks(
                 task_id: ref tid,
                 task_subject: ref subj,
             } => {
-                // Skip if we already spawned this coworker in this tick.
+                // Post-decision spawn guards: these depend on loop-accumulation
+                // state or spawn-specific context that can't be in the pure function.
                 if coworkers_dispatched_this_tick.contains(&o.to_lowercase()) {
                     debug!(
                         "Already spawned {} this tick — skipping duplicate spawn for task !{}",
@@ -1405,9 +1257,6 @@ fn dispatch_owned_pending_tasks(
                     continue;
                 }
 
-                // Skip if a previous spawn failure put this coworker on cooldown.
-                // Without this check, a missing worktree causes an infinite retry
-                // loop every 5s (see !2172).
                 if snap
                     .spawn_failure_cooldown_names
                     .contains(&o.to_lowercase())
@@ -1426,7 +1275,7 @@ fn dispatch_owned_pending_tasks(
                 let plan_section = build_plan_prompt_section(tid, snap);
                 let prompt = crate::agents::coworker_task_prompt(tid, subj, &plan_section);
 
-                let wt = prepare_task_worktree(tid, subj, state.paths.dir_key(), snap);
+                let wt = prepare_task_worktree(tid, subj, &snap.dir_key, snap);
 
                 if let Some(bound_coworker) = snap.worktree_collision(&wt.worktree_id, o) {
                     debug!(
@@ -1438,7 +1287,7 @@ fn dispatch_owned_pending_tasks(
 
                 let mut config = crate::launch::LaunchConfig::coworker(
                     o.clone(),
-                    state.paths.dir_key().to_string(),
+                    snap.dir_key.clone(),
                     crate::launch::SessionMode::Resume,
                     Some(prompt),
                     Some(tid.clone()),
@@ -1448,9 +1297,6 @@ fn dispatch_owned_pending_tasks(
 
                 effects.extend(wt.pre_spawn_effects);
 
-                // Include RecordTaskAssignment so mark_in_flight_spawns_from_effects()
-                // can track this spawn across ticks and prevent duplicate spawns if
-                // the spawn takes longer than one tick interval to complete.
                 let on_success = spawn_success_effects(
                     o.clone(),
                     tid.clone(),
