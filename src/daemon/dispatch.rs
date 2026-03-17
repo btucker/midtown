@@ -326,8 +326,7 @@ fn find_session_for_task<'a>(
 pub(crate) fn is_task_pr_protected(
     task: &crate::tasks::Task,
     merged_pr_numbers: &HashSet<u64>,
-    tasks_with_open_prs: &HashMap<String, u64>,
-    github_open_pr_task_ids: &HashMap<String, u64>,
+    pr_task_index: &snapshot::PrTaskIndex,
     active_names: &HashSet<String>,
 ) -> bool {
     // Completed tasks are always protected
@@ -339,12 +338,12 @@ pub(crate) fn is_task_pr_protected(
     // Merged-PR guards fire BEFORE the active-owner check — a merged PR always
     // protects the task (preventing recovery-loops) regardless of session state.
 
-    // Check pr_task_associations for a merged PR
-    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id)
+    // Check session-derived PR mapping for a merged PR
+    if let Some(pr_number) = pr_task_index.session_pr_for_task(&task.id)
         && merged_pr_numbers.contains(&pr_number)
     {
         debug!(
-            "Task !{} is in pr_task_associations and PR #{} is merged — protected for auto-completion",
+            "Task !{} is in pr_task_index (session) and PR #{} is merged — protected for auto-completion",
             task.id, pr_number
         );
         return true;
@@ -376,17 +375,17 @@ pub(crate) fn is_task_pr_protected(
         return false;
     }
 
-    // Open PR via pr_task_associations (not merged — merged case handled above)
-    if let Some(&pr_number) = tasks_with_open_prs.get(&task.id) {
+    // Open PR via session-derived mapping (not merged — merged case handled above)
+    if let Some(pr_number) = pr_task_index.session_pr_for_task(&task.id) {
         debug!(
-            "Skipping recovery for task !{}: has open PR via pr_task_associations (PR #{})",
+            "Skipping recovery for task !{}: has open PR via session data (PR #{})",
             task.id, pr_number
         );
         return true;
     }
 
     // Defense-in-depth: GitHub title pattern match
-    if let Some(&open_pr) = github_open_pr_task_ids.get(&task.id) {
+    if let Some(open_pr) = pr_task_index.github_pr_for_task(&task.id) {
         info!(
             "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
             task.id, open_pr
@@ -2524,13 +2523,9 @@ pub fn should_recover_task_test_helper(
     if let Some(owner) = &task.owner {
         active_names.insert(owner.to_lowercase());
     }
-    !is_task_pr_protected(
-        task,
-        merged_pr_numbers,
-        tasks_with_open_prs,
-        github_open_pr_task_ids,
-        &active_names,
-    )
+    let pr_task_index =
+        snapshot::PrTaskIndex::new(tasks_with_open_prs.clone(), github_open_pr_task_ids.clone());
+    !is_task_pr_protected(task, merged_pr_numbers, &pr_task_index, &active_names)
 }
 
 // ============================================================================
@@ -2588,9 +2583,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         // protected from reset even when only the GitHub source has them.
         // NOTE: This guard must fire before the ownerless check so that ownerless tasks
         // with open PRs are also protected.
-        if snap.pr.tasks_with_open_prs.contains_key(task_id)
-            || snap.pr.github_open_pr_task_ids.contains_key(task_id)
-        {
+        if snap.pr.pr_task_index.task_has_pr(task_id) {
             continue;
         }
 

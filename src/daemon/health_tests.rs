@@ -55,9 +55,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
-            github_open_pr_task_ids: HashMap::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
+            pr_task_index: snapshot::PrTaskIndex::default(),
             orphaned_pr_lead_nudges_sent: HashSet::new(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
             freshly_fetched_rate_limit: None,
@@ -226,9 +224,7 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
-            github_open_pr_task_ids: HashMap::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
+            pr_task_index: snapshot::PrTaskIndex::default(),
             orphaned_pr_lead_nudges_sent: HashSet::new(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
             freshly_fetched_rate_limit: None,
@@ -432,9 +428,7 @@ fn test_check_for_usage_limits_with_reset_time() {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
-            github_open_pr_task_ids: HashMap::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
+            pr_task_index: snapshot::PrTaskIndex::default(),
             orphaned_pr_lead_nudges_sent: HashSet::new(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
             freshly_fetched_rate_limit: None,
@@ -557,9 +551,7 @@ fn test_check_for_usage_limits_already_scheduled() {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
-            github_open_pr_task_ids: HashMap::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
+            pr_task_index: snapshot::PrTaskIndex::default(),
             orphaned_pr_lead_nudges_sent: HashSet::new(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
             freshly_fetched_rate_limit: None,
@@ -717,9 +709,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
             ci_passed_pr_coworkers: HashSet::new(),
             review_feedback_pr_coworkers: HashSet::new(),
             open_prs_data: vec![],
-            github_open_pr_task_ids: HashMap::new(),
-            tasks_with_open_prs: HashMap::new(),
-            pr_task_associations: HashMap::new(),
+            pr_task_index: snapshot::PrTaskIndex::default(),
             orphaned_pr_lead_nudges_sent: HashSet::new(),
             github_rate_limit: crate::github_rate_limit::GitHubRateLimit::default(),
             freshly_fetched_rate_limit: None,
@@ -2012,9 +2002,10 @@ fn test_dead_reviewer_respawn_inherits_task_channel() {
         .insert("lexington".to_string(), "sess-rev-200".to_string());
 
     // PR → task → channel chain
-    snap.pr
-        .pr_task_associations
-        .insert(pr_number, task_id.to_string());
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::new(
+        [(task_id.to_string(), pr_number)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
     snap.task_channel
         .insert(task_id.to_string(), channel_name.to_string());
 
@@ -2416,9 +2407,10 @@ fn test_dead_reviewer_respawn_emits_coworker_stuck_workflow_event() {
         .insert("lexington".to_string(), "sess-rev-200".to_string());
 
     // PR → task → channel chain
-    snap.pr
-        .pr_task_associations
-        .insert(pr_number, task_id.to_string());
+    snap.pr.pr_task_index = snapshot::PrTaskIndex::new(
+        [(task_id.to_string(), pr_number)].into_iter().collect(),
+        std::collections::HashMap::new(),
+    );
     snap.task_channel
         .insert(task_id.to_string(), channel_name.to_string());
 

@@ -43,6 +43,102 @@ mod u64_key_map {
     }
 }
 
+/// Unified index of PR↔task mappings from two data sources.
+///
+/// Replaces three separate fields (`github_open_pr_task_ids`, `tasks_with_open_prs`,
+/// `pr_task_associations`) with a single struct that builds both forward (task→PR)
+/// and reverse (PR→task) maps once.
+///
+/// Two sources are kept separate internally because they have different reliability:
+/// - **Session-derived** (`session_task_to_pr`): authoritative when fresh, but stale
+///   after daemon restart until sessions reconnect.
+/// - **GitHub-title-derived** (`github_task_to_pr`): survives restarts (repopulated
+///   from GitHub API) but depends on `[Midtown !{id}]` in PR titles.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct PrTaskIndex {
+    /// task_id → pr_number from SessionRecord (primary source).
+    #[serde(default, alias = "tasks_with_open_prs")]
+    session_task_to_pr: HashMap<String, u64>,
+    /// task_id → pr_number from GitHub PR titles (defense-in-depth backup).
+    #[serde(default, alias = "github_open_pr_task_ids")]
+    github_task_to_pr: HashMap<String, u64>,
+    /// pr_number → task_id (inverse of `session_task_to_pr`).
+    #[serde(
+        default,
+        alias = "pr_task_associations",
+        deserialize_with = "u64_key_map::deserialize"
+    )]
+    pr_to_task: HashMap<u64, String>,
+}
+
+impl PrTaskIndex {
+    /// Build a new index from the two data sources.
+    ///
+    /// The `pr_to_task` reverse map is derived from `session_task_to_pr` automatically.
+    pub fn new(
+        session_task_to_pr: HashMap<String, u64>,
+        github_task_to_pr: HashMap<String, u64>,
+    ) -> Self {
+        let pr_to_task: HashMap<u64, String> = session_task_to_pr
+            .iter()
+            .map(|(task, &pr)| (pr, task.clone()))
+            .collect();
+        Self {
+            session_task_to_pr,
+            github_task_to_pr,
+            pr_to_task,
+        }
+    }
+
+    /// Look up the PR number for a task from session data.
+    pub fn session_pr_for_task(&self, task_id: &str) -> Option<u64> {
+        self.session_task_to_pr.get(task_id).copied()
+    }
+
+    /// Look up the PR number for a task from GitHub title data.
+    pub fn github_pr_for_task(&self, task_id: &str) -> Option<u64> {
+        self.github_task_to_pr.get(task_id).copied()
+    }
+
+    /// Check if a task has an associated PR from either source.
+    pub fn task_has_pr(&self, task_id: &str) -> bool {
+        self.session_task_to_pr.contains_key(task_id)
+            || self.github_task_to_pr.contains_key(task_id)
+    }
+
+    /// Look up the task ID for a PR number (session-derived, reverse map).
+    pub fn task_for_pr(&self, pr_number: u64) -> Option<&str> {
+        self.pr_to_task.get(&pr_number).map(|s| s.as_str())
+    }
+
+    /// Check if a PR number has an associated task (session-derived).
+    pub fn pr_has_task(&self, pr_number: &u64) -> bool {
+        self.pr_to_task.contains_key(pr_number)
+    }
+
+    /// Iterate over all (pr_number, task_id) pairs from session data.
+    pub fn pr_task_pairs(&self) -> impl Iterator<Item = (u64, &str)> {
+        self.pr_to_task
+            .iter()
+            .map(|(&pr, task)| (pr, task.as_str()))
+    }
+
+    /// Iterate over all (task_id, pr_number) pairs from GitHub title data.
+    /// Used by `collect_pr_task_link_effects` for PR→task auto-link repair.
+    pub fn github_task_pr_pairs(&self) -> impl Iterator<Item = (&str, u64)> {
+        self.github_task_to_pr
+            .iter()
+            .map(|(task, &pr)| (task.as_str(), pr))
+    }
+
+    /// Expose the session-derived PR→task map for callers that need `&HashMap<u64, String>`.
+    /// Used by `resolve_pr_owner_from_session` which is shared between the snapshot path
+    /// and async webhook handlers (the latter pass their own HashMap).
+    pub fn pr_to_task_map(&self) -> &HashMap<u64, String> {
+        &self.pr_to_task
+    }
+}
+
 /// Health state of a headless coworker process.
 ///
 /// Populated by the daemon's session management layer (future SessionManager)
@@ -183,24 +279,11 @@ pub struct SnapshotPrState {
     /// Pre-collected during snapshot so decision logic doesn't need to lock pr_coworker_cache.
     #[serde(default)]
     pub open_prs_data: Vec<serde_json::Value>,
-    /// Task IDs that have open PRs (derived from PR titles in `open_prs_data`).
-    /// Maps task_id → pr_number. Complements `tasks_with_open_prs` (from SessionRecord)
-    /// by catching cases where SessionRecord is stale after a daemon restart but the
-    /// PR title contains `[Midtown !{task_id}]`. Used by:
-    /// - Orphan recovery (`dispatch.rs`): prevent spawning duplicate coworkers.
-    /// - PR→task auto-link repair (`pr.rs`): emit `SetTaskPr` as a polling fallback
-    ///   when webhooks missed the PR open event (see `collect_pr_task_link_effects`).
-    #[serde(default)]
-    pub github_open_pr_task_ids: HashMap<String, u64>,
-    /// Task IDs that have associated open PRs (from SessionRecord).
-    /// Maps task_id → pr_number. Used by reconcile_tasks_in_review to detect
-    /// tasks whose PR is open but whose owner is no longer active.
-    pub tasks_with_open_prs: HashMap<String, u64>,
-    /// PR numbers with associated task IDs (from SessionRecord).
-    /// Maps pr_number → task_id. Used by abandoned PR detection to reset tasks
-    /// when PRs are closed without merging.
-    #[serde(deserialize_with = "u64_key_map::deserialize")]
-    pub pr_task_associations: HashMap<u64, String>,
+    /// Unified PR↔task index from both SessionRecord and GitHub PR title sources.
+    /// Replaces the former `github_open_pr_task_ids`, `tasks_with_open_prs`, and
+    /// `pr_task_associations` fields.
+    #[serde(flatten)]
+    pub pr_task_index: PrTaskIndex,
     /// PR numbers for which the lead has already been nudged about an orphaned PR.
     /// Prevents `reconcile_orphaned_prs` from nudging on every polling tick.
     #[serde(default)]
@@ -642,6 +725,8 @@ impl WorldSnapshot {
     /// `repo_name` → `dir_key` + `project_name` split. Old JSON has a single
     /// `repo_name` field which serde maps to `dir_key` via `#[serde(alias)]`.
     /// `project_name` defaults to `""` — this method copies `dir_key` into it.
+    /// Only used in test fixtures — gated to `#[cfg(test)]`.
+    #[cfg(test)]
     pub fn fixup_legacy_fields(&mut self) {
         if self.project_name.is_empty() && !self.dir_key.is_empty() {
             self.project_name = self.dir_key.clone();
@@ -650,12 +735,12 @@ impl WorldSnapshot {
 
     /// Look up the topic channel for a PR via its associated task.
     ///
-    /// Chains `pr_task_associations` (PR# → task_id) and `task_channel`
+    /// Chains `pr_task_index` (PR# → task_id) and `task_channel`
     /// (task_id → channel name). Analogous to `PrContext::get_channel()`
     /// on the async side — use this in synchronous decision functions that
     /// operate on the snapshot.
     pub fn channel_for_pr(&self, pr_number: u64) -> Option<String> {
-        let task_id = self.pr.pr_task_associations.get(&pr_number)?;
+        let task_id = self.pr.pr_task_index.task_for_pr(pr_number)?;
         self.task_channel.get(task_id).cloned()
     }
 
@@ -924,12 +1009,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|(_, _, owner)| owner.to_lowercase())
         .collect();
 
-    // ── PR↔task mapping (from SessionRecord) ──────────────────────────
-    let (tasks_with_open_prs, pr_task_associations) = {
+    // ── PR↔task index (unified from SessionRecord + GitHub PR titles) ──
+    let pr_task_index = {
         let ps = state.persistent_state.lock().await;
-        let tasks_with_open_prs = super::state::task_to_pr_map_from_sessions(&ps.sessions);
-        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
-        (tasks_with_open_prs, pr_task_associations)
+        let session_task_to_pr = super::state::task_to_pr_map_from_sessions(&ps.sessions);
+        PrTaskIndex::new(session_task_to_pr, github_open_pr_task_ids)
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
@@ -1422,8 +1506,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             super::dispatch::is_task_pr_protected(
                 task,
                 &merged_pr_numbers,
-                &tasks_with_open_prs,
-                &github_open_pr_task_ids,
+                &pr_task_index,
                 &active_names,
             )
         })
@@ -1449,9 +1532,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             ci_passed_pr_coworkers,
             review_feedback_pr_coworkers,
             open_prs_data,
-            github_open_pr_task_ids,
-            tasks_with_open_prs,
-            pr_task_associations,
+            pr_task_index,
             orphaned_pr_lead_nudges_sent,
             github_rate_limit,
             freshly_fetched_rate_limit: None,
