@@ -846,11 +846,9 @@ pub(super) async fn check_and_fire_reminders(
     );
 
     // Emit an effect to advance last_evaluated_at for all cron reminders
-    let has_cron = ps
-        .reminders
-        .reminders
-        .iter()
-        .any(|r| matches!(r.trigger, crate::reminders::ReminderTrigger::CronUtc { .. }));
+    let has_cron = ps.reminders.reminders.iter().any(|r| {
+        r.is_active() && matches!(r.trigger, crate::reminders::ReminderTrigger::CronUtc { .. })
+    });
     if has_cron {
         effects.push(Effect::AdvanceCronEvalTimestamps {
             dir_key: snap.dir_key.clone(),
