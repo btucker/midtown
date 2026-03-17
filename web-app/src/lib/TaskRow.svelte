@@ -10,18 +10,44 @@ import { getPrUrl as getPrUrlUtil } from "./channelUtils.ts";
 import { renderContent } from "./markdown.ts";
 import { getSenderColor } from "./messageUtils.ts";
 import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import type { Task } from "./types.ts";
 
-let { task, cw = null, depth = 0, reviewer = null, reviewPosted = false, onclick = null, variant = "row" } = $props();
+let {
+	task,
+	cw = null,
+	children = [] as Task[],
+	reviewer = null,
+	reviewPosted = false,
+	onclick = null,
+	variant = "row",
+} = $props();
 
 const isCard = $derived(variant === "card");
-const isActive = $derived(task.status === "in_progress");
+
+// Status rollup: in_progress if any child is in_progress; done only when parent + all children are done
+const rolledUpStatus = $derived.by(() => {
+	if (isCard || children.length === 0) return task.status;
+	const allTasks = [task, ...children];
+	if (allTasks.some((t) => t.status === "in_progress")) return "in_progress";
+	if (allTasks.every((t) => t.status === "done")) return "done";
+	return task.status;
+});
+
+const isActive = $derived(rolledUpStatus === "in_progress");
 const isBlocked = $derived(task.blocked_by?.length > 0);
+
+// Derive reviewer from children: child whose subject contains 'review' → child's owner is the reviewer
+const childReviewer = $derived.by(() => {
+	if (reviewer || isCard || children.length === 0) return null;
+	const reviewChild = children.find((c) => /review/i.test(c.subject));
+	return reviewChild?.owner ?? null;
+});
 
 // Card-only: auto-derive coworker/reviewer from stores
 const cwMap = $derived(isCard ? new Map($coworkers.map((c) => [c.name, c])) : null);
 const relatedPr = $derived(isCard ? $kanbanData.review.find((pr) => String(pr.task_id) === String(task.id)) : null);
 const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? null) : null) : cw);
-const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
+const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : (reviewer ?? childReviewer));
 const effectiveReviewPosted = $derived(isCard ? relatedPr?.review_posted || false : reviewPosted);
 const hasProgress = $derived(effectiveCw?.progress != null);
 
@@ -30,10 +56,10 @@ const prUrl = $derived(
 );
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
-function statusBarColor(task) {
-	if (task.status === "done") return "hsl(var(--accent-green, 145 40% 38%))";
-	if (task.status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
-	if (task.owner) return getSenderColor(task.owner);
+function statusBarColor(status, owner) {
+	if (status === "done") return "hsl(var(--accent-green, 145 40% 38%))";
+	if (status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
+	if (owner) return getSenderColor(owner);
 	return "hsl(var(--accent-teal))";
 }
 
@@ -75,12 +101,11 @@ function handleDescriptionClick(e) {
 </script>
 
 <button
-  class="task-row w-full overflow-visible flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''} {depth > 0 ? 'pl-3' : ''}"
+  class="task-row w-full overflow-visible flex items-stretch gap-1.5 py-[5px] cursor-pointer transition-[background] duration-100 text-left font-mono text-[0.72rem] leading-[1.3] text-muted-foreground {isCard ? 'border border-[hsl(var(--border))] bg-[hsl(var(--card))] mb-2 hover:bg-[hsl(var(--accent)_/_0.3)] pr-3 rounded-md' : 'border-none bg-transparent rounded-[5px] hover:bg-sidebar-accent'} {isActive ? 'text-sidebar-foreground' : ''} {isBlocked ? 'opacity-65' : ''}"
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
-  {#if depth > 0}<span class="shrink-0 text-muted-foreground/30 text-[0.6rem] self-center mr-[-2px]">└</span>{/if}
-  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(task)}"></span>
+  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(rolledUpStatus, task.owner)}"></span>
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
@@ -88,7 +113,7 @@ function handleDescriptionClick(e) {
     {:else}
       <div class="flex items-center gap-1.5">
         <span class="shrink-0 font-semibold {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
-        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if task.status === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
+        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if rolledUpStatus === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
         {#if isBlocked}
           <span class="shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
         {/if}

@@ -2,17 +2,17 @@ import type { Task } from "./types.ts";
 
 export interface GroupedTask {
 	task: Task;
-	depth: number;
+	children: Task[];
 }
 
 /**
  * Arrange tasks into parent-child groups for display.
  *
- * Returns a flat list with depth annotations:
- * - Top-level tasks (no parent, or parent not in the list) get depth 0
- * - Children are placed immediately after their parent with depth 1
+ * Returns one entry per top-level task with its children attached.
+ * - Top-level tasks (no parent, or parent not in the list) get an empty children array
+ * - Children are attached to their parent's entry
  *
- * Children whose parent is not in the visible list are shown at depth 0
+ * Children whose parent is not in the visible list are promoted to top-level
  * to avoid orphaned invisible tasks.
  */
 export function groupTasksByParent(tasks: Task[]): GroupedTask[] {
@@ -49,16 +49,10 @@ export function groupTasksByParent(tasks: Task[]): GroupedTask[] {
 		}
 	}
 
-	// Build flat list: each top-level task followed by its children
+	// Build result: each top-level task with its children attached
 	const result: GroupedTask[] = [];
 	for (const task of topLevel) {
-		result.push({ task, depth: 0 });
-		const children = childrenByParent.get(String(task.id));
-		if (children) {
-			for (const child of children) {
-				result.push({ task: child, depth: 1 });
-			}
-		}
+		result.push({ task, children: childrenByParent.get(String(task.id)) || [] });
 	}
 
 	return result;

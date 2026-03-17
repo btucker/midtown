@@ -11,29 +11,26 @@ describe("groupTasksByParent", () => {
 		expect(groupTasksByParent([])).toEqual([]);
 	});
 
-	it("returns tasks at depth 0 when no parent relationships", () => {
+	it("returns tasks with empty children when no parent relationships", () => {
 		const tasks = [makeTask(1, "Task A"), makeTask(2, "Task B")];
 		const result = groupTasksByParent(tasks);
 		expect(result).toEqual([
-			{ task: tasks[0], depth: 0 },
-			{ task: tasks[1], depth: 0 },
+			{ task: tasks[0], children: [] },
+			{ task: tasks[1], children: [] },
 		]);
 	});
 
-	it("nests child under its parent at depth 1", () => {
+	it("attaches child to its parent", () => {
 		const parent = makeTask(10, "Implement feature");
 		const child = makeTask(11, "Review PR #42", "10");
 		const result = groupTasksByParent([parent, child]);
-		expect(result).toEqual([
-			{ task: parent, depth: 0 },
-			{ task: child, depth: 1 },
-		]);
+		expect(result).toEqual([{ task: parent, children: [child] }]);
 	});
 
-	it("shows child at depth 0 when parent is not in list", () => {
+	it("shows child as top-level with no children when parent is not in list", () => {
 		const child = makeTask(11, "Review PR #42", "10");
 		const result = groupTasksByParent([child]);
-		expect(result).toEqual([{ task: child, depth: 0 }]);
+		expect(result).toEqual([{ task: child, children: [] }]);
 	});
 
 	it("groups multiple children under same parent", () => {
@@ -41,11 +38,7 @@ describe("groupTasksByParent", () => {
 		const child1 = makeTask(11, "Review PR", "10");
 		const child2 = makeTask(12, "Address feedback", "10");
 		const result = groupTasksByParent([parent, child1, child2]);
-		expect(result).toEqual([
-			{ task: parent, depth: 0 },
-			{ task: child1, depth: 1 },
-			{ task: child2, depth: 1 },
-		]);
+		expect(result).toEqual([{ task: parent, children: [child1, child2] }]);
 	});
 
 	it("handles mixed parent and standalone tasks", () => {
@@ -54,9 +47,8 @@ describe("groupTasksByParent", () => {
 		const child = makeTask(11, "Review", "10");
 		const result = groupTasksByParent([standalone, parent, child]);
 		expect(result).toEqual([
-			{ task: standalone, depth: 0 },
-			{ task: parent, depth: 0 },
-			{ task: child, depth: 1 },
+			{ task: standalone, children: [] },
+			{ task: parent, children: [child] },
 		]);
 	});
 
@@ -65,16 +57,13 @@ describe("groupTasksByParent", () => {
 		const parent = makeTask(10, "Feature");
 		// Child appears before parent in input — child should nest under parent
 		const result = groupTasksByParent([child, parent]);
-		expect(result).toEqual([
-			{ task: parent, depth: 0 },
-			{ task: child, depth: 1 },
-		]);
+		expect(result).toEqual([{ task: parent, children: [child] }]);
 	});
 
 	it("handles self-parent by treating as top-level", () => {
 		const task = makeTask(5, "Self-referencing", "5");
 		const result = groupTasksByParent([task]);
-		expect(result).toEqual([{ task, depth: 0 }]);
+		expect(result).toEqual([{ task, children: [] }]);
 	});
 
 	it("handles circular parent refs without losing tasks", () => {
@@ -83,7 +72,7 @@ describe("groupTasksByParent", () => {
 		const result = groupTasksByParent([a, b]);
 		// Both should appear — neither can be properly nested
 		expect(result).toHaveLength(2);
-		expect(result.every((r) => r.depth === 0)).toBe(true);
+		expect(result.every((r) => r.children.length === 0)).toBe(true);
 	});
 
 	it("does not duplicate tasks in any scenario", () => {
@@ -92,7 +81,14 @@ describe("groupTasksByParent", () => {
 		const orphan = makeTask(12, "Orphan", "99");
 		const selfRef = makeTask(13, "Self", "13");
 		const result = groupTasksByParent([parent, child, orphan, selfRef]);
-		const ids = result.map((r) => r.task.id);
+		// Collect all task ids (parent + children)
+		const ids: number[] = [];
+		for (const group of result) {
+			ids.push(group.task.id);
+			for (const c of group.children) {
+				ids.push(c.id);
+			}
+		}
 		expect(ids).toHaveLength(new Set(ids).size);
 		expect(ids).toContain(10);
 		expect(ids).toContain(11);
