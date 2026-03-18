@@ -1866,6 +1866,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         // Inline failure bookkeeping with real coworker name
                         Box::pin(execute_effects(
                             vec![
+                                Effect::ReleaseName {
+                                    name: name.to_string(),
+                                },
                                 Effect::RecordCooldown {
                                     category: "spawn_failure".to_string(),
                                     key: name.to_string(),
