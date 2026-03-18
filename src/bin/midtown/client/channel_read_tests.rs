@@ -3,12 +3,7 @@
 //! These tests verify that channel_read correctly assembles the JSON params
 //! passed to the daemon RPC, particularly the `channel` field priority logic.
 
-use std::sync::Mutex;
-
-/// Guard for tests that mutate the `MIDTOWN_CHANNEL` env var.
-/// Rust runs tests in parallel; without serialization, concurrent
-/// set_var/remove_var calls cause flaky failures.
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
+use crate::ENV_MUTEX;
 
 /// Helper to build the params JSON that channel_read would send, without
 /// actually connecting to a socket. We replicate the param-assembly logic

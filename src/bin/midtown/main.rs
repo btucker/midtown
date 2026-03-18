@@ -8,6 +8,15 @@ use clap::{Parser, Subcommand};
 mod cli;
 mod client;
 
+/// Shared mutex for tests that mutate the `MIDTOWN_CHANNEL` env var.
+///
+/// Rust runs tests in parallel. Multiple test files (`hooks.rs`,
+/// `channel_post_tests.rs`, `channel_read_tests.rs`) set/remove this
+/// env var and must serialize against each other — a per-file mutex
+/// is insufficient.
+#[cfg(test)]
+pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 use cli::{
     AgentCommand, AuthCommand, ChannelCommand, ConfigCommand, DiagramCommand, E2eCommand,
     HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, TaskCommand, WorkflowCommand,

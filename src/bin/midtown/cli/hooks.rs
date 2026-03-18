@@ -681,12 +681,7 @@ fn open_channel_for_hook(repo: &str) -> Result<midtown::Channel, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Guard for tests that mutate the `MIDTOWN_CHANNEL` env var.
-    /// Rust runs tests in parallel; without serialization, concurrent
-    /// set_var/remove_var calls cause flaky failures.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    use crate::ENV_MUTEX;
 
     #[test]
     fn test_open_channel_for_hook_respects_midtown_channel() {
