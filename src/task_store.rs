@@ -29,8 +29,10 @@ pub struct Task {
     #[serde(default)]
     pub pr: Option<u64>,
     /// Creative session name, set by lead at creation. Immutable.
+    #[serde(default)]
     pub agent_name: String,
     /// Agent definition for `--agent` flag, set by lead at creation. Immutable.
+    #[serde(default)]
     pub agent_type: String,
     /// Bound session ID, set by daemon at spawn time.
     #[serde(default)]

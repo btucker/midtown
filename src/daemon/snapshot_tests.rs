@@ -419,7 +419,7 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "review-42".to_string(),
         agent_name: "riverside".to_string(),
-        agent_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         session_id: "sess-riverside".to_string(),
         start_time: chrono::Utc::now(),
         end_time: None, // open span — reviewer is/was active
@@ -458,7 +458,7 @@ fn active_reviewer_with_running_session_in_active_set() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "review-100".to_string(),
         agent_name: "amsterdam".to_string(),
-        agent_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         session_id: "sess-amsterdam".to_string(),
         start_time: chrono::Utc::now(),
         end_time: None,
@@ -494,7 +494,7 @@ fn active_reviewer_alive_in_process_health_in_active_set() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "review-200".to_string(),
         agent_name: "broadway".to_string(),
-        agent_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         session_id: "sess-broadway".to_string(),
         start_time: chrono::Utc::now(),
         end_time: None,
@@ -537,7 +537,7 @@ fn dead_reviewer_not_in_active_reviewers() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "review-300".to_string(),
         agent_name: "amsterdam".to_string(),
-        agent_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         session_id: "sess-amsterdam".to_string(),
         start_time: chrono::Utc::now(),
         end_time: None, // span still open (not yet closed)
@@ -581,7 +581,7 @@ fn build_reviewer_pr_assignments_excludes_closed_spans() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "review-400".to_string(),
         agent_name: "park".to_string(),
-        agent_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         session_id: "sess-park".to_string(),
         start_time: chrono::Utc::now() - chrono::Duration::hours(1),
         end_time: Some(chrono::Utc::now()), // closed span

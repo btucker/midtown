@@ -307,9 +307,7 @@ pub(super) async fn handle_task_create(
     };
 
     // Check agent_name uniqueness via TaskStore
-    let tasks_dir = state.paths.base_dir().join("tasks");
-    let task_store = crate::task_store::TaskStore::new(tasks_dir);
-    if task_store.is_name_in_use(agent_name) {
+    if state.task_store.is_name_in_use(agent_name) {
         return Response::error(
             id,
             RpcError::new(
@@ -413,7 +411,7 @@ pub(super) async fn handle_task_create(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    if let Err(e) = task_store.save(&new_task) {
+    if let Err(e) = state.task_store.save(&new_task) {
         warn!("Failed to save task to TaskStore: {}", e);
     }
 

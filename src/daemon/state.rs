@@ -60,7 +60,7 @@ pub struct TaskSessionSpan {
     pub task_id: String,
     /// Coworker name at the time of this span.
     pub agent_name: String,
-    /// Role: "dev", "reviewer", or "channel-lead".
+    /// Agent type: e.g., "midtown-code-author", "midtown-code-reviewer", "midtown-channel-lead".
     pub agent_type: String,
     /// Claude Code session ID.
     pub session_id: String,
@@ -549,7 +549,7 @@ impl DaemonPersistentState {
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&TaskSessionSpan> {
         self.task_session_spans
             .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
+            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
             .find(|s| {
                 self.task_pr_number.get(&s.task_id) == Some(&pr_number)
                     || self.sessions.get(&s.session_id).and_then(|r| r.pr_number) == Some(pr_number)
@@ -572,7 +572,7 @@ impl DaemonPersistentState {
     pub fn active_reviewer_spans(&self) -> Vec<&TaskSessionSpan> {
         self.task_session_spans
             .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
+            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
             .collect()
     }
 

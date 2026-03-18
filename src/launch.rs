@@ -596,16 +596,18 @@ impl LaunchConfig {
         dir_key: impl Into<String>,
         session_mode: SessionMode,
         domain_context: impl Into<String>,
-        _agents_md: Option<String>,
+        agents_md: Option<String>,
     ) -> Self {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
         let repo = dir_key.into();
         let domain_ctx = domain_context.into();
-        let domain_ctx_opt = if domain_ctx.is_empty() {
-            None
-        } else {
-            Some(domain_ctx)
+        // Merge domain_context and agents_md into system_prompt_extra
+        let domain_ctx_opt = match (domain_ctx.is_empty(), agents_md) {
+            (true, None) => None,
+            (true, Some(md)) => Some(md),
+            (false, None) => Some(domain_ctx),
+            (false, Some(md)) => Some(format!("{}\n\n{}", domain_ctx, md)),
         };
         let execution_fallback = crate::config::get_channel_lead_model_fallback(&repo);
         let channel_model = crate::config::get_channel_leads_config(&repo)

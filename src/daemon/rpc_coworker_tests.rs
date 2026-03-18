@@ -922,7 +922,12 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
     // Create a reviewer span and mark review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("review-42", reviewer_name, "reviewer", "sess-rev-42");
+        ps.create_span(
+            "review-42",
+            reviewer_name,
+            "midtown-code-reviewer",
+            "sess-rev-42",
+        );
         ps.task_pr_number.insert("review-42".to_string(), pr_number);
         // Mark the review as completed (simulates webhook having arrived)
         ps.github.mark_reviewed_pr(pr_number);
@@ -1019,7 +1024,7 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
     // Create reviewer span for a PR but do NOT mark the review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-43", reviewer_name, "reviewer", "");
+        ps.create_span("task-43", reviewer_name, "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-43".to_string(), pr_number);
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
