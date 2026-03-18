@@ -163,12 +163,14 @@ impl Default for SessionRecord {
 }
 
 impl SessionRecord {
-    /// Whether this session is a fork (bound to a thread).
+    /// Whether this session is a fork (channel-lead bound to a thread).
     ///
-    /// Fork sessions are spawned for research/investigation in threads and
-    /// should not be treated as PR owners or task dispatch targets.
+    /// Fork sessions are channel-lead sessions spawned for research/investigation
+    /// in threads. They inherit task_id from the parent but should not be treated
+    /// as PR owners or task dispatch targets. Regular dev coworkers also carry
+    /// bound_thread_id (for thread routing) but ARE genuine task owners.
     pub fn is_fork_session(&self) -> bool {
-        self.bound_thread_id.is_some()
+        self.coworker_type == "channel-lead" && self.bound_thread_id.is_some()
     }
 }
 

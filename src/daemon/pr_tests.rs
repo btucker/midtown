@@ -5708,13 +5708,14 @@ fn test_resolve_pr_owner_skips_fork_sessions() {
     let pr_task_associations: HashMap<u64, String> =
         [(42, "100".to_string())].into_iter().collect();
 
-    // Fork session has the task_id but also has bound_thread_id set
+    // Fork session: channel-lead with bound_thread_id (inherits task_id from parent)
     let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
         "fork-sess".to_string(),
         crate::daemon::state::SessionRecord {
             session_id: "fork-sess".to_string(),
             task_id: Some("100".to_string()),
             current_name: Some("fork-elastic-ceiling-7492".to_string()),
+            coworker_type: "channel-lead".to_string(),
             bound_thread_id: Some("thread-abc".to_string()),
             working_dir: "/tmp/test".to_string(),
             is_running: true,
