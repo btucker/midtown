@@ -442,13 +442,10 @@ pub(crate) fn decide_dead_fork_respawns(
         };
 
         // Get the fork's process name
-        let Some(name) = record
-            .current_name
-            .as_ref()
-            .or(record.preferred_name.as_ref())
-        else {
+        if record.name.is_empty() {
             continue;
-        };
+        }
+        let name = &record.name;
 
         // Check if the process is dead.
         // Note: `exit_code` is not reliably populated by `collect_health()` (always None
@@ -474,7 +471,7 @@ pub(crate) fn decide_dead_fork_respawns(
             channel: record.channel.clone(),
             working_dir,
             auth_provider: record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-            is_channel_lead: record.coworker_type == "channel-lead",
+            is_channel_lead: record.agent_type == "midtown-channel-lead",
         });
     }
 
@@ -1227,12 +1224,11 @@ pub(crate) fn decide_session_recovery(
     }
 
     // Resolve the coworker name for recovery.
-    let coworker_name = record
-        .preferred_name
-        .as_deref()
-        .or(record.current_name.as_deref())
-        .unwrap_or(owner)
-        .to_string();
+    let coworker_name = if !record.name.is_empty() {
+        record.name.clone()
+    } else {
+        owner.to_string()
+    };
 
     // Skip if this coworker is currently serving as a reviewer.
     if snap

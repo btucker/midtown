@@ -827,8 +827,8 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
             "stale-session-id-xyz".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "stale-session-id-xyz".to_string(),
-                current_name: Some("auth-refactor".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "auth-refactor".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("auth-refactor".to_string()),
                 is_running: false,
                 resume_on_startup: false,
@@ -1227,8 +1227,8 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
             "session-fx-123".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "session-fx-123".to_string(),
-                current_name: Some("feature-x".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "feature-x".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("feature-x".to_string()),
                 is_running: true,
                 resume_on_startup: false,
@@ -1678,8 +1678,8 @@ async fn test_channel_rename_success() {
             "session-auth-123".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "session-auth-123".to_string(),
-                current_name: Some(old_lead_session_name.clone()),
-                coworker_type: "channel-lead".to_string(),
+                name: old_lead_session_name.clone(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("auth-v1".to_string()),
                 is_running: true,
                 resume_on_startup: false,
@@ -2211,14 +2211,12 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
             crate::daemon::state::SessionRecord {
                 session_id: dead_fork_sid.to_string(),
                 task_id: None,
-                current_name: Some(dead_fork_name.to_string()),
-                preferred_name: Some(dead_fork_name.to_string()),
+                name: dead_fork_name.to_string(),
                 working_dir: String::new(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: false,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -2230,6 +2228,7 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
                 provider: Some(crate::auth::AuthProvider::Claude),
                 platform: None,
                 profile: None,
+                restart_count: 0,
             },
         );
     }
@@ -2589,10 +2588,9 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
             dead_fork_sid.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: dead_fork_sid.to_string(),
-                current_name: Some(dead_fork_name.to_string()),
-                preferred_name: Some(dead_fork_name.to_string()),
+                name: dead_fork_name.to_string(),
                 working_dir: String::new(),
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: false,
                 bound_thread_id: Some(thread_parent_id.clone()),
                 channel: Some("web".to_string()),
@@ -2727,9 +2725,9 @@ async fn test_is_known_agent_name_checks_all_registries() {
             "sess-stopped".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "sess-stopped".to_string(),
-                preferred_name: Some("stopped-cw".to_string()),
+                name: "stopped-cw".to_string(),
                 working_dir: "/tmp/test".to_string(),
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 ..Default::default()
             },
         );
@@ -2743,9 +2741,9 @@ async fn test_is_known_agent_name_checks_all_registries() {
             "sess-active-rec".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "sess-active-rec".to_string(),
-                current_name: Some("active-rec".to_string()),
+                name: "active-rec".to_string(),
                 working_dir: "/tmp/test".to_string(),
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 ..Default::default()
             },
         );

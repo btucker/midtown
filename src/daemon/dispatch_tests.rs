@@ -1386,7 +1386,7 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
             crate::daemon::state::SessionRecord {
                 session_id: "sess-broadway".to_string(),
                 task_id: Some("49".to_string()),
-                current_name: Some("broadway".to_string()),
+                name: "broadway".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -1394,6 +1394,12 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
         .into_iter()
         .collect(),
         session_task_map: [("49".to_string(), "sess-broadway".to_string())]
+            .into_iter()
+            .collect(),
+        session_name_map: [("sess-broadway".to_string(), "broadway".to_string())]
+            .into_iter()
+            .collect(),
+        name_session_map: [("broadway".to_string(), "sess-broadway".to_string())]
             .into_iter()
             .collect(),
         ..snapshot::minimal_snapshot_for_test()
@@ -2178,7 +2184,7 @@ fn test_grouped_task_skips_if_already_assigned() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-york".to_string(),
             task_id: Some(york_task_id.clone()),
-            current_name: Some("york".to_string()),
+            name: "york".to_string(),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
         },
@@ -3616,8 +3622,7 @@ fn make_test_session_record(
     crate::daemon::state::SessionRecord {
         session_id: session_id.to_string(),
         task_id: task_id.map(|s| s.to_string()),
-        current_name: preferred_name.map(|s| s.to_string()),
-        preferred_name: preferred_name.map(|s| s.to_string()),
+        name: preferred_name.unwrap_or("").to_string(),
         working_dir: working_dir.to_string(),
         is_running,
         ..Default::default()
@@ -3689,8 +3694,8 @@ fn test_dispatch_via_sessions_recovers_stopped_session() {
     let has_spawn = effects.iter().any(|e| {
         matches!(
             e,
-            Effect::SpawnForTask { preferred_name: Some(name), .. }
-            if name == "lexington"
+            Effect::SpawnForTask { preferred_name, .. }
+            if preferred_name.as_deref() == Some("lexington")
         )
     });
     assert!(
@@ -3805,8 +3810,8 @@ fn test_dispatch_via_sessions_uses_preferred_name() {
     let has_spawn = effects.iter().any(|e| {
         matches!(
             e,
-            Effect::SpawnForTask { preferred_name: Some(name), .. }
-            if name == "park"
+            Effect::SpawnForTask { preferred_name, .. }
+            if preferred_name.as_deref() == Some("park")
         )
     });
     assert!(
@@ -5134,7 +5139,7 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
             "Reviewer spawn info should have pr_number=42"
         );
         assert_eq!(
-            info.agent_type, "reviewer",
+            info.agent_type, "midtown-code-reviewer",
             "Reviewer spawn info should have agent_type='reviewer'"
         );
         assert!(
@@ -5391,7 +5396,7 @@ fn test_reviewer_create_span_before_post_pr_comment() {
         .expect("Reviewer task should produce SpawnForTask with reviewer field");
 
     assert_eq!(
-        reviewer.agent_type, "reviewer",
+        reviewer.agent_type, "midtown-code-reviewer",
         "agent_type should be 'reviewer'"
     );
     assert!(reviewer.pr_number == 99, "pr_number should be 99");

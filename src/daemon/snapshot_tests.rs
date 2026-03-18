@@ -679,7 +679,7 @@ fn find_session_for_task_returns_record_when_chain_resolves() {
             crate::daemon::state::SessionRecord {
                 session_id: "sess-abc".to_string(),
                 task_id: Some("42".to_string()),
-                current_name: Some("lexington".to_string()),
+                name: "lexington".to_string(),
                 ..Default::default()
             },
         )]
@@ -949,7 +949,7 @@ fn find_session_for_task_skips_fork_sessions() {
         SessionRecord {
             session_id: "coworker-sess".to_string(),
             task_id: Some("500".to_string()),
-            current_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
         },
@@ -959,8 +959,8 @@ fn find_session_for_task_skips_fork_sessions() {
         SessionRecord {
             session_id: "fork-sess".to_string(),
             task_id: Some("500".to_string()),
-            current_name: Some("fork-research-1234".to_string()),
-            coworker_type: "channel-lead".to_string(),
+            name: "fork-research-1234".to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
             bound_thread_id: Some("thread-xyz".to_string()),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
@@ -983,8 +983,7 @@ fn find_session_for_task_skips_fork_sessions() {
     let session_id = session_task_map.get("500").unwrap();
     let resolved = sessions.get(session_id).unwrap();
     assert_eq!(
-        resolved.current_name.as_deref(),
-        Some("madison"),
+        resolved.name, "madison",
         "Should resolve to coworker session, not the fork"
     );
     assert!(

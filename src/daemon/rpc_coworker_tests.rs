@@ -814,7 +814,6 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
                 task_id: Some(task_id.to_string()),
                 pr_number: Some(42),
                 branch: Some("park/add-new-feature".to_string()),
-                preferred_name: Some("park".to_string()),
                 ..Default::default()
             },
         );
@@ -1488,14 +1487,12 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
             super::super::state::SessionRecord {
                 session_id: "sess-test".to_string(),
                 task_id: None,
-                current_name: Some(coworker_name.to_string()),
-                preferred_name: Some(coworker_name.to_string()),
+                name: coworker_name.to_string(),
                 working_dir: "/tmp".to_string(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -1507,6 +1504,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
                 provider: Some(crate::auth::AuthProvider::Claude),
                 platform: None,
                 profile: None,
+                restart_count: 0,
             },
         );
     }
@@ -1521,11 +1519,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
     }
     {
         let mut ps = state.persistent_state.lock().await;
-        if let Some(record) = ps
-            .sessions
-            .values_mut()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
-        {
+        if let Some(record) = ps.sessions.values_mut().find(|r| r.name == coworker_name) {
             record.bound_thread_id = Some(thread_id.to_string());
         }
     }
@@ -1546,7 +1540,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
         let record = ps
             .sessions
             .values()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
+            .find(|r| r.name == coworker_name)
             .expect("SessionRecord should exist");
         assert_eq!(
             record.bound_thread_id.as_deref(),
@@ -1784,11 +1778,7 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
     {
         let mut ps = state.persistent_state.lock().await;
         // This find will return None — no record matches
-        if let Some(record) = ps
-            .sessions
-            .values_mut()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
-        {
+        if let Some(record) = ps.sessions.values_mut().find(|r| r.name == coworker_name) {
             record.bound_thread_id = Some(thread_id.to_string());
         }
         // No save error — just no record found
@@ -1807,10 +1797,7 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
     // Verify: no SessionRecord was created (we don't create records here)
     {
         let ps = state.persistent_state.lock().await;
-        let record = ps
-            .sessions
-            .values()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name));
+        let record = ps.sessions.values().find(|r| r.name == coworker_name);
         assert!(
             record.is_none(),
             "No SessionRecord should exist — binding logic doesn't create records"

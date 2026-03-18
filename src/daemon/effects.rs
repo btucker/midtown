@@ -1578,9 +1578,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // (covers sessions that may have been persisted under a
                 // different session_id than name_to_session currently maps).
                 for record in ps.sessions.values() {
-                    if record.current_name.as_deref().is_some_and(|n| n == name)
-                        && !record.session_id.is_empty()
-                    {
+                    if record.name == name && !record.session_id.is_empty() {
                         candidate_ids.insert(record.session_id.clone());
                     }
                 }
@@ -1594,16 +1592,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // stale so the session won't be auto-resumed under this name.
                 let mut stale_ids_for_spans: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
-                    if record.current_name.as_deref().is_some_and(|n| n == name)
-                        && record.is_running
-                    {
+                    if record.name == name && record.is_running {
                         info!(
                             "Clearing stale session record for '{}': {}",
                             name, record.session_id
                         );
                         record.is_running = false;
                         record.resume_on_startup = false;
-                        record.current_name = None;
                         stale_ids_for_spans.push(record.session_id.clone());
                     }
                 }
@@ -1626,15 +1621,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut cleared_task_ids: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
                     let matches_id = candidate_ids.contains(&record.session_id);
-                    let matches_running_name = record.is_running
-                        && (record
-                            .current_name
-                            .as_deref()
-                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
-                            || record
-                                .preferred_name
-                                .as_deref()
-                                .is_some_and(|n| n.eq_ignore_ascii_case(&name)));
+                    let matches_running_name =
+                        record.is_running && record.name.eq_ignore_ascii_case(&name);
                     if !(matches_id || matches_running_name) {
                         continue;
                     }
@@ -1643,7 +1631,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     record.is_running = false;
                     record.resume_on_startup = false;
-                    record.current_name = None;
                     stale_ids_for_spans.push(record.session_id.clone());
                 }
 
@@ -2757,13 +2744,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 let mut removed_session = false;
                                 let mut stopped_ids: Vec<String> = Vec::new();
                                 for record in ps.sessions.values_mut() {
-                                    if record
-                                        .current_name
-                                        .as_deref()
-                                        .is_some_and(|n| n == lead_session_name)
-                                    {
+                                    if record.name == lead_session_name {
                                         record.is_running = false;
-                                        record.current_name = None;
                                         record.resume_on_startup = false;
                                         removed_session = true;
                                         stopped_ids.push(record.session_id.clone());
@@ -3205,10 +3187,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             let ps = state.persistent_state.lock().await;
                             ps.sessions
                                 .iter()
-                                .find(|(_, r)| {
-                                    r.preferred_name.as_deref() == Some(agent_name)
-                                        || r.current_name.as_deref() == Some(agent_name)
-                                })
+                                .find(|(_, r)| r.name == agent_name)
                                 .map(|(sid, r)| (sid.clone(), r.clone()))
                         };
 
@@ -3552,17 +3531,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let session_id = record.session_id.clone();
 
                 // Update in-memory reverse maps
-                if let Some(ref name) = record.current_name {
+                if !record.name.is_empty() {
                     state
                         .name_to_session
                         .lock()
                         .unwrap()
-                        .insert(name.clone(), session_id.clone());
+                        .insert(record.name.clone(), session_id.clone());
                     state
                         .session_to_name
                         .lock()
                         .unwrap()
-                        .insert(session_id.clone(), name.clone());
+                        .insert(session_id.clone(), record.name.clone());
                 }
                 if let Some(ref task_id) = record.task_id {
                     state
@@ -4529,20 +4508,13 @@ async fn respawn_fork(
     // Create SessionRecord for the new fork
     {
         let mut ps = state.persistent_state.lock().await;
-        // Clear current_name/preferred_name on any old session records that
-        // still claim this name. Same cleanup as SpawnForTask (PR #1819) —
-        // prevents ambiguous find-by-name lookups when multiple records share
-        // the same name. Must check both fields because rpc_auth.rs matches
-        // sessions by either preferred_name or current_name.
+        // Clear old session records that still claim this name. Same cleanup
+        // as SpawnForTask (PR #1819) — prevents ambiguous find-by-name lookups
+        // when multiple records share the same name.
         let mut displaced_fork_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
-            if record.session_id != fork_session_id
-                && (record.preferred_name.as_deref() == Some(&name)
-                    || record.current_name.as_deref() == Some(&name))
-            {
+            if record.session_id != fork_session_id && record.name == name {
                 record.is_running = false;
-                record.current_name = None;
-                record.preferred_name = None;
                 displaced_fork_ids.push(record.session_id.clone());
             }
         }
@@ -4554,17 +4526,15 @@ async fn respawn_fork(
             crate::daemon::state::SessionRecord {
                 session_id: fork_session_id.clone(),
                 task_id: None,
-                current_name: Some(name.clone()),
-                preferred_name: Some(name.clone()),
+                name: name.clone(),
                 working_dir: working_dir.unwrap_or_default().to_string(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: initial_prompt.map(String::from),
-                is_reviewer: false,
-                coworker_type: if is_channel_lead {
-                    "channel-lead".to_string()
+                agent_type: if is_channel_lead {
+                    "midtown-channel-lead".to_string()
                 } else {
-                    "dev".to_string()
+                    "midtown-code-author".to_string()
                 },
                 is_running: true,
                 created_at: chrono::Utc::now(),
@@ -4580,6 +4550,7 @@ async fn respawn_fork(
                 provider: Some(auth_provider),
                 platform: Some(crate::platform::Platform::from_provider(auth_provider)),
                 profile: None,
+                restart_count: 0,
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -4714,11 +4685,10 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
     // Suppress insights from channel leads (they auto-post all output).
     {
         let ps = state.persistent_state.lock().await;
-        let is_channel_lead = ps.sessions.values().any(|s| {
-            s.is_running
-                && s.current_name.as_deref() == Some(agent)
-                && s.coworker_type == "channel-lead"
-        });
+        let is_channel_lead = ps
+            .sessions
+            .values()
+            .any(|s| s.is_running && s.name == agent && s.agent_type == "midtown-channel-lead");
         if is_channel_lead {
             debug!(
                 "post_insight: suppressing insight from channel lead {}, already auto-posted",
@@ -4734,12 +4704,8 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
         let task_id = ps
             .sessions
             .values()
-            .find(|r| r.is_running && r.current_name.as_deref() == Some(agent))
-            .or_else(|| {
-                ps.sessions
-                    .values()
-                    .find(|r| r.current_name.as_deref() == Some(agent))
-            })
+            .find(|r| r.is_running && r.name == agent)
+            .or_else(|| ps.sessions.values().find(|r| r.name == agent))
             .and_then(|r| r.task_id.as_deref());
         let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
         let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());

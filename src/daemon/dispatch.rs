@@ -549,9 +549,13 @@ fn check_and_recover_orphans_impl(snap: &snapshot::WorldSnapshot) -> Vec<effects
     );
 
     let (session_mode, preferred_name) = match snap.find_session_for_task(&recovery.task_id) {
-        Some(record) if !record.is_running && !record.is_reviewer => (
+        Some(record) if !record.is_running && record.agent_type != "midtown-code-reviewer" => (
             crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
-            record.preferred_name.clone(),
+            if record.name.is_empty() {
+                None
+            } else {
+                Some(record.name.clone())
+            },
         ),
         _ => (
             crate::launch::SessionMode::Fresh,
@@ -1117,11 +1121,9 @@ fn resolve_grouped_name(
                         || t.status == crate::tasks::TaskStatus::Pending)
             })
             && let Some(session) = snap.find_session_for_task(&pr_task.id)
-            && let Some(name) = session
-                .current_name
-                .as_ref()
-                .or(session.preferred_name.as_ref())
+            && !session.name.is_empty()
         {
+            let name = &session.name;
             info!(
                 "Task !{} references PR #{} - assigning to session owner {}",
                 task.id, pr_num, name
@@ -1141,11 +1143,9 @@ fn resolve_grouped_name(
         }) {
             // Session-based lookup (source of truth).
             if let Some(session) = snap.find_session_for_task(&t.id)
-                && let Some(name) = session
-                    .current_name
-                    .as_ref()
-                    .or(session.preferred_name.as_ref())
+                && !session.name.is_empty()
             {
+                let name = &session.name;
                 info!(
                     "Task !{} references PR #{} - assigning to session owner {} (text match)",
                     task.id, pr_num, name
@@ -1324,7 +1324,11 @@ fn dispatch_unowned_pending_tasks(
                     task.id, record.session_id
                 );
 
-                let preferred_name = record.preferred_name.clone();
+                let preferred_name = if record.name.is_empty() {
+                    None
+                } else {
+                    Some(record.name.clone())
+                };
                 let session_id = record.session_id.clone();
                 let decision = SpawnDecision {
                     task_id: task.id.clone(),
@@ -1657,7 +1661,7 @@ fn dispatch_unowned_pending_tasks(
                         crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
                     ),
                     restart_count: 0,
-                    agent_type: "reviewer".to_string(),
+                    agent_type: "midtown-code-reviewer".to_string(),
                 }),
             });
             spawns_queued_this_tick += 1;

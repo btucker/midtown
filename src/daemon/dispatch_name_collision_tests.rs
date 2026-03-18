@@ -138,15 +138,12 @@ fn test_dispatch_excludes_active_session_names() {
     );
 
     // Verify the preferred_name on the SpawnForTask is not "park"
-    if let Some(effects::Effect::SpawnForTask {
-        preferred_name: Some(name),
-        ..
-    }) = effects
+    if let Some(effects::Effect::SpawnForTask { preferred_name, .. }) = effects
         .iter()
         .find(|e| matches!(e, effects::Effect::SpawnForTask { .. }))
     {
         assert_ne!(
-            name.as_str(),
+            preferred_name.as_deref().unwrap_or(""),
             "park",
             "Dispatch should NOT allocate 'park' — it has an active session (in active_names) \
              even though it's not in CoworkerManager."

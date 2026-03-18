@@ -269,10 +269,9 @@ async fn insert_test_session_with_metadata(
             session_id.clone(),
             crate::daemon::state::SessionRecord {
                 session_id: session_id.clone(),
-                current_name: Some(name.to_string()),
-                preferred_name: Some(name.to_string()),
+                name: name.to_string(),
                 working_dir: "/tmp/test-worktree".to_string(),
-                coworker_type: coworker_type.to_string(),
+                agent_type: coworker_type.to_string(),
                 task_id: Some("42".to_string()),
                 pr_number,
                 channel,
@@ -677,10 +676,9 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
             calling_session_id.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: calling_session_id.to_string(),
-                current_name: Some("web".to_string()),
-                preferred_name: Some("web".to_string()),
+                name: "web".to_string(),
                 working_dir: "/dev/null/nonexistent".to_string(),
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("web".to_string()),
                 ..Default::default()
             },
@@ -761,10 +759,9 @@ async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
             calling_session_id.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: calling_session_id.to_string(),
-                current_name: Some("daemon-core".to_string()),
-                preferred_name: Some("daemon-core".to_string()),
+                name: "daemon-core".to_string(),
                 working_dir: "/dev/null/nonexistent".to_string(),
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("daemon-core".to_string()),
                 ..Default::default()
             },
@@ -901,10 +898,9 @@ async fn test_create_fork_session_falls_back_to_repo_name() {
             calling_session_id.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: calling_session_id.to_string(),
-                current_name: Some("main-lead".to_string()),
-                preferred_name: Some("main-lead".to_string()),
+                name: "main-lead".to_string(),
                 working_dir: "/dev/null/nonexistent".to_string(),
-                coworker_type: "lead".to_string(),
+                agent_type: "midtown-project-lead".to_string(),
                 channel: None, // no channel — will trigger fallback
                 ..Default::default()
             },
@@ -998,10 +994,9 @@ async fn test_handle_session_fork_with_initial_message() {
             calling_session_id.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: calling_session_id.to_string(),
-                current_name: Some("daemon-core".to_string()),
-                preferred_name: Some("daemon-core".to_string()),
+                name: "daemon-core".to_string(),
                 working_dir: "/dev/null/nonexistent".to_string(),
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("daemon-core".to_string()),
                 ..Default::default()
             },

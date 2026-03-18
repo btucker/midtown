@@ -322,10 +322,7 @@ pub(super) async fn handle_auth_switch(
                 persistent
                     .sessions
                     .values()
-                    .find(|r| {
-                        r.current_name.as_deref() == Some(name)
-                            || r.preferred_name.as_deref() == Some(name)
-                    })
+                    .find(|r| r.name == *name)
                     .map(|r| (name.clone(), r.channel.clone()))
             })
             .collect();

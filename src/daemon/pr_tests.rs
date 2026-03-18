@@ -562,7 +562,7 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-york".to_string(),
             task_id: Some("t100".to_string()),
-            current_name: Some("york".to_string()),
+            name: "york".to_string(),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
         },
@@ -851,7 +851,7 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-york".to_string(),
             task_id: Some("5151".to_string()),
-            current_name: Some("york".to_string()),
+            name: "york".to_string(),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
         },
@@ -1941,7 +1941,7 @@ async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
                 session_id: "sess-park".to_string(),
                 task_id: Some("1483".to_string()),
                 pr_number: Some(1246),
-                current_name: Some("park".to_string()),
+                name: "park".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -2023,7 +2023,7 @@ async fn test_headless_only_coworker_pr_is_not_orphaned() {
                 session_id: "sess-york".to_string(),
                 task_id: Some("500".to_string()),
                 pr_number: Some(999),
-                current_name: Some("york".to_string()),
+                name: "york".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -2073,7 +2073,7 @@ fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
-            current_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
@@ -2113,7 +2113,7 @@ fn test_resolve_pr_owner_from_session_returns_none_without_session() {
 /// When the session record exists but has no current_name (suspended session),
 /// the lookup should fall back to preferred_name so PR feedback routes to the right coworker.
 #[test]
-fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session() {
+fn test_resolve_pr_owner_from_session_uses_name_for_suspended_session() {
     let pr_task_associations: HashMap<u64, String> =
         [(42, "123".to_string())].into_iter().collect();
     let session_task_map: HashMap<String, String> = [("123".to_string(), "sess-abc".to_string())]
@@ -2124,7 +2124,7 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
-            preferred_name: Some("lexington".to_string()),
+            name: "lexington".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
@@ -2140,7 +2140,7 @@ fn test_resolve_pr_owner_from_session_uses_preferred_name_for_suspended_session(
     assert_eq!(
         result,
         Some("lexington".to_string()),
-        "Should return preferred_name when session has no current_name but preferred_name is set"
+        "Should return name even when session is suspended (name is stable)"
     );
 }
 
@@ -2172,7 +2172,7 @@ fn test_resolve_pr_owner_uses_session_current_name() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-xyz".to_string(),
             task_id: Some("555".to_string()),
-            current_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("task-2047-fix".to_string()),
             pr_number: Some(2047),
@@ -2262,7 +2262,7 @@ async fn test_poll_prs_session_based_owner_resolution() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("123".to_string()),
-            current_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
@@ -2307,7 +2307,6 @@ async fn test_poll_prs_session_based_owner_resolution() {
                 task_id: Some("123".to_string()),
                 pr_number: Some(42),
                 branch: Some("lexington/fix-auth".to_string()),
-                preferred_name: Some("madison".to_string()),
                 ..Default::default()
             },
         );
@@ -2349,8 +2348,7 @@ fn test_resolve_pr_owner_from_session_full_chain() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("100".to_string()),
-            current_name: Some("madison".to_string()),
-            preferred_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
@@ -2388,7 +2386,7 @@ fn test_resolve_pr_owner_from_session_returns_none_no_pr_association() {
 
 /// resolve_pr_owner_from_session falls back to preferred_name when current_name is None.
 #[test]
-fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
+fn test_resolve_pr_owner_from_session_name_via_chain() {
     let pr_task_associations: HashMap<u64, String> =
         [(42, "100".to_string())].into_iter().collect();
     let session_task_map: HashMap<String, String> = [("100".to_string(), "sess-abc".to_string())]
@@ -2399,7 +2397,7 @@ fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
             task_id: Some("100".to_string()),
-            preferred_name: Some("park".to_string()),
+            name: "park".to_string(),
             working_dir: "/tmp/test".to_string(),
             branch: Some("lexington/fix-auth".to_string()),
             pr_number: Some(42),
@@ -2415,7 +2413,7 @@ fn test_resolve_pr_owner_from_session_preferred_name_fallback_via_chain() {
     assert_eq!(
         result,
         Some("park".to_string()),
-        "Should fall back to preferred_name when current_name is None"
+        "Should return stable name from session record"
     );
 }
 
@@ -2477,7 +2475,7 @@ async fn test_reviewer_not_assigned_to_pr_author() {
                 session_id: "sess-riverside".to_string(),
                 task_id: Some("100".to_string()),
                 pr_number: Some(9998),
-                current_name: Some("riverside".to_string()),
+                name: "riverside".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -2877,7 +2875,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
                 session_id: "sess-york".to_string(),
                 task_id: Some("778".to_string()),
                 pr_number: Some(99994),
-                current_name: Some("york".to_string()),
+                name: "york".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -2950,7 +2948,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
                 session_id: "sess-madison".to_string(),
                 task_id: Some("200".to_string()),
                 pr_number: Some(99994),
-                current_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -4229,7 +4227,6 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
                 task_id: Some(task_id.to_string()),
                 pr_number: Some(pr_number),
                 branch: Some("lexington/some-feature".to_string()),
-                preferred_name: Some("lexington".to_string()),
                 ..Default::default()
             },
         );
@@ -4309,7 +4306,6 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
                 task_id: Some(task_id.to_string()),
                 pr_number: Some(pr_number),
                 branch: Some("lexington/some-feature".to_string()),
-                preferred_name: Some("lexington".to_string()),
                 ..Default::default()
             },
         );
@@ -4393,8 +4389,7 @@ async fn test_reviewer_spawn_inherits_task_channel() {
                 task_id: Some(task_id.to_string()),
                 pr_number: Some(pr_number),
                 branch: Some("madison/auth-feature".to_string()),
-                preferred_name: Some("madison".to_string()),
-                current_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 ..Default::default()
             },
         );
@@ -4484,7 +4479,7 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
                 session_id: "sess-madison-77771".to_string(),
                 task_id: Some("task-77771".to_string()),
                 pr_number: Some(pr_number),
-                current_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -4567,7 +4562,7 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
                 session_id: "sess-york-99998".to_string(),
                 task_id: Some("300".to_string()),
                 pr_number: Some(pr_number),
-                current_name: Some("york".to_string()),
+                name: "york".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -4634,7 +4629,7 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
                 session_id: "sess-york-99997".to_string(),
                 task_id: Some("301".to_string()),
                 pr_number: Some(pr_number),
-                current_name: Some("york".to_string()),
+                name: "york".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -4720,7 +4715,6 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
                 task_id: Some("42".to_string()),
                 pr_number: Some(100),
                 branch: Some("madison/task-42-feature".to_string()),
-                preferred_name: Some("madison".to_string()),
                 ..Default::default()
             },
         );
@@ -4817,8 +4811,7 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
                 task_id: Some("43".to_string()),
                 pr_number: Some(101),
                 branch: Some("madison/task-43-feature".to_string()),
-                preferred_name: Some("madison".to_string()),
-                current_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 ..Default::default()
             },
         );
@@ -5021,7 +5014,6 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
                 task_id: Some("1834".to_string()),
                 pr_number: Some(pr_number),
                 branch: Some("lead/essay".to_string()),
-                preferred_name: Some("columbus".to_string()),
                 ..Default::default()
             },
         );
@@ -5546,7 +5538,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
                 session_id: "sess-lexington".to_string(),
                 task_id: Some("200".to_string()),
                 pr_number: Some(7001),
-                current_name: Some("lexington".to_string()),
+                name: "lexington".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -5557,7 +5549,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
                 session_id: "sess-park".to_string(),
                 task_id: Some("201".to_string()),
                 pr_number: Some(7002),
-                current_name: Some("park".to_string()),
+                name: "park".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },
@@ -5593,7 +5585,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
                 ..
             } = e
             {
-                if agent_type == "reviewer" {
+                if agent_type == "midtown-code-reviewer" {
                     Some(agent_name.clone())
                 } else {
                     None
@@ -5714,8 +5706,8 @@ fn test_resolve_pr_owner_skips_fork_sessions() {
         crate::daemon::state::SessionRecord {
             session_id: "fork-sess".to_string(),
             task_id: Some("100".to_string()),
-            current_name: Some("fork-elastic-ceiling-7492".to_string()),
-            coworker_type: "channel-lead".to_string(),
+            name: "fork-elastic-ceiling-7492".to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
             bound_thread_id: Some("thread-abc".to_string()),
             working_dir: "/tmp/test".to_string(),
             is_running: true,

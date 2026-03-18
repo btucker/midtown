@@ -15,7 +15,7 @@ fn add_coworker_with_open_pr(
         session_id.to_string(),
         SessionRecord {
             session_id: session_id.to_string(),
-            current_name: Some(name.to_string()),
+            name: name.to_string(),
             pr_number: Some(pr_number),
             ..Default::default()
         },
@@ -137,7 +137,7 @@ fn does_not_nudge_coworkers_without_sessions() {
         "session-1".to_string(),
         SessionRecord {
             session_id: "session-1".to_string(),
-            current_name: Some("lexington".to_string()),
+            name: "lexington".to_string(),
             pr_number: Some(200),
             ..Default::default()
         },

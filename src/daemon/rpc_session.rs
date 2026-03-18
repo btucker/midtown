@@ -160,7 +160,11 @@ async fn resolve_attach_target_candidates(
                 .values()
                 .filter_map(|record| {
                     if record.task_id.as_deref() == Some(id_str.as_str()) {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -182,7 +186,11 @@ async fn resolve_attach_target_candidates(
             }
             matches.extend(persistent.sessions.values().filter_map(|record| {
                 if record.pr_number == Some(pr_num) {
-                    record.current_name.as_ref().map(|n| n.to_lowercase())
+                    if record.name.is_empty() {
+                        None
+                    } else {
+                        Some(record.name.to_lowercase())
+                    }
                 } else {
                     None
                 }
@@ -211,7 +219,11 @@ async fn resolve_attach_target_candidates(
                 .values()
                 .filter_map(|record| {
                     if platform_for_provider(record.provider) == platform {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -239,7 +251,11 @@ async fn resolve_attach_target_candidates(
                     }
 
                     if platform_for_provider(record.provider) == platform {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -570,7 +586,7 @@ pub(super) async fn handle_session_attach(
             "name": name,
             "provider": provider.as_str(),
             "profile": record.profile,
-            "coworker_type": record.coworker_type,
+            "agent_type": record.agent_type,
             "channel": record.channel,
         }),
     )
@@ -760,7 +776,10 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         .sessions
         .values()
         .filter_map(|record| {
-            let name = record.current_name.as_ref()?;
+            if record.name.is_empty() {
+                return None;
+            }
+            let name = &record.name;
             let status = if attached.contains_key(&name.to_lowercase()) {
                 "attached"
             } else if running_coworkers.contains(&name.to_lowercase()) {
@@ -986,9 +1005,9 @@ pub(super) async fn handle_session_clear(
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
         // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
         {
-            match session_info.coworker_type.as_str() {
-                "reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
-                "channel-lead" => {
+            match session_info.agent_type.as_str() {
+                "midtown-code-reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
+                "midtown-channel-lead" => {
                     c.role = crate::launch::CoworkerRole::ChannelLead {
                         channel_name: session_info.channel.clone().unwrap_or_default(),
                         domain_context: String::new(),
@@ -1398,7 +1417,7 @@ pub(super) async fn create_fork_session(
                     wd,
                     r.channel.clone(),
                     r.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-                    r.coworker_type == "channel-lead",
+                    r.agent_type == "midtown-channel-lead",
                 )
             }
             None => {
@@ -1477,16 +1496,14 @@ pub(super) async fn create_fork_session(
             crate::daemon::state::SessionRecord {
                 session_id: fork_session_id.clone(),
                 task_id: parent_record.as_ref().and_then(|r| r.task_id.clone()),
-                current_name: Some(fork_name.clone()),
-                preferred_name: Some(fork_name.clone()),
+                name: fork_name.clone(),
                 working_dir: working_dir.clone().unwrap_or_default(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: parent_record
                     .as_ref()
                     .and_then(|r| r.initial_prompt.clone()),
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -1505,6 +1522,7 @@ pub(super) async fn create_fork_session(
                     .and_then(|r| r.provider)
                     .map(crate::platform::Platform::from_provider),
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
+                restart_count: 0,
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -1713,7 +1731,7 @@ pub(super) async fn handle_session_fork(
                 ps_guard
                     .sessions
                     .get(calling_session_id)
-                    .map(|r| r.coworker_type == "channel-lead")
+                    .map(|r| r.agent_type == "midtown-channel-lead")
                     .unwrap_or(false)
             };
             // (persistent_prompt, nudge_message): persistent is crash-recovery-safe

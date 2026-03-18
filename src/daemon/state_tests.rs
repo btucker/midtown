@@ -111,9 +111,9 @@ fn test_sessions_in_persistent_state() {
         "session-42".to_string(),
         SessionRecord {
             session_id: "session-42".to_string(),
-            current_name: Some("park".to_string()),
+            name: "park".to_string(),
             working_dir: "/path/to/park-worktree".to_string(),
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             task_id: Some("3".to_string()),
             purpose: "task !3: Fix login bug".to_string(),
             pid: Some(9999),
@@ -146,9 +146,9 @@ fn test_session_record_provider_persistence() {
         "codex-session-123".to_string(),
         SessionRecord {
             session_id: "codex-session-123".to_string(),
-            current_name: Some("madison".to_string()),
+            name: "madison".to_string(),
             working_dir: "/path/to/madison-worktree".to_string(),
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             task_id: Some("42".to_string()),
             purpose: "task !42: Add feature".to_string(),
             pid: Some(5555),
@@ -407,8 +407,8 @@ fn test_channel_lead_session_record_coworker_type_and_channel() {
         "session-ch-123".to_string(),
         SessionRecord {
             session_id: "session-ch-123".to_string(),
-            current_name: Some("amsterdam".to_string()),
-            coworker_type: "channel-lead".to_string(),
+            name: "amsterdam".to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
             channel: Some("daemon-architecture".to_string()),
             purpose: "channel lead for daemon-architecture".to_string(),
             pid: Some(42),
@@ -423,9 +423,9 @@ fn test_channel_lead_session_record_coworker_type_and_channel() {
 
     let record = loaded.sessions.get("session-ch-123").unwrap();
     assert_eq!(
-        record.coworker_type.as_str(),
-        "channel-lead",
-        "coworker_type should be 'channel-lead', not 'dev'"
+        record.agent_type.as_str(),
+        "midtown-channel-lead",
+        "agent_type should be 'midtown-channel-lead'"
     );
     assert_eq!(
         record.channel.as_deref(),
@@ -442,10 +442,8 @@ fn make_test_session_record_named(session_id: &str, is_running: bool, name: &str
     SessionRecord {
         session_id: session_id.to_string(),
         task_id: Some("1690".to_string()),
-        current_name: Some(name.to_string()),
-        preferred_name: Some(name.to_string()),
-        is_reviewer: true,
-        coworker_type: "reviewer".to_string(),
+        name: name.to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         is_running,
         resume_on_startup: false,
         ..Default::default()
@@ -489,7 +487,7 @@ fn test_upsert_session_running_marks_stopped_session_as_running() {
     );
     // Original record fields preserved (and_modify only sets is_running + current_name)
     assert_eq!(session.task_id, Some("1690".to_string()));
-    assert_eq!(session.current_name, Some("riverside".to_string()));
+    assert_eq!(session.name, "riverside");
 }
 
 #[test]
@@ -501,7 +499,7 @@ fn test_upsert_session_running_updates_current_name_on_existing_entry() {
 
     // Pre-populate with a stopped session whose current_name was cleared on stop
     let mut stopped_record = make_test_session_record_named("session-xyz", false, "old-name");
-    stopped_record.current_name = None; // cleared when session stopped
+    stopped_record.name = String::new(); // cleared when session stopped
     state
         .sessions
         .insert("session-xyz".to_string(), stopped_record);
@@ -513,9 +511,8 @@ fn test_upsert_session_running_updates_current_name_on_existing_entry() {
     let session = state.sessions.get("session-xyz").unwrap();
     assert!(session.is_running, "Session must be marked running");
     assert_eq!(
-        session.current_name,
-        Some("new-name".to_string()),
-        "current_name must be updated from the new record, not left as None"
+        session.name, "new-name",
+        "name must be updated from the new record"
     );
 }
 
@@ -541,8 +538,10 @@ fn test_fork_bound_threads_rebuilt_from_session_records_with_bound_thread_id() {
     // Simulate the rebuild loop from DaemonState::new
     let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
     for record in sessions.values() {
-        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
-            fork_bound_threads.insert(name.clone(), tid.clone());
+        if !record.name.is_empty()
+            && let Some(tid) = &record.bound_thread_id
+        {
+            fork_bound_threads.insert(record.name.clone(), tid.clone());
         }
     }
 
@@ -565,8 +564,10 @@ fn test_fork_bound_threads_skips_sessions_without_bound_thread_id() {
 
     let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
     for record in sessions.values() {
-        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
-            fork_bound_threads.insert(name.clone(), tid.clone());
+        if !record.name.is_empty()
+            && let Some(tid) = &record.bound_thread_id
+        {
+            fork_bound_threads.insert(record.name.clone(), tid.clone());
         }
     }
 
@@ -592,8 +593,10 @@ fn test_fork_bound_threads_only_includes_bound_sessions() {
 
     let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
     for record in sessions.values() {
-        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
-            fork_bound_threads.insert(name.clone(), tid.clone());
+        if !record.name.is_empty()
+            && let Some(tid) = &record.bound_thread_id
+        {
+            fork_bound_threads.insert(record.name.clone(), tid.clone());
         }
     }
 
@@ -615,13 +618,13 @@ fn test_fork_bound_channels_rebuild_only_for_channel_leads() {
 
     let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
     let mut channel_lead_record = make_test_session_record_named("sess-fork", true, "channel-fork");
-    channel_lead_record.coworker_type = "channel-lead".to_string();
+    channel_lead_record.agent_type = "midtown-channel-lead".to_string();
     channel_lead_record.bound_thread_id = Some("thread-fork".to_string());
     channel_lead_record.channel = Some("topic-fork".to_string());
     sessions.insert("sess-fork".to_string(), channel_lead_record);
 
     let mut dev_record = make_test_session_record_named("sess-task", true, "riverside");
-    dev_record.coworker_type = "dev".to_string();
+    dev_record.agent_type = "midtown-code-author".to_string();
     dev_record.bound_thread_id = Some("thread-task".to_string());
     dev_record.channel = Some("topic-task".to_string());
     sessions.insert("sess-task".to_string(), dev_record);
@@ -629,12 +632,14 @@ fn test_fork_bound_channels_rebuild_only_for_channel_leads() {
     let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
     let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
     for (_session_id, record) in sessions.iter() {
-        if let (Some(name), Some(tid)) = (&record.current_name, &record.bound_thread_id) {
-            fork_bound_threads.insert(name.clone(), tid.clone());
-            if record.coworker_type == "channel-lead"
+        if !record.name.is_empty()
+            && let Some(tid) = &record.bound_thread_id
+        {
+            fork_bound_threads.insert(record.name.clone(), tid.clone());
+            if record.agent_type == "midtown-channel-lead"
                 && let Some(ref channel) = record.channel
             {
-                fork_bound_channels.insert(name.clone(), channel.clone());
+                fork_bound_channels.insert(record.name.clone(), channel.clone());
             }
         }
     }
@@ -702,14 +707,14 @@ fn test_topic_sessions_rebuilt_from_channel_lead_fork_records() {
 
     let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
     let mut fork_record = make_test_session_record_named("fork-sess-1", true, "fork-riverside");
-    fork_record.coworker_type = "channel-lead".to_string();
+    fork_record.agent_type = "midtown-channel-lead".to_string();
     fork_record.bound_thread_id = Some("thread-msg-abc".to_string());
     sessions.insert("fork-sess-1".to_string(), fork_record);
 
     // Simulate the rebuild loop from DaemonState::new
     let mut topic_sessions: HashMap<String, String> = HashMap::new();
     for (session_id, record) in &sessions {
-        if record.coworker_type == "channel-lead"
+        if record.agent_type == "midtown-channel-lead"
             && let Some(ref tid) = record.bound_thread_id
         {
             topic_sessions.insert(tid.clone(), session_id.clone());
@@ -732,13 +737,13 @@ fn test_topic_sessions_skips_non_channel_lead_sessions() {
 
     let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
     let mut task_record = make_test_session_record_named("task-sess-1", true, "riverside");
-    task_record.coworker_type = "dev".to_string();
+    task_record.agent_type = "midtown-code-author".to_string();
     task_record.bound_thread_id = Some("thread-task-xyz".to_string());
     sessions.insert("task-sess-1".to_string(), task_record);
 
     let mut topic_sessions: HashMap<String, String> = HashMap::new();
     for (session_id, record) in &sessions {
-        if record.coworker_type == "channel-lead"
+        if record.agent_type == "midtown-channel-lead"
             && let Some(ref tid) = record.bound_thread_id
         {
             topic_sessions.insert(tid.clone(), session_id.clone());
@@ -759,13 +764,13 @@ fn test_topic_sessions_skips_channel_leads_without_bound_thread() {
 
     let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
     let mut root_lead = make_test_session_record_named("lead-sess-1", true, "ops-lead");
-    root_lead.coworker_type = "channel-lead".to_string();
+    root_lead.agent_type = "midtown-channel-lead".to_string();
     // bound_thread_id is None — this is a root channel lead, not a fork
     sessions.insert("lead-sess-1".to_string(), root_lead);
 
     let mut topic_sessions: HashMap<String, String> = HashMap::new();
     for (session_id, record) in &sessions {
-        if record.coworker_type == "channel-lead"
+        if record.agent_type == "midtown-channel-lead"
             && let Some(ref tid) = record.bound_thread_id
         {
             topic_sessions.insert(tid.clone(), session_id.clone());
@@ -788,18 +793,18 @@ fn test_topic_sessions_only_includes_channel_lead_forks() {
 
     // Fork channel lead (should be included)
     let mut fork = make_test_session_record_named("fork-1", true, "fork-ops");
-    fork.coworker_type = "channel-lead".to_string();
+    fork.agent_type = "midtown-channel-lead".to_string();
     fork.bound_thread_id = Some("thread-111".to_string());
     sessions.insert("fork-1".to_string(), fork);
 
     // Root channel lead (no bound_thread_id, should be excluded)
     let mut root_lead = make_test_session_record_named("lead-1", true, "ops-root");
-    root_lead.coworker_type = "channel-lead".to_string();
+    root_lead.agent_type = "midtown-channel-lead".to_string();
     sessions.insert("lead-1".to_string(), root_lead);
 
     // Task coworker with bound_thread_id (should be excluded)
     let mut task = make_test_session_record_named("task-1", true, "riverside");
-    task.coworker_type = "dev".to_string();
+    task.agent_type = "midtown-code-author".to_string();
     task.bound_thread_id = Some("thread-222".to_string());
     sessions.insert("task-1".to_string(), task);
 
@@ -809,7 +814,7 @@ fn test_topic_sessions_only_includes_channel_lead_forks() {
 
     let mut topic_sessions: HashMap<String, String> = HashMap::new();
     for (session_id, record) in &sessions {
-        if record.coworker_type == "channel-lead"
+        if record.agent_type == "midtown-channel-lead"
             && let Some(ref tid) = record.bound_thread_id
         {
             topic_sessions.insert(tid.clone(), session_id.clone());
@@ -1044,7 +1049,7 @@ fn make_gc_session(session_id: &str, task_id: Option<&str>, has_prompt: bool) ->
         } else {
             None
         },
-        coworker_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         ..Default::default()
     }
 }
@@ -1337,7 +1342,7 @@ fn test_is_fork_session() {
 
     // Channel-lead with bound_thread_id — IS a fork
     let fork = SessionRecord {
-        coworker_type: "channel-lead".to_string(),
+        agent_type: "midtown-channel-lead".to_string(),
         bound_thread_id: Some("thread-123".to_string()),
         ..Default::default()
     };
@@ -1348,7 +1353,7 @@ fn test_is_fork_session() {
 
     // Dev coworker with bound_thread_id — NOT a fork (genuine task owner)
     let dev_with_thread = SessionRecord {
-        coworker_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         bound_thread_id: Some("thread-456".to_string()),
         ..Default::default()
     };
@@ -1359,7 +1364,7 @@ fn test_is_fork_session() {
 
     // Channel-lead without bound_thread_id — NOT a fork (root channel lead)
     let root_lead = SessionRecord {
-        coworker_type: "channel-lead".to_string(),
+        agent_type: "midtown-channel-lead".to_string(),
         bound_thread_id: None,
         ..Default::default()
     };

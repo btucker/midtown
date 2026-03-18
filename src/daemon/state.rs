@@ -82,10 +82,8 @@ pub struct SessionRecord {
     pub session_id: String,
     /// Task this session is working on (e.g., "1561").
     pub task_id: Option<String>,
-    /// Current name allocation (None if suspended/name released).
-    pub current_name: Option<String>,
-    /// Preferred name for next resume (the name it had last time).
-    pub preferred_name: Option<String>,
+    /// Stable name for this session (assigned at creation, never changes).
+    pub name: String,
     /// Worktree path for this session.
     pub working_dir: String,
     /// Git branch the session is working on.
@@ -94,10 +92,8 @@ pub struct SessionRecord {
     pub pr_number: Option<u64>,
     /// Initial prompt used to start the session (for restart/clear).
     pub initial_prompt: Option<String>,
-    /// Whether this is a reviewer session (ephemeral, never resumed after shutdown).
-    pub is_reviewer: bool,
-    /// Coworker type: "dev", "reviewer", or "channel-lead".
-    pub coworker_type: String,
+    /// Agent type: "midtown-code-author", "midtown-code-reviewer", or "midtown-channel-lead".
+    pub agent_type: String,
     /// Whether the session process is currently running.
     pub is_running: bool,
     /// When the session was created.
@@ -132,6 +128,9 @@ pub struct SessionRecord {
     /// Auth profile name (e.g., "ben@example.com") — account identity.
     #[serde(default)]
     pub profile: Option<String>,
+    /// How many times this session has been restarted.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 impl Default for SessionRecord {
@@ -139,14 +138,12 @@ impl Default for SessionRecord {
         Self {
             session_id: String::new(),
             task_id: None,
-            current_name: None,
-            preferred_name: None,
+            name: String::new(),
             working_dir: String::new(),
             branch: None,
             pr_number: None,
             initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             is_running: false,
             created_at: Utc::now(),
             resume_on_startup: true,
@@ -158,6 +155,7 @@ impl Default for SessionRecord {
             provider: None,
             platform: None,
             profile: None,
+            restart_count: 0,
         }
     }
 }
@@ -170,7 +168,7 @@ impl SessionRecord {
     /// as PR owners or task dispatch targets. Regular dev coworkers also carry
     /// bound_thread_id (for thread routing) but ARE genuine task owners.
     pub fn is_fork_session(&self) -> bool {
-        self.coworker_type == "channel-lead" && self.bound_thread_id.is_some()
+        self.agent_type == "midtown-channel-lead" && self.bound_thread_id.is_some()
     }
 }
 
@@ -709,15 +707,15 @@ impl DaemonPersistentState {
     ///
     /// When resuming a stopped session, `entry().or_insert_with()` alone won't update
     /// `is_running` because the entry already exists. This method uses `and_modify` to
-    /// mark existing sessions as running and refresh `current_name` before falling back
+    /// mark existing sessions as running and refresh `name` before falling back
     /// to insert for new sessions.
     pub fn upsert_session_running(&mut self, session_id: String, new_record: SessionRecord) {
-        let current_name = new_record.current_name.clone();
+        let name = new_record.name.clone();
         self.sessions
             .entry(session_id)
             .and_modify(|r| {
                 r.is_running = true;
-                r.current_name = current_name;
+                r.name = name;
             })
             .or_insert(new_record);
     }

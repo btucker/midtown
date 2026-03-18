@@ -1061,7 +1061,6 @@ impl DaemonState {
                 // Mark the SessionRecord as stopped in persistent state.
                 if let Some(record) = ps.sessions.get_mut(&session_id) {
                     record.is_running = false;
-                    record.current_name = None;
                     changed = true;
                 }
                 // Close any open task-session spans for the exiting session.
@@ -1344,11 +1343,13 @@ impl DaemonState {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
                 .values()
-                .filter_map(|r| r.current_name.clone())
+                .filter(|r| !r.name.is_empty())
+                .map(|r| r.name.clone())
                 .collect();
             name_pool.restore(&allocated_names);
             for (session_id, record) in &persistent_state.sessions {
-                if let Some(ref name) = record.current_name {
+                if !record.name.is_empty() {
+                    let name = &record.name;
                     name_to_session.insert(name.clone(), session_id.clone());
                     session_to_name.insert(session_id.clone(), name.clone());
                     // Rebuild thread-binding cache from persisted SessionRecord so
@@ -1358,7 +1359,7 @@ impl DaemonState {
                         // Rebuild inherited channel map only for forked channel leads.
                         // Regular task coworkers also carry `bound_thread_id` but should not
                         // stream their output as lead-like activity.
-                        if record.coworker_type == "channel-lead" {
+                        if record.agent_type == "midtown-channel-lead" {
                             if let Some(ref channel) = record.channel {
                                 fork_bound_channels.insert(name.clone(), channel.clone());
                             }
@@ -1697,12 +1698,7 @@ impl DaemonState {
         let working_dir_for_record = working_dir_for_persist.clone();
         {
             let mut ps = self.persistent_state.lock().await;
-            let coworker_type_str = match &config.role {
-                crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
-                crate::launch::CoworkerRole::Lead => "lead".to_string(),
-                crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
-                _ => "dev".to_string(),
-            };
+            let agent_type_str = config.role.agent_name().to_string();
             let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
             // Look up bound thread from task_thread_id — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
@@ -1712,16 +1708,14 @@ impl DaemonState {
                 crate::daemon::state::SessionRecord {
                     session_id: session_id_for_record.clone(),
                     task_id: config.task_id.clone(),
-                    current_name: Some(name.clone()),
-                    preferred_name: Some(name.clone()),
+                    name: name.clone(),
                     working_dir: working_dir_for_record.clone(),
                     pr_number: config.pr_number,
                     initial_prompt: config
                         .persisted_initial_prompt
                         .clone()
                         .or_else(|| config.initial_prompt.clone()),
-                    is_reviewer,
-                    coworker_type: coworker_type_str,
+                    agent_type: agent_type_str,
                     is_running: true,
                     created_at: chrono::Utc::now(),
                     resume_on_startup: !is_reviewer,
@@ -1868,8 +1862,8 @@ impl DaemonState {
                     .as_deref()
                     .is_some_and(|tid| in_progress_ids.contains(tid))
             })
-            .filter_map(|s| s.current_name.clone())
-            .map(|n| n.to_lowercase())
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
             .collect()
     }
 
@@ -1974,7 +1968,7 @@ impl DaemonState {
                 .entry(session_id.clone())
                 .or_insert_with(|| state::SessionRecord {
                     session_id: session_id.clone(),
-                    current_name: Some(coworker_lower),
+                    name: coworker_lower,
                     is_running: true,
                     ..Default::default()
                 });
@@ -2344,9 +2338,7 @@ impl DaemonState {
             }
             // Persisted session record (covers stopped coworkers whose
             // coworker_records entry was cleaned up but SessionRecord remains).
-            if ps.sessions.values().any(|r| {
-                r.current_name.as_deref() == Some(name) || r.preferred_name.as_deref() == Some(name)
-            }) {
+            if ps.sessions.values().any(|r| r.name == name) {
                 return true;
             }
         }
@@ -2793,7 +2785,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                 && let Some(record) = persistent.sessions.get_mut(session_id)
             {
                 record.is_running = true;
-                record.resume_on_startup = !record.is_reviewer;
+                record.resume_on_startup = record.agent_type != "midtown-code-reviewer";
                 record.pid = info.pid;
                 record.last_active = info.last_active;
                 if let Some(ref wd) = info.working_dir {
@@ -3916,8 +3908,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 // sessions or very old daemon state).
                                 entry.insert(crate::daemon::state::SessionRecord {
                                     session_id: sid.clone(),
-                                    current_name: Some(name.to_string()),
-                                    preferred_name: Some(name.to_string()),
+                                    name: name.to_string(),
                                     is_running: true,
                                     created_at: chrono::Utc::now(),
                                     last_active: chrono::Utc::now(),
@@ -3927,7 +3918,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             }
                             // Update in-memory reverse maps when session gets its ID.
                             if let Some(record) = ps.sessions.get(sid) {
-                                if let Some(ref sname) = record.current_name {
+                                if !record.name.is_empty() {
+                                    let sname = &record.name;
                                     state
                                         .name_to_session
                                         .lock()
@@ -4078,7 +4070,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             }
                             // Channel leads are long-lived — keep resume_on_startup=true
                             // so they're always eligible for resume and never GC'd.
-                            if record.coworker_type != "channel-lead" {
+                            if record.agent_type != "midtown-channel-lead" {
                                 record.resume_on_startup = false;
                             }
                         }
@@ -4142,7 +4134,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                             record
                                                 .provider
                                                 .unwrap_or(crate::auth::AuthProvider::Claude),
-                                            record.coworker_type == "channel-lead",
+                                            record.agent_type == "midtown-channel-lead",
                                             record.initial_prompt.clone(),
                                         )
                                     } else {

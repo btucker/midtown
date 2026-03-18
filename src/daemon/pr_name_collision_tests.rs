@@ -114,7 +114,7 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
                 session_id: "sess-park".to_string(),
                 task_id: Some("200".to_string()),
                 pr_number: Some(7777),
-                current_name: Some("park".to_string()),
+                name: "park".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 ..Default::default()
             },

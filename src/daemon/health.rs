@@ -1037,14 +1037,14 @@ pub(super) fn check_for_state_gc(
         }
 
         // Dead reviewer sessions: prune immediately (ephemeral lifecycle).
-        if record.is_reviewer {
+        if record.agent_type == "midtown-code-reviewer" {
             dead_session_ids.push(session_id.clone());
             continue;
         }
 
         // Channel lead sessions are long-lived and should always be available
         // for resume — never garbage-collect them.
-        if record.coworker_type == "channel-lead" {
+        if record.agent_type == "midtown-channel-lead" {
             if let Some(ref tid) = record.task_id {
                 surviving_task_ids.insert(tid.clone());
             }
@@ -1083,7 +1083,12 @@ pub(super) fn check_for_state_gc(
             dead_session_ids.len(),
             dead_session_ids
                 .iter()
-                .filter(|sid| sessions.get(*sid).map(|r| r.is_reviewer).unwrap_or(false))
+                .filter(|sid| {
+                    sessions
+                        .get(*sid)
+                        .map(|r| r.agent_type == "midtown-code-reviewer")
+                        .unwrap_or(false)
+                })
                 .count()
         );
     }
@@ -1224,7 +1229,7 @@ fn build_reviewer_respawn_effects(
                 .map(|t| t.id.clone())
                 .unwrap_or_default(),
             agent_name: name.to_string(),
-            agent_type: "reviewer".to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
             session_id: String::new(),
             pr_number: Some(pr_number),
             restart_count: new_restart_count,

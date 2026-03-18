@@ -327,11 +327,7 @@ pub(super) async fn handle_coworker_spawn(
                 // call-in with --thread has no task — we set it directly here.
                 {
                     let mut ps = state.persistent_state.lock().await;
-                    if let Some(record) = ps
-                        .sessions
-                        .values_mut()
-                        .find(|r| r.current_name.as_deref() == Some(&config.name))
-                    {
+                    if let Some(record) = ps.sessions.values_mut().find(|r| r.name == config.name) {
                         record.bound_thread_id = Some(tid.clone());
                     }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {

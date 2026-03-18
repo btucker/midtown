@@ -10,8 +10,7 @@ fn mk_session_record(
     crate::daemon::state::SessionRecord {
         session_id: session_id.to_string(),
         task_id: task_id.map(ToString::to_string),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running,
         ..Default::default()
@@ -495,8 +494,7 @@ fn test_record_session_inserts_into_persistent_state() {
     let record = SessionRecord {
         session_id: "sess-abc-123".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         branch: Some("lexington/task-42".to_string()),
         initial_prompt: Some("Work on task 42".to_string()),
@@ -511,7 +509,7 @@ fn test_record_session_inserts_into_persistent_state() {
     assert!(persistent_state.sessions.contains_key("sess-abc-123"));
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
     assert_eq!(stored.task_id.as_deref(), Some("42"));
-    assert_eq!(stored.current_name.as_deref(), Some("lexington"));
+    assert_eq!(stored.name, "lexington");
     assert!(stored.is_running);
 }
 
@@ -523,8 +521,7 @@ fn test_record_session_updates_existing_record() {
     let record = SessionRecord {
         session_id: "sess-abc-123".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -539,15 +536,13 @@ fn test_record_session_updates_existing_record() {
         .unwrap()
         .clone();
     updated.is_running = false;
-    updated.current_name = None;
     persistent_state
         .sessions
         .insert("sess-abc-123".to_string(), updated);
 
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
     assert!(!stored.is_running);
-    assert!(stored.current_name.is_none());
-    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+    assert_eq!(stored.name, "lexington", "name should be stable");
 }
 
 #[test]
@@ -577,8 +572,7 @@ fn test_shutdown_session_marks_not_running() {
     let record = SessionRecord {
         session_id: "sess-abc-123".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -589,13 +583,14 @@ fn test_shutdown_session_marks_not_running() {
 
     if let Some(record) = persistent_state.sessions.get_mut("sess-abc-123") {
         record.is_running = false;
-        record.current_name = None;
     }
 
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
     assert!(!stored.is_running);
-    assert!(stored.current_name.is_none());
-    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+    assert_eq!(
+        stored.name, "lexington",
+        "name should be stable after shutdown"
+    );
 }
 
 #[test]
@@ -662,8 +657,7 @@ fn test_coworker_break_updates_session_record() {
     let record = SessionRecord {
         session_id: "sess-abc-123".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -680,12 +674,12 @@ fn test_coworker_break_updates_session_record() {
         && let Some(record) = persistent_state.sessions.get_mut(&session_id)
     {
         record.is_running = false;
-        record.current_name = None;
+        record.name = String::new();
     }
 
     let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
     assert!(!stored.is_running);
-    assert!(stored.current_name.is_none());
+    assert!(stored.name.is_empty());
 }
 
 #[test]
@@ -702,8 +696,7 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     let record = SessionRecord {
         session_id: "sess-123".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("lexington".to_string()),
-        preferred_name: Some("lexington".to_string()),
+        name: "lexington".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -720,7 +713,7 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         && let Some(sr) = persistent_state.sessions.get_mut(session_id)
     {
         sr.is_running = false;
-        sr.current_name = None;
+        // Name is now stable — not cleared on shutdown
     }
     pool.release("lexington");
     name_to_session.remove("lexington");
@@ -730,8 +723,10 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
 
     let stored = persistent_state.sessions.get("sess-123").unwrap();
     assert!(!stored.is_running);
-    assert!(stored.current_name.is_none());
-    assert_eq!(stored.preferred_name.as_deref(), Some("lexington"));
+    assert_eq!(
+        stored.name, "lexington",
+        "name should be stable after shutdown"
+    );
     assert!(!pool.is_allocated("lexington"));
     assert_eq!(pool.available_count(), 3);
     assert!(name_to_session.is_empty());
@@ -748,8 +743,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
     let old_record = SessionRecord {
         session_id: "sess-old-111".to_string(),
         task_id: Some("42".to_string()),
-        current_name: Some("riverside".to_string()),
-        preferred_name: Some("riverside".to_string()),
+        name: "riverside".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         created_at: Utc::now() - chrono::Duration::hours(1),
@@ -761,12 +755,10 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
 
     let old_reviewer = SessionRecord {
         session_id: "sess-old-222".to_string(),
-        current_name: Some("riverside".to_string()),
-        preferred_name: Some("riverside".to_string()),
+        name: "riverside".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         pr_number: Some(100),
-        is_reviewer: true,
-        coworker_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         is_running: true,
         created_at: Utc::now() - chrono::Duration::minutes(30),
         resume_on_startup: false,
@@ -779,8 +771,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
     let unrelated = SessionRecord {
         session_id: "sess-amsterdam".to_string(),
         task_id: Some("99".to_string()),
-        current_name: Some("amsterdam".to_string()),
-        preferred_name: Some("amsterdam".to_string()),
+        name: "amsterdam".to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -793,10 +784,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
     let effective_name = "riverside";
 
     for record in persistent_state.sessions.values_mut() {
-        if record.session_id != new_session_id
-            && record.is_running
-            && (record.preferred_name.as_deref() == Some(effective_name)
-                || record.current_name.as_deref() == Some(effective_name))
+        if record.session_id != new_session_id && record.is_running && record.name == effective_name
         {
             record.is_running = false;
         }
@@ -805,8 +793,7 @@ fn test_spawn_session_marks_old_records_with_same_name_as_not_running() {
     let new_record = SessionRecord {
         session_id: new_session_id.to_string(),
         task_id: Some("50".to_string()),
-        current_name: Some(effective_name.to_string()),
-        preferred_name: Some(effective_name.to_string()),
+        name: effective_name.to_string(),
         working_dir: "/tmp/worktree".to_string(),
         is_running: true,
         ..Default::default()
@@ -1946,14 +1933,12 @@ fn test_respawn_fork_clears_old_record_current_name() {
     let old_record = SessionRecord {
         session_id: "old-fork-sess".to_string(),
         task_id: None,
-        current_name: Some("fork-investigate".to_string()),
-        preferred_name: Some("fork-investigate".to_string()),
+        name: "fork-investigate".to_string(),
         working_dir: "/tmp/old".to_string(),
         branch: None,
         pr_number: None,
         initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         is_running: false,
         created_at: chrono::Utc::now(),
         resume_on_startup: false,
@@ -1965,6 +1950,7 @@ fn test_respawn_fork_clears_old_record_current_name() {
         provider: None,
         platform: None,
         profile: None,
+        restart_count: 0,
     };
     ps.sessions
         .insert(old_record.session_id.clone(), old_record);
@@ -1975,13 +1961,9 @@ fn test_respawn_fork_clears_old_record_current_name() {
 
     // --- This is the cleanup that respawn_fork must perform ---
     for record in ps.sessions.values_mut() {
-        if record.session_id != new_fork_session_id
-            && (record.preferred_name.as_deref() == Some(new_fork_name)
-                || record.current_name.as_deref() == Some(new_fork_name))
-        {
+        if record.session_id != new_fork_session_id && record.name == new_fork_name {
             record.is_running = false;
-            record.current_name = None;
-            record.preferred_name = None;
+            record.name = String::new();
         }
     }
 
@@ -1991,14 +1973,12 @@ fn test_respawn_fork_clears_old_record_current_name() {
         SessionRecord {
             session_id: new_fork_session_id.to_string(),
             task_id: None,
-            current_name: Some(new_fork_name.to_string()),
-            preferred_name: Some(new_fork_name.to_string()),
+            name: new_fork_name.to_string(),
             working_dir: "/tmp/new".to_string(),
             branch: None,
             pr_number: None,
             initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             is_running: true,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
@@ -2010,18 +1990,15 @@ fn test_respawn_fork_clears_old_record_current_name() {
             provider: None,
             platform: None,
             profile: None,
+            restart_count: 0,
         },
     );
 
-    // Verify: old record must have both name fields cleared
+    // Verify: old record must have name cleared
     let old = ps.sessions.get("old-fork-sess").unwrap();
     assert!(
-        old.current_name.is_none(),
-        "Old fork record should have current_name cleared after respawn"
-    );
-    assert!(
-        old.preferred_name.is_none(),
-        "Old fork record should have preferred_name cleared after respawn"
+        old.name.is_empty(),
+        "Old fork record should have name cleared after respawn"
     );
     assert!(
         !old.is_running,
@@ -2030,17 +2007,14 @@ fn test_respawn_fork_clears_old_record_current_name() {
 
     // Verify: new record has the name
     let new = ps.sessions.get("new-fork-sess").unwrap();
-    assert_eq!(new.current_name.as_deref(), Some("fork-investigate"));
+    assert_eq!(new.name, "fork-investigate");
     assert!(new.is_running);
 
-    // Verify: only one record claims the name (via either field)
+    // Verify: only one record claims the name
     let name_count = ps
         .sessions
         .values()
-        .filter(|r| {
-            r.current_name.as_deref() == Some("fork-investigate")
-                || r.preferred_name.as_deref() == Some("fork-investigate")
-        })
+        .filter(|r| r.name == "fork-investigate")
         .count();
     assert_eq!(
         name_count, 1,
@@ -2048,7 +2022,6 @@ fn test_respawn_fork_clears_old_record_current_name() {
     );
 }
 
-/// When an old fork record has `current_name: None` but `preferred_name` still
 /// set, the cleanup must still clear `preferred_name`. Otherwise `rpc_auth.rs`
 /// (which matches on both fields) would find an ambiguous match.
 #[test]
@@ -2057,18 +2030,16 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
 
     let mut ps = DaemonPersistentState::default();
 
-    // Old record: current_name already cleared but preferred_name still set
+    // Old record: name still set (the cleanup must clear is_running)
     let old_record = SessionRecord {
         session_id: "old-fork-sess".to_string(),
         task_id: None,
-        current_name: None,
-        preferred_name: Some("fork-investigate".to_string()),
+        name: "fork-investigate".to_string(),
         working_dir: "/tmp/old".to_string(),
         branch: None,
         pr_number: None,
         initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         is_running: false,
         created_at: chrono::Utc::now(),
         resume_on_startup: false,
@@ -2080,6 +2051,7 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
         provider: None,
         platform: None,
         profile: None,
+        restart_count: 0,
     };
     ps.sessions
         .insert(old_record.session_id.clone(), old_record);
@@ -2087,15 +2059,11 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
     let new_fork_name = "fork-investigate";
     let new_fork_session_id = "new-fork-sess";
 
-    // Same cleanup as respawn_fork — must match on preferred_name too
+    // Same cleanup as respawn_fork — must clear name on old records
     for record in ps.sessions.values_mut() {
-        if record.session_id != new_fork_session_id
-            && (record.preferred_name.as_deref() == Some(new_fork_name)
-                || record.current_name.as_deref() == Some(new_fork_name))
-        {
+        if record.session_id != new_fork_session_id && record.name == new_fork_name {
             record.is_running = false;
-            record.current_name = None;
-            record.preferred_name = None;
+            record.name = String::new();
         }
     }
 
@@ -2104,14 +2072,12 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
         SessionRecord {
             session_id: new_fork_session_id.to_string(),
             task_id: None,
-            current_name: Some(new_fork_name.to_string()),
-            preferred_name: Some(new_fork_name.to_string()),
+            name: new_fork_name.to_string(),
             working_dir: "/tmp/new".to_string(),
             branch: None,
             pr_number: None,
             initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             is_running: true,
             created_at: chrono::Utc::now(),
             resume_on_startup: false,
@@ -2123,24 +2089,22 @@ fn test_respawn_fork_clears_old_record_preferred_name_only() {
             provider: None,
             platform: None,
             profile: None,
+            restart_count: 0,
         },
     );
 
-    // Old record's preferred_name must be cleared
+    // Old record's name must be cleared
     let old = ps.sessions.get("old-fork-sess").unwrap();
     assert!(
-        old.preferred_name.is_none(),
-        "Old record with preferred_name-only should have it cleared"
+        old.name.is_empty(),
+        "Old record's name should have been cleared"
     );
 
     // No ambiguous match: only the new record should match a find-by-name
     let matches: Vec<_> = ps
         .sessions
         .values()
-        .filter(|r| {
-            r.current_name.as_deref() == Some("fork-investigate")
-                || r.preferred_name.as_deref() == Some("fork-investigate")
-        })
+        .filter(|r| r.name == "fork-investigate")
         .collect();
     assert_eq!(
         matches.len(),
@@ -2358,8 +2322,8 @@ async fn test_post_insight_channel_lead_suppressed() {
             "cl-session-abc".to_string(),
             super::super::state::SessionRecord {
                 session_id: "cl-session-abc".to_string(),
-                current_name: Some("ops-lead".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "ops-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 is_running: true,
                 ..Default::default()
@@ -2399,8 +2363,8 @@ async fn test_post_insight_dedup_before_suppression_ordering() {
             "cl-session-abc".to_string(),
             super::super::state::SessionRecord {
                 session_id: "cl-session-abc".to_string(),
-                current_name: Some("ops-lead".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "ops-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 working_dir: "/tmp/test".to_string(),
                 is_running: true,
                 ..Default::default()
@@ -2445,8 +2409,8 @@ async fn test_post_insight_threads_in_default_channel_when_task_channel_is_none(
             "test-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("50".to_string()),
                 is_running: true,
                 ..Default::default()
@@ -2493,8 +2457,8 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
             "old-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "old-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("88".to_string()),
                 is_running: false,
                 ..Default::default()
@@ -2506,8 +2470,8 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
             "new-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "new-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("99".to_string()),
                 is_running: true,
                 ..Default::default()
@@ -2560,8 +2524,8 @@ async fn test_post_insight_routes_to_task_thread() {
             "test-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("42".to_string()),
                 is_running: true,
                 ..Default::default()
@@ -2605,8 +2569,8 @@ async fn test_post_insight_threads_when_task_channel_is_none() {
             "test-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("99".to_string()),
                 is_running: true,
                 ..Default::default()
@@ -2648,8 +2612,8 @@ async fn test_post_insight_no_thread_when_no_thread_id() {
             "test-session-id".to_string(),
             super::super::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
-                current_name: Some("coworker1".to_string()),
-                coworker_type: "dev".to_string(),
+                name: "coworker1".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 task_id: Some("42".to_string()),
                 is_running: true,
                 ..Default::default()
@@ -2869,8 +2833,7 @@ async fn test_nudge_channel_lead_dm_fork_no_respawn() {
             "sess-fork-dead".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "sess-fork-dead".to_string(),
-                current_name: Some(fork_name.to_string()),
-                preferred_name: Some(fork_name.to_string()),
+                name: fork_name.to_string(),
                 working_dir: "/tmp".to_string(),
                 ..Default::default()
             },
@@ -3035,8 +2998,8 @@ async fn test_record_task_assignment_updates_session_task_id() {
             session_id.to_string(),
             super::super::state::SessionRecord {
                 session_id: session_id.to_string(),
-                current_name: Some(coworker_name.to_string()),
-                coworker_type: "dev".to_string(),
+                name: coworker_name.to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 is_running: true,
                 task_id: None,
                 ..Default::default()
@@ -3096,8 +3059,8 @@ async fn test_record_task_assignment_fixes_insight_routing() {
             session_id.to_string(),
             super::super::state::SessionRecord {
                 session_id: session_id.to_string(),
-                current_name: Some(coworker_name.to_string()),
-                coworker_type: "dev".to_string(),
+                name: coworker_name.to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 is_running: true,
                 task_id: Some("old-task".to_string()),
                 ..Default::default()

@@ -983,12 +983,11 @@ pub(crate) async fn deliver_task_prompt(
         };
 
         // Determine coworker name for resume
-        let name = record
-            .preferred_name
-            .as_deref()
-            .or(record.current_name.as_deref())
-            .or(task.owner.as_deref())
-            .unwrap_or("unknown");
+        let name = if !record.name.is_empty() {
+            record.name.as_str()
+        } else {
+            task.owner.as_deref().unwrap_or("unknown")
+        };
 
         // Build LaunchConfig for resume
         let mut config = crate::launch::LaunchConfig::coworker(

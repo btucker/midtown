@@ -18,8 +18,7 @@ fn make_session_record(
     SessionRecord {
         session_id: session_id.to_string(),
         task_id: task_id.map(|s| s.to_string()),
-        current_name: current_name.map(|s| s.to_string()),
-        preferred_name: current_name.map(|s| s.to_string()),
+        name: current_name.unwrap_or("").to_string(),
         working_dir: "/tmp/test-worktree".to_string(),
         branch: Some("main".to_string()),
         is_running,
@@ -352,8 +351,7 @@ fn test_session_dispatch_recovery_loop_stopped_reviewer_session() {
     // Exact session state from the captured loop snapshot:
     // Task !1690 owned by "riverside", stopped reviewer session "e2bafbb6".
     let session = SessionRecord {
-        is_reviewer: true,
-        coworker_type: "reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
         ..make_session_record(
             "e2bafbb6-5fe5-4cfb-a98f-94caad0ff834",
             Some("1690"),
@@ -493,7 +491,7 @@ fn test_session_dispatch_skips_channel_lead_owned_tasks() {
     // Given: a channel lead has an in-progress task with a stopped session.
     // The session recovery loop must NOT resume it as a regular coworker.
     let session = SessionRecord {
-        coworker_type: "channel-lead".to_string(),
+        agent_type: "midtown-channel-lead".to_string(),
         ..make_session_record("sess-cl-123", Some("99"), Some("canal-lead"), false)
     };
 

@@ -1309,7 +1309,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::SpawnForTask {
             task_id: "874".to_string(),
             dir_key: "test-repo".to_string(),
-            preferred_name: Some("park".to_string()),
+            preferred_name: None,
             config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
@@ -1341,7 +1341,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::SpawnForTask {
             task_id: "876".to_string(),
             dir_key: "test-repo".to_string(),
-            preferred_name: Some("amsterdam".to_string()),
+            preferred_name: None,
             config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
@@ -2181,8 +2181,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
             crate::daemon::state::SessionRecord {
                 session_id: session_id.to_string(),
                 task_id: Some("42".to_string()),
-                current_name: Some("madison".to_string()),
-                preferred_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 working_dir: "/tmp/worktree".to_string(),
                 is_running: true,
                 ..Default::default()
@@ -2203,14 +2202,9 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
         !record.is_running,
         "SessionRecord.is_running should be false after cleanup"
     );
-    assert!(
-        record.current_name.is_none(),
-        "SessionRecord.current_name should be None after cleanup"
-    );
     assert_eq!(
-        record.preferred_name.as_deref(),
-        Some("madison"),
-        "SessionRecord.preferred_name should be preserved for future resume"
+        record.name, "madison",
+        "SessionRecord.name should be preserved after cleanup"
     );
     assert_eq!(
         record.task_id.as_deref(),
@@ -2249,8 +2243,7 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
                 crate::daemon::state::SessionRecord {
                     session_id: sid.to_string(),
                     task_id: Some(task.to_string()),
-                    current_name: Some(name.to_string()),
-                    preferred_name: Some(name.to_string()),
+                    name: name.to_string(),
                     working_dir: "/tmp/worktree".to_string(),
                     is_running: true,
                     ..Default::default()
@@ -2269,11 +2262,7 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
         .get("sid-park")
         .expect("park's SessionRecord should exist");
     assert!(park_record.is_running, "park should still be running");
-    assert_eq!(
-        park_record.current_name.as_deref(),
-        Some("park"),
-        "park's current_name should be preserved"
-    );
+    assert_eq!(park_record.name, "park", "park's name should be preserved");
 
     // Madison's SessionRecord should be marked stopped
     let madison_record = ps
@@ -2281,5 +2270,8 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
         .get("sid-madison")
         .expect("madison's SessionRecord should still exist");
     assert!(!madison_record.is_running);
-    assert!(madison_record.current_name.is_none());
+    assert_eq!(
+        madison_record.name, "madison",
+        "name should be stable after cleanup"
+    );
 }

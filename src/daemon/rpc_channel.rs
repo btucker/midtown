@@ -714,13 +714,8 @@ pub(super) async fn handle_channel_archive(
                 let mut removed_session = false;
                 let mut stopped_ids: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
-                    if record
-                        .current_name
-                        .as_deref()
-                        .is_some_and(|n| n == lead_session_name)
-                    {
+                    if record.name == lead_session_name {
                         record.is_running = false;
-                        record.current_name = None;
                         record.resume_on_startup = false;
                         removed_session = true;
                         stopped_ids.push(record.session_id.clone());
@@ -874,13 +869,8 @@ pub(super) async fn handle_channel_rename(
         // references to the dead session.
         let mut stopped_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
-            if record
-                .current_name
-                .as_deref()
-                .is_some_and(|n| n == old_lead_session_name)
-            {
+            if record.name == old_lead_session_name {
                 record.is_running = false;
-                record.current_name = None;
                 record.resume_on_startup = false;
                 stopped_ids.push(record.session_id.clone());
             }
@@ -1362,7 +1352,7 @@ async fn try_lazy_fork_respawn(
                     Some(record.working_dir.clone())
                 },
                 record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-                record.coworker_type == "channel-lead",
+                record.agent_type == "midtown-channel-lead",
                 record.initial_prompt.clone(),
                 record.channel.clone(),
             )

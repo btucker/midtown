@@ -33,10 +33,9 @@ fn test_sessions_preserved_after_restart() {
         "session-amsterdam-123".to_string(),
         SessionRecord {
             session_id: "session-amsterdam-123".to_string(),
-            current_name: Some("amsterdam".to_string()),
-            preferred_name: Some("amsterdam".to_string()),
+            name: "amsterdam".to_string(),
             working_dir: "/path/to/worktree".to_string(),
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             task_id: Some("1385".to_string()),
             purpose: "task !1385: E2E decision functions".to_string(),
             pid: Some(12345),
@@ -50,11 +49,9 @@ fn test_sessions_preserved_after_restart() {
         "session-park-456".to_string(),
         SessionRecord {
             session_id: "session-park-456".to_string(),
-            current_name: Some("park".to_string()),
-            preferred_name: Some("park".to_string()),
+            name: "park".to_string(),
             working_dir: "/path/to/main".to_string(),
-            coworker_type: "reviewer".to_string(),
-            is_reviewer: true,
+            agent_type: "midtown-code-reviewer".to_string(),
             pr_number: Some(42),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
@@ -86,12 +83,12 @@ fn test_sessions_preserved_after_restart() {
     );
 
     let amsterdam = loaded_state.sessions.get("session-amsterdam-123").unwrap();
-    assert_eq!(amsterdam.coworker_type, "dev");
+    assert_eq!(amsterdam.agent_type, "midtown-code-author");
     assert_eq!(amsterdam.task_id, Some("1385".to_string()));
     assert!(amsterdam.resume_on_startup);
 
     let park = loaded_state.sessions.get("session-park-456").unwrap();
-    assert_eq!(park.coworker_type, "reviewer");
+    assert_eq!(park.agent_type, "midtown-code-reviewer");
     assert_eq!(park.pr_number, Some(42));
     assert!(park.resume_on_startup);
 
@@ -127,9 +124,8 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         "session-amsterdam-123".to_string(),
         SessionRecord {
             session_id: "session-amsterdam-123".to_string(),
-            current_name: Some("amsterdam".to_string()),
-            preferred_name: Some("amsterdam".to_string()),
-            coworker_type: "dev".to_string(),
+            name: "amsterdam".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             task_id: Some("1385".to_string()),
             purpose: "task !1385".to_string(),
             pid: Some(12345),
@@ -143,10 +139,8 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         "session-park-456".to_string(),
         SessionRecord {
             session_id: "session-park-456".to_string(),
-            current_name: Some("park".to_string()),
-            preferred_name: Some("park".to_string()),
-            coworker_type: "reviewer".to_string(),
-            is_reviewer: true,
+            name: "park".to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
             pr_number: Some(42),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
@@ -160,10 +154,8 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         "session-madison-789".to_string(),
         SessionRecord {
             session_id: "session-madison-789".to_string(),
-            current_name: Some("madison".to_string()),
-            preferred_name: Some("madison".to_string()),
-            coworker_type: "reviewer".to_string(),
-            is_reviewer: true,
+            name: "madison".to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
             pr_number: Some(43),
             purpose: "reviewer for PR #43".to_string(),
             pid: Some(12347),
@@ -204,7 +196,8 @@ fn test_persistent_state_prevents_duplicate_spawns() {
         .sessions
         .values()
         .filter(|r| r.resume_on_startup)
-        .filter_map(|r| r.current_name.clone())
+        .filter(|r| !r.name.is_empty())
+        .map(|r| r.name.clone())
         .collect();
 
     assert_eq!(

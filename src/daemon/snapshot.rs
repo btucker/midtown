@@ -889,7 +889,13 @@ impl WorldSnapshot {
         self.sessions
             .values()
             .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
-            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
             .collect()
     }
 
@@ -905,7 +911,13 @@ impl WorldSnapshot {
                 s.pr_number
                     .is_some_and(|pr| self.pr.merged_pr_numbers.contains(&pr))
             })
-            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
             .collect()
     }
 
@@ -1069,8 +1081,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                     .as_deref()
                     .is_some_and(|tid| in_progress_task_ids.contains(tid))
             })
-            .filter_map(|s| s.current_name.clone())
-            .map(|n| n.to_lowercase())
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
             .collect()
     };
 
@@ -1560,9 +1572,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             {
                 session_task_map.insert(task_id.clone(), session_id.clone());
             }
-            if let Some(name) = &record.current_name {
-                session_name_map.insert(session_id.clone(), name.clone());
-                name_session_map.insert(name.clone(), session_id.clone());
+            if !record.name.is_empty() {
+                session_name_map.insert(session_id.clone(), record.name.clone());
+                name_session_map.insert(record.name.clone(), session_id.clone());
             }
         }
         (
