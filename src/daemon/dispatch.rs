@@ -627,14 +627,11 @@ fn dispatch_via_sessions_inner(snap: &snapshot::WorldSnapshot) -> Vec<effects::E
         let action = crate::rules::decide_session_recovery(task_id, task_subject, owner, snap);
 
         match action {
-            crate::rules::SessionRecoveryAction::Skip {
-                ref reason,
-                stale_session_ref,
-            } => {
-                if stale_session_ref {
-                    warn!("{}", reason);
+            crate::rules::SessionRecoveryAction::Skip(ref reason) => {
+                if reason.is_stale_session_ref() {
+                    warn!("task !{}: skipping session recovery — {}", task_id, reason);
                 } else {
-                    debug!("{}", reason);
+                    debug!("task !{}: skipping session recovery — {}", task_id, reason);
                 }
                 continue;
             }
@@ -914,7 +911,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
         snap.coworkers.running_coworkers.len()
     );
 
-    let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap);
+    let (mut effects, coworkers_dispatched_this_tick) = dispatch_owned_pending_tasks(snap, state);
 
     effects.extend(dispatch_unowned_pending_tasks(
         snap,
@@ -941,6 +938,7 @@ pub(super) fn spawn_for_pending_tasks_excluding(
 /// deduplication with `dispatch_unowned_pending_tasks`).
 fn dispatch_owned_pending_tasks(
     snap: &snapshot::WorldSnapshot,
+    state: &DaemonState,
 ) -> (Vec<effects::Effect>, HashSet<String>) {
     let mut effects = Vec::new();
     let mut coworkers_dispatched_this_tick: HashSet<String> = HashSet::new();
@@ -948,6 +946,45 @@ fn dispatch_owned_pending_tasks(
     for (task_id, task_subject, owner) in snap.pending_tasks_with_owners.iter() {
         let action =
             crate::rules::decide_owned_pending_dispatch(task_id, task_subject, owner, snap);
+
+        // Post-decision live-state guards: close the TOCTOU window where a
+        // concurrent RPC dispatcher (e.g. daemon.check-pending) claims the
+        // same task between snapshot collection and effect execution.
+        // Check the *current* in-flight set and cooldowns, not the snapshot copy.
+        if matches!(
+            action,
+            crate::rules::PendingTaskAction::NudgeOwner { .. }
+                | crate::rules::PendingTaskAction::SpawnOwner { .. }
+        ) {
+            if state.is_task_spawn_in_flight(task_id) {
+                debug!(
+                    "task !{}: skipping owned pending dispatch — in-flight spawn (live check)",
+                    task_id
+                );
+                continue;
+            }
+            // Live nudge-cooldown check: an RPC dispatcher may have nudged
+            // this task after our snapshot was collected, recording a cooldown
+            // that isn't in snap.task_nudge_cooldown_ids.
+            if matches!(action, crate::rules::PendingTaskAction::NudgeOwner { .. }) {
+                let task_key = format!("pending-{}", task_id);
+                let on_cooldown = {
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    !cooldowns.check(
+                        "task_nudge",
+                        &task_key,
+                        super::constants::TASK_NUDGE_COOLDOWN,
+                    )
+                };
+                if on_cooldown {
+                    debug!(
+                        "task !{}: skipping owned pending dispatch — nudge cooldown (live check)",
+                        task_id
+                    );
+                    continue;
+                }
+            }
+        }
 
         match action {
             crate::rules::PendingTaskAction::AutoComplete {
@@ -1037,8 +1074,11 @@ fn dispatch_owned_pending_tasks(
 
                 coworkers_dispatched_this_tick.insert(o.to_lowercase());
             }
-            crate::rules::PendingTaskAction::Skip { ref reason } => {
-                debug!("{}", reason);
+            crate::rules::PendingTaskAction::Skip(ref reason) => {
+                debug!(
+                    "task !{}: skipping owned pending dispatch — {}",
+                    task_id, reason
+                );
             }
         }
     }
