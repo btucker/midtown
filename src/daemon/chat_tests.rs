@@ -191,7 +191,7 @@ fn mention_skip_dev_limit_posts_to_ops_channel() {
             );
             assert!(message.contains("amsterdam"), "Should mention the coworker");
             assert!(
-                message.contains("dev coworkers limit"),
+                message.contains("in-progress task limit"),
                 "Should explain the limit"
             );
         }

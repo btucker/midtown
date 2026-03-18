@@ -448,7 +448,7 @@ fn mention_action_to_effects(
             debug!("{}", reason);
             if reason.contains("dev limit") {
                 vec![Effect::post_to_ops(format!(
-                    "Cannot call in {} for @mention: dev coworkers limit reached",
+                    "Cannot call in {} for @mention: in-progress task limit reached",
                     coworker_name
                 ))]
             } else {

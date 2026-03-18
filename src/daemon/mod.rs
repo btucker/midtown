@@ -1137,18 +1137,29 @@ impl DaemonState {
     /// Reads task status from disk. Used by RPC handlers (`rpc_coworker.rs`,
     /// `chat.rs`) that operate outside the snapshot pipeline and don't have
     /// access to a pre-computed snapshot. The snapshot pipeline uses
-    /// `snap.is_at_task_limit` (pre-computed from `in_progress_tasks.len()`)
+    /// `snap.is_at_task_limit` (pre-computed in `collect_world_snapshot`)
     /// for pure decision functions.
     ///
-    /// Orphaned tasks (in-progress but no running coworker) DO count toward
-    /// the limit — orphan recovery will reassign or clear them.
+    /// Only counts tasks with active owners (registered in CoworkerManager).
+    /// Tasks whose owners are dead (e.g., after a restart) don't consume
+    /// coworker slots and should not block new spawns.
     fn is_at_task_limit(&self) -> bool {
         let tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
-        let in_progress_count = tasks
+        let registered: std::collections::HashSet<String> = self
+            .coworkers
+            .list()
+            .iter()
+            .map(|cw| cw.name.to_lowercase())
+            .collect();
+        let active_in_progress_count = tasks
             .iter()
             .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .filter(|t| match &t.owner {
+                Some(owner) => registered.contains(&owner.to_lowercase()),
+                None => true, // ownerless tasks count (freshly dispatched)
+            })
             .count();
-        in_progress_count >= self.max_in_progress_tasks
+        active_in_progress_count >= self.max_in_progress_tasks
     }
 
     /// Check if a PR has at least one completed review.

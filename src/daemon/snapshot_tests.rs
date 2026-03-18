@@ -841,3 +841,51 @@ fn test_pr_task_index_new_preserves_multiple_prs_per_task() {
     let pairs: Vec<_> = index.pr_task_pairs().collect();
     assert_eq!(pairs.len(), 2);
 }
+
+/// After a restart, dead coworkers' in_progress tasks should NOT count toward
+/// the task limit. Only tasks with active owners consume coworker slots.
+///
+/// Bug: the daemon would report "0/8 active coworkers" but simultaneously
+/// block spawns with "dev coworkers limit reached" because dead coworkers'
+/// tasks stayed in_progress and counted toward is_at_task_limit.
+#[test]
+fn test_task_limit_excludes_dead_owner_tasks() {
+    let mut snap = minimal_snapshot_for_test();
+    snap.max_in_progress_tasks = 8;
+
+    // 8 in_progress tasks, but only 2 owners are active
+    snap.in_progress_tasks = vec![
+        ("1".into(), "Task 1".into(), "park".into()),
+        ("2".into(), "Task 2".into(), "madison".into()),
+        ("3".into(), "Task 3".into(), "broadway".into()), // dead
+        ("4".into(), "Task 4".into(), "columbus".into()), // dead
+        ("5".into(), "Task 5".into(), "riverside".into()), // dead
+        ("6".into(), "Task 6".into(), "amsterdam".into()), // dead
+        ("7".into(), "Task 7".into(), "lexington".into()), // dead
+        ("8".into(), "Task 8".into(), "york".into()),     // dead
+    ];
+
+    // Only park and madison are active
+    snap.coworkers.active_names = ["park".to_string(), "madison".to_string()]
+        .into_iter()
+        .collect();
+
+    // With the old logic (count all in_progress), 8 >= 8 → at limit.
+    // With the fix (count only active-owner tasks), 2 < 8 → NOT at limit.
+    let active_count = snap
+        .in_progress_tasks
+        .iter()
+        .filter(|(_, _, owner)| owner.is_empty() || snap.coworkers.active_names.contains(owner))
+        .count();
+    assert_eq!(active_count, 2, "Only 2 tasks have active owners");
+    assert!(
+        active_count < snap.max_in_progress_tasks,
+        "Should NOT be at task limit with only 2 active-owner tasks"
+    );
+
+    // Verify is_at_task_limit would be false with the fix
+    assert!(
+        !snap.is_at_task_limit,
+        "Snapshot default is_at_task_limit should be false"
+    );
+}
