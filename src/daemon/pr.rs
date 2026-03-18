@@ -1300,6 +1300,9 @@ fn action_to_effects(
         // Task-less PRs: post to ops for manual investigation.
         // All coworker PRs should have tasks; reaching here indicates a
         // data gap (e.g., daemon restart lost session records).
+        // Bug !2377: Use RecordPermanentPrNudge (one-shot) instead of RecordPrNudge
+        // (cooldown-based). No coworker exists to fix the issue, so cooldown expiry
+        // would just re-fire the same message every 10 minutes indefinitely.
         PrAction::NudgeOwner { owner, message: _ } | PrAction::SpawnOwner { owner, message: _ } => {
             vec![
                 Effect::PostToChannel {
@@ -1321,7 +1324,7 @@ fn action_to_effects(
                     tool_use_id: None,
                     parent_tool_use_id: None,
                 },
-                Effect::RecordPrNudge {
+                Effect::RecordPermanentPrNudge {
                     pr_number,
                     issue_type,
                 },

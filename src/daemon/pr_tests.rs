@@ -5407,3 +5407,83 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
         reviewer_names
     );
 }
+
+/// Bug !2377: Task-less PRs use RecordPrNudge (cooldown-based), so the "no task
+/// linked" ops post re-fires every 10 minutes. Since no coworker exists to fix the
+/// issue, this creates infinite spam. The fix is to use RecordPermanentPrNudge so
+/// the notification fires exactly once.
+#[test]
+fn action_to_effects_taskless_pr_uses_permanent_nudge() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = action_to_effects(
+        crate::rules::PrAction::SpawnOwner {
+            owner: "york".to_string(),
+            message: "CI green — please merge".to_string(),
+        },
+        42,
+        "Fix auth",
+        PrIssueType::GreenWithFeedback,
+        &state,
+        &ctx,
+    );
+
+    let has_permanent = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordPermanentPrNudge { pr_number, .. } if *pr_number == 42
+        )
+    });
+    assert!(
+        has_permanent,
+        "Bug !2377: Task-less PR nudge must use RecordPermanentPrNudge to prevent \
+         re-firing every cooldown period. Got: {:#?}",
+        effects
+    );
+
+    // Also verify it does NOT produce a regular RecordPrNudge (which would allow re-fire)
+    let has_regular = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordPrNudge { pr_number, .. } if *pr_number == 42
+        )
+    });
+    assert!(
+        !has_regular,
+        "Bug !2377: Task-less PR nudge must NOT produce RecordPrNudge (cooldown-based). \
+         Only RecordPermanentPrNudge should be emitted. Got: {:#?}",
+        effects
+    );
+}
+
+/// Bug !2377: Same as above but for NudgeOwner (the other arm that handles task-less PRs).
+#[test]
+fn action_to_effects_taskless_nudge_owner_uses_permanent_nudge() {
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+    let ctx = make_pr_context_empty();
+
+    let effects = action_to_effects(
+        crate::rules::PrAction::NudgeOwner {
+            owner: "park".to_string(),
+            message: "CI green — please merge".to_string(),
+        },
+        99,
+        "Add logging",
+        PrIssueType::GreenWithFeedback,
+        &state,
+        &ctx,
+    );
+
+    let has_permanent = effects.iter().any(|e| {
+        matches!(
+            e,
+            Effect::RecordPermanentPrNudge { pr_number, .. } if *pr_number == 99
+        )
+    });
+    assert!(
+        has_permanent,
+        "Bug !2377: Task-less NudgeOwner must use RecordPermanentPrNudge. Got: {:#?}",
+        effects
+    );
+}
