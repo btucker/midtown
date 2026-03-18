@@ -343,9 +343,11 @@ fn test_merged_pr_autocomplete_runs_at_task_limit() {
     );
 }
 
-/// When at task limit with idle coworkers, tasks should be assigned to idle coworkers.
+/// All tasks (including those with idle coworkers) are deferred at the task limit.
+/// Task:session is 1:1 — idle coworkers are suspended waiting for review feedback,
+/// not available for reassignment.
 #[test]
-fn test_idle_coworker_reuse_at_task_limit() {
+fn test_tasks_deferred_at_task_limit() {
     let state = make_test_state_with_max(2);
 
     for name in &["lexington", "park"] {
@@ -361,49 +363,9 @@ fn test_idle_coworker_reuse_at_task_limit() {
 
     let pending = vec![make_pending_task("99")];
 
-    // At task limit (2/2), but park is idle (not in busy_coworkers)
-    let mut snap = make_task_limit_snapshot(running, pending, true);
-    // Mark lexington as busy, park stays idle
-    snap.busy_coworkers.insert("lexington".to_string());
-    // Don't mark park as busy — it's idle and should be reusable
-
-    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
-
-    let has_nudge = effects.iter().any(|e| {
-        matches!(
-            e,
-            crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
-        )
-    });
-    assert!(
-        has_nudge,
-        "Expected idle coworker to be nudged with new task at task limit. Effects: {:?}",
-        effects
-    );
-}
-
-/// When at task limit with NO idle coworkers, tasks should be deferred.
-#[test]
-fn test_no_idle_coworkers_defers_at_task_limit() {
-    let state = make_test_state_with_max(2);
-
-    for name in &["lexington", "park"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let running = vec![
-        make_running_coworker("lexington"),
-        make_running_coworker("park"),
-    ];
-
-    let pending = vec![make_pending_task("99")];
-
-    // At task limit (2/2), all coworkers busy
+    // At task limit (2/2), park is idle but should NOT be reused
     let mut snap = make_task_limit_snapshot(running, pending, true);
     snap.busy_coworkers.insert("lexington".to_string());
-    snap.busy_coworkers.insert("park".to_string());
 
     let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
 
@@ -416,50 +378,7 @@ fn test_no_idle_coworkers_defers_at_task_limit() {
     });
     assert!(
         !has_task_effect,
-        "Expected no dispatch when at task limit and all coworkers busy. Effects: {:?}",
-        effects
-    );
-}
-
-/// Reviewer tasks should NOT reuse idle coworkers — they need fresh isolated worktrees.
-#[test]
-fn test_reviewer_task_deferred_at_task_limit() {
-    let state = make_test_state_with_max(2);
-
-    for name in &["lexington", "park"] {
-        state
-            .coworkers
-            .insert_for_testing(make_running_coworker(name));
-    }
-
-    let running = vec![
-        make_running_coworker("lexington"),
-        make_running_coworker("park"),
-    ];
-
-    let mut reviewer_task = make_pending_task("99");
-    reviewer_task.pr = Some(200);
-    let pending = vec![reviewer_task];
-
-    // At task limit (2/2), park is idle, but task is a reviewer task
-    let mut snap = make_task_limit_snapshot(running, pending, true);
-    snap.busy_coworkers.insert("lexington".to_string());
-    // Mark task as reviewer type
-    snap.task_agent_type_map
-        .insert("99".to_string(), "midtown-code-reviewer".to_string());
-
-    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
-
-    let has_task_effect = effects.iter().any(|e| {
-        matches!(
-            e,
-            crate::daemon::effects::Effect::SpawnForTask { .. }
-                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
-        )
-    });
-    assert!(
-        !has_task_effect,
-        "Expected reviewer task to be deferred at task limit (no idle reuse). Effects: {:?}",
+        "Expected task to be deferred at task limit (no idle reuse). Effects: {:?}",
         effects
     );
 }
