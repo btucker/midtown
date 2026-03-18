@@ -1582,6 +1582,219 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
     );
 }
 
+/// reconcile_orphaned_prs should NOT flag a PR as orphaned when the PR title
+/// contains `[Midtown !NNN]` (detected via `github_open_pr_task_ids`), even if
+/// `pr_task_associations` is empty (e.g., after session GC or daemon restart).
+///
+/// This reproduces the bug in !2348: session records are GC'd after 24h, causing
+/// `pr_task_associations` to lose the PR→task link. The PR title still contains
+/// the task ID, so `github_open_pr_task_ids` should prevent false orphan detection.
+#[test]
+fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 99,
+        "title": "feat: Add auth endpoint [Midtown !500]",
+        "headRefName": "task-500-add-auth",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(99);
+
+    // Session-derived association is EMPTY (simulates session GC after 24h)
+    // But the PR title has [Midtown !500], so github_task_pr_pairs should catch it
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("500".to_string(), 99)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
+    // The task must be non-completed for the title link to suppress orphan detection
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "500".to_string(),
+        subject: "Add auth endpoint".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
+
+    let effects = reconcile_orphaned_prs(&snap);
+
+    let nudge_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
+        .count();
+    assert_eq!(
+        nudge_count, 0,
+        "Should NOT nudge lead when PR title contains [Midtown !NNN] (github_open_pr_task_ids)"
+    );
+}
+
+/// reconcile_orphaned_prs should NOT flag a PR as orphaned when a task's `pr` field
+/// points to it, even if both `pr_task_associations` and `github_open_pr_task_ids`
+/// are empty.
+///
+/// This covers the case where the task's PR link was set via webhook/RPC but the
+/// session was GC'd and the PR title doesn't follow the `[Midtown !NNN]` convention.
+#[test]
+fn test_reconcile_orphaned_prs_checks_task_pr_field() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 77,
+        "title": "Fix a bug",
+        "headRefName": "task-600-fix-bug",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(77);
+
+    // No session association, no title-based association
+    // But a task on disk has pr = Some(77)
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "600".to_string(),
+        subject: "Fix a bug".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(77),
+        created_at: None,
+    });
+
+    let effects = reconcile_orphaned_prs(&snap);
+
+    let nudge_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
+        .count();
+    assert_eq!(
+        nudge_count, 0,
+        "Should NOT nudge lead when a task's pr field points to this PR"
+    );
+}
+
+/// A completed task's `pr` field should NOT suppress orphan detection.
+/// The PR is genuinely orphaned — work is done but the PR wasn't merged.
+#[test]
+fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 88,
+        "title": "feat: Something [Midtown !700]",
+        "headRefName": "task-700-something",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(88);
+
+    // Task is completed but PR is still open — PR is orphaned
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "700".to_string(),
+        subject: "Something".to_string(),
+        status: crate::tasks::TaskStatus::Completed,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: Some(88),
+        created_at: None,
+    });
+    // Title-based link also exists
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("700".to_string(), 88)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
+
+    let effects = reconcile_orphaned_prs(&snap);
+
+    let nudge_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeChannelLead { .. }))
+        .count();
+    assert_eq!(
+        nudge_count, 1,
+        "Should nudge lead when task is completed but PR is still open (orphaned)"
+    );
+}
+
+/// When a previously-nudged PR is found linked via `github_open_pr_task_ids`,
+/// `ClearOrphanedPrLeadNudge` should be emitted so re-nudging is possible if
+/// the link later disappears.
+#[test]
+fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
+    use super::super::snapshot::minimal_snapshot_for_test;
+
+    let pr_data = json!({
+        "number": 55,
+        "title": "feat: New feature [Midtown !300]",
+        "headRefName": "task-300-new-feature",
+        "isDraft": false,
+        "statusCheckRollup": {
+            "state": "SUCCESS"
+        }
+    });
+
+    let mut snap = minimal_snapshot_for_test();
+    snap.pr.open_prs_data = vec![pr_data];
+    snap.reviewer.reviewed_prs.insert(55);
+
+    // Lead was previously nudged
+    snap.pr.orphaned_pr_lead_nudges_sent.insert(55);
+    // No session link, but title-derived link exists
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("300".to_string(), 55)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
+    // Non-completed task required for title link to be active
+    snap.all_tasks.push(crate::tasks::Task {
+        id: "300".to_string(),
+        subject: "New feature".to_string(),
+        status: crate::tasks::TaskStatus::InProgress,
+        owner: None,
+        description: None,
+        blocked_by: vec![],
+        channel: None,
+        pr: None,
+        created_at: None,
+    });
+
+    let effects = reconcile_orphaned_prs(&snap);
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ClearOrphanedPrLeadNudge { pr_number: 55 })),
+        "Should clear nudge record when PR is linked via title parsing"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::NudgeChannelLead { .. })),
+        "Should not nudge when PR has a title-derived task link"
+    );
+}
+
 /// Cross-tick spawn dedup (!1377): task-linked SpawnOwner produces TaskPrompt,
 /// which is tracked by extract_claimed_task_ids_from_effects.
 #[test]
