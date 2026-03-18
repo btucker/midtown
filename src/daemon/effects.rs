@@ -1991,6 +1991,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         e
                     );
                 }
+                // Also update TaskStore with session_id and pr
+                if let Ok(mut store_task) = state.task_store.load(&task_id) {
+                    store_task.session_id = Some(session_id.clone());
+                    if let Some(pr) = pr_number {
+                        store_task.pr = Some(pr);
+                    }
+                    if let Err(e) = state.task_store.save(&store_task) {
+                        warn!("Failed to update TaskStore task {} session: {}", task_id, e);
+                    }
+                }
             }
             Effect::CloseTaskSessionSpan {
                 session_id,
@@ -2224,6 +2234,33 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save review task metadata: {}", e);
+                        }
+                        // Also write to TaskStore for new task storage layer
+                        let parent_thread = parent_task_id
+                            .as_ref()
+                            .and_then(|pid| ps.task_thread_id.get(pid).cloned());
+                        drop(ps);
+                        let store_task = crate::task_store::Task {
+                            id: task_id.clone(),
+                            subject: format!("Review PR #{}", pr_number),
+                            status: crate::task_store::TaskStatus::Pending,
+                            description: None,
+                            blocked_by: vec![],
+                            channel: channel.clone(),
+                            pr: Some(pr_number),
+                            agent_name: task_id.clone(), // Will be set properly by task dispatch
+                            agent_type: "midtown-code-reviewer".to_string(),
+                            session_id: None,
+                            parent: parent_task_id.clone(),
+                            message_id: None,
+                            thread_id: parent_thread,
+                            model: None,
+                            plan: None,
+                            created_at: chrono::Utc::now(),
+                            updated_at: chrono::Utc::now(),
+                        };
+                        if let Err(e) = state.task_store.save(&store_task) {
+                            warn!("Failed to save review task to TaskStore: {}", e);
                         }
                     }
                     Err(e) => {
@@ -2823,6 +2860,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         warn!("Failed to save task_channel after merge: {}", e);
                     }
                 }
+                // Also update TaskStore tasks that reference the merged channel
+                for mut task in state.task_store.load_all() {
+                    if task.channel.as_deref() == Some(&from) {
+                        task.channel = Some(into.clone());
+                        if let Err(e) = state.task_store.save(&task) {
+                            warn!(
+                                "Failed to update TaskStore task {} channel after merge: {}",
+                                task.id, e
+                            );
+                        }
+                    }
+                }
 
                 // Post merge notice to target channel
                 let msg = Message::for_channel(
@@ -2883,6 +2932,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     None, // pr
                 ) {
                     warn!("Failed to update task file channel for !{}: {}", task_id, e);
+                }
+                // Also update TaskStore
+                if let Ok(mut task) = state.task_store.load(&task_id) {
+                    task.channel = Some(channel.clone());
+                    if let Err(e) = state.task_store.save(&task) {
+                        warn!("Failed to update TaskStore task {} channel: {}", task_id, e);
+                    }
                 }
             }
             Effect::UnassignTask { task_id, dir_key } => {
@@ -2977,10 +3033,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 ps.task_message_id
                                     .insert(task_id.clone(), message_id.clone());
                                 if !ps.task_thread_id.contains_key(&task_id) {
-                                    ps.task_thread_id.insert(task_id.clone(), message_id);
+                                    ps.task_thread_id
+                                        .insert(task_id.clone(), message_id.clone());
                                 }
                                 if let Err(e) = ps.save_for_repo(&dir_key) {
                                     warn!("Failed to save task message_id mapping: {}", e);
+                                }
+                                // Also update TaskStore
+                                if let Ok(mut store_task) = state.task_store.load(&task_id) {
+                                    store_task.message_id = Some(message_id.clone());
+                                    if store_task.thread_id.is_none() {
+                                        store_task.thread_id = Some(message_id);
+                                    }
+                                    if let Err(e) = state.task_store.save(&store_task) {
+                                        warn!(
+                                            "Failed to update TaskStore task {} message_id: {}",
+                                            task_id, e
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -3980,9 +4050,11 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
                 .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
                 .map(|s| s.task_id.clone())
                 .collect();
-            for tid in task_ids {
-                ps.task_placeholder_comment_id.insert(tid, comment_id);
+            for tid in &task_ids {
+                ps.task_placeholder_comment_id
+                    .insert(tid.clone(), comment_id);
             }
+            // TODO: migrate placeholder_comment_id to frontmatter lookup
             serde_json::to_string_pretty(&*ps).ok()
         };
         if let Some(json) = serialized {
@@ -4708,8 +4780,19 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
             .find(|r| r.is_running && r.name == agent)
             .or_else(|| ps.sessions.values().find(|r| r.name == agent))
             .and_then(|r| r.task_id.as_deref());
-        let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
-        let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
+        // Try TaskStore first, then fall back to persistent state HashMaps
+        let (ch, thread) = if let Some(tid) = task_id {
+            if let Ok(store_task) = state.task_store.load(tid) {
+                (store_task.channel.clone(), store_task.thread_id.clone())
+            } else {
+                (
+                    ps.task_channel.get(tid).cloned(),
+                    ps.task_thread_id.get(tid).cloned(),
+                )
+            }
+        } else {
+            (None, None)
+        };
         (ch, thread)
     };
 

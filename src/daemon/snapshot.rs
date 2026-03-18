@@ -1099,7 +1099,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
     // task-to-thread, task-to-message, task-to-parent, task-to-agent-type,
-    // channel-lead, and lead-driven mappings
+    // channel-lead, and lead-driven mappings.
+    //
+    // Primary source: TaskStore (file-per-task JSON). Falls back to
+    // DaemonPersistentState HashMap fields for data that hasn't been
+    // migrated yet (see Task 9 migration).
     let (
         task_channel,
         task_model_map,
@@ -1112,18 +1116,86 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         channel_lead_sessions,
         lead_driven_channels,
     ) = {
+        let all_store_tasks = state.task_store.load_all();
+        let mut task_channel = HashMap::new();
+        let mut task_model_map = HashMap::new();
+        let mut task_plan_map = HashMap::new();
+        let mut task_execution_skill_map = HashMap::new();
+        let mut task_thread_id_map = HashMap::new();
+        let mut task_message_id_map = HashMap::new();
+        let mut task_parent_map = HashMap::new();
+        let mut task_agent_type_map = HashMap::new();
+        for t in &all_store_tasks {
+            if let Some(ref ch) = t.channel {
+                task_channel.insert(t.id.clone(), ch.clone());
+            }
+            if let Some(ref m) = t.model {
+                task_model_map.insert(t.id.clone(), m.clone());
+            }
+            if let Some(ref p) = t.plan {
+                task_plan_map.insert(t.id.clone(), p.clone());
+            }
+            if let Some(ref tid) = t.thread_id {
+                task_thread_id_map.insert(t.id.clone(), tid.clone());
+            }
+            if let Some(ref mid) = t.message_id {
+                task_message_id_map.insert(t.id.clone(), mid.clone());
+            }
+            if let Some(ref pid) = t.parent {
+                task_parent_map.insert(t.id.clone(), pid.clone());
+            }
+            task_agent_type_map.insert(t.id.clone(), t.agent_type.clone());
+        }
+        // Merge with persistent state HashMap fields for backward compatibility
+        // (pre-migration data). TaskStore entries take precedence.
         let ps = state.persistent_state.lock().await;
+        for (k, v) in &ps.task_channel {
+            task_channel.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_model {
+            task_model_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_plan {
+            task_plan_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_execution_skill {
+            task_execution_skill_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_thread_id {
+            task_thread_id_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_message_id {
+            task_message_id_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_parent {
+            task_parent_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_agent_type {
+            task_agent_type_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        let channel_lead_sessions = ps.channel_lead_sessions.clone();
+        let lead_driven_channels = ps.lead_driven_channels.clone();
         (
-            ps.task_channel.clone(),
-            ps.task_model.clone(),
-            ps.task_plan.clone(),
-            ps.task_execution_skill.clone(),
-            ps.task_thread_id.clone(),
-            ps.task_message_id.clone(),
-            ps.task_parent.clone(),
-            ps.task_agent_type.clone(),
-            ps.channel_lead_sessions.clone(),
-            ps.lead_driven_channels.clone(),
+            task_channel,
+            task_model_map,
+            task_plan_map,
+            task_execution_skill_map,
+            task_thread_id_map,
+            task_message_id_map,
+            task_parent_map,
+            task_agent_type_map,
+            channel_lead_sessions,
+            lead_driven_channels,
         )
     };
 
@@ -1171,7 +1243,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         // This is required for decide_dead_reviewer_respawns to detect and
         // respawn reviewers whose processes have exited without posting a review.
         let assignments = build_reviewer_pr_assignments_from_spans(&ps);
-        // Collect PR → restart_count for stuck reviewer backoff (from task_restart_count).
+        // Collect PR → restart_count for stuck reviewer backoff.
+        // Primary source: task_restart_count + task_pr_number on persistent state
+        // (these fields stay on DaemonPersistentState until SessionRecord migration).
         let restart_counts: HashMap<u64, u32> = ps
             .task_restart_count
             .iter()
@@ -1213,14 +1287,14 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
-        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition).
-        // Read from task_placeholder_comment_id keyed by task_id, mapped to pr via task_pr_number.
+        // Pre-fetch stored placeholder IDs from persistent state.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
                 .map(|&pr| {
-                    // Find a task_id for this PR via task_pr_number reverse lookup
+                    // Try TaskStore first: find task with this PR and a placeholder_comment_id
+                    // Look up placeholder_comment_id from persistent state
                     let id = ps
                         .task_pr_number
                         .iter()

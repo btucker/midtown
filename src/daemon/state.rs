@@ -348,6 +348,14 @@ pub struct DaemonPersistentState {
     /// populates SessionRecord.pr_number.
     #[serde(default)]
     pub task_pr_number: HashMap<String, u64>,
+
+    /// Write-through task index for fast lookups without directory scanning.
+    ///
+    /// Populated from `TaskStore::build_index()` on daemon startup.
+    /// Updated after every `TaskStore::save()` call. Contains task status,
+    /// parent, and agent_name for each task.
+    #[serde(default)]
+    pub task_index: HashMap<String, crate::task_store::TaskIndexEntry>,
 }
 
 impl DaemonPersistentState {
@@ -675,6 +683,7 @@ impl DaemonPersistentState {
             permanent_pr_nudges: Vec::new(),
             task_session_spans: Vec::new(),
             task_pr_number: HashMap::new(),
+            task_index: HashMap::new(),
         };
 
         // Save the unified file

@@ -533,6 +533,43 @@ pub(super) async fn handle_task_create(
         }
     }
 
+    // Also write to TaskStore for new task storage layer
+    {
+        let ps = state.persistent_state.lock().await;
+        let resolved_thread = ps.task_thread_id.get(&task_id).cloned();
+        let resolved_message = ps.task_message_id.get(&task_id).cloned();
+        let resolved_parent = ps.task_parent.get(&task_id).cloned();
+        drop(ps);
+        let store_task = crate::task_store::Task {
+            id: task_id.clone(),
+            subject: subject.to_string(),
+            status: crate::task_store::TaskStatus::Pending,
+            description: if description.is_empty() {
+                None
+            } else {
+                Some(description.to_string())
+            },
+            blocked_by: blocked_by.map_or_else(Vec::new, |b| b.to_vec()),
+            channel: Some(effective_channel.to_string()),
+            pr,
+            agent_name: task_id.clone(), // Will be set properly when agent_name param is added
+            agent_type: agent_type.unwrap_or("midtown-code-author").to_string(),
+            session_id: None,
+            parent: resolved_parent,
+            message_id: resolved_message,
+            thread_id: resolved_thread,
+            model: model.map(|m| m.to_string()),
+            plan: plan.map(|p| p.to_string()),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!("Failed to save task to TaskStore: {}", e);
+        } else {
+            state.update_task_index(&store_task).await;
+        }
+    }
+
     // Nudge the effective channel's lead about the new task and emit workflow event
     let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
         channel_name: effective_channel.to_string(),
@@ -669,75 +706,76 @@ pub(super) async fn handle_task_update(
         }
     }
 
-    // Also update the new TaskStore if the task file exists there
-    let tasks_dir = state.paths.base_dir().join("tasks");
-    let task_store = crate::task_store::TaskStore::new(tasks_dir);
-    if let Ok(mut task) = task_store.load(task_id) {
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
         if let Some(s) = status {
-            task.status = match s {
+            store_task.status = match s {
                 "pending" => crate::task_store::TaskStatus::Pending,
                 "in_progress" => crate::task_store::TaskStatus::InProgress,
                 "completed" => crate::task_store::TaskStatus::Completed,
-                _ => task.status,
+                _ => store_task.status,
             };
         }
-        if let Some(d) = description {
-            task.description = if d.is_empty() {
+        if let Some(desc) = description {
+            store_task.description = if desc.is_empty() {
                 None
             } else {
-                Some(d.to_string())
+                Some(desc.to_string())
             };
         }
         if let Some(bb) = blocked_by {
-            task.blocked_by = bb.to_vec();
+            store_task.blocked_by = bb.to_vec();
         }
         if let Some(ch) = channel {
-            task.channel = if ch.is_empty() {
-                None
+            if ch.is_empty() {
+                store_task.channel = None;
+                store_task.thread_id = None;
             } else {
-                Some(ch.to_string())
-            };
+                store_task.channel = Some(ch.to_string());
+            }
         }
         if let Some(m) = model {
-            task.model = if m.is_empty() {
+            store_task.model = if m.is_empty() {
                 None
             } else {
                 Some(m.to_string())
             };
         }
-        if let Some(pr_num) = pr {
-            task.pr = Some(pr_num);
+        if let Some(p) = pr {
+            store_task.pr = Some(p);
         }
         if let Some(p) = plan {
-            task.plan = if p.is_empty() {
+            store_task.plan = if p.is_empty() {
                 None
             } else {
                 Some(p.to_string())
             };
         }
         if let Some(sid) = session_id {
-            task.session_id = if sid.is_empty() {
+            store_task.session_id = if sid.is_empty() {
                 None
             } else {
                 Some(sid.to_string())
             };
         }
         if let Some(mid) = message_id {
-            task.message_id = if mid.is_empty() {
+            store_task.message_id = if mid.is_empty() {
                 None
             } else {
                 Some(mid.to_string())
             };
         }
         if let Some(tid) = thread_id {
-            task.thread_id = if tid.is_empty() {
+            store_task.thread_id = if tid.is_empty() {
                 None
             } else {
                 Some(tid.to_string())
             };
         }
-        if let Err(e) = task_store.save(&task) {
-            warn!("Failed to save task update to TaskStore: {}", e);
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!("Failed to update TaskStore task {}: {}", task_id, e);
+        } else {
+            state.update_task_index(&store_task).await;
         }
     }
 
@@ -788,6 +826,19 @@ pub(super) async fn handle_task_done(
         warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
     }
 
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
+        store_task.status = crate::task_store::TaskStatus::Completed;
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!(
+                "Failed to update TaskStore task {} to completed: {}",
+                task_id, e
+            );
+        } else {
+            state.update_task_index(&store_task).await;
+        }
+    }
+
     info!("Completed task !{}", task_id);
     Response::success(
         id,
@@ -808,7 +859,23 @@ pub(super) async fn handle_task_metadata(
     task_id: &str,
     state: &DaemonState,
 ) -> Response {
-    // Verify the task exists in native task storage before returning metadata.
+    // Try TaskStore first, then fall back to native task storage + persistent state
+    if let Ok(store_task) = state.task_store.load(task_id) {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "channel": store_task.channel,
+                "model": store_task.model,
+                "plan": store_task.plan,
+                "message_id": store_task.message_id,
+                "thread_id": store_task.thread_id,
+                "parent": store_task.parent,
+                "agent_type": store_task.agent_type,
+            }),
+        );
+    }
+
+    // Fallback: verify the task exists in native task storage before returning metadata.
     let tasks = crate::tasks::read_tasks();
     if !tasks.iter().any(|t| t.id == task_id) {
         return Response::error(
@@ -1130,6 +1197,12 @@ pub(crate) async fn deliver_task_prompt(
             let mut task_model_map = std::collections::HashMap::new();
             task_model_map.insert(task_id.to_string(), m.to_string());
             config.apply_task_model(&task_model_map, task_id);
+        } else if let Ok(store_task) = state.task_store.load(task_id) {
+            if let Some(ref m) = store_task.model {
+                let mut task_model_map = std::collections::HashMap::new();
+                task_model_map.insert(task_id.to_string(), m.clone());
+                config.apply_task_model(&task_model_map, task_id);
+            }
         } else {
             let ps = state.persistent_state.lock().await;
             config.apply_task_model(&ps.task_model, task_id);
@@ -1267,6 +1340,18 @@ pub(super) async fn handle_task_handoff(
             .insert(task_id.to_string(), agent.to_string());
         if let Err(e) = ps.save_for_repo(&dir_key) {
             warn!("Failed to save task_agent_type after handoff: {}", e);
+        }
+    }
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
+        store_task.agent_type = agent.to_string();
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!(
+                "Failed to update TaskStore task {} agent_type: {}",
+                task_id, e
+            );
+        } else {
+            state.update_task_index(&store_task).await;
         }
     }
 

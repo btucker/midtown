@@ -132,16 +132,18 @@ pub(super) async fn handle_coworker_spawn(
     // Priority: agent instructions wrap everything, user --prompt is preserved, task
     // prompt is appended when --task is provided.
     let task_prompt = if let Some(ref t) = task {
-        // Read plan/execution-skill data directly from persistent state (same source
-        // that collect_world_snapshot uses, but without the full snapshot overhead).
+        // Read plan/execution-skill data. Try TaskStore first, then persistent state.
         let plan_section = {
-            let ps = state.persistent_state.lock().await;
-            let plan_path = ps.task_plan.get(&t.id).cloned();
-            let execution_skill = ps.task_execution_skill.get(&t.id).cloned();
+            let plan_path = if let Ok(store_task) = state.task_store.load(&t.id) {
+                store_task.plan.clone()
+            } else {
+                let ps = state.persistent_state.lock().await;
+                ps.task_plan.get(&t.id).cloned()
+            };
             super::dispatch::build_plan_prompt_section_from_parts(
                 &t.id,
                 plan_path.as_deref(),
-                execution_skill.as_deref(),
+                None, // execution_skill dropped
             )
         };
         Some(crate::agents::coworker_task_prompt(

@@ -758,6 +758,17 @@ pub(crate) struct DaemonState {
     /// Spawns `uv run python -m midtown` when plugins are detected in
     /// discovery paths. Communicates via Unix socket.
     pub(crate) plugin_daemon: plugin_daemon::PluginDaemonManager,
+    /// File-per-task storage for Midtown's own task persistence.
+    ///
+    /// Each task is stored as a JSON file in `~/.midtown/<project>/tasks/`.
+    /// Replaces the scattered `task_*` HashMaps on `DaemonPersistentState`.
+    /// Not behind a Mutex — only does file I/O (no shared mutable state).
+    pub(crate) task_store: crate::task_store::TaskStore,
+    /// Write-through task index for fast lookups without directory scanning.
+    ///
+    /// Updated after every `task_store.save()` call. Reconciled from disk
+    /// via `task_store.build_index()` on daemon startup.
+    pub(crate) task_index: std::sync::Mutex<HashMap<String, crate::task_store::TaskIndexEntry>>,
 }
 
 impl DaemonState {
@@ -1297,8 +1308,8 @@ impl DaemonState {
         let project_name = paths.project_name().to_string();
 
         // Load unified persistent state (migrates from legacy files if needed)
-        let persistent_state =
-            state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_else(|e| {
+        let mut persistent_state = state::DaemonPersistentState::load_for_repo(dir_key)
+            .unwrap_or_else(|e| {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
@@ -1369,6 +1380,14 @@ impl DaemonState {
                     task_to_session.insert(task_id.clone(), session_id.clone());
                 }
             }
+        }
+
+        // Set up the task store and build the initial task index from disk.
+        let task_store = crate::task_store::TaskStore::new(paths.tasks_dir());
+        let task_index = task_store.build_index();
+        // Reconcile the persistent state's task_index with the on-disk tasks.
+        if !task_index.is_empty() {
+            persistent_state.task_index = task_index.clone();
         }
 
         // Set up the plugin daemon manager with the workflows directory.
@@ -1449,6 +1468,8 @@ impl DaemonState {
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
             dm_tool_threads: std::sync::Mutex::new(HashMap::new()),
             plugin_daemon,
+            task_store,
+            task_index: std::sync::Mutex::new(task_index),
         })
     }
 
@@ -2365,6 +2386,25 @@ impl DaemonState {
     #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
     pub(crate) fn session_for_task(&self, task_id: &str) -> Option<String> {
         self.task_to_session.lock().unwrap().get(task_id).cloned()
+    }
+
+    /// Update the write-through task index after a TaskStore save.
+    ///
+    /// Also updates the persistent state's task_index for serialization.
+    pub(crate) async fn update_task_index(&self, task: &crate::task_store::Task) {
+        let entry = crate::task_store::TaskIndexEntry {
+            status: task.status,
+            parent: task.parent.clone(),
+            agent_name: task.agent_name.clone(),
+        };
+        // Update in-memory index
+        self.task_index
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), entry.clone());
+        // Update persistent state index
+        let mut ps = self.persistent_state.lock().await;
+        ps.task_index.insert(task.id.clone(), entry);
     }
 
     /// Returns the name of the default (main) channel for this repo.
