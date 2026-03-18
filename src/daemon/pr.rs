@@ -4310,7 +4310,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
         Effect::ShutdownSession { .. } => "ShutdownSession",
         Effect::RecordSession { .. } => "RecordSession",
-        Effect::ReleaseName { .. } => "ReleaseName",
         Effect::MergePr { .. } => "MergePr",
         Effect::AutoMergePr { .. } => "AutoMergePr",
         Effect::PostPrComment { .. } => "PostPrComment",

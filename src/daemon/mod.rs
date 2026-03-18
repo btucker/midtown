@@ -673,12 +673,6 @@ pub(crate) struct DaemonState {
     /// None means "no placeholder found" (negative result).
     /// Positive results (Some(comment_id)) are kept until the reviewer completes.
     reviewer_placeholder_cache: std::sync::Mutex<HashMap<u64, (Option<u64>, std::time::Instant)>>,
-    /// LRU pool for coworker name allocation.
-    ///
-    /// Tracks available and allocated names. Names at the front of the queue are
-    /// least-recently-used and will be allocated first. Released names go to the
-    /// back. Restored from `persistent_state.sessions` on startup.
-    pub(crate) name_pool: std::sync::Mutex<crate::name_pool::NamePool>,
     /// Reverse map: coworker name → session ID.
     ///
     /// Maintained in memory alongside `persistent_state.sessions`. Updated when
@@ -965,9 +959,9 @@ impl DaemonState {
     ///
     /// Handles: coworker deregistration, stop-time recording, coworker records,
     /// cooldowns, pending nudges, task assignments, recent tool activity,
-    /// NamePool release, session reverse-map cleanup (name_to_session,
-    /// session_to_name, task_to_session), SessionRecord persistent state update
-    /// (marks `is_running=false` and `current_name=None`), optional worktree
+    /// session reverse-map cleanup (name_to_session, session_to_name,
+    /// task_to_session), SessionRecord persistent state update (marks
+    /// `is_running=false` and `current_name=None`), optional worktree
     /// unbinding, and pending questions.
     ///
     /// Does NOT handle session-manager operations (session_manager.shutdown vs
@@ -1023,13 +1017,9 @@ impl DaemonState {
             let mut map = self.session_profile_map.lock().unwrap();
             map.remove(&name.to_lowercase());
         }
-        // Release name back to NamePool and clean up session reverse maps.
+        // Clean up session reverse maps.
         // Each lock is acquired and released independently (no nesting)
         // to avoid implicit lock-ordering dependencies.
-        {
-            let mut name_pool = self.name_pool.lock().unwrap();
-            name_pool.release(name);
-        }
         let removed_session_id = self.name_to_session.lock().unwrap().remove(name);
         if let Some(ref session_id) = removed_session_id {
             self.session_to_name.lock().unwrap().remove(session_id);
@@ -1342,8 +1332,6 @@ impl DaemonState {
         // Clone dir_key for session_manager before moving paths into Self
         let session_manager_repo_name = dir_key.to_string();
 
-        // NamePool is initialized empty — task-based naming generates names dynamically.
-        let mut name_pool = crate::name_pool::NamePool::new(&[]);
         let mut name_to_session: HashMap<String, String> = HashMap::new();
         let mut session_to_name: HashMap<String, String> = HashMap::new();
         let mut task_to_session: HashMap<String, String> = HashMap::new();
@@ -1351,13 +1339,6 @@ impl DaemonState {
         let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
         let mut topic_sessions: HashMap<String, String> = HashMap::new();
         {
-            let allocated_names: Vec<String> = persistent_state
-                .sessions
-                .values()
-                .filter(|r| !r.name.is_empty())
-                .map(|r| r.name.clone())
-                .collect();
-            name_pool.restore(&allocated_names);
             for (session_id, record) in &persistent_state.sessions {
                 if !record.name.is_empty() {
                     let name = &record.name;
@@ -1460,7 +1441,6 @@ impl DaemonState {
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
             tool_activity_headers: std::sync::RwLock::new(HashMap::new()),
-            name_pool: std::sync::Mutex::new(name_pool),
             name_to_session: std::sync::Mutex::new(name_to_session),
             session_to_name: std::sync::Mutex::new(session_to_name),
             task_to_session: std::sync::Mutex::new(task_to_session),
@@ -4073,11 +4053,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
                     // Clean up all transient coworker state (shared with shutdown path).
-                    // This includes releasing the name back to NamePool and cleaning
-                    // up session reverse maps (name_to_session, session_to_name,
-                    // task_to_session).
-                    // Clean up all transient state and release dead coworker worktree
-                    // binding so immediate respawn can continue.
+                    // This includes cleaning up session reverse maps
+                    // (name_to_session, session_to_name, task_to_session) and
+                    // releasing dead coworker worktree binding so immediate
+                    // respawn can continue.
                     state.cleanup_dead_coworker_state(&name).await;
 
                     // Only clear session_id when the resume itself failed

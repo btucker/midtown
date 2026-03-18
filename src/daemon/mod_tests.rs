@@ -1471,9 +1471,6 @@ fn make_cleanup_test_state() -> (
         shutdown_tx,
     )
     .expect("daemon state");
-    // Pre-populate name pool with test names so cleanup tests can allocate/release
-    *state.name_pool.lock().unwrap() =
-        crate::name_pool::NamePool::new(&["madison", "park", "lexington", "broadway"]);
     (state, temp_dir, _guard)
 }
 
@@ -1753,17 +1750,8 @@ async fn test_cleanup_dead_coworker_sets_completed_at_on_worktree() {
 }
 
 // ============================================================================
-// NamePool + session registry tests
+// Session registry tests
 // ============================================================================
-
-#[test]
-fn test_daemon_state_initializes_name_pool() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-    let pool = state.name_pool.lock().unwrap();
-    // Test helper pre-populates pool with test names
-    assert_eq!(pool.available_count(), 4);
-    assert_eq!(pool.allocated_count(), 0);
-}
 
 #[test]
 fn test_session_id_for_name_returns_empty_when_no_session() {
@@ -1850,18 +1838,10 @@ fn test_reverse_maps_bidirectional_consistency() {
 }
 
 #[tokio::test]
-async fn test_cleanup_releases_name_from_pool() {
+async fn test_cleanup_clears_reverse_maps() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate a name from the pool
-    let name = {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap()
-    };
-    assert_eq!(name, "madison");
-    assert!(state.name_pool.lock().unwrap().is_allocated("madison"));
-
-    // Populate reverse maps for this name
+    // Populate reverse maps
     {
         state
             .name_to_session
@@ -1880,14 +1860,10 @@ async fn test_cleanup_releases_name_from_pool() {
             .insert("42".to_string(), "sid-madison".to_string());
     }
 
-    // cleanup_coworker_state handles all transient state AND name pool + reverse maps.
+    // cleanup_coworker_state handles all transient state and reverse maps.
     state.cleanup_coworker_state("madison").await;
 
     // Verify cleanup
-    assert!(
-        !state.name_pool.lock().unwrap().is_allocated("madison"),
-        "name should be released back to pool"
-    );
     assert_eq!(
         state.session_id_for_name("madison"),
         "",
@@ -1908,13 +1884,6 @@ async fn test_cleanup_releases_name_from_pool() {
 #[tokio::test]
 async fn test_cleanup_preserves_other_sessions_reverse_maps() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-
-    // Allocate two names
-    {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap();
-        pool.allocate(Some("park")).unwrap();
-    }
 
     // Populate reverse maps for both
     {
@@ -1938,10 +1907,6 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
     state.cleanup_coworker_state("madison").await;
 
     // Park's state should be untouched
-    assert!(
-        state.name_pool.lock().unwrap().is_allocated("park"),
-        "park should still be allocated"
-    );
     assert_eq!(
         state.session_id_for_name("park"),
         "sid-park",
@@ -1959,33 +1924,18 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
     );
 
     // Madison's state should be cleared
-    assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
     assert_eq!(state.session_id_for_name("madison"), "");
     assert_eq!(state.name_for_session("sid-madison"), None);
     assert_eq!(state.session_for_task("42"), None);
 }
 
-// Removed: test_name_pool_empty_by_default — with the test helper pre-populating
-// the pool with test names, this assertion is no longer applicable.
-
 #[tokio::test]
 async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate a name but don't populate reverse maps
-    state
-        .name_pool
-        .lock()
-        .unwrap()
-        .allocate(Some("madison"))
-        .unwrap();
-
-    // cleanup_coworker_state should handle releasing the name even when
-    // no reverse maps were populated (no panic, no stale state).
+    // Don't populate reverse maps — cleanup should be a no-op (no panic).
     state.cleanup_coworker_state("madison").await;
 
-    // Verify pool state is correct
-    assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
     assert_eq!(state.session_id_for_name("madison"), "");
 }
 
@@ -1993,15 +1943,7 @@ async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
 async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate madison and populate reverse maps
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
+    // Populate reverse maps
     {
         state
             .name_to_session
@@ -2031,30 +1973,19 @@ async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
     assert_eq!(t2s.get("44"), Some(&"sid-park".to_string()));
 }
 
-/// Regression test: repeated shutdown/spawn cycles must not exhaust the NamePool.
+/// Regression test: repeated shutdown/spawn cycles must not leak reverse map entries.
 ///
-/// Before this fix, cleanup_coworker_state didn't release names back to the pool
-/// or clear reverse maps. After enough shutdown/spawn cycles, the pool would have
-/// no names left even though no coworkers were active. This test simulates 3 full
-/// cycles of allocate → register → cleanup, then verifies the name is still
-/// available for reuse.
+/// Simulates 3 full cycles of register → cleanup and verifies reverse maps are
+/// fully cleared after each cycle.
 #[tokio::test]
-async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
+async fn test_repeated_shutdown_spawn_cycles_clear_reverse_maps() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     for cycle in 0..3 {
         let session_id = format!("sid-madison-{cycle}");
         let task_id = format!("{}", 100 + cycle);
 
-        // Simulate spawn: allocate name + populate reverse maps
-        {
-            state
-                .name_pool
-                .lock()
-                .unwrap()
-                .allocate(Some("madison"))
-                .unwrap();
-        }
+        // Simulate spawn: populate reverse maps
         {
             state
                 .name_to_session
@@ -2073,20 +2004,10 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
                 .insert(task_id.clone(), session_id.clone());
         }
 
-        // Verify name is allocated before cleanup
-        assert!(
-            state.name_pool.lock().unwrap().is_allocated("madison"),
-            "cycle {cycle}: madison should be allocated before cleanup"
-        );
-
         // Simulate shutdown/session-death: cleanup_coworker_state
         state.cleanup_coworker_state("madison").await;
 
         // Verify cleanup released everything
-        assert!(
-            !state.name_pool.lock().unwrap().is_allocated("madison"),
-            "cycle {cycle}: madison should be released after cleanup"
-        );
         assert_eq!(
             state.session_id_for_name("madison"),
             "",
@@ -2103,14 +2024,6 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
             "cycle {cycle}: task_to_session should be cleared"
         );
     }
-
-    // After 3 full cycles, the pool should have all names available (no leaked names)
-    let pool = state.name_pool.lock().unwrap();
-    assert_eq!(
-        pool.available_count(),
-        4,
-        "all names should be available after repeated cleanup cycles"
-    );
 }
 
 /// Verify that cleanup_coworker_state marks the SessionRecord as stopped
@@ -2121,16 +2034,8 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
     let session_id = "sid-madison-001";
 
-    // 1. Set up a running session: allocate name, populate reverse maps,
-    //    and insert a SessionRecord into persistent state.
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
+    // 1. Set up a running session: populate reverse maps and insert a
+    //    SessionRecord into persistent state.
     {
         state
             .name_to_session
@@ -2194,11 +2099,6 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Set up two sessions
-    {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap();
-        pool.allocate(Some("park")).unwrap();
-    }
     {
         let mut n2s = state.name_to_session.lock().unwrap();
         n2s.insert("madison".to_string(), "sid-madison".to_string());

@@ -546,25 +546,6 @@ fn test_record_session_updates_existing_record() {
 }
 
 #[test]
-fn test_release_name_frees_name_in_pool() {
-    use crate::name_pool::NamePool;
-
-    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-    let name = pool.allocate(None).unwrap();
-    assert_eq!(name, "lexington");
-    assert!(pool.is_allocated("lexington"));
-    assert_eq!(pool.available_count(), 2);
-
-    pool.release(&name);
-    assert!(!pool.is_allocated("lexington"));
-    assert_eq!(pool.available_count(), 3);
-
-    assert_eq!(pool.allocate(None).unwrap(), "park");
-    assert_eq!(pool.allocate(None).unwrap(), "madison");
-    assert_eq!(pool.allocate(None).unwrap(), "lexington");
-}
-
-#[test]
 fn test_shutdown_session_marks_not_running() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
 
@@ -591,32 +572,6 @@ fn test_shutdown_session_marks_not_running() {
         stored.name, "lexington",
         "name should be stable after shutdown"
     );
-}
-
-#[test]
-fn test_spawn_session_name_allocation_with_preferred() {
-    use crate::name_pool::NamePool;
-    use std::collections::HashSet;
-
-    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-    pool.allocate(None);
-    pool.allocate(None);
-    pool.release("lexington");
-
-    let excluded: HashSet<String> = HashSet::new();
-    let name = pool.allocate_excluding(Some("lexington"), &excluded);
-    assert_eq!(name.as_deref(), Some("lexington"));
-}
-
-#[test]
-fn test_spawn_session_excludes_channel_leads() {
-    use crate::name_pool::NamePool;
-    use std::collections::HashSet;
-
-    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
-    let channel_leads: HashSet<String> = ["lexington"].iter().map(|s| s.to_string()).collect();
-    let name = pool.allocate_excluding(None, &channel_leads);
-    assert_eq!(name.as_deref(), Some("park"));
 }
 
 #[test]
@@ -685,13 +640,11 @@ fn test_coworker_break_updates_session_record() {
 #[test]
 fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-    use crate::name_pool::NamePool;
     use std::collections::HashMap;
 
     let mut persistent_state = DaemonPersistentState::default();
     let mut name_to_session: HashMap<String, String> = HashMap::new();
     let mut session_to_name: HashMap<String, String> = HashMap::new();
-    let mut pool = NamePool::new(&["lexington", "park", "madison"]);
 
     let record = SessionRecord {
         session_id: "sess-123".to_string(),
@@ -706,7 +659,6 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         .insert(record.session_id.clone(), record);
     name_to_session.insert("lexington".to_string(), "sess-123".to_string());
     session_to_name.insert("sess-123".to_string(), "lexington".to_string());
-    pool.allocate(Some("lexington"));
 
     let session_id = name_to_session.get("lexington").cloned();
     if let Some(session_id) = &session_id
@@ -715,7 +667,6 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         sr.is_running = false;
         // Name is now stable — not cleared on shutdown
     }
-    pool.release("lexington");
     name_to_session.remove("lexington");
     if let Some(sid) = session_id {
         session_to_name.remove(&sid);
@@ -727,8 +678,6 @@ fn test_shutdown_coworker_impl_updates_session_via_name_lookup() {
         stored.name, "lexington",
         "name should be stable after shutdown"
     );
-    assert!(!pool.is_allocated("lexington"));
-    assert_eq!(pool.available_count(), 3);
     assert!(name_to_session.is_empty());
     assert!(session_to_name.is_empty());
 }

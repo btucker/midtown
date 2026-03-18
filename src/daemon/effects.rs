@@ -670,7 +670,7 @@ pub enum Effect {
     },
 
     // ── Session-centric effects ─────────────────────────────────────────
-    /// Shut down a running session. Releases the name back to the NamePool.
+    /// Shut down a running session.
     ///
     /// Session-centric counterpart to `ShutdownCoworker`. Looks up the session's
     /// current name via `session_to_name` reverse map and performs shutdown +
@@ -684,12 +684,6 @@ pub enum Effect {
     RecordSession {
         record: Box<crate::daemon::state::SessionRecord>,
     },
-
-    /// Release a name back to the NamePool (session stopped, name no longer needed).
-    ///
-    /// Standalone effect for releasing a name without full shutdown. Used when
-    /// a session is suspended (process stopped but session state preserved for later resume).
-    ReleaseName { name: String },
 
     /// Merge a PR using `gh pr merge --squash --auto`.
     ///
@@ -1724,22 +1718,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 extra_success_cooldowns,
                 reviewer,
             } => {
-                // 1. Allocate name from pool
-                let channel_lead_names = {
-                    let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_names()
-                };
-                let name = {
-                    let mut pool = state.name_pool.lock().unwrap();
-                    pool.allocate_excluding(preferred_name.as_deref(), &channel_lead_names)
-                };
-                let Some(name) = name else {
-                    warn!("SpawnForTask: no available names for task !{}", task_id);
+                // Use the task's agent_name as the session name (names are
+                // generated at task creation and never recycled).
+                let Some(name) = preferred_name else {
+                    warn!("SpawnForTask: no agent_name for task !{}", task_id);
                     state.clear_task_spawn_in_flight(&task_id);
                     continue;
                 };
 
-                // 2. Update config with allocated name
                 config.name = name.clone();
 
                 // 3. Spawn via state.spawn_coworker
@@ -3157,14 +3143,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         session_id, name, reason
                     );
                     // shutdown_coworker_impl → cleanup_coworker_state handles all
-                    // cleanup: NamePool release, reverse maps, and SessionRecord
-                    // update in persistent state.
+                    // cleanup: reverse maps and SessionRecord update in
+                    // persistent state.
                     let _ = shutdown_coworker_impl(&name, &reason, state).await;
 
                     state.broadcast_coworker_update(&name, "stopped", None);
                 } else {
-                    // No name mapped — session may have been suspended via ReleaseName
-                    // or already partially cleaned up. Still mark SessionRecord as stopped
+                    // No name mapped — session may have already been partially
+                    // cleaned up. Still mark SessionRecord as stopped
                     // so persistent state doesn't show a stale is_running=true.
                     warn!(
                         "ShutdownSession: no name found for session {} — marking record as stopped",
@@ -3634,19 +3620,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
                 info!("RecordSession: saved session {}", session_id);
-            }
-
-            Effect::ReleaseName { name } => {
-                {
-                    let mut pool = state.name_pool.lock().unwrap();
-                    pool.release(&name);
-                }
-                // Clean up reverse maps
-                let session_id = state.name_to_session.lock().unwrap().remove(&name);
-                if let Some(session_id) = session_id {
-                    state.session_to_name.lock().unwrap().remove(&session_id);
-                }
-                info!("ReleaseName: released '{}' back to NamePool", name);
             }
 
             Effect::AutoDetachCoworker { name } => {

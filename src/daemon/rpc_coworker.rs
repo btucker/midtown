@@ -438,7 +438,7 @@ pub(super) async fn handle_coworker_break(
     }
     // Clean up all transient coworker state through the centralized path.
     // This handles: deregistration, stop-time, coworker_records, cooldowns,
-    // pending nudges, task assignments, NamePool release,
+    // pending nudges, task assignments,
     // session reverse maps, SessionRecord update, and pending_questions.
     // Note: we intentionally do NOT unbind the worktree here — break preserves
     // the worktree for potential resumption.

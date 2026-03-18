@@ -496,14 +496,6 @@ impl MultiTickHarness {
                         .sessions
                         .insert(record.session_id.clone(), *record.clone());
                 }
-                Effect::ReleaseName { name } => {
-                    if let Some(session_id) = self.snapshot.name_session_map.remove(name) {
-                        self.snapshot.session_name_map.remove(&session_id);
-                        if let Some(record) = self.snapshot.sessions.get_mut(&session_id) {
-                            record.name = String::new();
-                        }
-                    }
-                }
                 _ => {
                     // Other effects (PostToChannel, PostSystemMessage, NudgeCoworker,
                     // NudgeLead, etc.) don't affect WorldSnapshot state.
