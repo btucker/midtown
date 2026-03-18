@@ -1866,7 +1866,7 @@ async fn silent_coworker_scenario(
                 STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
             );
             effects.push(Effect::nudge_session(
-                state.session_id_for_name(name),
+                state.session_id_for_name(name).await,
                 nudge_msg,
             ));
             effects.push(Effect::PostSystemMessage {
@@ -3335,7 +3335,7 @@ pub(super) async fn handle_pr_comment_nudge(
 
         let effects = if is_active {
             vec![Effect::nudge_session(
-                state.session_id_for_name(&reviewer_name),
+                state.session_id_for_name(&reviewer_name).await,
                 nudge_msg,
             )]
         } else if let Some(session_id) = reviewer_session_id {

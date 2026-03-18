@@ -325,7 +325,6 @@ pub(super) async fn handle_session_resolve(
     let persistent = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
     let attached = state.attached_coworkers.lock().unwrap().clone();
-    let name_to_session = state.name_to_session.lock().unwrap().clone();
     let running_coworkers: std::collections::HashMap<String, crate::coworker::Coworker> = state
         .coworkers
         .list()
@@ -335,8 +334,7 @@ pub(super) async fn handle_session_resolve(
     let mut candidates: Vec<serde_json::Value> = names
         .into_iter()
         .filter_map(|name| {
-            let session_id = name_to_session.get(&name)?;
-            let record = persistent.sessions.get(session_id)?;
+            let record = persistent.session_by_name(&name)?;
             let coworker = running_coworkers.get(&name);
             let provider = record.provider.unwrap_or(crate::auth::AuthProvider::Claude);
             let platform = platform_for_provider(record.provider);
@@ -446,8 +444,7 @@ pub(super) async fn handle_session_attach(
     // session_manager which may have received the init event by now.
     let record = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        match session_id.and_then(|sid| persistent.sessions.get(&sid).cloned()) {
+        match persistent.session_by_name(&name).cloned() {
             Some(mut record) => {
                 if record.session_id.is_empty()
                     && let Some(sid) = state.session_manager.get_session_id(&name).await
@@ -637,8 +634,7 @@ pub(super) async fn handle_session_detach(
     // Get session details from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
+        persistent.session_by_name(&name).cloned()
     };
 
     let session_info = match session_info {
@@ -901,8 +897,7 @@ pub(super) async fn handle_session_clear(
     // Get session info from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
+        persistent.session_by_name(&name).cloned()
     };
 
     let session_info = match session_info {
@@ -1276,12 +1271,10 @@ pub(super) async fn create_fork_session(
         // relaunched, but topic_sessions is rebuilt from persisted records.
         // Without this check, new fork requests silently return a dead
         // session_id (!2259).
-        let session_name = state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .get(existing_sid)
-            .cloned();
+        let session_name = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions.get(existing_sid).map(|s| s.name.clone())
+        };
         let is_alive = if let Some(ref name) = session_name {
             state.session_manager.is_alive(name).await
         } else {
@@ -1325,12 +1318,10 @@ pub(super) async fn create_fork_session(
 
     // If a concurrent fork completed, verify it's alive before returning it.
     if let Some(concurrent_sid) = concurrent_entry {
-        let concurrent_name = state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .get(&concurrent_sid)
-            .cloned();
+        let concurrent_name = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions.get(&concurrent_sid).map(|s| s.name.clone())
+        };
         let concurrent_alive = if let Some(ref name) = concurrent_name {
             state.session_manager.is_alive(name).await
         } else {
@@ -1351,22 +1342,20 @@ pub(super) async fn create_fork_session(
             .insert(thread_parent_id.to_string(), "pending".to_string());
     }
 
-    // Resolve the calling session's name from the reverse map.
+    // Resolve the calling session's name from persistent state.
     let caller_name = {
-        let s2n = state.session_to_name.lock().unwrap();
-        s2n.get(calling_session_id).cloned()
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(calling_session_id).map(|s| s.name.clone())
     };
 
     // Look up the calling session info to get working_dir, channel, and role.
     let (working_dir, channel, auth_provider, is_channel_lead) = {
         let ps = state.persistent_state.lock().await;
         // Try direct session_id lookup first, then fall back to name-based lookup.
-        let record = ps.sessions.get(calling_session_id).or_else(|| {
-            caller_name
-                .as_ref()
-                .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
-                .and_then(|sid| ps.sessions.get(&sid))
-        });
+        let record = ps
+            .sessions
+            .get(calling_session_id)
+            .or_else(|| caller_name.as_ref().and_then(|n| ps.session_by_name(n)));
         match record {
             Some(r) => {
                 let wd = if r.working_dir.is_empty() {
@@ -1445,12 +1434,7 @@ pub(super) async fn create_fork_session(
         let parent_record = ps
             .sessions
             .get(calling_session_id)
-            .or_else(|| {
-                caller_name
-                    .as_ref()
-                    .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
-                    .and_then(|sid| ps.sessions.get(&sid))
-            })
+            .or_else(|| caller_name.as_ref().and_then(|n| ps.session_by_name(n)))
             .cloned();
         ps.sessions.insert(
             fork_session_id.clone(),
@@ -1491,20 +1475,7 @@ pub(super) async fn create_fork_session(
         }
     }
 
-    // Populate in-memory reverse maps BEFORE updating topic_sessions from
-    // "pending" to the real session_id. This ordering prevents a race where
-    // a concurrent fork request sees the real session_id in topic_sessions
-    // but finds no session_to_name entry, misclassifying a live fork as dead.
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(fork_name.clone(), fork_session_id.clone());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.clone(), fork_name.clone());
+    // SessionRecord is persisted above — no reverse maps to populate.
 
     // Cache the bound thread mapping for the output binding hot path
     // (avoids async persistent_state lock in handle_channel_post).
@@ -1814,16 +1785,16 @@ pub(super) async fn handle_session_fork(
             // fork path so the "Dedicated session" indicator appears regardless
             // of how the fork was created.
             if let Some(ref ch) = fork_channel {
-                let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
-                // Resolve parent lead via channel_lead_sessions (not the caller)
-                // so non-lead callers don't get misattributed as the parent.
-                let parent_lead = {
+                let (owner, parent_lead) = {
                     let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions
+                    let owner = ps.sessions.get(&sid).map(|s| s.name.clone());
+                    // Resolve parent lead via channel_lead_sessions (not the caller)
+                    // so non-lead callers don't get misattributed as the parent.
+                    let parent_lead = ps
+                        .channel_lead_sessions
                         .get(ch.as_str())
-                        .and_then(|lead_sid| {
-                            state.session_to_name.lock().unwrap().get(lead_sid).cloned()
-                        })
+                        .and_then(|lead_sid| ps.sessions.get(lead_sid).map(|s| s.name.clone()));
+                    (owner, parent_lead)
                 };
                 state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
                     web::ThreadOwnershipData {
@@ -1976,10 +1947,12 @@ pub(super) async fn handle_session_fork_thread(
             }
 
             // Broadcast ownership change to web clients
-            let s2n = state.session_to_name.lock().unwrap();
-            let owner = s2n.get(&sid).cloned();
-            let parent_lead = s2n.get(&lead_session_id).cloned();
-            drop(s2n);
+            let (owner, parent_lead) = {
+                let ps = state.persistent_state.lock().await;
+                let owner = ps.sessions.get(&sid).map(|s| s.name.clone());
+                let parent_lead = ps.sessions.get(&lead_session_id).map(|s| s.name.clone());
+                (owner, parent_lead)
+            };
             state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
                 thread_parent_id: thread_parent_id.to_string(),
                 channel: channel.to_string(),
@@ -2038,14 +2011,16 @@ pub(super) async fn handle_session_unfork_thread(
     };
 
     // Verify the fork session has a name mapping before attempting shutdown.
-    // If session_to_name is missing (concurrent cleanup race), ShutdownSession
+    // If the session record is missing (concurrent cleanup race), ShutdownSession
     // cannot call shutdown_coworker_impl, leaving the fork process running.
     // Clean up the stale topic_sessions entry and report the condition.
-    let has_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .contains_key(&fork_session_id);
+    let has_name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions
+            .get(&fork_session_id)
+            .map(|s| !s.name.is_empty())
+            .unwrap_or(false)
+    };
     if !has_name {
         warn!(
             "session.unfork_thread: fork session {} has no name mapping (stale), cleaning up topic_sessions",
@@ -2111,16 +2086,17 @@ pub(super) async fn handle_session_thread_ownership(
         .filter(|s| s.as_str() != "pending")
         .cloned();
     let has_dedicated = fork_session_id.is_some();
-    let owner =
-        fork_session_id.and_then(|sid| state.session_to_name.lock().unwrap().get(&sid).cloned());
-    // Resolve the parent channel lead's name for display in the thread panel.
-    let parent_lead = if has_dedicated {
+    let (owner, parent_lead) = {
         let ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .get(channel)
-            .and_then(|sid| state.session_to_name.lock().unwrap().get(sid).cloned())
-    } else {
-        None
+        let owner = fork_session_id.and_then(|sid| ps.sessions.get(&sid).map(|s| s.name.clone()));
+        let parent_lead = if has_dedicated {
+            ps.channel_lead_sessions
+                .get(channel)
+                .and_then(|sid| ps.sessions.get(sid).map(|s| s.name.clone()))
+        } else {
+            None
+        };
+        (owner, parent_lead)
     };
 
     state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {

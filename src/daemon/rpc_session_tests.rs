@@ -252,8 +252,8 @@ async fn insert_test_session(state: &DaemonState, name: &str, initial_prompt: Op
 
 /// Insert a session with explicit metadata (coworker type, PR number, channel).
 ///
-/// Populates both `sessions` (SessionRecord) and `name_to_session` so that
-/// migrated handlers can look up sessions via name → session_id → SessionRecord.
+/// Populates `sessions` (SessionRecord) so that handlers can look up
+/// sessions via `session_by_name()`.
 async fn insert_test_session_with_metadata(
     state: &DaemonState,
     name: &str,
@@ -281,11 +281,6 @@ async fn insert_test_session_with_metadata(
             },
         );
     }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(name.to_string(), session_id);
 }
 
 #[tokio::test]
@@ -536,13 +531,20 @@ async fn test_session_clear_handles_channel_lead_metadata() {
 // ============================================================================
 
 /// Helper: populate the state so that `create_fork_session` treats an existing
-/// `topic_sessions` entry as alive (sets session_to_name + is_alive hook).
-fn setup_alive_fork(state: &DaemonState, session_id: &str, fork_name: &str) {
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(session_id.to_string(), fork_name.to_string());
+/// `topic_sessions` entry as alive (inserts SessionRecord + is_alive hook).
+async fn setup_alive_fork(state: &DaemonState, session_id: &str, fork_name: &str) {
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.to_string(),
+                name: fork_name.to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     let name_owned = fork_name.to_string();
     state
         .session_manager
@@ -564,7 +566,7 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
-    setup_alive_fork(&state, &existing_sid, "fork-already-exists");
+    setup_alive_fork(&state, &existing_sid, "fork-already-exists").await;
 
     let result =
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
@@ -684,16 +686,6 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
             },
         );
     }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("web".to_string(), calling_session_id.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(calling_session_id.to_string(), "web".to_string());
 
     // spawn_fork will fail because the CWD doesn't exist
     let result = create_fork_session(
@@ -729,7 +721,7 @@ async fn test_create_fork_session_existing_returns_none_fork_channel() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
-    setup_alive_fork(&state, &existing_sid, "fork-existing-channel");
+    setup_alive_fork(&state, &existing_sid, "fork-existing-channel").await;
 
     let result =
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
@@ -767,16 +759,6 @@ async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
             },
         );
     }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("daemon-core".to_string(), calling_session_id.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(calling_session_id.to_string(), "daemon-core".to_string());
 
     // spawn_fork will fail (no real claude process), but the code should
     // reach spawn (past channel resolution) and fail gracefully.
@@ -815,7 +797,7 @@ async fn test_handle_session_fork_already_exists_response() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
-    setup_alive_fork(&state, &existing_sid, "fork-rpc-existing");
+    setup_alive_fork(&state, &existing_sid, "fork-rpc-existing").await;
 
     let resp = handle_session_fork(
         RequestId::Number(1),
@@ -906,16 +888,6 @@ async fn test_create_fork_session_falls_back_to_repo_name() {
             },
         );
     }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("main-lead".to_string(), calling_session_id.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(calling_session_id.to_string(), "main-lead".to_string());
 
     // Spawn will fail, but the fork_channel resolution runs before spawn.
     // We can't observe fork_channel directly since spawn fails, but we can
@@ -955,7 +927,7 @@ async fn test_handle_session_fork_existing_does_not_nudge() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), existing_sid.clone());
-    setup_alive_fork(&state, &existing_sid, "fork-no-nudge");
+    setup_alive_fork(&state, &existing_sid, "fork-no-nudge").await;
 
     // Fork already exists — handle_session_fork should return immediately
     // without sending nudge or broadcasting ThreadOwnership.
@@ -1002,16 +974,6 @@ async fn test_handle_session_fork_with_initial_message() {
             },
         );
     }
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("daemon-core".to_string(), calling_session_id.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(calling_session_id.to_string(), "daemon-core".to_string());
 
     // Spawn will fail — but the handler should not error on the RPC level;
     // it returns a JSON-RPC error response.
@@ -1819,7 +1781,7 @@ async fn test_handle_session_fork_accepts_valid_uuid() {
         .lock()
         .unwrap()
         .insert(valid_uuid.to_string(), "existing-session".to_string());
-    setup_alive_fork(&state, "existing-session", "fork-existing");
+    setup_alive_fork(&state, "existing-session", "fork-existing").await;
 
     let resp = handle_session_fork(
         RequestId::Number(101),

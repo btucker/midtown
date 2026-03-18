@@ -328,7 +328,7 @@ pub enum Effect {
     /// When spawn fails (e.g. missing worktree), the session→task link must be
     /// broken so dispatch doesn't retry the same dead session every tick.
     /// Clears `task_id` from the SessionRecord and removes the in-memory
-    /// `task_to_session` entry.
+    /// session record task_id entry.
     ClearSessionForTask { task_id: String },
     /// Clear persisted session IDs and session-record bindings for a coworker.
     ///
@@ -397,7 +397,7 @@ pub enum Effect {
         issue_type: PrIssueType,
     },
     /// Record a task assignment: updates in-memory busy tracking, persistent
-    /// session state (`sessions[].task_id`), and the `task_to_session` reverse map.
+    /// session state (`sessions[].task_id`).
     ///
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
@@ -657,7 +657,7 @@ pub enum Effect {
         reason: super::wake_reason::WakeReason,
     },
     /// Nudge a session (by session ID).
-    /// Resolves session_id → name via session_to_name, sends nudge message.
+    /// Resolves session_id → name via persistent state, sends nudge message.
     NudgeSession {
         session_id: String,
         reason: super::wake_reason::WakeReason,
@@ -673,14 +673,14 @@ pub enum Effect {
     /// Shut down a running session.
     ///
     /// Session-centric counterpart to `ShutdownCoworker`. Looks up the session's
-    /// current name via `session_to_name` reverse map and performs shutdown +
+    /// current name via persistent state and performs shutdown +
     /// cleanup through `cleanup_coworker_state`.
     ShutdownSession { session_id: String, reason: String },
 
     /// Record a session record in persistent state.
     ///
     /// Upserts the `SessionRecord` into `DaemonPersistentState::sessions` and
-    /// updates in-memory reverse maps (name_to_session, session_to_name, task_to_session).
+    /// updates the SessionRecord in persistent state.
     RecordSession {
         record: Box<crate::daemon::state::SessionRecord>,
     },
@@ -1082,12 +1082,10 @@ async fn send_session_nudge(
     session_id: &str,
     reason: &super::wake_reason::WakeReason,
 ) -> Option<Vec<Effect>> {
-    let name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(session_id)
-        .cloned();
+    let name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(session_id).map(|s| s.name.clone())
+    };
     let Some(name) = name else {
         warn!(
             "NudgeSession: no name found for session {} — cannot deliver",
@@ -1168,17 +1166,6 @@ async fn clear_stale_task_session_binding(
     task_id: &str,
     expected_session_id: Option<&str>,
 ) -> usize {
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        let should_remove = t2s
-            .get(task_id)
-            .map(|sid| expected_session_id.map(|exp| exp == sid).unwrap_or(true))
-            .unwrap_or(false);
-        if should_remove {
-            t2s.remove(task_id);
-        }
-    }
-
     // clear_task_binding_in_records below handles session record cleanup
     // (clearing task_id, resume_on_startup, is_running with expected_session_id logic).
     let mut ps = state.persistent_state.lock().await;
@@ -1553,17 +1540,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::ClearSavedSessionId { name } => {
-                // Gather candidate stale session IDs for this coworker from
-                // in-memory maps and persisted headless/channel entries.
-                let mapped_sid = state
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_default();
-
                 let mut ps = state.persistent_state.lock().await;
+                // Gather candidate stale session IDs for this coworker from
+                // persistent state and channel entries.
+                let mapped_sid = ps
+                    .session_by_name(&name)
+                    .map(|s| s.session_id.clone())
+                    .unwrap_or_default();
                 let mut candidate_ids: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 if !mapped_sid.is_empty() {
@@ -1571,7 +1554,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Also check ps.sessions for a record matching this name
                 // (covers sessions that may have been persisted under a
-                // different session_id than name_to_session currently maps).
+                // different session_id).
                 for record in ps.sessions.values() {
                     if record.name == name && !record.session_id.is_empty() {
                         candidate_ids.insert(record.session_id.clone());
@@ -1642,14 +1625,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 drop(ps);
 
-                if !cleared_task_ids.is_empty() {
-                    let mut t2s = state.task_to_session.lock().unwrap();
-                    for task_id in &cleared_task_ids {
-                        t2s.remove(task_id);
-                    }
-                    // Session records already cleared above (task_id.take()),
-                    // no separate clear_task_assignment_by_task needed.
-                }
+                // Session records already cleared above (task_id.take()),
+                // no separate clear_task_assignment_by_task needed.
             }
             Effect::ClearSessionWorkingDir { session_id } => {
                 let mut ps = state.persistent_state.lock().await;
@@ -1733,18 +1710,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     Ok(_) => {
                         info!("SpawnForTask: spawned {} for task !{}", name, task_id);
 
-                        // Update task_to_session mapping
-                        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-                        if let Some(ref sid) = session_id {
+                        // Update session record's task_id
+                        {
                             let mut ps = state.persistent_state.lock().await;
-                            if let Some(record) = ps.sessions.get_mut(sid) {
+                            if let Some(record) = ps.session_by_name_mut(&name) {
                                 record.task_id = Some(task_id.clone());
                             }
-                            state
-                                .task_to_session
-                                .lock()
-                                .unwrap()
-                                .insert(task_id.clone(), sid.clone());
                             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save persistent state after SpawnForTask task_id update: {}",
@@ -1808,7 +1779,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                         // Reviewer-specific extras (need real name + session_id)
                         if let Some(info) = reviewer {
-                            let sid = session_id.unwrap_or_default();
+                            let sid = {
+                                let ps = state.persistent_state.lock().await;
+                                ps.session_by_name(&name)
+                                    .map(|s| s.session_id.clone())
+                                    .unwrap_or_default()
+                            };
                             Box::pin(execute_effects(
                                 vec![
                                     Effect::CreateTaskSessionSpan {
@@ -1929,30 +1905,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 // Update sessions[].task_id — the single source of truth for
-                // coworker→task mapping. Also maintains the task_to_session
-                // reverse map.
-                let session_id = state
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(&coworker.to_lowercase())
-                    .cloned();
-                if let Some(sid) = session_id {
-                    let mut ps = state.persistent_state.lock().await;
-                    if let Some(record) = ps.sessions.get_mut(&sid) {
-                        record.task_id = Some(task_id.clone());
-                    }
-                    state
-                        .task_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(task_id.clone(), sid);
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!(
-                            "Failed to save persistent state after RecordTaskAssignment: {}",
-                            e
-                        );
-                    }
+                // coworker→task mapping.
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(record) = ps.session_by_name_mut(&coworker.to_lowercase()) {
+                    record.task_id = Some(task_id.clone());
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save persistent state after RecordTaskAssignment: {}",
+                        e
+                    );
                 }
             }
             Effect::CreateTaskSessionSpan {
@@ -3130,13 +3092,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             // ── Session-centric effects ──────────────────────────────────
             Effect::ShutdownSession { session_id, reason } => {
-                // Look up name from session_to_name
-                let name = state
-                    .session_to_name
-                    .lock()
-                    .unwrap()
-                    .get(&session_id)
-                    .cloned();
+                // Look up name from persistent state
+                let name = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.sessions.get(&session_id).map(|s| s.name.clone())
+                };
                 if let Some(name) = name {
                     info!(
                         "ShutdownSession: shutting down session {} (name: {}, reason: {})",
@@ -3185,12 +3145,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let msg = reason.to_nudge_message();
 
                     // 1. Try to nudge the active session (covers all types)
-                    let session_id = state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .get(agent_name)
-                        .cloned();
+                    let session_id = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.session_by_name(agent_name)
+                            .filter(|s| s.is_running)
+                            .map(|s| s.session_id.clone())
+                    };
                     let mut nudge_delivered = false;
 
                     if let Some(ref sid) = session_id
@@ -3589,27 +3549,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
             Effect::RecordSession { record } => {
                 let session_id = record.session_id.clone();
-
-                // Update in-memory reverse maps
-                if !record.name.is_empty() {
-                    state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(record.name.clone(), session_id.clone());
-                    state
-                        .session_to_name
-                        .lock()
-                        .unwrap()
-                        .insert(session_id.clone(), record.name.clone());
-                }
-                if let Some(ref task_id) = record.task_id {
-                    state
-                        .task_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(task_id.clone(), session_id.clone());
-                }
 
                 // Persist session record
                 {
@@ -4258,7 +4197,7 @@ async fn dispatch_workflow_event(
     );
 
     // Convert plugin actions to Effect variants and execute them.
-    let effects = plugin_actions_to_effects(&dispatch_result.actions, state);
+    let effects = plugin_actions_to_effects(&dispatch_result.actions, state).await;
     if !effects.is_empty() {
         // Use Box::pin to execute effects recursively without growing the stack.
         Box::pin(execute_effects(effects, state)).await;
@@ -4274,7 +4213,7 @@ async fn dispatch_workflow_event(
 /// to the corresponding `Effect` variants in the daemon's effect pipeline.
 ///
 /// Unknown methods are logged and skipped.
-fn plugin_actions_to_effects(
+async fn plugin_actions_to_effects(
     actions: &[super::plugin_daemon::PluginAction],
     state: &DaemonState,
 ) -> Vec<Effect> {
@@ -4317,7 +4256,7 @@ fn plugin_actions_to_effects(
                     .to_string();
                 if !name.is_empty() {
                     effects.push(Effect::nudge_session(
-                        state.session_id_for_name(&name),
+                        state.session_id_for_name(&name).await,
                         message,
                     ));
                 }
@@ -4607,18 +4546,6 @@ async fn respawn_fork(
         }
     }
 
-    // Populate in-memory reverse maps
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(name.clone(), fork_session_id.clone());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.clone(), name.clone());
-
     // Cache the bound thread mapping for the output binding hot path
     state
         .fork_bound_threads
@@ -4683,7 +4610,7 @@ async fn respawn_fork(
             let ps = state.persistent_state.lock().await;
             ps.channel_lead_sessions
                 .get(ch)
-                .and_then(|lead_sid| state.session_to_name.lock().unwrap().get(lead_sid).cloned())
+                .and_then(|lead_sid| ps.sessions.get(lead_sid).map(|s| s.name.clone()))
         };
         state.broadcast_web_update(crate::web::WebUpdate::ThreadOwnership(
             crate::web::ThreadOwnershipData {

@@ -222,7 +222,7 @@ pub(super) async fn handle_channel_post(
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
 
     // Validate DM channels: ensure the target coworker has been seen before.
-    // Uses name_to_session (active) or coworker_records (previously active) to
+    // Uses session records (active) or coworker_records (previously active) to
     // prevent posting to dm-<unknown>. Inactive coworkers will be respawned via
     // NudgeChannelLead when the user's message is routed.
     if state.is_user_sender(from)
@@ -380,7 +380,10 @@ pub(super) async fn handle_channel_post(
 
                 if let Some(ref fork_sid) = fork_session_id {
                     // Avoid self-nudge: don't nudge the fork if it's the sender.
-                    let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+                    let fork_name = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.sessions.get(fork_sid).map(|s| s.name.clone())
+                    };
                     let is_self = fork_name.as_deref() == Some(from);
                     if !is_self {
                         let wake_msg_id = msg.thread_anchor_id().to_string();
@@ -1285,7 +1288,10 @@ async fn try_lazy_fork_respawn(
     thread_parent_id: &str,
 ) -> Option<String> {
     // Look up the fork's process name
-    let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+    let fork_name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(fork_sid).map(|s| s.name.clone())
+    };
 
     let Some(ref name) = fork_name else {
         // No name mapping — stale topic_sessions entry, clean it up

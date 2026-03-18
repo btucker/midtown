@@ -764,6 +764,44 @@ impl DaemonPersistentState {
         self.channel_lead_sessions.keys().cloned().collect()
     }
 
+    /// Find a session record by coworker name (exact match).
+    pub fn session_by_name(&self, name: &str) -> Option<&SessionRecord> {
+        self.sessions.values().find(|s| s.name == name)
+    }
+
+    /// Find a mutable session record by coworker name.
+    pub fn session_by_name_mut(&mut self, name: &str) -> Option<&mut SessionRecord> {
+        self.sessions.values_mut().find(|s| s.name == name)
+    }
+
+    /// Find a session record by task ID.
+    pub fn session_by_task(&self, task_id: &str) -> Option<&SessionRecord> {
+        self.sessions
+            .values()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+    }
+
+    /// All running reviewer sessions.
+    pub fn running_reviewer_sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .collect()
+    }
+
+    /// Name → task assignments derived from sessions.
+    pub fn name_task_assignments(&self) -> HashMap<String, String> {
+        self.sessions
+            .values()
+            .filter(|s| !s.name.is_empty())
+            .filter_map(|s| {
+                s.task_id
+                    .as_ref()
+                    .map(|tid| (s.name.to_lowercase(), tid.clone()))
+            })
+            .collect()
+    }
+
     /// Migrate per-channel `workflow-state.json` files into in-memory state.
     ///
     /// Scans `~/.midtown/projects/<repo>/channels/*/workflow-state.json`,

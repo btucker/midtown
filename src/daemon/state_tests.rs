@@ -1373,3 +1373,143 @@ fn test_is_fork_session() {
         "Root channel lead without bound_thread_id is NOT a fork"
     );
 }
+
+#[test]
+fn test_session_by_name() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "lexington".into(),
+            task_id: Some("42".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        ps.session_by_name("lexington").unwrap().session_id,
+        "sess-1"
+    );
+    assert!(ps.session_by_name("park").is_none());
+}
+
+#[test]
+fn test_session_by_name_mut() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "lexington".into(),
+            ..Default::default()
+        },
+    );
+    let record = ps.session_by_name_mut("lexington").unwrap();
+    record.is_running = true;
+    assert!(ps.session_by_name("lexington").unwrap().is_running);
+    assert!(ps.session_by_name_mut("park").is_none());
+}
+
+#[test]
+fn test_session_by_task() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "lexington".into(),
+            task_id: Some("42".into()),
+            ..Default::default()
+        },
+    );
+    assert_eq!(ps.session_by_task("42").unwrap().session_id, "sess-1");
+    assert!(ps.session_by_task("99").is_none());
+}
+
+#[test]
+fn test_running_reviewer_sessions() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "park".into(),
+            agent_type: "midtown-code-reviewer".into(),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+    ps.sessions.insert(
+        "sess-2".into(),
+        SessionRecord {
+            session_id: "sess-2".into(),
+            name: "madison".into(),
+            agent_type: "midtown-code-author".into(),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+    let reviewers = ps.running_reviewer_sessions();
+    assert_eq!(reviewers.len(), 1);
+    assert_eq!(reviewers[0].name, "park");
+}
+
+#[test]
+fn test_running_reviewer_sessions_excludes_stopped() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "park".into(),
+            agent_type: "midtown-code-reviewer".into(),
+            is_running: false,
+            ..Default::default()
+        },
+    );
+    let reviewers = ps.running_reviewer_sessions();
+    assert!(reviewers.is_empty());
+}
+
+#[test]
+fn test_name_task_assignments() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "lexington".into(),
+            task_id: Some("42".into()),
+            ..Default::default()
+        },
+    );
+    ps.sessions.insert(
+        "sess-2".into(),
+        SessionRecord {
+            session_id: "sess-2".into(),
+            name: "park".into(),
+            task_id: None,
+            ..Default::default()
+        },
+    );
+    let assignments = ps.name_task_assignments();
+    assert_eq!(assignments.get("lexington").unwrap(), "42");
+    assert!(!assignments.contains_key("park"));
+}
+
+#[test]
+fn test_name_task_assignments_lowercases_name() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "Lexington".into(),
+            task_id: Some("42".into()),
+            ..Default::default()
+        },
+    );
+    let assignments = ps.name_task_assignments();
+    assert_eq!(assignments.get("lexington").unwrap(), "42");
+    assert!(!assignments.contains_key("Lexington"));
+}

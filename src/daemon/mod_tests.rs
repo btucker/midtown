@@ -4,14 +4,30 @@ use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
 #[test]
 fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
-    let name_to_session = std::collections::HashMap::from([
-        ("midtown".to_string(), "sess-lead".to_string()),
-        ("auth".to_string(), "sess-auth".to_string()),
-        ("park".to_string(), "sess-park".to_string()),
-        ("reviewer-42".to_string(), "sess-reviewer".to_string()),
-        ("auth-discuss-a1b2".to_string(), "sess-fork".to_string()),
+    fn make_record(session_id: &str, name: &str) -> state::SessionRecord {
+        state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+    let sessions = std::collections::HashMap::from([
+        ("sess-lead".to_string(), make_record("sess-lead", "midtown")),
+        ("sess-auth".to_string(), make_record("sess-auth", "auth")),
+        ("sess-park".to_string(), make_record("sess-park", "park")),
+        (
+            "sess-reviewer".to_string(),
+            make_record("sess-reviewer", "reviewer-42"),
+        ),
+        (
+            "sess-fork".to_string(),
+            make_record("sess-fork", "auth-discuss-a1b2"),
+        ),
         // Regular coworker with a thread binding (task thread) — should still get DM
-        ("broadway".to_string(), "sess-broadway".to_string()),
+        (
+            "sess-broadway".to_string(),
+            make_record("sess-broadway", "broadway"),
+        ),
     ]);
     let channel_lead_sessions =
         std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
@@ -20,7 +36,7 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
         std::collections::HashMap::from([("auth-discuss-a1b2".to_string(), "auth".to_string())]);
 
     let dm_names = dm_mirror_agent_names(
-        &name_to_session,
+        &sessions,
         &channel_lead_sessions,
         &fork_bound_channels,
         "midtown",
@@ -1683,15 +1699,13 @@ async fn test_cleanup_dead_coworker_without_session_id_clears_binding() {
     }
 
     // No session entry is intentionally recorded for this coworker name.
-    assert!(
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get("riverside")
-            .is_none(),
-        "precondition: no name_to_session mapping"
-    );
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.session_by_name("riverside").is_none(),
+            "precondition: no session record"
+        );
+    }
 
     state.cleanup_dead_coworker_state("riverside").await;
 
@@ -1753,154 +1767,127 @@ async fn test_cleanup_dead_coworker_sets_completed_at_on_worktree() {
 // Session registry tests
 // ============================================================================
 
-#[test]
-fn test_session_id_for_name_returns_empty_when_no_session() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.session_id_for_name("park"), "");
+/// Helper to insert a test session record.
+async fn insert_test_session_record(
+    state: &DaemonState,
+    session_id: &str,
+    name: &str,
+    task_id: Option<&str>,
+) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.sessions.insert(
+        session_id.to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            task_id: task_id.map(|t| t.to_string()),
+            is_running: true,
+            ..Default::default()
+        },
+    );
 }
 
-#[test]
-fn test_name_for_session_returns_none_when_empty() {
+#[tokio::test]
+async fn test_session_id_for_name_returns_empty_when_no_session() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.name_for_session("sid-123"), None);
+    assert_eq!(state.session_id_for_name("park").await, "");
 }
 
-#[test]
-fn test_session_for_task_returns_none_when_empty() {
+#[tokio::test]
+async fn test_name_for_session_returns_none_when_empty() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.session_for_task("42"), None);
+    assert_eq!(state.name_for_session("sid-123").await, None);
 }
 
-#[test]
-fn test_session_id_for_name_after_manual_population() {
+#[tokio::test]
+async fn test_session_for_task_returns_none_when_empty() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("park".to_string(), "sid-park-1".to_string());
-
-    assert_eq!(state.session_id_for_name("park"), "sid-park-1");
-    assert_eq!(state.session_id_for_name("madison"), "");
+    assert_eq!(state.session_for_task("42").await, None);
 }
 
-#[test]
-fn test_name_for_session_after_manual_population() {
+#[tokio::test]
+async fn test_session_id_for_name_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert("sid-park-1".to_string(), "park".to_string());
+    insert_test_session_record(&state, "sid-park-1", "park", None).await;
+
+    assert_eq!(state.session_id_for_name("park").await, "sid-park-1");
+    assert_eq!(state.session_id_for_name("madison").await, "");
+}
+
+#[tokio::test]
+async fn test_name_for_session_after_manual_population() {
+    let (state, _tmp, _guard) = make_cleanup_test_state();
+    insert_test_session_record(&state, "sid-park-1", "park", None).await;
 
     assert_eq!(
-        state.name_for_session("sid-park-1"),
+        state.name_for_session("sid-park-1").await,
         Some("park".to_string())
     );
-    assert_eq!(state.name_for_session("sid-nonexistent"), None);
+    assert_eq!(state.name_for_session("sid-nonexistent").await, None);
 }
 
-#[test]
-fn test_session_for_task_after_manual_population() {
+#[tokio::test]
+async fn test_session_for_task_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .task_to_session
-        .lock()
-        .unwrap()
-        .insert("42".to_string(), "sid-park-1".to_string());
+    insert_test_session_record(&state, "sid-park-1", "park", Some("42")).await;
 
-    assert_eq!(state.session_for_task("42"), Some("sid-park-1".to_string()));
-    assert_eq!(state.session_for_task("99"), None);
+    assert_eq!(
+        state.session_for_task("42").await,
+        Some("sid-park-1".to_string())
+    );
+    assert_eq!(state.session_for_task("99").await, None);
 }
 
-#[test]
-fn test_reverse_maps_bidirectional_consistency() {
+#[tokio::test]
+async fn test_session_lookups_bidirectional_consistency() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-
-    // Populate both directions
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        let mut s2n = state.session_to_name.lock().unwrap();
-        n2s.insert("park".to_string(), "sid-park".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-    }
+    insert_test_session_record(&state, "sid-park", "park", None).await;
+    insert_test_session_record(&state, "sid-madison", "madison", None).await;
 
     // Verify both directions work
-    assert_eq!(state.session_id_for_name("park"), "sid-park");
-    assert_eq!(state.name_for_session("sid-park"), Some("park".to_string()));
-    assert_eq!(state.session_id_for_name("madison"), "sid-madison");
+    assert_eq!(state.session_id_for_name("park").await, "sid-park");
     assert_eq!(
-        state.name_for_session("sid-madison"),
+        state.name_for_session("sid-park").await,
+        Some("park".to_string())
+    );
+    assert_eq!(state.session_id_for_name("madison").await, "sid-madison");
+    assert_eq!(
+        state.name_for_session("sid-madison").await,
         Some("madison".to_string())
     );
 }
 
 #[tokio::test]
-async fn test_cleanup_clears_reverse_maps() {
+async fn test_cleanup_marks_session_stopped() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Populate reverse maps
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), "sid-madison".to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert("sid-madison".to_string(), "madison".to_string());
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .insert("42".to_string(), "sid-madison".to_string());
-    }
+    // Populate session record
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
 
-    // cleanup_coworker_state handles all transient state and reverse maps.
+    // cleanup_coworker_state handles all transient state.
     state.cleanup_coworker_state("madison").await;
 
-    // Verify cleanup
-    assert_eq!(
-        state.session_id_for_name("madison"),
-        "",
-        "name_to_session should be cleared"
-    );
-    assert_eq!(
-        state.name_for_session("sid-madison"),
-        None,
-        "session_to_name should be cleared"
-    );
-    assert_eq!(
-        state.session_for_task("42"),
-        None,
-        "task_to_session should be cleared"
+    // After cleanup, is_running should be false (session record still exists
+    // but is marked stopped). session_by_name only finds by name, so the
+    // record is still there but marked as not running.
+    let ps = state.persistent_state.lock().await;
+    let record = ps
+        .sessions
+        .get("sid-madison")
+        .expect("record should still exist");
+    assert!(
+        !record.is_running,
+        "is_running should be false after cleanup"
     );
 }
 
 #[tokio::test]
-async fn test_cleanup_preserves_other_sessions_reverse_maps() {
+async fn test_cleanup_preserves_other_sessions() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Populate reverse maps for both
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        n2s.insert("park".to_string(), "sid-park".to_string());
-    }
-    {
-        let mut s2n = state.session_to_name.lock().unwrap();
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-    }
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        t2s.insert("42".to_string(), "sid-madison".to_string());
-        t2s.insert("43".to_string(), "sid-park".to_string());
-    }
+    // Populate sessions for both
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
+    insert_test_session_record(&state, "sid-park", "park", Some("43")).await;
 
     // Clean up only madison via cleanup_coworker_state (used by both
     // intentional shutdown and session-death paths).
@@ -1908,120 +1895,80 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
 
     // Park's state should be untouched
     assert_eq!(
-        state.session_id_for_name("park"),
+        state.session_id_for_name("park").await,
         "sid-park",
-        "park's name_to_session should be preserved"
+        "park's session should be preserved"
     );
     assert_eq!(
-        state.name_for_session("sid-park"),
+        state.name_for_session("sid-park").await,
         Some("park".to_string()),
-        "park's session_to_name should be preserved"
+        "park's session should be preserved"
     );
     assert_eq!(
-        state.session_for_task("43"),
+        state.session_for_task("43").await,
         Some("sid-park".to_string()),
-        "park's task_to_session should be preserved"
+        "park's task mapping should be preserved"
     );
-
-    // Madison's state should be cleared
-    assert_eq!(state.session_id_for_name("madison"), "");
-    assert_eq!(state.name_for_session("sid-madison"), None);
-    assert_eq!(state.session_for_task("42"), None);
 }
 
 #[tokio::test]
-async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
+async fn test_cleanup_with_no_session_is_noop() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Don't populate reverse maps — cleanup should be a no-op (no panic).
+    // Don't populate sessions — cleanup should be a no-op (no panic).
     state.cleanup_coworker_state("madison").await;
 
-    assert_eq!(state.session_id_for_name("madison"), "");
+    assert_eq!(state.session_id_for_name("madison").await, "");
 }
 
 #[tokio::test]
-async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
+async fn test_cleanup_session_is_marked_stopped() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Populate reverse maps
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), "sid-madison".to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert("sid-madison".to_string(), "madison".to_string());
-    }
-    // Simulate a session with multiple tasks (unlikely but possible)
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        t2s.insert("42".to_string(), "sid-madison".to_string());
-        t2s.insert("43".to_string(), "sid-madison".to_string());
-        t2s.insert("44".to_string(), "sid-park".to_string());
-    }
+    // Populate session
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
+    insert_test_session_record(&state, "sid-park", "park", Some("44")).await;
 
-    // cleanup_coworker_state should remove all tasks for this session
+    // cleanup_coworker_state should mark session as stopped
     state.cleanup_coworker_state("madison").await;
 
-    // Only park's task should remain
-    let t2s = state.task_to_session.lock().unwrap();
-    assert_eq!(t2s.len(), 1);
-    assert_eq!(t2s.get("44"), Some(&"sid-park".to_string()));
+    // Park's session should still be running
+    let ps = state.persistent_state.lock().await;
+    let park = ps.sessions.get("sid-park").expect("park exists");
+    assert!(park.is_running);
+    let madison = ps.sessions.get("sid-madison").expect("madison exists");
+    assert!(!madison.is_running);
 }
 
-/// Regression test: repeated shutdown/spawn cycles must not leak reverse map entries.
+/// Regression test: repeated shutdown/spawn cycles must not leak entries.
 ///
-/// Simulates 3 full cycles of register → cleanup and verifies reverse maps are
-/// fully cleared after each cycle.
+/// Simulates 3 full cycles of register → cleanup and verifies session records
+/// are properly updated after each cycle.
 #[tokio::test]
-async fn test_repeated_shutdown_spawn_cycles_clear_reverse_maps() {
+async fn test_repeated_shutdown_spawn_cycles() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     for cycle in 0..3 {
         let session_id = format!("sid-madison-{cycle}");
         let task_id = format!("{}", 100 + cycle);
 
-        // Simulate spawn: populate reverse maps
+        // Simulate spawn: insert session record.
+        // Remove old records for this name first (as spawn_coworker would overwrite).
         {
-            state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .insert("madison".to_string(), session_id.clone());
-            state
-                .session_to_name
-                .lock()
-                .unwrap()
-                .insert(session_id.clone(), "madison".to_string());
-            state
-                .task_to_session
-                .lock()
-                .unwrap()
-                .insert(task_id.clone(), session_id.clone());
+            let mut ps = state.persistent_state.lock().await;
+            ps.sessions.retain(|_, r| r.name != "madison");
         }
+        insert_test_session_record(&state, &session_id, "madison", Some(&task_id)).await;
 
         // Simulate shutdown/session-death: cleanup_coworker_state
         state.cleanup_coworker_state("madison").await;
 
-        // Verify cleanup released everything
-        assert_eq!(
-            state.session_id_for_name("madison"),
-            "",
-            "cycle {cycle}: name_to_session should be cleared"
-        );
-        assert_eq!(
-            state.name_for_session(&session_id),
-            None,
-            "cycle {cycle}: session_to_name should be cleared"
-        );
-        assert_eq!(
-            state.session_for_task(&task_id),
-            None,
-            "cycle {cycle}: task_to_session should be cleared"
+        // Verify cleanup marked session as stopped
+        let ps = state.persistent_state.lock().await;
+        let record = ps.sessions.get(&session_id).expect("record should exist");
+        assert!(
+            !record.is_running,
+            "cycle {cycle}: session should be marked stopped"
         );
     }
 }
@@ -2034,25 +1981,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
     let session_id = "sid-madison-001";
 
-    // 1. Set up a running session: populate reverse maps and insert a
-    //    SessionRecord into persistent state.
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), session_id.to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), "madison".to_string());
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .insert("42".to_string(), session_id.to_string());
-    }
+    // 1. Set up a running session with a SessionRecord in persistent state.
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2099,16 +2028,6 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Set up two sessions
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        n2s.insert("park".to_string(), "sid-park".to_string());
-    }
-    {
-        let mut s2n = state.session_to_name.lock().unwrap();
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-    }
     {
         let mut ps = state.persistent_state.lock().await;
         for (sid, name, task) in [("sid-madison", "madison", "42"), ("sid-park", "park", "43")] {

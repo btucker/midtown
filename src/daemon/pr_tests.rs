@@ -2291,12 +2291,6 @@ async fn test_poll_prs_session_based_owner_resolution() {
     snap.coworkers.running_coworkers = snap.coworkers.active_coworkers.clone();
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    // Populate name→session mapping so nudge effects get the correct session_id
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("madison".to_string(), "sess-abc".to_string());
     // Populate persistent_state with session record so PrContext gets the task association
     {
         let mut ps = state.persistent_state.lock().await;

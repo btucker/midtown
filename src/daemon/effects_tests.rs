@@ -919,8 +919,8 @@ async fn dispatch_workflow_event_noop_when_no_plugins() {
     );
 }
 
-#[test]
-fn plugin_actions_to_effects_channel_post() {
+#[tokio::test]
+async fn plugin_actions_to_effects_channel_post() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-actions");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -928,7 +928,7 @@ fn plugin_actions_to_effects_channel_post() {
         params: serde_json::json!({"message": "hello from plugin", "channel": "test-ch"}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert_eq!(effects.len(), 1);
     assert!(matches!(
         &effects[0],
@@ -937,8 +937,8 @@ fn plugin_actions_to_effects_channel_post() {
     ));
 }
 
-#[test]
-fn plugin_actions_to_effects_nudge_coworker() {
+#[tokio::test]
+async fn plugin_actions_to_effects_nudge_coworker() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-nudge");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -946,13 +946,13 @@ fn plugin_actions_to_effects_nudge_coworker() {
         params: serde_json::json!({"name": "lexington", "message": "PR approved"}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert_eq!(effects.len(), 1);
     assert!(matches!(&effects[0], Effect::NudgeSession { .. }));
 }
 
-#[test]
-fn plugin_actions_to_effects_task_done() {
+#[tokio::test]
+async fn plugin_actions_to_effects_task_done() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-done");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -960,7 +960,7 @@ fn plugin_actions_to_effects_task_done() {
         params: serde_json::json!({"id": "42"}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert_eq!(effects.len(), 1);
     assert!(matches!(
         &effects[0],
@@ -968,8 +968,8 @@ fn plugin_actions_to_effects_task_done() {
     ));
 }
 
-#[test]
-fn plugin_actions_to_effects_auto_merge() {
+#[tokio::test]
+async fn plugin_actions_to_effects_auto_merge() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-merge");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -977,7 +977,7 @@ fn plugin_actions_to_effects_auto_merge() {
         params: serde_json::json!({"pr": 123}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert_eq!(effects.len(), 1);
     assert!(matches!(
         &effects[0],
@@ -985,8 +985,8 @@ fn plugin_actions_to_effects_auto_merge() {
     ));
 }
 
-#[test]
-fn plugin_actions_to_effects_unknown_method_skipped() {
+#[tokio::test]
+async fn plugin_actions_to_effects_unknown_method_skipped() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-unk");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -994,12 +994,12 @@ fn plugin_actions_to_effects_unknown_method_skipped() {
         params: serde_json::json!({}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert!(effects.is_empty(), "unknown methods should be skipped");
 }
 
-#[test]
-fn plugin_actions_to_effects_multiple_actions() {
+#[tokio::test]
+async fn plugin_actions_to_effects_multiple_actions() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-multi");
 
     let actions = vec![
@@ -1017,12 +1017,12 @@ fn plugin_actions_to_effects_multiple_actions() {
         },
     ];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert_eq!(effects.len(), 3);
 }
 
-#[test]
-fn plugin_actions_to_effects_channel_post_empty_message_skipped() {
+#[tokio::test]
+async fn plugin_actions_to_effects_channel_post_empty_message_skipped() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-empty-msg");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -1030,15 +1030,15 @@ fn plugin_actions_to_effects_channel_post_empty_message_skipped() {
         params: serde_json::json!({"channel": "test-ch"}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert!(
         effects.is_empty(),
         "channel.post with missing message should be skipped"
     );
 }
 
-#[test]
-fn plugin_actions_to_effects_channel_post_blank_message_skipped() {
+#[tokio::test]
+async fn plugin_actions_to_effects_channel_post_blank_message_skipped() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-blank-msg");
 
     let actions = vec![super::super::plugin_daemon::PluginAction {
@@ -1046,7 +1046,7 @@ fn plugin_actions_to_effects_channel_post_blank_message_skipped() {
         params: serde_json::json!({"message": "", "channel": "test-ch"}),
     }];
 
-    let effects = plugin_actions_to_effects(&actions, &state);
+    let effects = plugin_actions_to_effects(&actions, &state).await;
     assert!(
         effects.is_empty(),
         "channel.post with empty string message should be skipped"
@@ -2598,12 +2598,19 @@ async fn test_nudge_channel_lead_dm_nudges_active_coworker() {
     let session_id = "sess-columbus-1".to_string();
     let dm_content = "Hey, can you check the auth module?";
 
-    // Register the coworker as active via name_to_session
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(coworker_name.to_string(), session_id.clone());
+    // Register the coworker as active via session record
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.clone(),
+                name: coworker_name.to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     // Set up hook to capture the nudge
     let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
@@ -2956,13 +2963,6 @@ async fn test_record_task_assignment_updates_session_task_id() {
         );
     }
 
-    // Set up the name_to_session reverse map
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(coworker_name.to_string(), session_id.to_string());
-
     // Execute RecordTaskAssignment
     let effects = vec![Effect::RecordTaskAssignment {
         coworker: coworker_name.to_string(),
@@ -2981,13 +2981,14 @@ async fn test_record_task_assignment_updates_session_task_id() {
         );
     }
 
-    // Verify task_to_session reverse map was updated
+    // Verify task can be looked up via session_by_task
     {
-        let map = state.task_to_session.lock().unwrap();
+        let ps = state.persistent_state.lock().await;
+        let found = ps.session_by_task("42").map(|s| s.session_id.clone());
         assert_eq!(
-            map.get("42").map(String::as_str),
+            found.as_deref(),
             Some(session_id),
-            "task_to_session should map the new task to the session"
+            "session_by_task should find the session for the new task"
         );
     }
 }
@@ -3026,12 +3027,6 @@ async fn test_record_task_assignment_fixes_insight_routing() {
         ps.task_thread_id
             .insert("new-task".to_string(), "new-thread-id".to_string());
     }
-
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(coworker_name.to_string(), session_id.to_string());
 
     // Reassign the session to the new task
     execute_effects(

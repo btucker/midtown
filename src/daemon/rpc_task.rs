@@ -951,25 +951,12 @@ pub(super) async fn handle_task_claim(
 
     // Update session-based task assignment (only after disk write succeeds)
     {
-        let session_id = state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get(&from.to_lowercase())
-            .cloned();
-        if let Some(sid) = session_id {
-            let mut ps = state.persistent_state.lock().await;
-            if let Some(record) = ps.sessions.get_mut(&sid) {
-                record.task_id = Some(task_id.to_string());
-            }
-            state
-                .task_to_session
-                .lock()
-                .unwrap()
-                .insert(task_id.to_string(), sid);
-            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                warn!("Failed to save state after task.claim assignment: {}", e);
-            }
+        let mut ps = state.persistent_state.lock().await;
+        if let Some(record) = ps.session_by_name_mut(&from.to_lowercase()) {
+            record.task_id = Some(task_id.to_string());
+        }
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!("Failed to save state after task.claim assignment: {}", e);
         }
     }
 
@@ -1024,40 +1011,22 @@ pub(crate) async fn deliver_task_prompt(
         return Err(format!("Task !{} not found", task_id));
     };
 
-    // Find the session for this task.
-    // First check the in-memory map (fast path for running sessions).
-    // If missing (coworker stopped and map was cleaned up), fall back to
-    // persistent state which survives shutdown/break.
-    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            // Fallback: find a stopped session record with this task_id
-            let ps = state.persistent_state.lock().await;
-            let found = ps
-                .sessions
-                .iter()
-                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
-                .map(|(sid, _)| sid.clone());
-            match found {
-                Some(sid) => sid,
-                None => {
-                    return Err(format!(
-                        "No session found for task !{} — task may not have been dispatched yet",
-                        task_id
-                    ));
-                }
+    // Find the session for this task from persistent state.
+    let (session_id, coworker_name) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.session_by_task(task_id) {
+            Some(r) => (
+                r.session_id.clone(),
+                Some(r.name.clone()).filter(|n| !n.is_empty()),
+            ),
+            None => {
+                return Err(format!(
+                    "No session found for task !{} — task may not have been dispatched yet",
+                    task_id
+                ));
             }
         }
     };
-
-    // Check if the session is running
-    let coworker_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(&session_id)
-        .cloned();
     let is_alive = if let Some(ref name) = coworker_name {
         state.session_manager.is_alive(name).await
     } else {
@@ -1246,42 +1215,28 @@ pub(super) async fn handle_task_handoff(
         );
     }
 
-    // Find the session for this task
-    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            let ps = state.persistent_state.lock().await;
-            let found = ps
-                .sessions
-                .iter()
-                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
-                .map(|(sid, _)| sid.clone());
-            match found {
-                Some(sid) => sid,
-                None => {
-                    return Response::error(
-                        id,
-                        RpcError::new(
-                            -32603,
-                            format!(
-                                "No session found for task !{} — task may not have been dispatched yet",
-                                task_id
-                            ),
+    // Find the session for this task from persistent state
+    let (session_id, coworker_name) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.session_by_task(task_id) {
+            Some(r) => (
+                r.session_id.clone(),
+                Some(r.name.clone()).filter(|n| !n.is_empty()),
+            ),
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No session found for task !{} — task may not have been dispatched yet",
+                            task_id
                         ),
-                    );
-                }
+                    ),
+                );
             }
         }
     };
-
-    // Stop the session if running
-    let coworker_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(&session_id)
-        .cloned();
     if let Some(ref name) = coworker_name
         && state.session_manager.is_alive(name).await
     {

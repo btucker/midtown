@@ -634,7 +634,7 @@ pub(super) async fn handle_coworker_report_state(
                 name, pr_number
             );
             let nudge_effects = vec![effects::Effect::nudge_session(
-                state.session_id_for_name(name),
+                state.session_id_for_name(name).await,
                 format!(
                     "You are assigned as reviewer for PR #{pr_number} but have not posted \
                      your review yet. Please complete and post your review comment on the PR \
@@ -759,25 +759,15 @@ pub(super) async fn handle_coworker_report_state(
             state.clear_task_assignment_by_task(tid).await;
         } else {
             // No task_id known — clear this coworker's session record directly
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&name.to_lowercase())
-                .cloned();
-            if let Some(sid) = session_id {
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(record) = ps.sessions.get_mut(&sid)
-                    && let Some(task_id) = record.task_id.take()
-                {
-                    state.task_to_session.lock().unwrap().remove(&task_id);
-                }
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!(
-                        "Failed to save state after clearing coworker assignment for {}: {}",
-                        name, e
-                    );
-                }
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(record) = ps.session_by_name_mut(&name.to_lowercase()) {
+                record.task_id = None;
+            }
+            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                warn!(
+                    "Failed to save state after clearing coworker assignment for {}: {}",
+                    name, e
+                );
             }
         }
     }

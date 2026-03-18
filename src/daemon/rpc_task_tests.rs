@@ -1333,14 +1333,21 @@ async fn test_handle_task_handoff_session_exists_but_no_record() {
     )
     .expect("create task");
 
-    // Insert a fake session mapping (task → session) without a corresponding
-    // session record in persistent state
+    // Insert a session record with the task binding but no running process
     let fake_session_id = "fake-session-abc-123";
-    state
-        .task_to_session
-        .lock()
-        .unwrap()
-        .insert(task_id.clone(), fake_session_id.to_string());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            fake_session_id.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: fake_session_id.to_string(),
+                name: "fake-coworker".to_string(),
+                task_id: Some(task_id.clone()),
+                is_running: false,
+                ..Default::default()
+            },
+        );
+    }
 
     let response = handle_task_handoff(
         crate::rpc::RequestId::Number(3),
