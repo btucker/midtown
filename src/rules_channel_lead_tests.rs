@@ -44,12 +44,14 @@ fn channel_lead_owned_task_not_orphan_recovered() {
     let empty = empty_set();
     let empty_map: HashMap<String, chrono::DateTime<chrono::Utc>> = HashMap::new();
     let leads = names(&["ops"]);
+    let empty_cooldown = empty_set();
     let ctx = OrphanRecoveryContext {
         in_progress: &tasks,
         active_names: &empty,
         recently_stopped: &empty,
         attached_coworkers: &empty_map,
         channel_lead_names: &leads,
+        spawn_failure_cooldown_names: &empty_cooldown,
     };
     let result = decide_orphan_recovery(&ctx);
     assert!(

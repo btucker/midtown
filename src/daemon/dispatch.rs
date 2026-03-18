@@ -523,25 +523,13 @@ fn check_and_recover_orphans_impl(snap: &snapshot::WorldSnapshot) -> Vec<effects
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
         channel_lead_names,
+        spawn_failure_cooldown_names: &snap.spawn_failure_cooldown_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
     let Some(recovery) = recovery else {
         return vec![];
     };
-
-    // Check per-coworker spawn failure cooldown to prevent infinite retry loops
-    // (pre-evaluated in snapshot)
-    if snap
-        .spawn_failure_cooldown_names
-        .contains(&recovery.owner.to_lowercase())
-    {
-        debug!(
-            "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
-            recovery.owner, recovery.task_id
-        );
-        return vec![];
-    }
 
     info!(
         "Detected orphaned task !{} owned by {} - attempting recovery",
