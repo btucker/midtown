@@ -1144,9 +1144,9 @@ const FORK_SCOPE_BOUNDARY: &str = "\
 
 You are a fork session — scoped to this thread's topic only. After completing your research or investigation:
 - Report your findings in the thread
-- Do NOT claim, assign, or work on tasks
+- You may create tasks (`midtown task create`) to hand off work you discovered
+- Do NOT claim or work on tasks yourself (`midtown task claim`)
 - Do NOT create PRs or implement features
-- Do NOT use `midtown task claim` or `midtown task create`
 - Stop after reporting — the root lead session handles next steps";
 
 #[allow(clippy::too_many_arguments)]

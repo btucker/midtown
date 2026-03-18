@@ -2055,4 +2055,8 @@ fn test_build_fork_config_includes_scope_boundary() {
         headless_config.system_prompt.contains("Do NOT claim"),
         "Fork scope boundary must instruct forks not to claim tasks"
     );
+    assert!(
+        headless_config.system_prompt.contains("may create tasks"),
+        "Fork scope boundary must allow task creation (handoff mechanism)"
+    );
 }
