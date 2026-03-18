@@ -356,6 +356,145 @@ pub struct DaemonPersistentState {
     /// parent, and agent_name for each task.
     #[serde(default)]
     pub task_index: HashMap<String, crate::task_store::TaskIndexEntry>,
+
+    // ── Per-tick ephemeral state ──────────────────────────────────────────
+    // Populated by `prepare_tick()` before each tick evaluation.
+    // Not persisted to daemon-state.json.
+    /// Process health for headless coworkers, keyed by name.
+    #[serde(skip)]
+    pub tick_process_health: HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+
+    /// Cached open PR data from last GitHub poll.
+    #[serde(skip)]
+    pub tick_open_prs: Vec<serde_json::Value>,
+
+    /// Number of PRs needing review.
+    #[serde(skip)]
+    pub tick_prs_needing_review: usize,
+
+    /// Merged PR numbers from last poll.
+    #[serde(skip)]
+    pub tick_merged_pr_numbers: HashSet<u64>,
+
+    /// GitHub API rate limit state.
+    #[serde(skip)]
+    pub tick_rate_limit: crate::github_rate_limit::GitHubRateLimit,
+
+    /// Freshly fetched rate limit (only during RateLimitCheckTick).
+    #[serde(skip)]
+    pub tick_fresh_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
+
+    /// PR↔task index built from sessions + GitHub PR titles.
+    #[serde(skip)]
+    pub tick_pr_task_index: crate::daemon::snapshot::PrTaskIndex,
+
+    /// Pre-evaluated cooldown states.
+    #[serde(skip)]
+    pub tick_orphan_spawn_cooldown_active: bool,
+    #[serde(skip)]
+    pub tick_session_dispatch_cooldown_active: bool,
+    #[serde(skip)]
+    pub tick_spawn_failure_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_note_staleness_cooldown_channels: HashSet<String>,
+    #[serde(skip)]
+    pub tick_merge_rebase_nudge_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_rebase_nudge_processed_prs: HashSet<u64>,
+    #[serde(skip)]
+    pub tick_rebase_regression_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_lead_worktree_freshness_cooldown_channels: HashSet<String>,
+    #[serde(skip)]
+    pub tick_task_nudge_cooldown_ids: HashSet<String>,
+    #[serde(skip)]
+    pub tick_recently_recovered_session_ids: HashSet<String>,
+    #[serde(skip)]
+    pub tick_in_flight_task_spawns: HashSet<String>,
+
+    /// Coworker start/stop times from DaemonState caches.
+    #[serde(skip)]
+    pub tick_coworker_start_times: HashMap<String, DateTime<Utc>>,
+    #[serde(skip)]
+    pub tick_coworker_stop_times: HashMap<String, DateTime<Utc>>,
+
+    /// Attached coworkers with attach timestamp.
+    #[serde(skip)]
+    pub tick_attached_coworkers: HashMap<String, DateTime<Utc>>,
+
+    /// Config constants from DaemonState.
+    #[serde(skip)]
+    pub tick_dir_key: String,
+    #[serde(skip)]
+    pub tick_project_name: String,
+    #[serde(skip)]
+    pub tick_default_channel: String,
+    #[serde(skip)]
+    pub tick_default_branch: String,
+    #[serde(skip)]
+    pub tick_repo_owner: Option<String>,
+    #[serde(skip)]
+    pub tick_max_in_progress_tasks: usize,
+    #[serde(skip)]
+    pub tick_lead_refresh_interval_secs: u64,
+    #[serde(skip)]
+    pub tick_now: DateTime<Utc>,
+
+    /// Stale channel lead worktrees (behind origin/main).
+    #[serde(skip)]
+    pub tick_stale_lead_worktrees: HashSet<String>,
+
+    /// Topic/fork sessions: thread_parent_id → session_id.
+    #[serde(skip)]
+    pub tick_topic_sessions: HashMap<String, String>,
+
+    /// Session profile mapping: coworker name → auth profile email.
+    #[serde(skip)]
+    pub tick_session_profile_map: HashMap<String, String>,
+
+    /// Pool profiles currently at usage limit.
+    #[serde(skip)]
+    pub tick_limited_pool_profiles: HashSet<String>,
+
+    /// Channel messages for debugging context.
+    #[serde(skip)]
+    pub tick_channel_messages: Vec<crate::message::Message>,
+
+    /// Daemon log tail for debugging context.
+    #[serde(skip)]
+    pub tick_daemon_logs: Vec<String>,
+
+    /// Reviewer escalations already posted.
+    #[serde(skip)]
+    pub tick_reviewer_escalations_posted: HashSet<u64>,
+
+    /// Orphaned PR lead nudges already sent.
+    #[serde(skip)]
+    pub tick_orphaned_pr_nudges_sent: HashSet<u64>,
+
+    /// Archived channels.
+    #[serde(skip)]
+    pub tick_archived_channels: HashSet<String>,
+
+    /// Stale channel notes.
+    #[serde(skip)]
+    pub tick_stale_channel_notes: HashMap<String, Vec<String>>,
+
+    /// Active session names (lowercase) — running coworkers + alive headless sessions.
+    #[serde(skip)]
+    pub tick_active_session_names: HashSet<String>,
+
+    /// Active coworker data from CoworkerManager.
+    #[serde(skip)]
+    pub tick_active_coworkers: Vec<crate::coworker::Coworker>,
+
+    /// Running coworker data from CoworkerManager.
+    #[serde(skip)]
+    pub tick_running_coworkers: Vec<crate::coworker::Coworker>,
+
+    /// Session name string (e.g., "midtown-projectname").
+    #[serde(skip)]
+    pub tick_session_name: String,
 }
 
 impl DaemonPersistentState {
@@ -684,6 +823,7 @@ impl DaemonPersistentState {
             task_session_spans: Vec::new(),
             task_pr_number: HashMap::new(),
             task_index: HashMap::new(),
+            ..Default::default()
         };
 
         // Save the unified file

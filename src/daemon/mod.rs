@@ -36,6 +36,7 @@ pub mod snapshot;
 mod startup;
 pub(crate) mod state;
 mod stream;
+pub(crate) mod tick;
 mod trackers;
 pub(crate) mod wake_reason;
 mod webhook_fwd;

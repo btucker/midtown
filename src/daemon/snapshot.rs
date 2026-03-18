@@ -54,7 +54,7 @@ mod u64_key_map {
 ///   after daemon restart until sessions reconnect.
 /// - **GitHub-title-derived** (`github_task_to_pr`): survives restarts (repopulated
 ///   from GitHub API) but depends on `[Midtown !{id}]` in PR titles.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PrTaskIndex {
     /// task_id → pr_number from SessionRecord (primary source).
     #[serde(default, alias = "tasks_with_open_prs")]
@@ -2028,7 +2028,7 @@ const WORKTREE_FRESHNESS_CACHE_SECS: u64 = 25;
 /// at ~30s and TaskDispatchTick at ~5s).
 ///
 /// Returns the set of channel names whose worktrees are behind.
-async fn collect_stale_channel_lead_worktrees(
+pub(super) async fn collect_stale_channel_lead_worktrees(
     state: &DaemonState,
     channel_lead_sessions: &HashMap<String, String>,
     sessions: &HashMap<String, crate::daemon::state::SessionRecord>,
