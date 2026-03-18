@@ -1396,7 +1396,14 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     let channel_lead_names: HashSet<String> = channel_lead_sessions.keys().cloned().collect();
 
     // ── Limits & timing ─────────────────────────────────────────────────
-    let is_at_task_limit = in_progress_tasks.len() >= state.max_in_progress_tasks;
+    // Only count in_progress tasks with active owners toward the limit.
+    // Tasks whose owners are dead (e.g., after a restart) don't consume
+    // coworker slots and should not block new spawns.
+    let active_in_progress_count = in_progress_tasks
+        .iter()
+        .filter(|(_, _, owner)| owner.is_empty() || active_names.contains(owner))
+        .count();
+    let is_at_task_limit = active_in_progress_count >= state.max_in_progress_tasks;
     let dir_key = state.paths.dir_key().to_string();
     let project_name = state.project_name.clone();
     let default_channel = state.channel_router.default_channel_name().to_string();

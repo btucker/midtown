@@ -504,3 +504,70 @@ fn test_dispatch_with_legacy_lead() {
         effects
     );
 }
+
+/// After a restart, in_progress tasks with dead owners should NOT block
+/// the task limit check on DaemonState (used by RPC handlers).
+///
+/// Bug: is_at_task_limit() counted ALL in_progress tasks on disk, including
+/// tasks whose coworker owners had died. After a restart with 8+ tasks
+/// in_progress (many with open PRs), the daemon would block all spawns
+/// with "dev coworkers limit reached" even though 0 coworkers were running.
+#[test]
+fn test_is_at_task_limit_excludes_dead_owner_tasks() {
+    let state = make_test_state_with_max(8);
+
+    // Create 8 in_progress tasks on disk via create_task_for_repo,
+    // then update their status to in_progress.
+    let dir_key = state.paths.dir_key().to_string();
+    for i in 0..8 {
+        let owner = format!("coworker-{}", i);
+        let task_id = crate::tasks::create_task_for_repo(
+            &format!("Task {}", i),
+            "test task",
+            "",
+            &owner,
+            &dir_key,
+            None,
+            None,
+            None,
+        )
+        .expect("create task");
+        let _ = crate::tasks::update_task_fields_for_repo(
+            &task_id,
+            &dir_key,
+            None,
+            Some("in_progress"),
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+
+    // Verify tasks were created
+    let tasks = crate::tasks::read_tasks_for_repo(Some(&dir_key));
+    let in_progress = tasks
+        .iter()
+        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+        .count();
+    assert_eq!(in_progress, 8, "Should have 8 in_progress tasks");
+
+    // No coworkers registered in CoworkerManager → all owners are "dead"
+    assert!(
+        !state.is_at_task_limit(),
+        "Should NOT be at task limit when no coworkers are registered \
+         (all 8 task owners are dead). Before fix: counted all in_progress \
+         tasks regardless of owner liveness."
+    );
+
+    // Register 8 coworkers → now all owners are "active" → limit hit
+    for i in 0..8 {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(&format!("coworker-{}", i)));
+    }
+    assert!(
+        state.is_at_task_limit(),
+        "Should be at task limit when all 8 task owners are registered"
+    );
+}

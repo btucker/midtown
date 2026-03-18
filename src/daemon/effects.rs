@@ -2460,6 +2460,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 };
 
                 if result.has_changes() {
+                    // Sync CoworkerManager with alive sessions immediately.
+                    // Without this, stale entries persist until the next
+                    // SessionMonitorTick, causing ghost coworkers that block
+                    // name allocation and spawn decisions.
+                    let alive_names: std::collections::HashSet<String> = state
+                        .session_manager
+                        .list_alive_names()
+                        .await
+                        .into_iter()
+                        .collect();
+                    state.coworkers.retain_alive(&alive_names);
+
                     info!(
                         "State GC: removed {} dead sessions, \
                          pruned {} orphaned task entries",
