@@ -518,6 +518,10 @@ pub struct WorldSnapshot {
     /// Used by dispatch.rs to spawn tasks with the correct agent definition.
     #[serde(default)]
     pub task_agent_type_map: HashMap<String, String>,
+    /// Task agent names from TaskStore (task_id → agent_name).
+    /// Used by dispatch.rs to use the lead-assigned name instead of generating one.
+    #[serde(default)]
+    pub task_agent_name_map: HashMap<String, String>,
     /// Channel lead session mapping for nudge routing.
     /// Maps channel name → session ID. Used by effects.rs to deliver
     /// `NudgeChannelLead` effects without locking persistent state.
@@ -1113,6 +1117,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_message_id_map,
         task_parent_map,
         task_agent_type_map,
+        task_agent_name_map,
         channel_lead_sessions,
         lead_driven_channels,
     ) = {
@@ -1125,6 +1130,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         let mut task_message_id_map = HashMap::new();
         let mut task_parent_map = HashMap::new();
         let mut task_agent_type_map = HashMap::new();
+        let mut task_agent_name_map = HashMap::new();
         for t in &all_store_tasks {
             if let Some(ref ch) = t.channel {
                 task_channel.insert(t.id.clone(), ch.clone());
@@ -1145,6 +1151,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 task_parent_map.insert(t.id.clone(), pid.clone());
             }
             task_agent_type_map.insert(t.id.clone(), t.agent_type.clone());
+            if !t.agent_name.is_empty() {
+                task_agent_name_map.insert(t.id.clone(), t.agent_name.clone());
+            }
         }
         // Merge with persistent state HashMap fields for backward compatibility
         // (pre-migration data). TaskStore entries take precedence.
@@ -1194,6 +1203,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             task_message_id_map,
             task_parent_map,
             task_agent_type_map,
+            task_agent_name_map,
             channel_lead_sessions,
             lead_driven_channels,
         )
@@ -1816,6 +1826,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_message_id_map,
         task_parent_map,
         task_agent_type_map,
+        task_agent_name_map,
         channel_lead_sessions,
         channel_lead_names,
         active_session_names: all_active_session_names,
@@ -1899,6 +1910,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
         active_session_names: HashSet::new(),

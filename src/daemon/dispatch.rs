@@ -1439,8 +1439,14 @@ fn dispatch_unowned_pending_tasks(
             {
                 excluded_names.insert(author.to_lowercase());
             }
-            let name = generate_task_session_name(&task.id, &task.subject, &excluded_names);
-            debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
+            // Use the lead-assigned agent_name from TaskStore if available,
+            // otherwise fall back to generating a name from the task subject.
+            let name = if let Some(agent_name) = snap.task_agent_name_map.get(&task.id) {
+                agent_name.clone()
+            } else {
+                generate_task_session_name(&task.id, &task.subject, &excluded_names)
+            };
+            debug!("Task !{}: allocated coworker name {}", task.id, name);
             name
         };
 

@@ -533,43 +533,6 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Also write to TaskStore for new task storage layer
-    {
-        let ps = state.persistent_state.lock().await;
-        let resolved_thread = ps.task_thread_id.get(&task_id).cloned();
-        let resolved_message = ps.task_message_id.get(&task_id).cloned();
-        let resolved_parent = ps.task_parent.get(&task_id).cloned();
-        drop(ps);
-        let store_task = crate::task_store::Task {
-            id: task_id.clone(),
-            subject: subject.to_string(),
-            status: crate::task_store::TaskStatus::Pending,
-            description: if description.is_empty() {
-                None
-            } else {
-                Some(description.to_string())
-            },
-            blocked_by: blocked_by.map_or_else(Vec::new, |b| b.to_vec()),
-            channel: Some(effective_channel.to_string()),
-            pr,
-            agent_name: task_id.clone(), // Will be set properly when agent_name param is added
-            agent_type: agent_type.unwrap_or("midtown-code-author").to_string(),
-            session_id: None,
-            parent: resolved_parent,
-            message_id: resolved_message,
-            thread_id: resolved_thread,
-            model: model.map(|m| m.to_string()),
-            plan: plan.map(|p| p.to_string()),
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
-        };
-        if let Err(e) = state.task_store.save(&store_task) {
-            warn!("Failed to save task to TaskStore: {}", e);
-        } else {
-            state.update_task_index(&store_task).await;
-        }
-    }
-
     // Nudge the effective channel's lead about the new task and emit workflow event
     let nudge_effect = crate::daemon::effects::Effect::NudgeChannelLead {
         channel_name: effective_channel.to_string(),
