@@ -1325,6 +1325,7 @@ fn test_task_parent_default_empty() {
 
 #[test]
 fn test_is_fork_session() {
+    // Regular dev session (no thread binding) — not a fork
     let regular = SessionRecord {
         bound_thread_id: None,
         ..Default::default()
@@ -1334,12 +1335,36 @@ fn test_is_fork_session() {
         "Regular session should not be a fork"
     );
 
+    // Channel-lead with bound_thread_id — IS a fork
     let fork = SessionRecord {
+        coworker_type: "channel-lead".to_string(),
         bound_thread_id: Some("thread-123".to_string()),
         ..Default::default()
     };
     assert!(
         fork.is_fork_session(),
-        "Session with bound_thread_id is a fork"
+        "Channel-lead with bound_thread_id is a fork"
+    );
+
+    // Dev coworker with bound_thread_id — NOT a fork (genuine task owner)
+    let dev_with_thread = SessionRecord {
+        coworker_type: "dev".to_string(),
+        bound_thread_id: Some("thread-456".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        !dev_with_thread.is_fork_session(),
+        "Dev coworker with bound_thread_id is NOT a fork — it's a real task owner"
+    );
+
+    // Channel-lead without bound_thread_id — NOT a fork (root channel lead)
+    let root_lead = SessionRecord {
+        coworker_type: "channel-lead".to_string(),
+        bound_thread_id: None,
+        ..Default::default()
+    };
+    assert!(
+        !root_lead.is_fork_session(),
+        "Root channel lead without bound_thread_id is NOT a fork"
     );
 }

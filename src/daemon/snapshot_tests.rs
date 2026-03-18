@@ -960,6 +960,7 @@ fn find_session_for_task_skips_fork_sessions() {
             session_id: "fork-sess".to_string(),
             task_id: Some("500".to_string()),
             current_name: Some("fork-research-1234".to_string()),
+            coworker_type: "channel-lead".to_string(),
             bound_thread_id: Some("thread-xyz".to_string()),
             working_dir: "/tmp/test".to_string(),
             ..Default::default()
