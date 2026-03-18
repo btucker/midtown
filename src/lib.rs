@@ -86,8 +86,11 @@ pub mod agents;
 // Agent definition file loading (Claude Code agent format)
 pub mod agent_definition;
 
-// Claude Code task storage integration
+// Claude Code task storage integration (legacy, being replaced by task_store)
 pub mod tasks;
+
+// Midtown task storage — one JSON file per task in ~/.midtown/<project>/tasks/
+pub mod task_store;
 
 // Path utilities (socket paths, repo detection)
 pub mod paths;
