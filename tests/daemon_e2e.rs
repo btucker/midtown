@@ -2909,10 +2909,11 @@ fn test_daemon_rejects_invalid_model_format_on_create() {
         "invalid",           // No slash at all
     ];
 
-    for invalid_model in invalid_formats {
+    for (i, invalid_model) in invalid_formats.iter().enumerate() {
         let params = serde_json::json!({
             "subject": "Test task",
             "description": "Testing invalid model format",
+            "agent_name": format!("test-model-{}", i),
             "model": invalid_model
         });
 
@@ -3058,6 +3059,7 @@ fn test_daemon_accepts_valid_model_format_on_create() {
         let params = serde_json::json!({
             "subject": format!("Test task {}", idx),
             "description": "Testing valid model format",
+            "agent_name": format!("valid-model-{}", idx),
             "model": valid_model
         });
 

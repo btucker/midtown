@@ -171,17 +171,13 @@ fn test_concurrent_name_allocation_no_overwrites() {
         inserted, rejected
     );
 
-    // The fix ensures rejected inserts don't cause overwrites.
-    // We expect some rejections due to name allocation races, but that's OK.
-    // What matters is that the total inserted + rejected equals the number of
-    // attempted allocations, and no coworker was overwritten.
-    //
-    // Verify the fix is working by checking that rejections occurred
-    // (indicating the race happened) but no data was corrupted.
-    assert!(
-        rejected > 0,
-        "Expected some rejections due to concurrent name allocation, but got 0. \
-         This suggests the test isn't triggering the race condition."
+    // With task-based naming, each name is unique (UUID-based), so there
+    // should be no rejections. The old avenue-name pool could produce
+    // collisions, but that's no longer possible.
+    assert_eq!(
+        inserted + rejected,
+        ITERATIONS * THREADS_PER_ITERATION,
+        "Total attempts should equal inserted + rejected"
     );
 }
 
