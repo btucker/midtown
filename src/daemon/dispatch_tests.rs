@@ -4887,15 +4887,15 @@ fn test_lead_driven_channel_still_auto_completes_merged_pr_tasks() {
     }];
     snap.pr.merged_pr_numbers.insert(100);
 
-    let (effects, _) = dispatch_owned_pending_tasks(&snap);
+    // Test via the pure decision function — merged-PR auto-complete should fire
+    // even though the channel is lead-driven (auto-complete runs before the
+    // lead-driven check).
+    let action = crate::rules::decide_owned_pending_dispatch("42", "Fix bug", "park", &snap);
 
-    // Should emit CompleteTask + ClearBlockedBy even though channel is lead-driven.
     assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "42")),
-        "Expected CompleteTask for merged PR in lead-driven channel, got {:?}",
-        effects
+        matches!(action, crate::rules::PendingTaskAction::AutoComplete { ref task_id, pr_num } if task_id == "42" && pr_num == 100),
+        "Expected AutoComplete for merged PR in lead-driven channel, got {:?}",
+        action
     );
 }
 
