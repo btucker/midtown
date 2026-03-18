@@ -1,8 +1,8 @@
 use super::*;
 
-/// Test that ProcessHealth derives usage limit and API error sets correctly.
+/// Test that compute_health_sets derives usage limit and API error sets correctly.
 #[test]
-fn test_process_health_derives_usage_limited_and_api_error_sets() {
+fn test_compute_health_sets_basic() {
     let mut health = HashMap::new();
     health.insert(
         "york".to_string(),
@@ -20,21 +20,66 @@ fn test_process_health_derives_usage_limited_and_api_error_sets() {
     );
     health.insert("madison".to_string(), ProcessHealth::default());
 
-    let usage_limited: HashSet<String> = health
-        .iter()
-        .filter(|(_, h)| h.has_usage_limit)
-        .map(|(n, _)| n.to_lowercase())
-        .collect();
-    let api_error: HashSet<String> = health
-        .iter()
-        .filter(|(n, h)| h.has_api_error && !usage_limited.contains(&n.to_lowercase()))
-        .map(|(n, _)| n.to_lowercase())
-        .collect();
+    let sets = compute_health_sets(&health);
 
-    assert!(usage_limited.contains("york"));
-    assert!(!usage_limited.contains("park"));
-    assert!(api_error.contains("park"));
-    assert!(!api_error.contains("madison"));
+    assert!(sets.usage_limited_coworkers.contains("york"));
+    assert!(!sets.usage_limited_coworkers.contains("park"));
+    assert!(sets.api_error_coworkers.contains("park"));
+    assert!(!sets.api_error_coworkers.contains("madison"));
+    assert!(sets.auth_error_coworkers.is_empty());
+    assert!(sets.tool_name_conflict_coworkers.is_empty());
+}
+
+/// Auth errors take precedence: a coworker with both auth and API errors
+/// appears only in auth_error_coworkers, not api_error_coworkers.
+#[test]
+fn test_compute_health_sets_auth_excludes_api() {
+    let mut health = HashMap::new();
+    health.insert(
+        "york".to_string(),
+        ProcessHealth {
+            has_auth_error: true,
+            has_api_error: true,
+            ..Default::default()
+        },
+    );
+    health.insert(
+        "park".to_string(),
+        ProcessHealth {
+            has_usage_limit: true,
+            has_api_error: true,
+            ..Default::default()
+        },
+    );
+
+    let sets = compute_health_sets(&health);
+
+    assert!(sets.auth_error_coworkers.contains("york"));
+    assert!(
+        !sets.api_error_coworkers.contains("york"),
+        "auth error should exclude from api_error set"
+    );
+    assert!(sets.usage_limited_coworkers.contains("park"));
+    assert!(
+        !sets.api_error_coworkers.contains("park"),
+        "usage limit should exclude from api_error set"
+    );
+}
+
+/// Tool name conflict coworkers are tracked independently.
+#[test]
+fn test_compute_health_sets_tool_conflict() {
+    let mut health = HashMap::new();
+    health.insert(
+        "broadway".to_string(),
+        ProcessHealth {
+            has_tool_name_conflict: true,
+            ..Default::default()
+        },
+    );
+
+    let sets = compute_health_sets(&health);
+    assert!(sets.tool_name_conflict_coworkers.contains("broadway"));
 }
 
 /// Test that WorldSnapshot has coworker_stop_times field and it serializes correctly.

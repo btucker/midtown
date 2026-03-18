@@ -479,7 +479,7 @@ fn check_and_recover_orphans_impl(
         active_names: &snap.coworkers.active_names,
         recently_stopped: &recently_stopped,
         attached_coworkers: &snap.coworkers.attached_coworkers,
-        channel_lead_names: &channel_lead_names,
+        channel_lead_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
@@ -1637,7 +1637,7 @@ fn dispatch_unowned_pending_tasks(
             }
             if let Some(name) = find_idle_coworker(
                 snap,
-                &channel_lead_names,
+                channel_lead_names,
                 &names_assigned_this_tick,
                 owned_dispatched,
             ) {
@@ -1654,7 +1654,7 @@ fn dispatch_unowned_pending_tasks(
                 continue;
             }
         } else {
-            let mut excluded_names = snap.channel_lead_names();
+            let mut excluded_names = snap.channel_lead_names().clone();
             // Exclude all names with active sessions to prevent name collisions.
             // CoworkerManager only knows about registered coworkers, but a session
             // may still be running after its coworker was cleaned up from the manager.

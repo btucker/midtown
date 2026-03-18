@@ -1130,7 +1130,7 @@ fn build_reviewer_respawn_effects(
             snap.repo_owner.as_deref().unwrap_or("unknown"),
             snap.project_name
         );
-        let task_id = snap.pr.pr_task_associations.get(&pr_number);
+        let task_id = snap.pr.pr_task_index.task_for_pr(pr_number);
         let frontmatter = match task_id {
             Some(tid) => format!("<!-- midtown task:{tid} type:review-status -->"),
             None => "<!-- midtown type:review-status -->".to_string(),

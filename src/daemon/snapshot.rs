@@ -204,6 +204,61 @@ pub struct ProcessHealth {
     pub exit_code: Option<i32>,
 }
 
+/// Cached health-derived sets, keyed by `headless_health_generation` in `DaemonState`.
+///
+/// All fields are pure derivations from `ProcessHealth` boolean flags — no dependency
+/// on wall-clock time. `coworkers_with_active_tools` is intentionally excluded: its
+/// `pending_api_turn_fresh` check depends on `now_utc`, so it must be recomputed
+/// every tick.
+#[derive(Clone)]
+pub(super) struct CachedHealthSets {
+    pub usage_limited_coworkers: HashSet<String>,
+    pub auth_error_coworkers: HashSet<String>,
+    pub api_error_coworkers: HashSet<String>,
+    pub tool_name_conflict_coworkers: HashSet<String>,
+}
+
+/// Derive the 4 cacheable health sets from raw process health data.
+///
+/// Priority ordering: auth errors take precedence over usage limits and API errors.
+/// A coworker in `auth_error_coworkers` is excluded from `api_error_coworkers`.
+pub(super) fn compute_health_sets(health: &HashMap<String, ProcessHealth>) -> CachedHealthSets {
+    let usage_limited_coworkers: HashSet<String> = health
+        .iter()
+        .filter(|(_, h)| h.has_usage_limit)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    let auth_error_coworkers: HashSet<String> = health
+        .iter()
+        .filter(|(_, h)| h.has_auth_error)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    let api_error_coworkers: HashSet<String> = health
+        .iter()
+        .filter(|(name, h)| {
+            h.has_api_error
+                && !auth_error_coworkers.contains(&name.to_lowercase())
+                && !usage_limited_coworkers.contains(&name.to_lowercase())
+        })
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    let tool_name_conflict_coworkers: HashSet<String> = health
+        .iter()
+        .filter(|(_, h)| h.has_tool_name_conflict)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    CachedHealthSets {
+        usage_limited_coworkers,
+        auth_error_coworkers,
+        api_error_coworkers,
+        tool_name_conflict_coworkers,
+    }
+}
+
 impl Default for ProcessHealth {
     fn default() -> Self {
         Self {
@@ -477,6 +532,10 @@ pub struct WorldSnapshot {
     /// `NudgeChannelLead` effects without locking persistent state.
     #[serde(default)]
     pub channel_lead_sessions: HashMap<String, String>,
+    /// Pre-computed set of channel lead names (keys of `channel_lead_sessions`).
+    /// Avoids re-allocating a HashSet on every call to `channel_lead_names()`.
+    #[serde(default)]
+    pub channel_lead_names: HashSet<String>,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -755,9 +814,9 @@ impl WorldSnapshot {
         map
     }
 
-    /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
-    pub fn channel_lead_names(&self) -> HashSet<String> {
-        self.channel_lead_sessions.keys().cloned().collect()
+    /// Returns the pre-computed set of active channel lead names.
+    pub fn channel_lead_names(&self) -> &HashSet<String> {
+        &self.channel_lead_names
     }
 
     /// Backward-compatibility fixup for snapshots serialized before the
@@ -1183,8 +1242,30 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Dependency state ──────────────────────────────────────────────────
-    let coworkers_with_unblocked_deps =
-        crate::tasks::get_coworkers_with_unblocked_dependents_for_repo(state.paths.dir_key());
+    // Task deps change rarely; cache the result for 30s to avoid recomputing
+    // on every TaskDispatchTick (~5s).
+    let coworkers_with_unblocked_deps = {
+        let cached = {
+            let cache = state.coworkers_with_unblocked_deps_cache.lock().unwrap();
+            if let Some((timestamp, ref result)) = *cache
+                && timestamp.elapsed().as_secs() < UNBLOCKED_DEPS_CACHE_SECS
+            {
+                Some(result.clone())
+            } else {
+                None
+            }
+        };
+        match cached {
+            Some(result) => result,
+            None => {
+                let result =
+                    crate::tasks::get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks);
+                let mut cache = state.coworkers_with_unblocked_deps_cache.lock().unwrap();
+                *cache = Some((std::time::Instant::now(), result.clone()));
+                result
+            }
+        }
+    };
 
     // ── Usage limit state ────────────────────────────────────────────────
     let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
@@ -1193,38 +1274,33 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
     let now_utc = Utc::now();
 
-    // Derive usage limit and API error sets from headless process health.
-    // These were previously detected from pane content; now read from structured flags.
-    let usage_limited_coworkers: HashSet<String> = headless_process_health
-        .iter()
-        .filter(|(_, health)| health.has_usage_limit)
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
-
-    // Auth errors take precedence over both usage limits and API errors, since they
-    // require user intervention and won't resolve with time or retries.
-    let auth_error_coworkers: HashSet<String> = headless_process_health
-        .iter()
-        .filter(|(_, health)| health.has_auth_error)
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
-
-    let api_error_coworkers: HashSet<String> = headless_process_health
-        .iter()
-        .filter(|(name, health)| {
-            // Only flag API error if not already auth error or usage limit
-            health.has_api_error
-                && !auth_error_coworkers.contains(&name.to_lowercase())
-                && !usage_limited_coworkers.contains(&name.to_lowercase())
-        })
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
-
-    let tool_name_conflict_coworkers: HashSet<String> = headless_process_health
-        .iter()
-        .filter(|(_, health)| health.has_tool_name_conflict)
-        .map(|(name, _)| name.to_lowercase())
-        .collect();
+    // Derive usage limit and error sets from headless process health.
+    // The 4 flag-only sets are cached across ticks via a generation counter —
+    // they only change when `headless_health` is written (~1s), not on every
+    // snapshot tick (~5s). `coworkers_with_active_tools` is always recomputed
+    // because its freshness check depends on wall-clock time.
+    let health_generation = state
+        .headless_health_generation
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let cached_health = {
+        let cache = state.health_derived_cache.lock().unwrap();
+        match *cache {
+            Some((cached_gen, ref sets)) if cached_gen == health_generation => Some(sets.clone()),
+            _ => None,
+        }
+    };
+    let health_sets = cached_health.unwrap_or_else(|| {
+        let sets = compute_health_sets(&headless_process_health);
+        let mut cache = state.health_derived_cache.lock().unwrap();
+        *cache = Some((health_generation, sets.clone()));
+        sets
+    });
+    let CachedHealthSets {
+        usage_limited_coworkers,
+        auth_error_coworkers,
+        api_error_coworkers,
+        tool_name_conflict_coworkers,
+    } = health_sets;
 
     let max_pending_api_call_exemption = chrono::Duration::minutes(20);
     let coworkers_with_active_tools: HashSet<String> = headless_process_health
@@ -1319,6 +1395,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .or(cfg.lead_session_refresh_interval_secs)
             .unwrap_or(crate::daemon::constants::DEFAULT_LEAD_SESSION_REFRESH_INTERVAL_SECS)
     };
+
+    // ── Pre-computed derived sets ──────────────────────────────────────
+    let channel_lead_names: HashSet<String> = channel_lead_sessions.keys().cloned().collect();
 
     // ── Limits & timing ─────────────────────────────────────────────────
     let is_at_task_limit = in_progress_tasks.len() >= state.max_in_progress_tasks;
@@ -1642,6 +1721,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_parent_map,
         task_agent_type_map,
         channel_lead_sessions,
+        channel_lead_names,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
         archived_channels,
@@ -1724,6 +1804,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
+        channel_lead_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),
@@ -1819,6 +1900,11 @@ pub(crate) fn build_reviewer_pr_assignments_from_spans(
     }
     assignments
 }
+
+/// How long to cache the coworkers-with-unblocked-deps result.
+/// Task dependency relationships change rarely; 30s staleness is acceptable
+/// because this set is only used for idle shutdown protection.
+const UNBLOCKED_DEPS_CACHE_SECS: u64 = 30;
 
 /// How long to cache worktree freshness results before re-running git fetch.
 const WORKTREE_FRESHNESS_CACHE_SECS: u64 = 25;

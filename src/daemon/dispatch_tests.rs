@@ -4991,7 +4991,7 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
     let channel_lead_names = snap.channel_lead_names();
     let first_name = state
         .coworkers
-        .next_available_name_excluding(&channel_lead_names)
+        .next_available_name_excluding(channel_lead_names)
         .unwrap();
     snap.spawn_failure_cooldown_names
         .insert(first_name.to_lowercase());

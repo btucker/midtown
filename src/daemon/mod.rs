@@ -601,6 +601,13 @@ pub(crate) struct DaemonState {
     /// and process status. Read by `collect_world_snapshot()` for the health decision
     /// functions in `rules.rs`.
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
+    /// Monotonically increasing counter, bumped each time `headless_health` is written.
+    /// `collect_world_snapshot()` compares this against the generation stored in
+    /// `health_derived_cache` to decide whether to reuse cached sets or recompute.
+    headless_health_generation: std::sync::atomic::AtomicU64,
+    /// Cached health-derived sets (4 HashSets), valid for the generation in `.0`.
+    /// Invalidated when `headless_health_generation` advances past the cached generation.
+    health_derived_cache: std::sync::Mutex<Option<(u64, snapshot::CachedHealthSets)>>,
     /// Coworkers currently in "attached" state (interactive session).
     ///
     /// When the Lead attaches to a headless coworker via `midtown agent attach`,
@@ -628,6 +635,11 @@ pub(crate) struct DaemonState {
     /// and `TaskDispatchTick` (~5s), we cache the result for 25s to avoid running
     /// git fetch on every tick.
     worktree_freshness_cache: std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
+    /// Cached set of coworkers whose completed tasks have unblocked pending follow-ups.
+    /// Task dependency relationships change rarely; 30s staleness is acceptable
+    /// because this set is only used for idle shutdown protection.
+    coworkers_with_unblocked_deps_cache:
+        std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
     ///
     /// Stores the PR GraphQL response (open PRs, merged PRs, repos) keyed by a
@@ -1419,7 +1431,10 @@ impl DaemonState {
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
             fork_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             worktree_freshness_cache: std::sync::Mutex::new(None),
+            coworkers_with_unblocked_deps_cache: std::sync::Mutex::new(None),
             headless_health: std::sync::RwLock::new(HashMap::new()),
+            headless_health_generation: std::sync::atomic::AtomicU64::new(0),
+            health_derived_cache: std::sync::Mutex::new(None),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
             session_manager: sessions::SessionManager::new(session_manager_repo_name),
             rpc_response_cache: Mutex::new(HashMap::new()),
@@ -3826,6 +3841,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let mut hh = state.headless_health.write().unwrap();
                     *hh = health;
                 }
+                state
+                    .headless_health_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 // Log headless events at debug level for diagnostics.
                 // Also backfill session_id in persistent state when init events arrive.
