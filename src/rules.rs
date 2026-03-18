@@ -805,6 +805,48 @@ pub fn review_comment_creates_followup(task_status: &crate::tasks::TaskStatus) -
 // Task assignment decision types and functions
 // ---------------------------------------------------------------------------
 
+/// Why an owned pending task was skipped during dispatch.
+///
+/// Each variant captures just enough context for debug logging without
+/// allocating formatted strings on every skip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum OwnedPendingSkipReason {
+    /// Owner is empty, "lead", or a channel lead.
+    LeadOrEmpty,
+    /// Owner name is not a valid coworker name.
+    InvalidCoworkerName,
+    /// Owner already has an in_progress task (one-task-per-coworker invariant).
+    OwnerHasInProgressTask,
+    /// Owner is serving as an active reviewer.
+    ActiveReviewer,
+    /// Nudge cooldown is active for this task.
+    NudgeCooldown,
+    /// Task limit reached — can't spawn new coworker.
+    TaskLimitReached,
+    /// Task is in a lead-driven channel.
+    LeadDrivenChannel,
+    /// Task already has an in-flight spawn from a previous tick.
+    InFlightSpawn,
+    /// Owner is already assigned to this specific task.
+    AlreadyAssigned,
+}
+
+impl std::fmt::Display for OwnedPendingSkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LeadOrEmpty => write!(f, "owner is lead, channel lead, or empty"),
+            Self::InvalidCoworkerName => write!(f, "owner is not a valid coworker name"),
+            Self::OwnerHasInProgressTask => write!(f, "owner already has an in_progress task"),
+            Self::ActiveReviewer => write!(f, "owner is an active reviewer"),
+            Self::NudgeCooldown => write!(f, "nudge cooldown active"),
+            Self::TaskLimitReached => write!(f, "task limit reached"),
+            Self::LeadDrivenChannel => write!(f, "channel is lead-driven"),
+            Self::InFlightSpawn => write!(f, "already has in-flight spawn"),
+            Self::AlreadyAssigned => write!(f, "owner already assigned to this task"),
+        }
+    }
+}
+
 /// Action to take for a pending task with an assigned owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PendingTaskAction {
@@ -822,8 +864,8 @@ pub(crate) enum PendingTaskAction {
         task_id: String,
         task_subject: String,
     },
-    /// Skip — owner is lead/empty, at dev limit, or nudge on cooldown.
-    Skip { reason: String },
+    /// Skip — guard condition matched.
+    Skip(OwnedPendingSkipReason),
 }
 
 /// Decide what action to take for a pending task with an assigned owner.
@@ -849,19 +891,12 @@ pub(crate) fn decide_pending_task_action(
     // Skip empty, lead-owned, or channel-lead-owned tasks — these sessions
     // are not managed by the coworker dispatch loop.
     if owner.is_empty() || owner.eq_ignore_ascii_case("lead") || is_channel_lead {
-        return PendingTaskAction::Skip {
-            reason: format!("task !{} owner is lead, channel lead, or empty", task_id),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::LeadOrEmpty);
     }
 
     // Skip invalid coworker names — can't spawn or nudge an invalid name
     if !crate::coworker::is_coworker_name(&owner.to_lowercase()) {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{} owner '{}' is not a valid coworker name",
-                task_id, owner
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::InvalidCoworkerName);
     }
 
     // Skip coworkers that already have an in_progress task.
@@ -869,31 +904,19 @@ pub(crate) fn decide_pending_task_action(
     // to a coworker that already owns an in_progress task. This prevents the
     // double-assignment bug where a coworker ends up with two active tasks.
     if has_in_progress_task {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{} owner '{}' already has an in_progress task",
-                task_id, owner
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::OwnerHasInProgressTask);
     }
 
     // Skip active reviewers — they have their own review assignments and should
     // not be nudged about main task list updates.
     if is_owner_reviewer {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{} owner '{}' is an active reviewer (has review assignment)",
-                task_id, owner
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::ActiveReviewer);
     }
 
     // Owner is active → nudge (unless on cooldown)
     if active_names.contains(&owner.to_lowercase()) {
         if on_nudge_cooldown {
-            return PendingTaskAction::Skip {
-                reason: format!("task !{} nudge on cooldown for {}", task_id, owner),
-            };
+            return PendingTaskAction::Skip(OwnedPendingSkipReason::NudgeCooldown);
         }
         return PendingTaskAction::NudgeOwner {
             owner: owner.to_string(),
@@ -904,12 +927,7 @@ pub(crate) fn decide_pending_task_action(
 
     // Owner is inactive → check dev limit
     if at_task_limit {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "dev limit reached, deferring spawn for task !{} owned by {}",
-                task_id, owner
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::TaskLimitReached);
     }
 
     PendingTaskAction::SpawnOwner {
@@ -952,22 +970,12 @@ pub(crate) fn decide_owned_pending_dispatch(
         .get(task_id)
         .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
     {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{}: skipping owned pending dispatch — channel is lead-driven",
-                task_id
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::LeadDrivenChannel);
     }
 
     // Skip tasks that already have an in-flight spawn from a previous tick.
     if snap.in_flight_task_spawns.contains(task_id) {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{} already has in-flight spawn, skipping duplicate",
-                task_id
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::InFlightSpawn);
     }
 
     // Skip if this owner is already assigned to THIS SPECIFIC TASK.
@@ -978,12 +986,7 @@ pub(crate) fn decide_owned_pending_dispatch(
         .get(&owner.to_lowercase())
         .is_some_and(|assigned_task_id| assigned_task_id == task_id)
     {
-        return PendingTaskAction::Skip {
-            reason: format!(
-                "task !{}: skipping {} (already assigned to this task)",
-                task_id, owner
-            ),
-        };
+        return PendingTaskAction::Skip(OwnedPendingSkipReason::AlreadyAssigned);
     }
 
     let on_nudge_cooldown = snap.task_nudge_cooldown_ids.contains(task_id);
@@ -1096,6 +1099,46 @@ pub(crate) fn decide_orphan_recovery(ctx: &OrphanRecoveryContext<'_>) -> Option<
 // Session recovery decision types and functions
 // ---------------------------------------------------------------------------
 
+/// Why session recovery was skipped for an in-progress task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionRecoverySkipReason {
+    /// Owner is empty, project lead, or channel lead.
+    LeadOrChannelLead,
+    /// Task is in a lead-driven channel.
+    LeadDrivenChannel,
+    /// session_task_map references a session not found in sessions map.
+    StaleSessionRef,
+    /// Session is currently running — no recovery needed.
+    SessionRunning,
+    /// Session was recently recovered (per-session cooldown).
+    RecentlyRecovered,
+    /// Coworker is currently an active reviewer.
+    ActiveReviewer,
+    /// Spawn failure cooldown is active for the coworker.
+    SpawnFailureCooldown,
+}
+
+impl SessionRecoverySkipReason {
+    /// Whether this skip indicates a stale session reference (warrants warn-level log).
+    pub fn is_stale_session_ref(&self) -> bool {
+        matches!(self, Self::StaleSessionRef)
+    }
+}
+
+impl std::fmt::Display for SessionRecoverySkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LeadOrChannelLead => write!(f, "owner is lead, channel lead, or empty"),
+            Self::LeadDrivenChannel => write!(f, "channel is lead-driven"),
+            Self::StaleSessionRef => write!(f, "session referenced in task map but not found"),
+            Self::SessionRunning => write!(f, "session is running"),
+            Self::RecentlyRecovered => write!(f, "session recently recovered (cooldown)"),
+            Self::ActiveReviewer => write!(f, "coworker is an active reviewer"),
+            Self::SpawnFailureCooldown => write!(f, "spawn failure cooldown active"),
+        }
+    }
+}
+
 /// Action to take for an in-progress task during session-based dispatch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SessionRecoveryAction {
@@ -1113,12 +1156,7 @@ pub(crate) enum SessionRecoveryAction {
         owner: String,
     },
     /// Skip — guard condition matched.
-    /// `stale_session_ref` is true when a session_task_map entry references a
-    /// missing session — this warrants a warn-level log instead of debug.
-    Skip {
-        reason: String,
-        stale_session_ref: bool,
-    },
+    Skip(SessionRecoverySkipReason),
 }
 
 /// Decide what action to take for a single in-progress task during session dispatch.
@@ -1140,13 +1178,7 @@ pub(crate) fn decide_session_recovery(
             .channel_lead_sessions
             .contains_key(&owner.to_lowercase())
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "task !{}: owner '{}' is lead, channel lead, or empty",
-                task_id, owner
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadOrChannelLead);
     }
 
     // Skip tasks in lead-driven channels — the lead manages dispatch manually.
@@ -1155,13 +1187,7 @@ pub(crate) fn decide_session_recovery(
         .get(task_id)
         .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "task !{}: skipping session recovery — channel is lead-driven",
-                task_id
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadDrivenChannel);
     }
 
     // Check if this task has a session record.
@@ -1170,13 +1196,7 @@ pub(crate) fn decide_session_recovery(
         None => {
             if snap.session_task_map.contains_key(task_id) {
                 // session_task_map has the entry but sessions map is stale
-                return SessionRecoveryAction::Skip {
-                    reason: format!(
-                        "Session for task !{} referenced in session_task_map but not found in sessions map",
-                        task_id
-                    ),
-                    stale_session_ref: true,
-                };
+                return SessionRecoveryAction::Skip(SessionRecoverySkipReason::StaleSessionRef);
             }
             // No session record — collect for legacy fallback path.
             return SessionRecoveryAction::FallbackToOrphan {
@@ -1195,13 +1215,7 @@ pub(crate) fn decide_session_recovery(
             .active_session_ids
             .contains(&record.session_id)
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "task !{} has running session {} — no recovery needed",
-                task_id, record.session_id
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SessionRunning);
     }
 
     // Skip if a recovery was recently attempted for this session (per-session cooldown).
@@ -1209,13 +1223,7 @@ pub(crate) fn decide_session_recovery(
         .recently_recovered_session_ids
         .contains(&record.session_id)
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "task !{} has recently-recovered session {} — skipping re-recovery (cooldown active)",
-                task_id, record.session_id
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::RecentlyRecovered);
     }
 
     // Resolve the coworker name for recovery.
@@ -1232,13 +1240,7 @@ pub(crate) fn decide_session_recovery(
         .active_reviewers
         .contains(&coworker_name.to_lowercase())
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "session dispatch: skipping task !{} — coworker {} is an active reviewer",
-                task_id, coworker_name
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::ActiveReviewer);
     }
 
     // Check per-coworker spawn failure cooldown.
@@ -1246,13 +1248,7 @@ pub(crate) fn decide_session_recovery(
         .spawn_failure_cooldown_names
         .contains(&coworker_name.to_lowercase())
     {
-        return SessionRecoveryAction::Skip {
-            reason: format!(
-                "spawn failure cooldown active for {} — skipping session dispatch for task !{}",
-                coworker_name, task_id
-            ),
-            stale_session_ref: false,
-        };
+        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SpawnFailureCooldown);
     }
 
     SessionRecoveryAction::Recover {
@@ -1640,19 +1636,13 @@ mod tests {
         );
 
         assert!(
-            matches!(action, PendingTaskAction::Skip { .. }),
+            matches!(
+                action,
+                PendingTaskAction::Skip(OwnedPendingSkipReason::ActiveReviewer)
+            ),
             "active reviewer should be skipped for main task list updates, got: {:?}",
             action
         );
-
-        // Verify the skip reason mentions reviewer
-        if let PendingTaskAction::Skip { reason } = action {
-            assert!(
-                reason.contains("reviewer"),
-                "skip reason should mention reviewer: {}",
-                reason
-            );
-        }
     }
 
     #[test]
@@ -1722,19 +1712,13 @@ mod tests {
         );
 
         assert!(
-            matches!(action, PendingTaskAction::Skip { .. }),
+            matches!(
+                action,
+                PendingTaskAction::Skip(OwnedPendingSkipReason::ActiveReviewer)
+            ),
             "inactive reviewer owner should still be skipped, got: {:?}",
             action
         );
-
-        // Verify the skip reason mentions reviewer
-        if let PendingTaskAction::Skip { reason } = action {
-            assert!(
-                reason.contains("reviewer"),
-                "skip reason should mention reviewer: {}",
-                reason
-            );
-        }
     }
 
     // -----------------------------------------------------------------------

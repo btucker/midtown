@@ -6,7 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{
-    OrphanRecoveryContext, PendingTaskAction, decide_orphan_recovery, decide_pending_task_action,
+    OrphanRecoveryContext, OwnedPendingSkipReason, PendingTaskAction, decide_orphan_recovery,
+    decide_pending_task_action,
 };
 
 fn empty_set() -> HashSet<String> {
@@ -31,8 +32,12 @@ fn channel_lead_owned_task_is_skipped() {
         true,            // is_channel_lead
     );
     assert!(
-        matches!(result, PendingTaskAction::Skip { .. }),
-        "channel lead owned task should be skipped"
+        matches!(
+            result,
+            PendingTaskAction::Skip(OwnedPendingSkipReason::LeadOrEmpty)
+        ),
+        "channel lead owned task should be skipped, got: {:?}",
+        result
     );
 }
 
