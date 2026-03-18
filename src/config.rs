@@ -743,6 +743,21 @@ pub enum ExecutionRole {
     HeadlessExecute,
 }
 
+/// Map an agent type string (the `--agent` flag value) to an `ExecutionRole`.
+///
+/// Built-in agent types have hardcoded mappings. User-defined agent types
+/// default to `Coworker`. `Specialized` and `HeadlessExecute` are not
+/// reachable through this mapping — they are used by other code paths.
+pub fn execution_role_for_agent_type(agent_type: &str) -> ExecutionRole {
+    match agent_type {
+        "midtown-code-author" => ExecutionRole::Coworker,
+        "midtown-code-reviewer" => ExecutionRole::Reviewer,
+        "midtown-channel-lead" => ExecutionRole::ChannelLead,
+        "midtown-project-lead" => ExecutionRole::Lead,
+        _ => ExecutionRole::Coworker,
+    }
+}
+
 /// Claude provider configuration within `[providers.claude]`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClaudeProviderConfig {
