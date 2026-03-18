@@ -1344,11 +1344,17 @@ impl DaemonState {
             let allocated_names: Vec<String> = persistent_state
                 .sessions
                 .values()
+                .filter(|r| r.is_running)
                 .filter_map(|r| r.current_name.clone())
                 .collect();
             name_pool.restore(&allocated_names);
             for (session_id, record) in &persistent_state.sessions {
-                if let Some(ref name) = record.current_name {
+                // Only rebuild name↔session maps for running sessions.
+                // Dead sessions retain current_name in persistent state but
+                // should not hold name pool allocations or routing entries.
+                if record.is_running
+                    && let Some(ref name) = record.current_name
+                {
                     name_to_session.insert(name.clone(), session_id.clone());
                     session_to_name.insert(session_id.clone(), name.clone());
                     // Rebuild thread-binding cache from persisted SessionRecord so
@@ -1368,6 +1374,8 @@ impl DaemonState {
                         }
                     }
                 }
+                // task_to_session is rebuilt for ALL sessions (including stopped)
+                // so session-aware dispatch can find and resume stopped sessions.
                 if let Some(ref task_id) = record.task_id {
                     task_to_session.insert(task_id.clone(), session_id.clone());
                 }

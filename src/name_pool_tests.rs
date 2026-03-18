@@ -66,3 +66,23 @@ fn test_is_allocated() {
     pool.release("a");
     assert!(!pool.is_allocated("a"));
 }
+
+#[test]
+fn test_restore_only_marks_given_names_as_allocated() {
+    let mut pool = NamePool::new(&["a", "b", "c", "d"]);
+
+    // Simulate: sessions with names "a" and "c" are running, "b" and "d" are dead.
+    // Only running session names should be allocated after restore.
+    pool.restore(&["a".to_string(), "c".to_string()]);
+
+    assert!(pool.is_allocated("a"));
+    assert!(!pool.is_allocated("b"));
+    assert!(pool.is_allocated("c"));
+    assert!(!pool.is_allocated("d"));
+    assert_eq!(pool.available_count(), 2);
+    assert_eq!(pool.allocated_count(), 2);
+    // Available names should be "b" and "d" (not allocated)
+    assert_eq!(pool.allocate(None), Some("b".to_string()));
+    assert_eq!(pool.allocate(None), Some("d".to_string()));
+    assert_eq!(pool.allocate(None), None); // exhausted
+}
