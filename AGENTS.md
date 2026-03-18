@@ -90,6 +90,20 @@ This catches failures faster than waiting for GitHub Actions and keeps you produ
 
 **Names reflect actual responsibility**: `SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment).
 
+## Session Taxonomy
+
+Three session types, each bound to exactly one thing:
+
+- **Lead** → bound to a **channel**. Named after the channel. Agent type: `midtown-channel-lead` (or `midtown-project-lead` for main).
+- **Fork** → bound to a **thread**. Named by the lead's `--name` flag (slugify fallback). Agent type: `midtown-channel-lead`.
+- **Worker** → bound to a **task**. Named by the task's `agent_name`. Agent type from the task's `agent_type` field.
+
+**Invariants:**
+- One-to-one mapping between tasks and worker sessions.
+- Forks never have tasks — they are thread-bound research sessions.
+- `agent_type` refers to the agent definition passed to `--agent` (e.g., `midtown-code-author`). It is NOT the session name.
+- `agent_name` is the creative session name (e.g., `ghost-town`). It is NOT the agent definition.
+
 ## Keeping docs/architecture.md Up-to-Date
 
 `docs/architecture.md` is the living reference for how the codebase works. Keep it current:
