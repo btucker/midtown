@@ -2024,3 +2024,35 @@ async fn test_channel_summary_collapses_multiline() {
         "Multiline content should be collapsed to single line"
     );
 }
+
+/// Fork system prompts must include a scope boundary that prevents the fork
+/// from claiming tasks or implementing features after completing its research.
+#[test]
+fn test_build_fork_config_includes_scope_boundary() {
+    let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
+    let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
+
+    let (_fork_name, headless_config) = build_fork_config(
+        "thread-scope-test",
+        "parent-session-id",
+        Some("web"),
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        crate::auth::AuthProvider::Claude,
+        false,
+        "test-repo",
+        None,
+    );
+
+    assert!(
+        headless_config
+            .system_prompt
+            .contains("Fork Scope Boundary"),
+        "Fork system_prompt must include a scope boundary to prevent forks from claiming tasks"
+    );
+    assert!(
+        headless_config.system_prompt.contains("Do NOT claim"),
+        "Fork scope boundary must instruct forks not to claim tasks"
+    );
+}

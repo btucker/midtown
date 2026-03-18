@@ -1139,6 +1139,16 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 /// Uses the **project-aware** auth profile resolution
 /// (`active_profile_dir_for_project_with_provider`) so that per-project
 /// `auth switch` overrides are picked up by forked sessions.
+const FORK_SCOPE_BOUNDARY: &str = "\
+## Fork Scope Boundary
+
+You are a fork session — scoped to this thread's topic only. After completing your research or investigation:
+- Report your findings in the thread
+- Do NOT claim, assign, or work on tasks
+- Do NOT create PRs or implement features
+- Do NOT use `midtown task claim` or `midtown task create`
+- Stop after reporting — the root lead session handles next steps";
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_fork_config(
     thread_parent_id: &str,
@@ -1195,7 +1205,11 @@ pub(super) fn build_fork_config(
 
     let headless_config = crate::headless::HeadlessConfig {
         model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
-        system_prompt: crate::agents::main_lead_system_prompt(repo_name),
+        system_prompt: format!(
+            "{}\n\n{}",
+            crate::agents::main_lead_system_prompt(repo_name),
+            FORK_SCOPE_BOUNDARY
+        ),
         json_schema: None,
         cwd: working_dir.map(String::from),
         project_name: Some(repo_name.to_string()),
