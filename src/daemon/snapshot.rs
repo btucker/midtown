@@ -1608,7 +1608,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .iter()
             .filter(|(task_id, _, _)| {
                 let key = format!("pending-{}", task_id);
-                !cooldowns.check("task_nudge", &key, std::time::Duration::from_secs(300))
+                !cooldowns.check("task_nudge", &key, super::constants::TASK_NUDGE_COOLDOWN)
             })
             .map(|(task_id, _, _)| task_id.clone())
             .collect()

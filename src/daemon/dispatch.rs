@@ -947,21 +947,43 @@ fn dispatch_owned_pending_tasks(
         let action =
             crate::rules::decide_owned_pending_dispatch(task_id, task_subject, owner, snap);
 
-        // Post-decision live-state guard: check the *current* in-flight set,
-        // not the snapshot copy. This closes the TOCTOU window where a
+        // Post-decision live-state guards: close the TOCTOU window where a
         // concurrent RPC dispatcher (e.g. daemon.check-pending) claims the
         // same task between snapshot collection and effect execution.
+        // Check the *current* in-flight set and cooldowns, not the snapshot copy.
         if matches!(
             action,
             crate::rules::PendingTaskAction::NudgeOwner { .. }
                 | crate::rules::PendingTaskAction::SpawnOwner { .. }
-        ) && state.is_task_spawn_in_flight(task_id)
-        {
-            debug!(
-                "task !{}: skipping owned pending dispatch — in-flight spawn (live check)",
-                task_id
-            );
-            continue;
+        ) {
+            if state.is_task_spawn_in_flight(task_id) {
+                debug!(
+                    "task !{}: skipping owned pending dispatch — in-flight spawn (live check)",
+                    task_id
+                );
+                continue;
+            }
+            // Live nudge-cooldown check: an RPC dispatcher may have nudged
+            // this task after our snapshot was collected, recording a cooldown
+            // that isn't in snap.task_nudge_cooldown_ids.
+            if matches!(action, crate::rules::PendingTaskAction::NudgeOwner { .. }) {
+                let task_key = format!("pending-{}", task_id);
+                let on_cooldown = {
+                    let cooldowns = state.cooldowns.lock().unwrap();
+                    !cooldowns.check(
+                        "task_nudge",
+                        &task_key,
+                        super::constants::TASK_NUDGE_COOLDOWN,
+                    )
+                };
+                if on_cooldown {
+                    debug!(
+                        "task !{}: skipping owned pending dispatch — nudge cooldown (live check)",
+                        task_id
+                    );
+                    continue;
+                }
+            }
         }
 
         match action {

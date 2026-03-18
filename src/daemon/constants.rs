@@ -24,6 +24,10 @@ pub const DEFAULT_WEBHOOK_PORT: u16 = 47023;
 /// were removed as part of this change for simplicity.
 pub const DEFAULT_PR_POLL_INTERVAL_SECS: u64 = 30;
 
+/// Minimum time between nudging the same pending task owner (5 minutes).
+/// Used both in snapshot pre-evaluation and as a live-state guard in dispatch.
+pub(super) const TASK_NUDGE_COOLDOWN: Duration = Duration::from_secs(300);
+
 /// Minimum time between nudging the same PR issue (10 minutes)
 pub const PR_NUDGE_COOLDOWN_SECS: u64 = 600;
 

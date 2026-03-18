@@ -4807,6 +4807,80 @@ fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
 }
 
 // ============================================================================
+// Live-state guard tests (TOCTOU race prevention)
+// ============================================================================
+
+#[test]
+fn test_owned_pending_live_in_flight_guard_skips_spawn() {
+    // Race scenario: an RPC dispatcher (daemon.check-pending) claimed a task
+    // and marked it in-flight *after* our snapshot was collected. The snapshot
+    // still shows the task as dispatchable, but the live in-flight set says no.
+    let snap = snapshot::WorldSnapshot {
+        pending_tasks_with_owners: vec![(
+            "100".to_string(),
+            "Feature X".to_string(),
+            "columbus".to_string(),
+        )],
+        ..snapshot::minimal_snapshot_for_test()
+    };
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Simulate a concurrent RPC dispatcher having already claimed this task.
+    state
+        .in_flight_task_spawns
+        .lock()
+        .unwrap()
+        .insert("100".to_string());
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    assert!(
+        effects
+            .iter()
+            .all(|e| !matches!(e, Effect::SpawnForTask { .. })),
+        "Live in-flight guard must prevent duplicate spawn. Got: {:?}",
+        effects
+    );
+}
+
+#[test]
+fn test_owned_pending_live_nudge_cooldown_guard_skips_nudge() {
+    // Race scenario: an RPC dispatcher nudged an owned task and recorded
+    // the cooldown *after* our snapshot was collected. The snapshot's
+    // task_nudge_cooldown_ids doesn't include this task, but the live
+    // cooldown tracker does.
+    let mut snap = snapshot::minimal_snapshot_for_test();
+    snap.pending_tasks_with_owners = vec![(
+        "200".to_string(),
+        "Feature Y".to_string(),
+        "columbus".to_string(),
+    )];
+    // Columbus must be in active_names for the decision function to choose NudgeOwner.
+    snap.coworkers.active_names.insert("columbus".to_string());
+
+    let (state, _tmp, _guard) = make_test_state();
+
+    // Simulate a concurrent RPC dispatcher having already nudged this task.
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("task_nudge", "pending-200");
+    }
+
+    let effects = spawn_for_pending_tasks(&snap, &state);
+
+    let nudge_count = effects
+        .iter()
+        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { .. }))
+        .count();
+    assert_eq!(
+        nudge_count, 0,
+        "Live nudge cooldown guard must prevent duplicate nudge. Got: {:?}",
+        effects
+    );
+}
+
+// ============================================================================
 // Lead-driven channel gating tests
 // ============================================================================
 
