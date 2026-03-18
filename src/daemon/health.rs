@@ -489,7 +489,7 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             config.model = super::helpers::resolve_model_for_role(
                 &snap.dir_key,
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
             if lead_wt.exists() {
@@ -646,8 +646,11 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     warn!("Lead session is not running — respawning");
 
     let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
-    config.model =
-        super::helpers::resolve_model_for_role(&snap.dir_key, config.auth_provider, &config.role);
+    config.model = super::helpers::resolve_model_for_role(
+        &snap.dir_key,
+        config.auth_provider,
+        &config.agent_type,
+    );
     let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
@@ -1170,7 +1173,7 @@ fn build_reviewer_respawn_effects(
     config.model = super::helpers::normalize_model_for_provider_role(
         &config.model,
         config.auth_provider,
-        &config.role,
+        &config.agent_type,
     );
     config.working_dir = Some(wt_path.clone());
 

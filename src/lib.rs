@@ -163,7 +163,7 @@ pub mod test_utils;
 mod lib_tests;
 
 pub use channel::{Channel, ChannelInfo, ChannelRouter, SendResult, load_channel_notes};
-pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
+pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType, ToolBlock};
 pub use session_key::SessionKey;

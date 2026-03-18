@@ -96,6 +96,7 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -263,6 +264,7 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -463,6 +465,7 @@ fn test_check_for_usage_limits_with_reset_time() {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -585,6 +588,7 @@ fn test_check_for_usage_limits_already_scheduled() {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -742,6 +746,7 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -1517,7 +1522,7 @@ fn unrecoverable_session_error_restarts_project_lead_immediately() {
                 e,
                 Effect::SpawnCoworker(config)
                     if config.name == "midtown"
-                        && matches!(config.role, crate::launch::CoworkerRole::Lead)
+                        && config.agent_type == "midtown-project-lead"
                         && matches!(config.session_mode, crate::launch::SessionMode::Fresh)
             )
         }),

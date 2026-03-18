@@ -768,20 +768,14 @@ pub(crate) fn build_attach_launch_spec(
             midtown::auth::active_profile_dir_for_project_with_provider(&repo_name, provider)
         });
 
-    // Determine role from coworker_type (provided by daemon's SessionRecord)
-    let role = if options.coworker_type == Some("lead") {
-        midtown::launch::CoworkerRole::Lead
-    } else if options.coworker_type == Some("reviewer") {
-        midtown::launch::CoworkerRole::Reviewer
-    } else if options.coworker_type == Some("channel-lead") {
-        midtown::launch::CoworkerRole::ChannelLead {
-            channel_name: options.channel.unwrap_or(name).to_string(),
-            domain_context: String::new(),
-            agents_md: None,
-        }
-    } else {
-        midtown::launch::CoworkerRole::Coworker
+    // Determine agent type from coworker_type (provided by daemon's SessionRecord)
+    let agent_type = match options.coworker_type {
+        Some("lead") => "midtown-project-lead",
+        Some("reviewer") => "midtown-code-reviewer",
+        Some("channel-lead") => "midtown-channel-lead",
+        _ => "midtown-code-author",
     };
+    let channel_name_for_lead = options.channel.unwrap_or(name).to_string();
 
     // Build common env vars using the shared function
     let env_map = midtown::launch::build_agent_env_vars(
@@ -808,52 +802,33 @@ pub(crate) fn build_attach_launch_spec(
         cmd_parts.extend(prefix);
     }
 
-    let launch_config = midtown::launch::LaunchConfig {
-        name: name.to_string(),
-        session_mode: midtown::launch::SessionMode::ResumeSession(session_id.to_string()),
-        role: role.clone(),
-        initial_prompt: None,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: None,
-        model: match &role {
-            midtown::launch::CoworkerRole::Lead | midtown::launch::CoworkerRole::Reviewer => {
-                "opus".to_string()
-            }
-            midtown::launch::CoworkerRole::Coworker => "sonnet".to_string(),
-            midtown::launch::CoworkerRole::ChannelLead { channel_name, .. } => {
-                midtown::config::get_channel_leads_config(&repo_name)
-                    .model_for_channel(channel_name)
-            }
-        },
-        channel: None,
-        auth_profile_dir: Some(profile_dir.clone()),
-        auth_provider: provider,
-        escalation_target: None,
-        task_id: None,
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
-    };
+    let mut launch_config =
+        midtown::launch::LaunchConfig::new(name.to_string(), agent_type, &repo_name, None, None)
+            .with_session_mode(midtown::launch::SessionMode::ResumeSession(
+                session_id.to_string(),
+            ))
+            .with_auth_provider(provider)
+            .with_auth_profile_dir(Some(profile_dir.clone()));
+    // For channel leads, override model from channel config
+    if agent_type == "midtown-channel-lead" {
+        launch_config.model = midtown::config::get_channel_leads_config(&repo_name)
+            .model_for_channel(&channel_name_for_lead);
+        launch_config.channel = Some(channel_name_for_lead.clone());
+    }
 
-    let system_prompt = match &launch_config.role {
-        midtown::launch::CoworkerRole::Lead => midtown::agents::main_lead_system_prompt(&repo_name),
-        midtown::launch::CoworkerRole::Reviewer => {
+    let system_prompt = match agent_type {
+        "midtown-project-lead" => midtown::agents::main_lead_system_prompt(&repo_name),
+        "midtown-code-reviewer" => {
             midtown::agents::reviewer_system_prompt(name, &repo_name, &repo_name, provider, None)
         }
-        midtown::launch::CoworkerRole::Coworker => {
-            midtown::agents::coworker_system_prompt(name, &repo_name, None)
-        }
-        midtown::launch::CoworkerRole::ChannelLead {
-            channel_name,
-            domain_context,
-            agents_md,
-        } => midtown::agents::channel_lead_system_prompt(
-            channel_name,
-            domain_context,
+        "midtown-code-author" => midtown::agents::coworker_system_prompt(name, &repo_name, None),
+        "midtown-channel-lead" => midtown::agents::channel_lead_system_prompt(
+            &channel_name_for_lead,
+            "",
             &repo_name,
-            agents_md.as_deref(),
+            None,
         ),
+        _ => midtown::agents::coworker_system_prompt(name, &repo_name, None),
     };
 
     // Build provider-specific headed CLI args.
@@ -869,7 +844,7 @@ pub(crate) fn build_attach_launch_spec(
                 .map_err(|e| format!("Failed to write system prompt to temp file: {}", e))?;
 
             // Write role-appropriate settings file
-            let settings_file = if matches!(role, midtown::launch::CoworkerRole::Lead) {
+            let settings_file = if agent_type == "midtown-project-lead" {
                 midtown::settings::write_lead_settings_file()
                     .map_err(|e| format!("Failed to write lead settings file: {}", e))?
             } else {

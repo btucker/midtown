@@ -2443,16 +2443,13 @@ async fn test_reviewer_not_assigned_to_pr_author() {
 
     let (state, _tmp, _guard) = make_test_state("midtown");
 
-    // Register all AVENUE_NAMES except "riverside" as active coworkers.
-    // This forces next_available_name_excluding to see "riverside" as the only
-    // available avenue name — reproducing the collision deterministically.
-    // (The function prefers avenue names over overflow names, so with all other
-    // avenue names in use, it would always pick "riverside" before the fix.)
-    for (i, name) in crate::coworker::AVENUE_NAMES
-        .iter()
-        .filter(|&&n| n != "riverside")
-        .enumerate()
-    {
+    // Register several coworkers as active, leaving the PR author's name
+    // as a potential reviewer candidate to verify it gets excluded.
+    let other_names = [
+        "worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6", "worker-7",
+        "worker-8", "worker-9",
+    ];
+    for (i, name) in other_names.iter().enumerate() {
         state
             .coworkers
             .register(
@@ -5431,36 +5428,32 @@ fn reviewer_resume_config_override_sets_role_provider_and_model() {
         Some("task-99".to_string()),
     );
     assert_eq!(
-        config.role,
-        crate::launch::CoworkerRole::Coworker,
-        "Precondition: coworker() should produce Coworker role"
+        config.agent_type, "midtown-code-author",
+        "Precondition: coworker() should produce code-author agent type"
     );
 
     // Verify coworker and reviewer defaults differ (precondition for the test)
     let coworker_default =
-        default_model_for_provider_role(crate::auth::AuthProvider::Claude, &config.role);
-    let reviewer_default = default_model_for_provider_role(
-        crate::auth::AuthProvider::Claude,
-        &crate::launch::CoworkerRole::Reviewer,
-    );
+        default_model_for_provider_role(crate::auth::AuthProvider::Claude, &config.agent_type);
+    let reviewer_default =
+        default_model_for_provider_role(crate::auth::AuthProvider::Claude, "midtown-code-reviewer");
     assert_ne!(
         coworker_default, reviewer_default,
         "Precondition: Coworker and Reviewer should have different default models"
     );
 
     // Step 2: Apply the same override as handle_pr_comment_nudge
-    config.role = crate::launch::CoworkerRole::Reviewer;
+    config.agent_type = "midtown-code-reviewer".to_string();
     config.auth_provider = crate::config::get_execution_provider_for_role(
         repo,
         crate::config::ExecutionRole::Reviewer,
     );
-    config.model = resolve_model_for_role(repo, config.auth_provider, &config.role);
+    config.model = resolve_model_for_role(repo, config.auth_provider, &config.agent_type);
 
     // Step 3: Assert the config is now correct for a reviewer
     assert_eq!(
-        config.role,
-        crate::launch::CoworkerRole::Reviewer,
-        "Role should be Reviewer after override"
+        config.agent_type, "midtown-code-reviewer",
+        "Agent type should be code-reviewer after override"
     );
     assert_eq!(
         config.model, reviewer_default,
@@ -5507,14 +5500,19 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
     // Without the fix, both PRs see the same single overflow name and both
     // get assigned it. With the fix, the first PR claims it and the
     // accumulator prevents the second PR from reusing it.
-    let overflow = crate::coworker::OVERFLOW_NAMES;
-
-    // Register the two PR authors (needed for orphan detection) plus all
-    // overflow names except the last one.
-    for (i, name) in ["lexington", "park"]
-        .iter()
-        .chain(overflow[..overflow.len() - 1].iter())
-        .enumerate()
+    // Register the two PR authors (needed for orphan detection) plus
+    // several other workers.
+    for (i, name) in [
+        "lexington",
+        "park",
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-4",
+        "worker-5",
+    ]
+    .iter()
+    .enumerate()
     {
         state
             .coworkers
@@ -5557,12 +5555,20 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
     }
 
     let registry = crate::worktree_registry::WorktreeRegistry::new();
-    // All avenue names are "active" — this excludes them from reviewer name
-    // selection and ensures the two author PRs aren't marked orphaned.
-    let active_names: std::collections::HashSet<String> = crate::coworker::AVENUE_NAMES
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    // Mark registered workers as "active" so they're excluded from reviewer
+    // name selection and the author PRs aren't marked orphaned.
+    let active_names: std::collections::HashSet<String> = [
+        "lexington",
+        "park",
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-4",
+        "worker-5",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,

@@ -52,29 +52,25 @@ pub(super) async fn handle_coworker_spawn(
         );
     }
 
-    // Pick a name for the coworker, excluding both channel lead names and active session
-    // names to prevent collision. A session may still be running after its coworker was
-    // cleaned up from CoworkerManager, so we also exclude names with live sessions.
+    // Generate a name for the coworker. If a task_id is provided, derive from task;
+    // otherwise generate a random worker name. Exclude active session names to prevent collisions.
     let mut excluded_names = channel_lead_names;
-    for name in state.session_manager.list_names().await {
-        if state.session_manager.is_alive(&name).await {
-            excluded_names.insert(name.to_lowercase());
+    for active_name in state.session_manager.list_names().await {
+        if state.session_manager.is_alive(&active_name).await {
+            excluded_names.insert(active_name.to_lowercase());
         }
     }
-    let name = match state
-        .coworkers
-        .next_available_name_excluding(&excluded_names)
-    {
-        Some(n) => n,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    "No available coworker slots (all avenue names in use)".to_string(),
-                ),
-            );
+    let name = if let Some(ref tid) = task_id {
+        // Derive name from task ID
+        let candidate = format!("task-{}", tid).to_lowercase();
+        if excluded_names.contains(&candidate) {
+            format!("{}-{}", candidate, fastrand::u32(1000..9999))
+        } else {
+            candidate
         }
+    } else {
+        // No task — generate a generic worker name
+        format!("worker-{}", fastrand::u32(1000..9999))
     };
 
     // Load agent definition if --agent was provided
@@ -194,37 +190,26 @@ pub(super) async fn handle_coworker_spawn(
     });
 
     // Build headless launch config
-    let config = crate::launch::LaunchConfig {
-        name,
-        session_mode: if resume {
-            crate::launch::SessionMode::Resume
-        } else {
-            crate::launch::SessionMode::Fresh
-        },
-        role: crate::launch::CoworkerRole::Coworker,
-        initial_prompt: effective_prompt,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: task_worktree.as_ref().map(|(_, path)| path.clone()),
-        model: agent_def
-            .as_ref()
-            .and_then(|d| d.model.clone())
-            .unwrap_or_else(|| {
-                super::helpers::resolve_model_for_role(
-                    state.paths.dir_key(),
-                    effective_provider,
-                    &crate::launch::CoworkerRole::Coworker,
-                )
-            }),
-        channel: effective_channel.clone(),
-        auth_profile_dir: None,
-        auth_provider: effective_provider,
-        escalation_target: None,
-        task_id: task_id.clone(),
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
+    let session_mode = if resume {
+        crate::launch::SessionMode::Resume
+    } else {
+        crate::launch::SessionMode::Fresh
     };
+    let mut config = crate::launch::LaunchConfig::new(
+        name,
+        "midtown-code-author",
+        state.paths.dir_key(),
+        effective_prompt,
+        None,
+    )
+    .with_session_mode(session_mode)
+    .with_working_dir(task_worktree.as_ref().map(|(_, path)| path.clone()))
+    .with_channel(effective_channel.clone())
+    .with_auth_provider(effective_provider)
+    .with_task_id(task_id.clone());
+    if let Some(m) = agent_def.as_ref().and_then(|d| d.model.clone()) {
+        config.model = m;
+    }
 
     // Pre-spawn: ensure task worktree exists and register assignment
     if let Some((ref worktree_id, ref path)) = task_worktree {
@@ -388,7 +373,7 @@ pub(super) async fn handle_lead_spawn(
     let mut config = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
     config.auth_provider = provider;
     config.model =
-        super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.agent_type);
 
     // Use the canonical lead worktree path so spawn_coworker uses it
     // instead of falling through to the legacy coworker-named path.

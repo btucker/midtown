@@ -93,13 +93,8 @@ fn test_dispatch_excludes_active_session_names() {
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Register all AVENUE_NAMES except "park" in CoworkerManager.
-    // This makes "park" the only "free" name from CoworkerManager's perspective.
-    for (i, name) in crate::coworker::AVENUE_NAMES
-        .iter()
-        .filter(|&&n| n != "park")
-        .enumerate()
-    {
+    // Register some workers in CoworkerManager.
+    for (i, name) in ["worker-1", "worker-2", "worker-3"].iter().enumerate() {
         state
             .coworkers
             .register(

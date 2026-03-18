@@ -659,7 +659,7 @@ pub async fn recover_from_session_records(
                 .clone()
                 .or_else(|| config.initial_prompt.clone());
         }
-        if matches!(config.role, crate::launch::CoworkerRole::Reviewer) {
+        if config.agent_type == "midtown-code-reviewer" {
             config.auth_provider = crate::config::get_execution_provider_for_role(
                 repo_name,
                 crate::config::ExecutionRole::Reviewer,
@@ -691,8 +691,11 @@ pub async fn recover_from_session_records(
                 );
             }
         }
-        config.model =
-            super::helpers::resolve_model_for_role(repo_name, config.auth_provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            repo_name,
+            config.auth_provider,
+            &config.agent_type,
+        );
 
         recovered_session_ids.insert(session_id.clone());
         effects.push(Effect::ResumeCoworker {

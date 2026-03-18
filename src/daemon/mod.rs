@@ -1132,11 +1132,12 @@ impl DaemonState {
         config: &crate::launch::LaunchConfig,
     ) -> Option<String> {
         let execution = crate::config::get_project_execution_config(self.paths.dir_key());
-        let pool = match &config.role {
-            crate::launch::CoworkerRole::Coworker => execution.coworker_profiles,
-            crate::launch::CoworkerRole::Reviewer => execution.reviewer_profiles,
-            crate::launch::CoworkerRole::ChannelLead { .. } => execution.channel_lead_profiles,
-            crate::launch::CoworkerRole::Lead => None,
+        let pool = match config.agent_type.as_str() {
+            "midtown-code-author" => execution.coworker_profiles,
+            "midtown-code-reviewer" => execution.reviewer_profiles,
+            "midtown-channel-lead" => execution.channel_lead_profiles,
+            "midtown-project-lead" => None,
+            _ => None,
         }?;
 
         let ps = self.persistent_state.lock().await;
@@ -1326,13 +1327,8 @@ impl DaemonState {
         // Clone dir_key for session_manager before moving paths into Self
         let session_manager_repo_name = dir_key.to_string();
 
-        // Build NamePool from all known coworker names and restore state from persisted sessions.
-        let all_names: Vec<&str> = crate::coworker::AVENUE_NAMES
-            .iter()
-            .chain(crate::coworker::OVERFLOW_NAMES.iter())
-            .copied()
-            .collect();
-        let mut name_pool = crate::name_pool::NamePool::new(&all_names);
+        // NamePool is initialized empty — task-based naming generates names dynamically.
+        let mut name_pool = crate::name_pool::NamePool::new(&[]);
         let mut name_to_session: HashMap<String, String> = HashMap::new();
         let mut session_to_name: HashMap<String, String> = HashMap::new();
         let mut task_to_session: HashMap<String, String> = HashMap::new();
@@ -1523,7 +1519,7 @@ impl DaemonState {
         let normalized_model = helpers::normalize_model_for_provider_role(
             &config.model,
             config.auth_provider,
-            &config.role,
+            &config.agent_type,
         );
         if normalized_model != config.model {
             warn!(
@@ -1574,7 +1570,7 @@ impl DaemonState {
         if crate::platform::Platform::from_provider(config.auth_provider)
             == crate::platform::Platform::Claude
         {
-            let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
+            let settings_file = if config.agent_type == "midtown-project-lead" {
                 crate::settings::write_lead_settings_file()?
             } else {
                 crate::settings::write_coworker_settings_file()?
@@ -1698,8 +1694,8 @@ impl DaemonState {
         let working_dir_for_record = working_dir_for_persist.clone();
         {
             let mut ps = self.persistent_state.lock().await;
-            let agent_type_str = config.role.agent_name().to_string();
-            let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
+            let agent_type_str = config.agent_type.clone();
+            let is_reviewer = config.agent_type == "midtown-code-reviewer";
             // Look up bound thread from task_thread_id — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
             let bound_thread_id = ps.resolve_bound_thread_id(config.task_id.as_deref());

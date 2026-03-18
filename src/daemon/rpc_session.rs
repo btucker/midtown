@@ -594,32 +594,12 @@ pub(super) async fn handle_session_attach(
 
 /// Handle session.detach RPC method.
 ///
-/// Maps a `CoworkerRole` to the equivalent `ExecutionRole` for provider lookups.
-fn coworker_role_to_execution_role(
-    role: &crate::launch::CoworkerRole,
-) -> crate::config::ExecutionRole {
-    match role {
-        crate::launch::CoworkerRole::Lead => crate::config::ExecutionRole::Lead,
-        crate::launch::CoworkerRole::Reviewer => crate::config::ExecutionRole::Reviewer,
-        crate::launch::CoworkerRole::ChannelLead { .. } => {
-            crate::config::ExecutionRole::ChannelLead
-        }
-        crate::launch::CoworkerRole::Coworker => crate::config::ExecutionRole::Coworker,
-    }
-}
-
 fn fork_channel_lead_model(
     repo_name: &str,
     auth_provider: crate::auth::AuthProvider,
-    fork_channel: Option<&str>,
+    _fork_channel: Option<&str>,
 ) -> String {
-    let fork_role = crate::launch::CoworkerRole::ChannelLead {
-        channel_name: fork_channel.unwrap_or_default().to_string(),
-        domain_context: String::new(),
-        agents_md: None,
-    };
-
-    super::helpers::resolve_model_for_role(repo_name, auth_provider, &fork_role)
+    super::helpers::resolve_model_for_role(repo_name, auth_provider, "midtown-channel-lead")
 }
 
 /// Resumes headless execution for a coworker that was previously attached.
@@ -711,13 +691,16 @@ pub(super) async fn handle_session_detach(
         config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
-        let execution_role = coworker_role_to_execution_role(&config.role);
+        let execution_role = crate::config::execution_role_for_agent_type(&config.agent_type);
         let provider = session_info.provider.unwrap_or_else(|| {
             crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
-        config.model =
-            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            provider,
+            &config.agent_type,
+        );
     }
     // Don't restore auth_profile_dir from persisted profile name — let
     // spawn_coworker() re-resolve from project config (authoritative source).
@@ -1003,20 +986,8 @@ pub(super) async fn handle_session_clear(
         );
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
-        // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
-        {
-            match session_info.agent_type.as_str() {
-                "midtown-code-reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
-                "midtown-channel-lead" => {
-                    c.role = crate::launch::CoworkerRole::ChannelLead {
-                        channel_name: session_info.channel.clone().unwrap_or_default(),
-                        domain_context: String::new(),
-                        agents_md: None,
-                    }
-                }
-                _ => {}
-            }
-        }
+        // Restore agent_type so reviewer/channel-lead context survives the clear.
+        c.agent_type = session_info.agent_type.clone();
         c.pr_number = session_info.pr_number;
         c.channel = session_info.channel.clone();
         c
@@ -1032,13 +1003,16 @@ pub(super) async fn handle_session_clear(
         config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
-        let execution_role = coworker_role_to_execution_role(&config.role);
+        let execution_role = crate::config::execution_role_for_agent_type(&config.agent_type);
         let provider = session_info.provider.unwrap_or_else(|| {
             crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
-        config.model =
-            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            provider,
+            &config.agent_type,
+        );
     }
 
     match state.spawn_coworker(&config).await {
@@ -1145,19 +1119,12 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 
 /// Build the `HeadlessConfig` and fork name for a fork session.
 ///
-/// Extracted from `create_fork_session` so tests can verify the config
-/// (especially auth profile resolution) without spawning a real process.
+/// Uses `LaunchConfig` internally then converts to `HeadlessConfig` with
+/// fork-specific adjustments (bound thread ID env, disallowed tools, settings).
 ///
 /// **Architecture note:** Fork sessions launch as *fresh* sessions (not
 /// `--resume --fork-session`) because headless sessions don't persist JSONL
-/// files to disk, so `--fork-session` has nothing to fork from. The fork
-/// receives context via its initial nudge message instead.  This also means
-/// `--setting-sources project,local` is always included, enabling autoCompact
-/// to trim large inherited context before the first API call.
-///
-/// Uses the **project-aware** auth profile resolution
-/// (`active_profile_dir_for_project_with_provider`) so that per-project
-/// `auth switch` overrides are picked up by forked sessions.
+/// files to disk, so `--fork-session` has nothing to fork from.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_fork_config(
     thread_parent_id: &str,
@@ -1171,11 +1138,7 @@ pub(super) fn build_fork_config(
     repo_name: &str,
     name_override: Option<&str>,
 ) -> (String, crate::headless::HeadlessConfig) {
-    let config_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider);
-
-    // Use the exact name if overridden (e.g., crash recovery reuses the original
-    // fork name to keep cooldown keys stable). Otherwise derive from hint/caller.
+    // Derive the fork name
     let fork_name = if let Some(name) = name_override {
         name.to_string()
     } else {
@@ -1194,66 +1157,64 @@ pub(super) fn build_fork_config(
         }
     };
 
-    let mut env = crate::launch::build_agent_env_vars(
-        &fork_name,
-        &fork_channel.map(String::from),
-        auth_provider,
-        &config_dir,
-        repo_name,
-    );
-    env.insert(
+    // Build LaunchConfig and convert to HeadlessConfig
+    let agent_type = if is_channel_lead {
+        "midtown-channel-lead"
+    } else {
+        "midtown-project-lead"
+    };
+    let launch_config =
+        crate::launch::LaunchConfig::new(&fork_name, agent_type, repo_name, None, None)
+            .with_channel(fork_channel.map(String::from))
+            .with_auth_provider(auth_provider)
+            .with_auth_profile_dir(Some(
+                crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider),
+            ));
+
+    let paths = crate::paths::ProjectPaths::new(repo_name);
+    let mut headless_config = launch_config.to_headless_config(&paths);
+
+    // Fork-specific adjustments
+    headless_config.cwd = working_dir.map(String::from);
+    headless_config.model = fork_channel_lead_model(repo_name, auth_provider, fork_channel);
+    headless_config.env.insert(
         "MIDTOWN_BOUND_THREAD_ID".to_string(),
         thread_parent_id.to_string(),
     );
 
-    // Ensure `.claude/settings.json` with `autoCompact: true` exists in the
-    // fork's working directory so `--setting-sources project,local` picks it up.
+    // Fork sessions use the full system prompt (no --agent) for Codex compatibility.
+    // For Claude/z.ai, we override agent_name to None and use the full prompt.
+    headless_config.agent_name = None;
+    headless_config.system_prompt = crate::agents::main_lead_system_prompt(repo_name);
+
+    // Fork channel leads get stricter tool restrictions (Edit re-added)
+    if is_channel_lead && !matches!(auth_provider, crate::auth::AuthProvider::Codex) {
+        headless_config.disallowed_tools = crate::launch::channel_lead_fork_disallowed_tools();
+    }
+
+    // Lead settings for fork sessions
+    headless_config.settings_path = if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
+        None
+    } else {
+        match crate::settings::write_lead_settings_file() {
+            Ok(path) => Some(path.to_string_lossy().to_string()),
+            Err(e) => {
+                warn!("Failed to write lead settings file for fork session: {e}");
+                None
+            }
+        }
+    };
+
+    // Pre-assign session ID for non-Codex providers
+    headless_config.session_id = match auth_provider {
+        crate::auth::AuthProvider::Codex => None,
+        _ => Some(uuid::Uuid::new_v4().to_string()),
+    };
+
+    // Ensure autoCompact settings exist in fork working directory
     if let Some(wd) = working_dir {
         crate::settings::ensure_auto_compact_settings(std::path::Path::new(wd));
     }
-
-    let headless_config = crate::headless::HeadlessConfig {
-        model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
-        system_prompt: crate::agents::main_lead_system_prompt(repo_name),
-        json_schema: None,
-        cwd: working_dir.map(String::from),
-        project_name: Some(repo_name.to_string()),
-        max_budget_usd: None,
-        allow_tools: true,
-        persist_session: true,
-        // Fresh session — headless sessions don't persist JSONL files, so
-        // --fork-session has nothing to fork from.  Context is injected via
-        // the initial nudge message instead.
-        resume_session_id: None,
-        inactivity_timeout: None,
-        settings_path: if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
-            None
-        } else {
-            match crate::settings::write_lead_settings_file() {
-                Ok(path) => Some(path.to_string_lossy().to_string()),
-                Err(e) => {
-                    warn!("Failed to write lead settings file for fork session: {e}");
-                    None
-                }
-            }
-        },
-        setting_sources: None,
-        auth_provider,
-        env,
-        session_id: match auth_provider {
-            crate::auth::AuthProvider::Codex => None,
-            _ => Some(uuid::Uuid::new_v4().to_string()),
-        },
-        fork_session: false,
-        disallowed_tools: if is_channel_lead
-            && !matches!(auth_provider, crate::auth::AuthProvider::Codex)
-        {
-            crate::launch::channel_lead_fork_disallowed_tools()
-        } else {
-            vec![]
-        },
-        agent_name: None, // Fork sessions use full system_prompt (no --agent)
-    };
 
     (fork_name, headless_config)
 }

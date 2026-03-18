@@ -1107,12 +1107,13 @@ async fn send_session_nudge(
             state.record_pending_nudge(&name, &msg);
 
             // Build a PostToChannel effect for the coworker's DM channel.
-            // Only for real coworkers (pool names like "lexington"), not fork sessions
-            // ("lexington-web-push-a1b2") or other ephemeral sessions.
+            // Only for non-fork sessions (sessions without a bound thread ID).
+            // Fork sessions are ephemeral and don't have their own DM channels.
             // Skip DmFromUser — the user's message is already in the DM channel
             // (written by rpc_channel.rs before the nudge effect was created).
             let mut follow_up = Vec::new();
-            if !reason.already_in_dm_channel() && crate::coworker::is_coworker_name(&name) {
+            let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(&name);
+            if !reason.already_in_dm_channel() && !is_fork {
                 follow_up.push(Effect::PostToChannel {
                     sender: reason.sender().to_owned(),
                     message: msg,
@@ -3054,7 +3055,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 config.model = super::helpers::resolve_model_for_role(
                     state.paths.dir_key(),
                     config.auth_provider,
-                    &config.role,
+                    &config.agent_type,
                 );
                 config.cwd_subdir = channel_directory;
 

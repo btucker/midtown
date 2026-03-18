@@ -5,11 +5,11 @@ use serde_json::json;
 fn default_model_for_provider_role_uses_codex_model_for_all_roles() {
     let provider = crate::auth::AuthProvider::Codex;
     assert_eq!(
-        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        default_model_for_provider_role(provider, "midtown-project-lead"),
         "gpt-5-codex"
     );
     assert_eq!(
-        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        default_model_for_provider_role(provider, "midtown-code-author"),
         "gpt-5-codex"
     );
 }
@@ -18,11 +18,11 @@ fn default_model_for_provider_role_uses_codex_model_for_all_roles() {
 fn default_model_for_provider_role_uses_claude_tiers() {
     let provider = crate::auth::AuthProvider::Claude;
     assert_eq!(
-        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Lead),
+        default_model_for_provider_role(provider, "midtown-project-lead"),
         "opus"
     );
     assert_eq!(
-        default_model_for_provider_role(provider, &crate::launch::CoworkerRole::Coworker),
+        default_model_for_provider_role(provider, "midtown-code-author"),
         "sonnet"
     );
 }
@@ -32,11 +32,7 @@ fn normalize_model_for_provider_role_rewrites_claude_alias_for_codex() {
     let normalized = normalize_model_for_provider_role(
         "sonnet",
         crate::auth::AuthProvider::Codex,
-        &crate::launch::CoworkerRole::ChannelLead {
-            channel_name: "ops".to_string(),
-            domain_context: String::new(),
-            agents_md: None,
-        },
+        "midtown-channel-lead",
     );
     assert_eq!(normalized, "gpt-5-codex");
 }
@@ -46,7 +42,7 @@ fn normalize_model_for_provider_role_keeps_codex_alias_for_codex() {
     let normalized = normalize_model_for_provider_role(
         "o3",
         crate::auth::AuthProvider::Codex,
-        &crate::launch::CoworkerRole::Coworker,
+        "midtown-code-author",
     );
     assert_eq!(normalized, "o3");
 }
@@ -56,7 +52,7 @@ fn normalize_model_for_provider_role_rewrites_codex_alias_for_claude() {
     let normalized = normalize_model_for_provider_role(
         "gpt-5.3-codex",
         crate::auth::AuthProvider::Claude,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
     assert_eq!(normalized, "opus");
 }
@@ -66,12 +62,12 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_claude() {
     let small = normalize_model_for_provider_role(
         "small",
         crate::auth::AuthProvider::Claude,
-        &crate::launch::CoworkerRole::Coworker,
+        "midtown-code-author",
     );
     let medium = normalize_model_for_provider_role(
         "medium",
         crate::auth::AuthProvider::Claude,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
     assert_eq!(small, "haiku");
     assert_eq!(medium, "sonnet");
@@ -82,17 +78,17 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_zai() {
     let small = normalize_model_for_provider_role(
         "small",
         crate::auth::AuthProvider::Zai,
-        &crate::launch::CoworkerRole::Coworker,
+        "midtown-code-author",
     );
     let medium = normalize_model_for_provider_role(
         "medium",
         crate::auth::AuthProvider::Zai,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
     let large = normalize_model_for_provider_role(
         "large",
         crate::auth::AuthProvider::Zai,
-        &crate::launch::CoworkerRole::Reviewer,
+        "midtown-code-reviewer",
     );
     assert_eq!(small, "haiku");
     assert_eq!(medium, "sonnet");
@@ -104,17 +100,17 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_codex() {
     let small = normalize_model_for_provider_role(
         "small",
         crate::auth::AuthProvider::Codex,
-        &crate::launch::CoworkerRole::Coworker,
+        "midtown-code-author",
     );
     let medium = normalize_model_for_provider_role(
         "medium",
         crate::auth::AuthProvider::Codex,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
     let large = normalize_model_for_provider_role(
         "large",
         crate::auth::AuthProvider::Codex,
-        &crate::launch::CoworkerRole::Reviewer,
+        "midtown-code-reviewer",
     );
     assert_eq!(small, "gpt-5.1-codex-mini");
     assert_eq!(medium, "gpt-5.3-codex-spark");
@@ -992,9 +988,8 @@ fn resolve_model_for_role_respects_config_or_falls_back() {
 
     // The result should match what get_model_for_role returns (config-aware),
     // normalized for the provider, or the hardcoded default if no config.
-    let coworker_model =
-        resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Coworker);
-    let lead_model = resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Lead);
+    let coworker_model = resolve_model_for_role(repo, claude, "midtown-code-author");
+    let lead_model = resolve_model_for_role(repo, claude, "midtown-project-lead");
 
     // Both should be valid Claude model names
     assert!(
@@ -1017,8 +1012,7 @@ fn resolve_model_for_role_respects_config_or_falls_back() {
     }
 
     // Codex should produce Codex-compatible model names
-    let codex_coworker =
-        resolve_model_for_role(repo, codex, &crate::launch::CoworkerRole::Coworker);
+    let codex_coworker = resolve_model_for_role(repo, codex, "midtown-code-author");
     assert!(
         !codex_coworker.contains("sonnet") && !codex_coworker.contains("opus"),
         "Codex coworker model '{}' should not contain Claude aliases",
@@ -1034,12 +1028,12 @@ fn resolve_model_for_role_matches_default_when_no_config() {
 
     if crate::config::get_model_for_role(repo, crate::config::ExecutionRole::Coworker).is_none() {
         assert_eq!(
-            resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Coworker),
-            default_model_for_provider_role(claude, &crate::launch::CoworkerRole::Coworker)
+            resolve_model_for_role(repo, claude, "midtown-code-author"),
+            default_model_for_provider_role(claude, "midtown-code-author")
         );
         assert_eq!(
-            resolve_model_for_role(repo, claude, &crate::launch::CoworkerRole::Lead),
-            default_model_for_provider_role(claude, &crate::launch::CoworkerRole::Lead)
+            resolve_model_for_role(repo, claude, "midtown-project-lead"),
+            default_model_for_provider_role(claude, "midtown-project-lead")
         );
     }
 }

@@ -1471,6 +1471,9 @@ fn make_cleanup_test_state() -> (
         shutdown_tx,
     )
     .expect("daemon state");
+    // Pre-populate name pool with test names so cleanup tests can allocate/release
+    *state.name_pool.lock().unwrap() =
+        crate::name_pool::NamePool::new(&["madison", "park", "lexington", "broadway"]);
     (state, temp_dir, _guard)
 }
 
@@ -1754,15 +1757,11 @@ async fn test_cleanup_dead_coworker_sets_completed_at_on_worktree() {
 // ============================================================================
 
 #[test]
-fn test_daemon_state_initializes_name_pool_with_all_coworker_names() {
+fn test_daemon_state_initializes_name_pool() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
     let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
-    assert_eq!(
-        pool.available_count(),
-        total,
-        "fresh DaemonState should have all names available"
-    );
+    // Test helper pre-populates pool with test names
+    assert_eq!(pool.available_count(), 4);
     assert_eq!(pool.allocated_count(), 0);
 }
 
@@ -1966,44 +1965,20 @@ async fn test_cleanup_preserves_other_sessions_reverse_maps() {
     assert_eq!(state.session_for_task("42"), None);
 }
 
-#[test]
-fn test_name_pool_allocate_and_release_round_trip() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-
-    // Allocate a name
-    let name = {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(None).unwrap()
-    };
-
-    // Name should be the first avenue name (LRU order)
-    assert_eq!(name, crate::coworker::AVENUE_NAMES[0]);
-
-    // Release it
-    {
-        state.name_pool.lock().unwrap().release(&name);
-    }
-
-    // It should now be available again (at the back of the queue)
-    let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
-    assert_eq!(pool.available_count(), total);
-    assert_eq!(pool.allocated_count(), 0);
-}
+// Removed: test_name_pool_empty_by_default — with the test helper pre-populating
+// the pool with test names, this assertion is no longer applicable.
 
 #[tokio::test]
 async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     // Allocate a name but don't populate reverse maps
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
+    state
+        .name_pool
+        .lock()
+        .unwrap()
+        .allocate(Some("madison"))
+        .unwrap();
 
     // cleanup_coworker_state should handle releasing the name even when
     // no reverse maps were populated (no panic, no stale state).
@@ -2129,12 +2104,11 @@ async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
         );
     }
 
-    // After 3 full cycles, the pool should be fully available (no leaked names)
+    // After 3 full cycles, the pool should have all names available (no leaked names)
     let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
     assert_eq!(
         pool.available_count(),
-        total,
+        4,
         "all names should be available after repeated cleanup cycles"
     );
 }

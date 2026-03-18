@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::auth::AuthProvider;
-use crate::launch::{CoworkerRole, LaunchConfig, SessionMode};
+use crate::launch::{LaunchConfig, SessionMode};
 
 // ── Platform enum ─────────────────────────────────────────────────────
 
@@ -453,7 +453,7 @@ fn test_codex_headed_args_has_resume() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::ResumeSession("thread-123".to_string()),
-        role: CoworkerRole::Lead,
+        agent_type: "midtown-project-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -466,7 +466,7 @@ fn test_codex_headed_args_has_resume() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
     assert_eq!(session_id, None);
@@ -492,7 +492,7 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::ResumeSession("thread-123".to_string()),
-        role: CoworkerRole::Lead,
+        agent_type: "midtown-project-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -505,7 +505,7 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     let (args, _) = build_codex_headed_args(&config, "", None);
     assert!(args.contains(&"resume".to_string()));
@@ -518,7 +518,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::Resume,
-        role: CoworkerRole::Lead,
+        agent_type: "midtown-project-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -531,7 +531,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
 
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
@@ -550,7 +550,7 @@ fn test_codex_headed_args_fresh_uses_positional_prompt() {
     let config = LaunchConfig {
         name: "park".to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
+        agent_type: "midtown-code-author".to_string(),
         initial_prompt: Some("ship it".to_string()),
         additional_dirs: vec![PathBuf::from("/tmp/repo2")],
         pr_number: None,
@@ -563,7 +563,7 @@ fn test_codex_headed_args_fresh_uses_positional_prompt() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", Some("ship it"));
     assert_eq!(session_id, None);

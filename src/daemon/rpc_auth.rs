@@ -351,7 +351,7 @@ pub(super) async fn handle_auth_switch(
         lead_config.model = super::helpers::resolve_model_for_role(
             state.paths.dir_key(),
             lead_config.auth_provider,
-            &lead_config.role,
+            &lead_config.agent_type,
         );
         lead_config.auth_profile_dir =
             Some(crate::auth::active_profile_dir_for_project_with_provider(
@@ -520,7 +520,7 @@ pub(super) async fn handle_auth_switch(
         config.model = super::helpers::resolve_model_for_role(
             state.paths.dir_key(),
             target_provider,
-            &config.role,
+            &config.agent_type,
         );
         config.auth_profile_dir = Some(crate::auth::active_profile_dir_for_project_with_provider(
             state.paths.dir_key(),

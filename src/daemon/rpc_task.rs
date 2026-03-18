@@ -1061,8 +1061,9 @@ pub(crate) async fn deliver_task_prompt(
         let name = coworker_name.as_deref().unwrap_or("unknown");
         match state.session_manager.send_message(name, message).await {
             Ok(()) => {
-                // Post to DM channel for observability
-                if crate::coworker::is_coworker_name(name) {
+                // Post to DM channel for observability (skip fork sessions)
+                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
                         message: message.to_string(),
@@ -1145,8 +1146,9 @@ pub(crate) async fn deliver_task_prompt(
                     session_id, name, task_id
                 );
 
-                // Post to DM channel for observability
-                if crate::coworker::is_coworker_name(name) {
+                // Post to DM channel for observability (skip fork sessions)
+                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
                         message: format!("[resumed] {}", message),

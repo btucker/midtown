@@ -83,13 +83,15 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
 
     let (state, _tmp, _guard) = make_test_state("midtown");
 
-    // Register all AVENUE_NAMES except "amsterdam" and "park" as active coworkers.
+    // Register several workers as active coworkers.
     // "park" is the PR author (excluded from reviewer selection).
     // "amsterdam" is NOT in CoworkerManager but IS in active_names (the bug scenario).
-    for (i, name) in crate::coworker::AVENUE_NAMES
-        .iter()
-        .filter(|&&n| n != "amsterdam" && n != "park")
-        .enumerate()
+    for (i, name) in [
+        "worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6", "worker-7",
+        "worker-8",
+    ]
+    .iter()
+    .enumerate()
     {
         state
             .coworkers

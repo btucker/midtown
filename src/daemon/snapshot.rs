@@ -528,6 +528,13 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub channel_lead_names: HashSet<String>,
 
+    // ── Session identity state ──────────────────────────────────────────────
+    /// All session names with active/running sessions (lowercase).
+    /// Used by rules.rs to validate task owners as real sessions
+    /// (replaces the old `is_coworker_name()` avenue-name check).
+    #[serde(default)]
+    pub active_session_names: HashSet<String>,
+
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
     pub coworkers_with_unblocked_deps: HashSet<String>,
@@ -1440,23 +1447,20 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             "global",
             crate::daemon::constants::SESSION_DISPATCH_COOLDOWN,
         );
-        // Collect all coworker names that are on the spawn failure cooldown.
-        // Check ALL pool names (AVENUE_NAMES + OVERFLOW_NAMES), not just active
-        // coworkers. A failed spawn never makes the coworker "active", so checking
-        // only active_coworkers would miss cooldowns for freshly-allocated names
-        // that failed to spawn (e.g., unowned task dispatch).
-        let all_pool_names = crate::coworker::AVENUE_NAMES
+        // Collect session names that are on the spawn failure cooldown.
+        // Check active names and any names tracked in cooldown state.
+        // With task-based naming, names are dynamic so we check what's
+        // currently known (active sessions + any cooldown keys).
+        let on_cooldown: HashSet<String> = active_names
             .iter()
-            .chain(crate::coworker::OVERFLOW_NAMES.iter());
-        let on_cooldown: HashSet<String> = all_pool_names
             .filter(|name| {
                 !cooldowns.check(
                     "spawn_failure",
-                    &name.to_lowercase(),
+                    name,
                     crate::daemon::constants::SPAWN_FAILURE_COOLDOWN,
                 )
             })
-            .map(|name| name.to_lowercase())
+            .cloned()
             .collect();
         (orphan_active, session_active, on_cooldown)
     };
@@ -1683,6 +1687,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|task| task.id.clone())
         .collect();
 
+    let all_active_session_names = active_names.clone();
     let snapshot = WorldSnapshot {
         coworkers: SnapshotCoworkerState {
             active_coworkers,
@@ -1739,6 +1744,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_agent_type_map,
         channel_lead_sessions,
         channel_lead_names,
+        active_session_names: all_active_session_names,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
         archived_channels,
@@ -1821,6 +1827,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_agent_type_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),

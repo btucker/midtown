@@ -564,7 +564,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
     let expected_model = crate::daemon::helpers::resolve_model_for_role(
         "test-repo",
         expected_provider,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
 
     match &effects[0] {
@@ -576,8 +576,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
             assert_eq!(name, "test-repo");
             assert_eq!(session_id, "sess-lead");
             assert_eq!(
-                config.role,
-                crate::launch::CoworkerRole::Lead,
+                config.agent_type, "midtown-project-lead",
                 "Lead should use CoworkerRole::Lead, not Coworker"
             );
             assert_eq!(
@@ -613,7 +612,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
     let expected_model = crate::daemon::helpers::resolve_model_for_role(
         "test-repo",
         expected_provider,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
 
     match &effects[0] {
@@ -624,7 +623,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
         } => {
             assert_eq!(name, "codex-session-1");
             assert_eq!(session_id, "sess-lead-codex");
-            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert_eq!(config.agent_type, "midtown-project-lead");
             assert_eq!(config.model, expected_model);
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),

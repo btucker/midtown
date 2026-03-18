@@ -166,33 +166,32 @@ pub fn is_lead_branch(branch: &str) -> bool {
 pub fn resolve_model_for_role(
     repo_name: &str,
     provider: crate::auth::AuthProvider,
-    role: &crate::launch::CoworkerRole,
+    agent_type: &str,
 ) -> String {
-    let execution_role = role.execution_role();
+    let execution_role = crate::config::execution_role_for_agent_type(agent_type);
     crate::config::get_model_for_role(repo_name, execution_role)
-        .map(|size| normalize_model_for_provider_role(size.as_model_str(), provider, role))
-        .unwrap_or_else(|| default_model_for_provider_role(provider, role).to_string())
+        .map(|size| normalize_model_for_provider_role(size.as_model_str(), provider, agent_type))
+        .unwrap_or_else(|| default_model_for_provider_role(provider, agent_type).to_string())
 }
 
-/// Default model alias for a coworker role/provider pair.
+/// Default model alias for an agent type/provider pair.
 ///
 /// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
 /// Codex uses "gpt-5-codex" for all roles.
 pub fn default_model_for_provider_role(
     provider: crate::auth::AuthProvider,
-    role: &crate::launch::CoworkerRole,
+    agent_type: &str,
 ) -> &'static str {
     match provider {
         crate::auth::AuthProvider::Codex => "gpt-5-codex",
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match role {
-            crate::launch::CoworkerRole::Lead | crate::launch::CoworkerRole::Reviewer => "opus",
-            crate::launch::CoworkerRole::Coworker
-            | crate::launch::CoworkerRole::ChannelLead { .. } => "sonnet",
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match agent_type {
+            "midtown-project-lead" | "midtown-code-reviewer" => "opus",
+            _ => "sonnet",
         },
     }
 }
 
-/// Normalize a launch model alias to a provider-compatible value for the role.
+/// Normalize a launch model alias to a provider-compatible value for the agent type.
 ///
 /// This guards against stale model aliases when the provider is switched (for example,
 /// `sonnet` lingering after switching to Codex). Explicit provider-compatible models
@@ -200,10 +199,10 @@ pub fn default_model_for_provider_role(
 pub fn normalize_model_for_provider_role(
     model: &str,
     provider: crate::auth::AuthProvider,
-    role: &crate::launch::CoworkerRole,
+    agent_type: &str,
 ) -> String {
     let trimmed = model.trim();
-    let default_model = default_model_for_provider_role(provider, role);
+    let default_model = default_model_for_provider_role(provider, agent_type);
     if trimmed.is_empty() {
         return default_model.to_string();
     }

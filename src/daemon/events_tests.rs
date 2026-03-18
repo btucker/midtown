@@ -1,11 +1,11 @@
 use super::*;
-use crate::launch::{CoworkerRole, LaunchConfig, SessionMode};
+use crate::launch::{LaunchConfig, SessionMode};
 
 fn make_spawn(name: &str) -> Effect {
     Effect::SpawnCoworker(LaunchConfig {
         name: name.to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
+        agent_type: "midtown-code-author".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -18,7 +18,7 @@ fn make_spawn(name: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     })
 }
 
@@ -79,7 +79,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
     let config = LaunchConfig {
         name: name.to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
+        agent_type: "midtown-code-author".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -92,7 +92,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -105,7 +105,7 @@ fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
     let config = LaunchConfig {
         name: String::new(), // name allocated at execution time
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
+        agent_type: "midtown-code-author".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -118,7 +118,7 @@ fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     Effect::SpawnForTask {
         task_id: task_id.to_string(),
@@ -289,7 +289,7 @@ fn dedup_prevents_double_spawn_for_same_task_across_variants() {
     let config_york = LaunchConfig {
         name: "york".to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Coworker,
+        agent_type: "midtown-code-author".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -302,7 +302,7 @@ fn dedup_prevents_double_spawn_for_same_task_across_variants() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
     let spawn_with_callbacks = Effect::SpawnCoworkerWithCallbacks {
         config: config_york,

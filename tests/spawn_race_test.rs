@@ -127,8 +127,9 @@ fn test_concurrent_name_allocation_no_overwrites() {
                 // Synchronize threads to maximize collision chance
                 barrier.wait();
 
-                // Allocate a name (simulating what PR poll and TaskDispatch do)
-                if let Some(name) = manager.next_available_name() {
+                // Generate a task-based name (simulating what PR poll and TaskDispatch do)
+                let name = format!("task-{}", uuid::Uuid::new_v4());
+                {
                     // Simulate the delay between allocation and insertion
                     // (worktree creation, session spawn, etc.)
                     thread::sleep(Duration::from_micros(10));

@@ -1029,9 +1029,9 @@ fn test_task_prompt_strips_id_prefixes() {
 
 // ── task.handoff tests ───────────────────────────────────────────────────────
 
-/// Handoff builds a resume LaunchConfig with the correct agent_name_override.
+/// Handoff builds a resume LaunchConfig with the correct agent_type.
 #[test]
-fn test_task_handoff_config_uses_agent_override() {
+fn test_task_handoff_config_uses_agent_type() {
     let mut config = crate::launch::LaunchConfig::coworker(
         "park".to_string(),
         "test-repo".to_string(),
@@ -1039,12 +1039,9 @@ fn test_task_handoff_config_uses_agent_override() {
         None, // no initial prompt — handoff just swaps the agent
         Some("42".to_string()),
     );
-    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+    config.agent_type = "midtown-code-reviewer".to_string();
 
-    assert_eq!(
-        config.agent_name_override.as_deref(),
-        Some("midtown-code-reviewer")
-    );
+    assert_eq!(config.agent_type, "midtown-code-reviewer");
     assert!(
         matches!(config.session_mode, crate::launch::SessionMode::ResumeSession(ref id) if id == "session-abc")
     );
@@ -1062,7 +1059,7 @@ fn test_task_handoff_applies_task_model() {
         None,
         Some("42".to_string()),
     );
-    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+    config.agent_type = "midtown-code-reviewer".to_string();
 
     let mut task_model = HashMap::new();
     task_model.insert("42".to_string(), "claude/opus".to_string());
@@ -1070,11 +1067,8 @@ fn test_task_handoff_applies_task_model() {
 
     assert_eq!(config.model, "opus");
     assert_eq!(config.auth_provider, crate::auth::AuthProvider::Claude);
-    // Agent override should be independent of model
-    assert_eq!(
-        config.agent_name_override.as_deref(),
-        Some("midtown-code-reviewer")
-    );
+    // Agent type should be independent of model
+    assert_eq!(config.agent_type, "midtown-code-reviewer");
 }
 
 /// Handoff resolves coworker name from preferred_name, current_name, or task owner.

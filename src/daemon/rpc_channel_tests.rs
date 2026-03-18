@@ -1865,20 +1865,8 @@ async fn test_channel_rename_path_traversal_old_name() {
     );
 }
 
-/// Renaming to a reserved avenue name returns an error.
-#[tokio::test]
-async fn test_channel_rename_reserved_avenue_name() {
-    let (state, tmp, _guard) = make_test_state("midtown-test-rename-avenue-name");
-    let base_dir = tmp.path();
-
-    crate::Channel::new(base_dir, "my-channel").expect("create channel");
-
-    let response = handle_channel_rename(8_i64.into(), "my-channel", "park", &state).await;
-    assert!(
-        response.error.is_some(),
-        "renaming to a reserved avenue name should return an error"
-    );
-}
+// Avenue name rename rejection test removed — with task-based naming,
+// avenue names are no longer reserved.
 
 // ── DM channel routing tests ──────────────────────────────────────────────────
 

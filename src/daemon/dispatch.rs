@@ -13,6 +13,21 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
+
+/// Generate a session name for a task.
+///
+/// Creates a slug from the task ID and subject (e.g., "task-42-fix-login-bug").
+/// If the generated name collides with an excluded name, appends a short random suffix.
+fn generate_task_session_name(task_id: &str, subject: &str, excluded: &HashSet<String>) -> String {
+    let slug = crate::worktree_registry::branch_slug_for_task(task_id, subject);
+    let name = slug.to_lowercase();
+    if !excluded.contains(&name) {
+        return name;
+    }
+    // Append random suffix for uniqueness
+    let suffix = fastrand::u32(1000..9999);
+    format!("{}-{}", name, suffix)
+}
 use super::helpers::is_project_lead;
 use super::{DaemonState, snapshot};
 
@@ -1424,13 +1439,7 @@ fn dispatch_unowned_pending_tasks(
             {
                 excluded_names.insert(author.to_lowercase());
             }
-            let Some(name) = state
-                .coworkers
-                .next_available_name_excluding(&excluded_names)
-            else {
-                debug!("No available coworker slots for unowned task !{}", task.id);
-                continue;
-            };
+            let name = generate_task_session_name(&task.id, &task.subject, &excluded_names);
             debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
             name
         };
@@ -1611,7 +1620,7 @@ fn dispatch_unowned_pending_tasks(
             config.model = super::helpers::normalize_model_for_provider_role(
                 &config.model,
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             config.working_dir = Some(wt_path.clone());
             config.channel = task.channel.clone();

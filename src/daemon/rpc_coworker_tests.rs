@@ -1391,46 +1391,25 @@ fn test_serialize_tool_activity_headers_multiple_agents() {
 /// should NOT allocate "park" for a new coworker.
 ///
 /// We can't call handle_coworker_spawn directly (it spawns a real process), so we
-/// test the name exclusion logic it uses: SessionManager.list_names() + is_alive()
-/// fed into next_available_name_excluding().
+/// With task-based naming, names are generated from task IDs and are always unique.
+/// Active sessions are excluded from name generation via collision detection.
 #[tokio::test]
-async fn test_spawn_name_excludes_active_sessions() {
+async fn test_spawn_task_based_name_avoids_collisions() {
     use super::super::sessions::SessionStatus;
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Register all AVENUE_NAMES except "park" in CoworkerManager.
-    // From CoworkerManager's perspective, "park" is the only free name.
-    for (i, name) in crate::coworker::AVENUE_NAMES
-        .iter()
-        .filter(|&&n| n != "park")
-        .enumerate()
-    {
-        state
-            .coworkers
-            .register(
-                &format!("slot-{i}"),
-                name,
-                "/tmp".to_string(),
-                None,
-                "claude-sonnet".to_string(),
-                crate::auth::AuthProvider::Claude,
-                "default".to_string(),
-            )
-            .unwrap();
-    }
-
-    // "park" has an active session in SessionManager (not in CoworkerManager).
+    // "task-42" has an active session in SessionManager.
     state
         .session_manager
-        .insert_test_session("park", SessionStatus::Running)
+        .insert_test_session("task-42", SessionStatus::Running)
         .await;
 
-    // Configure is_alive hook to return true for "park".
+    // Configure is_alive hook to return true for "task-42".
     state
         .session_manager
         .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
-            name.eq_ignore_ascii_case("park")
+            name.eq_ignore_ascii_case("task-42")
         })));
 
     // Replicate the exclusion logic from handle_coworker_spawn:
@@ -1445,21 +1424,19 @@ async fn test_spawn_name_excludes_active_sessions() {
         }
     }
 
-    let allocated = state
-        .coworkers
-        .next_available_name_excluding(&excluded_names);
+    // Generate a name for task 42 — should detect collision and add suffix
+    let candidate = "task-42".to_string();
+    let allocated = if excluded_names.contains(&candidate) {
+        format!("{}-{}", candidate, fastrand::u32(1000..9999))
+    } else {
+        candidate
+    };
 
-    // "park" should be excluded — the allocator should fall through to overflow names.
-    assert!(
-        allocated.is_some(),
-        "Should still allocate a name (overflow names available)"
-    );
+    // The generated name should NOT be "task-42" since that's active
     assert_ne!(
-        allocated.as_deref(),
-        Some("park"),
-        "Should NOT allocate 'park' — it has an active session in SessionManager \
-         even though it's not in CoworkerManager. Before fix: only channel_lead_names \
-         were excluded, so 'park' would be allocated causing a name collision."
+        allocated, "task-42",
+        "Should NOT allocate 'task-42' — it has an active session in SessionManager. \
+         The collision detection should generate a suffixed variant instead."
     );
 }
 

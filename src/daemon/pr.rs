@@ -1447,11 +1447,9 @@ async fn collect_stuck_condition_effects(
             })
             .collect();
         let channel_lead_names = ps.channel_lead_names();
-        let has_available_slots = !at_task_limit
-            && state
-                .coworkers
-                .next_available_name_excluding(&channel_lead_names)
-                .is_some();
+        // With task-based naming, there is always a name available.
+        // The only constraint is the in-progress task limit.
+        let has_available_slots = !at_task_limit;
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let pr_session_names: HashMap<u64, String> = {
             let task_to_name: HashMap<&str, &str> = ps
@@ -3345,22 +3343,17 @@ pub(super) async fn handle_pr_comment_nudge(
             // Override role, provider, and model: coworker() defaults to
             // Coworker/sonnet, but this is a reviewer session that should
             // use Reviewer provider + model (matching startup.rs recovery).
-            let mut config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::resume_reviewer(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
-                crate::launch::SessionMode::ResumeSession(session_id.clone()),
+                session_id.clone(),
                 Some(nudge_msg),
                 task_id,
-            );
-            config.role = crate::launch::CoworkerRole::Reviewer;
-            config.auth_provider = crate::config::get_execution_provider_for_role(
-                state.paths.dir_key(),
-                crate::config::ExecutionRole::Reviewer,
             );
             config.model = super::helpers::resolve_model_for_role(
                 state.paths.dir_key(),
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),
