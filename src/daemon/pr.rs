@@ -3997,8 +3997,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
                 .any(|(tid, pr)| {
                     pr == pr_number
                         && snap.all_tasks.iter().any(|t| {
-                            t.id == *tid
-                                && t.status != crate::tasks::TaskStatus::Completed
+                            t.id == *tid && t.status != crate::tasks::TaskStatus::Completed
                         })
                 });
         let has_task_pr_link = snap

@@ -1596,7 +1596,7 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
     let pr_data = json!({
         "number": 99,
         "title": "feat: Add auth endpoint [Midtown !500]",
-        "headRefName": "york/add-auth",
+        "headRefName": "task-500-add-auth",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1606,14 +1606,13 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(99);
-    snap.worktree_branch_owners
-        .insert("york/add-auth".to_string(), "york".to_string());
 
     // Session-derived association is EMPTY (simulates session GC after 24h)
-    // But the PR title has [Midtown !500], so github_open_pr_task_ids should catch it
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("500".to_string(), 99);
+    // But the PR title has [Midtown !500], so github_task_pr_pairs should catch it
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("500".to_string(), 99)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // The task must be non-completed for the title link to suppress orphan detection
     snap.all_tasks.push(crate::tasks::Task {
         id: "500".to_string(),
@@ -1652,7 +1651,7 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
     let pr_data = json!({
         "number": 77,
         "title": "Fix a bug",
-        "headRefName": "park/fix-bug",
+        "headRefName": "task-600-fix-bug",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1662,8 +1661,6 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(77);
-    snap.worktree_branch_owners
-        .insert("park/fix-bug".to_string(), "park".to_string());
 
     // No session association, no title-based association
     // But a task on disk has pr = Some(77)
@@ -1700,7 +1697,7 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
     let pr_data = json!({
         "number": 88,
         "title": "feat: Something [Midtown !700]",
-        "headRefName": "york/something",
+        "headRefName": "task-700-something",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1710,8 +1707,6 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(88);
-    snap.worktree_branch_owners
-        .insert("york/something".to_string(), "york".to_string());
 
     // Task is completed but PR is still open — PR is orphaned
     snap.all_tasks.push(crate::tasks::Task {
@@ -1726,9 +1721,10 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
         created_at: None,
     });
     // Title-based link also exists
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("700".to_string(), 88);
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("700".to_string(), 88)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
 
     let effects = reconcile_orphaned_prs(&snap);
 
@@ -1752,7 +1748,7 @@ fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
     let pr_data = json!({
         "number": 55,
         "title": "feat: New feature [Midtown !300]",
-        "headRefName": "york/new-feature",
+        "headRefName": "task-300-new-feature",
         "isDraft": false,
         "statusCheckRollup": {
             "state": "SUCCESS"
@@ -1762,15 +1758,14 @@ fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
     let mut snap = minimal_snapshot_for_test();
     snap.pr.open_prs_data = vec![pr_data];
     snap.reviewer.reviewed_prs.insert(55);
-    snap.worktree_branch_owners
-        .insert("york/new-feature".to_string(), "york".to_string());
 
     // Lead was previously nudged
     snap.pr.orphaned_pr_lead_nudges_sent.insert(55);
     // No session link, but title-derived link exists
-    snap.pr
-        .github_open_pr_task_ids
-        .insert("300".to_string(), 55);
+    use std::collections::HashMap;
+    let github_task_to_pr: HashMap<String, u64> = [("300".to_string(), 55)].into_iter().collect();
+    snap.pr.pr_task_index =
+        super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // Non-completed task required for title link to be active
     snap.all_tasks.push(crate::tasks::Task {
         id: "300".to_string(),
