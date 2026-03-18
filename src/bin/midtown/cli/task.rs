@@ -28,9 +28,9 @@ pub enum TaskCommand {
         /// Path to an implementation plan file
         #[arg(long)]
         plan: Option<String>,
-        /// Execution skill for the coworker (e.g., subagent-driven-development, executing-plans)
+        /// Creative session name for the agent (required, must be unique among active tasks)
         #[arg(long)]
-        execution_skill: Option<String>,
+        agent_name: Option<String>,
         /// Thread ID to route coworker updates back to the fork session that created this task
         #[arg(long)]
         thread_id: Option<String>,
@@ -50,9 +50,6 @@ pub enum TaskCommand {
     Update {
         /// Task ID to update
         id: String,
-        /// Set task owner
-        #[arg(long)]
-        owner: Option<String>,
         /// Set task status (pending, in_progress, completed)
         #[arg(long)]
         status: Option<String>,
@@ -74,6 +71,15 @@ pub enum TaskCommand {
         /// Path to an implementation plan file (recommended: ~/.midtown/projects/<project>/plans/)
         #[arg(long)]
         plan: Option<String>,
+        /// Set session ID bound to this task
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Set message ID for this task
+        #[arg(long)]
+        message_id: Option<String>,
+        /// Set thread ID for this task
+        #[arg(long)]
+        thread_id: Option<String>,
     },
     /// Mark a task as done
     Done {
@@ -140,7 +146,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             model,
             pr,
             plan,
-            execution_skill,
+            agent_name,
             thread_id,
             parent,
             agent_type,
@@ -156,7 +162,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 model.as_deref(),
                 *pr,
                 plan.as_deref(),
-                execution_skill.as_deref(),
+                agent_name.as_deref(),
                 effective_thread_id.as_deref(),
                 parent.as_deref(),
                 agent_type.as_deref(),
@@ -164,7 +170,6 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         }
         TaskCommand::Update {
             id,
-            owner,
             status,
             description,
             blocked_by,
@@ -172,9 +177,11 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             model,
             pr,
             plan,
+            session_id,
+            message_id,
+            thread_id,
         } => client.task_update(
             id,
-            owner.as_deref(),
             status.as_deref(),
             description.as_deref(),
             blocked_by.as_deref(),
@@ -182,6 +189,9 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             model.as_deref(),
             *pr,
             plan.as_deref(),
+            session_id.as_deref(),
+            message_id.as_deref(),
+            thread_id.as_deref(),
         ),
         TaskCommand::Claim { id } => client.task_claim(id),
         TaskCommand::Done { id } => client.task_done(id),

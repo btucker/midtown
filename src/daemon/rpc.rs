@@ -531,7 +531,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let model = params.str_param("model");
             let pr = params.u64_param("pr");
             let plan = params.str_param("plan");
-            let execution_skill = params.str_param("execution_skill");
+            let agent_name = params.str_param("agent_name");
             let thread_id = params.str_param("thread_id");
             let parent = params.str_param("parent");
             let agent_type = params.str_param("agent_type");
@@ -544,7 +544,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 model,
                 pr,
                 plan,
-                execution_skill,
+                agent_name,
                 thread_id,
                 parent,
                 agent_type,
@@ -555,7 +555,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "task.update" => {
             let task_id = require_str!(params, "id", request.id);
-            let owner = params.str_param("owner");
             let status = params.str_param("status");
             let description = params.str_param("description");
             let blocked_by = params.str_array_param("blocked_by");
@@ -563,10 +562,12 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let model = params.str_param("model");
             let pr = params.u64_param("pr");
             let plan = params.str_param("plan");
+            let session_id = params.str_param("session_id");
+            let message_id = params.str_param("message_id");
+            let thread_id = params.str_param("thread_id");
             super::rpc_task::handle_task_update(
                 request.id,
                 task_id,
-                owner,
                 status,
                 description,
                 blocked_by.as_deref(),
@@ -574,6 +575,9 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 model,
                 pr,
                 plan,
+                session_id,
+                message_id,
+                thread_id,
                 state,
             )
             .await
