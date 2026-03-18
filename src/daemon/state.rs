@@ -162,6 +162,16 @@ impl Default for SessionRecord {
     }
 }
 
+impl SessionRecord {
+    /// Whether this session is a fork (bound to a thread).
+    ///
+    /// Fork sessions are spawned for research/investigation in threads and
+    /// should not be treated as PR owners or task dispatch targets.
+    pub fn is_fork_session(&self) -> bool {
+        self.bound_thread_id.is_some()
+    }
+}
+
 /// All persistent daemon state in one struct.
 ///
 /// Serialized to `~/.midtown/projects/<repo>/daemon-state.json`.
