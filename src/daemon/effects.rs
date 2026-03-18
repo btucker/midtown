@@ -2256,6 +2256,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             thread_id: parent_thread,
                             model: None,
                             plan: None,
+                            placeholder_comment_id: None,
+                            restart_count: 0,
+                            execution_skill: None,
                             created_at: chrono::Utc::now(),
                             updated_at: chrono::Utc::now(),
                         };

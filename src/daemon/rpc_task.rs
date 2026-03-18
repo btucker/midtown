@@ -408,6 +408,9 @@ pub(super) async fn handle_task_create(
         thread_id: thread_id.map(|t| t.to_string()),
         model: model.map(|m| m.to_string()),
         plan: plan.map(|p| p.to_string()),
+        placeholder_comment_id: None,
+        restart_count: 0,
+        execution_skill: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };

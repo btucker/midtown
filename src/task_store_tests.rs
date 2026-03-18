@@ -18,6 +18,9 @@ fn make_task(id: &str, agent_name: &str, status: TaskStatus) -> Task {
         thread_id: None,
         model: None,
         plan: None,
+        placeholder_comment_id: None,
+        restart_count: 0,
+        execution_skill: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
@@ -44,6 +47,9 @@ fn test_save_and_load_round_trip() {
         thread_id: None,
         model: None,
         plan: None,
+        placeholder_comment_id: None,
+        restart_count: 0,
+        execution_skill: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     };

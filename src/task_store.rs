@@ -52,6 +52,15 @@ pub struct Task {
     /// Path to execution plan.
     #[serde(default)]
     pub plan: Option<String>,
+    /// GitHub comment ID for "Review in progress" placeholder (reviewer tasks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder_comment_id: Option<u64>,
+    /// Number of times this task's session has been restarted.
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Execution skill for plan-driven execution (e.g., "subagent-driven-development").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_skill: Option<String>,
     /// When the task was created.
     pub created_at: DateTime<Utc>,
     /// When the task was last modified (set automatically by `TaskStore::save()`).
@@ -74,6 +83,7 @@ pub struct TaskIndexEntry {
     pub status: TaskStatus,
     pub parent: Option<String>,
     pub agent_name: String,
+    pub agent_type: String,
 }
 
 /// Persistent task storage — one JSON file per task.
@@ -135,6 +145,7 @@ impl TaskStore {
                         status: t.status,
                         parent: t.parent.clone(),
                         agent_name: t.agent_name.clone(),
+                        agent_type: t.agent_type.clone(),
                     },
                 )
             })

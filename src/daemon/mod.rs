@@ -2400,6 +2400,7 @@ impl DaemonState {
             status: task.status,
             parent: task.parent.clone(),
             agent_name: task.agent_name.clone(),
+            agent_type: task.agent_type.clone(),
         };
         // Update in-memory index
         self.task_index
