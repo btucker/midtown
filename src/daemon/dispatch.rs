@@ -1601,15 +1601,6 @@ fn dispatch_unowned_pending_tasks(
         else {
             continue;
         };
-        let effective_count = in_progress_count + spawns_queued_this_tick;
-        if effective_count >= task_cap {
-            debug!(
-                "In-progress task limit reached ({}+{} >= {}), deferring unowned task !{}",
-                in_progress_count, spawns_queued_this_tick, task_cap, task.id
-            );
-            break;
-        }
-
         // Skip tasks already claimed by orphan recovery in this tick.
         if excluded_task_ids.contains(&task.id) {
             debug!(
@@ -1664,6 +1655,18 @@ fn dispatch_unowned_pending_tasks(
             debug!(
                 "Task !{}: skipping unowned pending dispatch — channel is lead-driven",
                 task.id
+            );
+            continue;
+        }
+
+        // ── Capacity gate — runs after zero-cost filters ──────────────────
+        // Merged-PR auto-complete, exclusion checks, and lead-driven skip
+        // run unconditionally above. Slot-consuming operations below are gated.
+        let effective_count = in_progress_count + spawns_queued_this_tick;
+        if effective_count >= task_cap {
+            debug!(
+                "In-progress task limit reached ({}+{} >= {}), deferring unowned task !{}",
+                in_progress_count, spawns_queued_this_tick, task_cap, task.id
             );
             continue;
         }
@@ -1794,15 +1797,24 @@ fn dispatch_unowned_pending_tasks(
             {
                 excluded_names.insert(author.to_lowercase());
             }
-            let Some(name) = state
+            if let Some(name) = state
                 .coworkers
                 .next_available_name_excluding(&excluded_names)
-            else {
+            {
+                debug!("Task !{}: allocated fresh coworker name {}", task.id, name);
+                name
+            } else if let Some(idle_name) =
+                find_idle_coworker(snap, &names_assigned_this_tick, owned_dispatched)
+            {
+                debug!(
+                    "Task !{}: no fresh slots, reusing idle coworker {}",
+                    task.id, idle_name
+                );
+                idle_name
+            } else {
                 debug!("No available coworker slots for unowned task !{}", task.id);
-                break;
-            };
-            debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
-            name
+                continue;
+            }
         };
 
         // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
@@ -2163,6 +2175,30 @@ fn dispatch_unowned_pending_tasks(
 // ============================================================================
 // Task completion for PR merged
 // ============================================================================
+
+/// Find an idle coworker: active but not busy, not a channel lead,
+/// not a reviewer, not already assigned this tick, not owned-dispatched.
+///
+/// Returns the coworker name (lowercase) or None.
+fn find_idle_coworker(
+    snap: &snapshot::WorldSnapshot,
+    names_assigned_this_tick: &HashSet<String>,
+    owned_dispatched: &HashSet<String>,
+) -> Option<String> {
+    let lead_names = snap.channel_lead_names();
+    snap.coworkers
+        .active_names
+        .iter()
+        .find(|name| {
+            let lower = name.to_lowercase();
+            !snap.busy_coworkers.contains(&lower)
+                && !lead_names.contains(&lower)
+                && !snap.reviewer.active_reviewers.contains(&lower)
+                && !names_assigned_this_tick.contains(&lower)
+                && !owned_dispatched.contains(&lower)
+        })
+        .cloned()
+}
 
 /// Build effects to auto-complete a task when its PR is merged.
 ///

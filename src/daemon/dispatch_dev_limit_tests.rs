@@ -347,3 +347,184 @@ fn test_dispatch_with_legacy_lead() {
         effects
     );
 }
+
+/// Merged-PR auto-complete should emit CompleteTask even when at task limit.
+///
+/// Before the fix, the loop `break`ed at the task limit gate, preventing
+/// merged-PR auto-complete from running for any tasks beyond the limit.
+#[test]
+fn test_merged_pr_autocomplete_runs_at_capacity() {
+    let state = make_test_state_with_max(2);
+
+    for name in &["lexington", "park"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let running = vec![
+        make_running_coworker("lexington"),
+        make_running_coworker("park"),
+    ];
+
+    // Task 99 is a regular pending task (will be deferred at capacity).
+    // Task 100 has pr=Some(42) and merged_pr_numbers contains 42,
+    // so it should be auto-completed regardless of capacity.
+    let mut task_100 = make_pending_task("100");
+    task_100.pr = Some(42);
+
+    let pending = vec![make_pending_task("99"), task_100];
+
+    let mut snap = make_task_limit_snapshot(running, pending, true);
+    snap.pr.merged_pr_numbers.insert(42);
+
+    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
+
+    let has_complete = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::CompleteTask { task_id, .. } if task_id == "100"
+        )
+    });
+    assert!(
+        has_complete,
+        "Expected CompleteTask for merged-PR task even at capacity. Effects: {:?}",
+        effects
+    );
+
+    // Should NOT have any spawn/nudge effects (at capacity for non-cleanup work).
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Should not spawn/nudge when at task limit. Effects: {:?}",
+        effects
+    );
+}
+
+/// When all coworker name slots are exhausted but an idle coworker exists,
+/// the loop should reuse the idle coworker via nudge instead of breaking.
+#[test]
+fn test_idle_coworker_reuse_when_no_fresh_slots() {
+    use crate::coworker::{AVENUE_NAMES, OVERFLOW_NAMES};
+
+    // All 16 names are active. "park" is idle (not busy).
+    let all_names: Vec<&str> = AVENUE_NAMES
+        .iter()
+        .chain(OVERFLOW_NAMES.iter())
+        .copied()
+        .collect();
+    let state = make_test_state_with_max(20); // high limit so task cap isn't the blocker
+
+    // Register all names in CoworkerManager so next_available_name_excluding returns None.
+    for name in &all_names {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let running: Vec<_> = all_names.iter().map(|n| make_running_coworker(n)).collect();
+    let pending = vec![make_pending_task("99")];
+
+    let mut snap = make_task_limit_snapshot(running, pending, false);
+    // Only 2 in-progress tasks (well below task_cap=20).
+    snap.in_progress_tasks = vec![
+        (
+            "1".to_string(),
+            "Task 1".to_string(),
+            "lexington".to_string(),
+        ),
+        ("2".to_string(), "Task 2".to_string(), "madison".to_string()),
+    ];
+    snap.max_in_progress_tasks = 20;
+    // All names are active (in the snapshot).
+    snap.coworkers.active_names = all_names.iter().map(|s| s.to_string()).collect();
+    // park is active but NOT busy — it's idle.
+    snap.busy_coworkers = all_names
+        .iter()
+        .filter(|n| **n != "park")
+        .map(|s| s.to_string())
+        .collect();
+    // Need name_session_map for the nudge effect.
+    snap.name_session_map
+        .insert("park".to_string(), "session-park".to_string());
+
+    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
+
+    let has_nudge = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::NudgeSessionWithCallbacks { session_id, .. }
+                if session_id == "session-park"
+        )
+    });
+    assert!(
+        has_nudge,
+        "Expected NudgeSessionWithCallbacks for idle coworker 'park'. Effects: {:?}",
+        effects
+    );
+}
+
+/// When at capacity AND no idle coworkers, should not spawn but should still
+/// process remaining tasks for cleanup (merged-PR auto-complete, etc.).
+#[test]
+fn test_no_dispatch_when_capacity_and_no_idle() {
+    let state = make_test_state_with_max(2);
+
+    for name in &["lexington", "park"] {
+        state
+            .coworkers
+            .insert_for_testing(make_running_coworker(name));
+    }
+
+    let running = vec![
+        make_running_coworker("lexington"),
+        make_running_coworker("park"),
+    ];
+
+    // Two pending tasks. First is a regular task (deferred at capacity).
+    // Second has a merged PR (should be auto-completed).
+    let mut task_200 = make_pending_task("200");
+    task_200.pr = Some(55);
+
+    let pending = vec![make_pending_task("199"), task_200];
+
+    let mut snap = make_task_limit_snapshot(running, pending, true);
+    snap.pr.merged_pr_numbers.insert(55);
+
+    let effects = crate::daemon::dispatch::spawn_for_pending_tasks(&snap, &state);
+
+    // No spawn effects.
+    let has_spawn = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::AssignAndSpawn { .. }
+                | crate::daemon::effects::Effect::SpawnCoworkerWithCallbacks { .. }
+                | crate::daemon::effects::Effect::NudgeSessionWithCallbacks { .. }
+        )
+    });
+    assert!(
+        !has_spawn,
+        "Should not spawn when at capacity with no idle coworkers. Effects: {:?}",
+        effects
+    );
+
+    // But merged-PR task should still be completed.
+    let has_complete = effects.iter().any(|e| {
+        matches!(
+            e,
+            crate::daemon::effects::Effect::CompleteTask { task_id, .. } if task_id == "200"
+        )
+    });
+    assert!(
+        has_complete,
+        "Merged-PR auto-complete should work even at capacity. Effects: {:?}",
+        effects
+    );
+}
