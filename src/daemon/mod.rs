@@ -13,6 +13,7 @@ pub(crate) mod effects;
 pub(crate) mod events;
 mod health;
 pub mod helpers;
+mod migration;
 pub(crate) mod plugin_daemon;
 mod pr;
 pub(crate) mod profile_pool;
@@ -1313,6 +1314,9 @@ impl DaemonState {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
+
+        // Migrate tasks from old ~/.claude/tasks/ format to new ~/.midtown/ format
+        migration::maybe_migrate_tasks(dir_key, &persistent_state);
 
         let user_display_name = config::get_user_display_name_for_project(dir_key);
 
