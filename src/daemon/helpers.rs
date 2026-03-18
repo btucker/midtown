@@ -116,17 +116,6 @@ pub fn is_coworker_sender(from: &str, main_lead_name: &str) -> bool {
     !SYSTEM_SENDERS.contains(&from) && !from.eq_ignore_ascii_case(main_lead_name)
 }
 
-/// Extract coworker name from branch using the worktree registry's branch_owners map.
-///
-/// Resolves task-based branch names like "task-42-fix-auth" or "review-pr-123"
-/// by looking them up in the `branch_owners` map from WorldSnapshot.worktree_branch_owners.
-pub fn coworker_from_branch(
-    branch: &str,
-    branch_owners: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    branch_owners.get(branch).cloned()
-}
-
 /// Returns true if the session name identifies the project lead.
 ///
 /// The canonical lead session is named after the repo (e.g., "midtown"). The legacy

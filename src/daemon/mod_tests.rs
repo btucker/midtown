@@ -126,32 +126,6 @@ fn test_extract_pr_number_none() {
     assert_eq!(extract_pr_number("just some text"), None);
 }
 
-#[test]
-fn test_coworker_from_branch_with_map() {
-    let mut map = std::collections::HashMap::new();
-    map.insert("task-42-fix-auth".to_string(), "lexington".to_string());
-    map.insert("review-pr-99".to_string(), "park".to_string());
-
-    assert_eq!(
-        coworker_from_branch("task-42-fix-auth", &map),
-        Some("lexington".to_string())
-    );
-    assert_eq!(
-        coworker_from_branch("review-pr-99", &map),
-        Some("park".to_string())
-    );
-    assert_eq!(
-        coworker_from_branch("unknown-branch", &map),
-        None,
-        "unknown branch should return None"
-    );
-    assert_eq!(
-        coworker_from_branch("main", &map),
-        None,
-        "main should return None"
-    );
-}
-
 // Lead nudge tests
 #[test]
 fn test_is_coworker_sender() {

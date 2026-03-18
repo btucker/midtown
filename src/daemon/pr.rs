@@ -672,10 +672,9 @@ async fn process_pr_issue_nudges(
 
         // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
         if let Some(ref owner) = owner_opt {
-            let has_active_worktree = snap.worktree_branch_owners.values().any(|o| o == owner)
-                || snap.worktree_branch_owners.contains_key(pf.head_ref);
+            let is_active = snap.coworkers.active_names.contains(&owner.to_lowercase());
 
-            if !has_active_worktree && !issues.is_empty() {
+            if !is_active && !issues.is_empty() {
                 effects.extend(
                     collect_orphaned_pr_effects(
                         pf.number,
@@ -1025,7 +1024,6 @@ pub(super) async fn poll_prs_for_issues(
             state,
             &prs,
             &reviewed_prs,
-            &snap.worktree_branch_owners,
             review_mode,
             snap.is_at_task_limit,
         )
@@ -1367,7 +1365,8 @@ fn action_to_effects(
 /// scenario functions can be synchronous.
 struct StuckEvalContext<'a> {
     review_mode: crate::config::ReviewMode,
-    branch_owners: &'a HashMap<String, String>,
+    /// PR number → current coworker name, derived from session data.
+    pr_session_names: HashMap<u64, String>,
     channel_lead_names: HashSet<String>,
     has_available_slots: bool,
     running_coworkers: Vec<crate::coworker::Coworker>,
@@ -1417,7 +1416,6 @@ async fn collect_stuck_condition_effects(
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
-    branch_owners: &HashMap<String, String>,
     review_mode: crate::config::ReviewMode,
     at_task_limit: bool,
 ) -> Vec<Effect> {
@@ -1454,12 +1452,27 @@ async fn collect_stuck_condition_effects(
                 .next_available_name_excluding(&channel_lead_names)
                 .is_some();
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        let pr_session_names: HashMap<u64, String> = {
+            let task_to_name: HashMap<&str, &str> = ps
+                .sessions
+                .values()
+                .filter_map(|s| Some((s.task_id.as_deref()?, s.current_name.as_deref()?)))
+                .collect();
+            pr_task_associations
+                .iter()
+                .filter_map(|(&pr_num, task_id)| {
+                    task_to_name
+                        .get(task_id.as_str())
+                        .map(|name| (pr_num, name.to_string()))
+                })
+                .collect()
+        };
         let task_channel = ps.task_channel.clone();
         let channel_workflows = ps.channel_workflows.clone();
         let lead_driven_channels = ps.lead_driven_channels.clone();
         StuckEvalContext {
             review_mode,
-            branch_owners,
+            pr_session_names,
             channel_lead_names,
             has_available_slots,
             running_coworkers: state.coworkers.list_running(),
@@ -1632,7 +1645,7 @@ fn no_review_nudge_self_review(
     let is_assigned = ctx.assigned_prs.contains(&pf.number);
 
     let build_busy_reason = || {
-        let pr_author = coworker_from_branch(pf.head_ref, ctx.branch_owners);
+        let pr_author = ctx.pr_session_names.get(&pf.number).cloned();
         let mut busy: Vec<String> = ctx
             .running_coworkers
             .iter()
@@ -2118,7 +2131,13 @@ async fn collect_comment_notification_effects(
         }
 
         // Only check coworker-owned PRs beyond this point
-        let owner = match coworker_from_branch(head_ref, &snap.worktree_branch_owners) {
+        let owner = match snap
+            .pr
+            .pr_task_index
+            .task_for_pr(pr_number)
+            .and_then(|task_id| snap.find_session_for_task(task_id))
+            .and_then(|s| s.current_name.clone())
+        {
             Some(o) => o,
             None => continue, // Not a coworker PR
         };
@@ -2269,7 +2288,6 @@ async fn collect_reviewer_effects(
     pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
-        &snap.worktree_branch_owners,
         &snap.worktree_registry,
         &snap.coworkers.active_names,
         state,
@@ -2471,7 +2489,6 @@ async fn collect_review_complete_effects(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn collect_reviewer_effects_with_source(
-    branch_owners: &std::collections::HashMap<String, String>,
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
     active_names: &std::collections::HashSet<String>,
     state: &DaemonState,
@@ -2726,9 +2743,14 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                         pr_number, head_ref
                     );
                     false
-                } else if let Some(owner) = coworker_from_branch(head_ref, branch_owners) {
-                    // The branch identifies a coworker owner. Only treat as orphaned if
-                    // the coworker is NOT currently active — an active coworker can always
+                } else if let Some(owner) = pr_task_associations
+                    .get(&pr_number)
+                    .and_then(|task_id| session_task_map.get(task_id.as_str()))
+                    .and_then(|session_id| sessions.get(session_id))
+                    .and_then(|record| record.current_name.clone())
+                {
+                    // A session owns this PR's task. Only treat as orphaned if the
+                    // coworker is NOT currently active — an active coworker can always
                     // address review feedback regardless of whether a worktree is registered.
                     // Uses the caller-provided active_names (from WorldSnapshot) which includes
                     // both pane-based and headless sessions, unlike list_running() which only
@@ -3967,10 +3989,8 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
             None => continue,
         };
 
-        // Check if it's a coworker branch, task branch, or lead branch
-        let has_valid_prefix = coworker_from_branch(branch, &snap.worktree_branch_owners).is_some()
-            || branch.starts_with("task-")
-            || is_lead_branch(branch);
+        // Check if it's a task branch or lead branch
+        let has_valid_prefix = branch.starts_with("task-") || is_lead_branch(branch);
 
         if !has_valid_prefix {
             continue;

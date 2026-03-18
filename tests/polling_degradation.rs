@@ -7,7 +7,7 @@
 //! Run with: `cargo test --test polling_degradation`
 
 use serde_json::json;
-use std::collections::HashMap;
+
 use std::time::Duration;
 
 // Re-exported types from daemon module
@@ -15,7 +15,7 @@ use midtown::daemon::{PrIssueTracker, PrIssueType, StuckConditionTracker, StuckC
 
 // Helper functions for polling
 use midtown::daemon::helpers::{
-    coworker_from_branch, detect_pr_issues, is_auto_mergeable, text_contains_review_signature,
+    detect_pr_issues, is_auto_mergeable, text_contains_review_signature,
 };
 
 // Decision functions
@@ -55,14 +55,8 @@ fn polling_detects_ci_failure() {
         issues
     );
 
-    // Verify owner extraction via branch_owners map (used for nudge targeting)
-    let map: HashMap<String, String> =
-        [("amsterdam/fix-auth".to_string(), "amsterdam".to_string())]
-            .into_iter()
-            .collect();
-    let branch = pr["headRefName"].as_str().unwrap();
-    let owner = coworker_from_branch(branch, &map);
-    assert_eq!(owner, Some("amsterdam".to_string()));
+    // Owner resolution now uses session-based lookup (PR → task → session → name)
+    // rather than a branch_owners map.
 }
 
 /// Test that polling detects merge conflicts.

@@ -105,10 +105,22 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
             .unwrap();
     }
 
-    let branch_owners: std::collections::HashMap<String, String> =
-        [("park/some-feature".to_string(), "park".to_string())]
-            .into_iter()
-            .collect();
+    // Populate session data so session-based orphan check resolves "park" as PR author.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-park".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-park".to_string(),
+                task_id: Some("200".to_string()),
+                pr_number: Some(7777),
+                current_name: Some("park".to_string()),
+                working_dir: "/tmp/test".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
     let registry = crate::worktree_registry::WorktreeRegistry::new();
 
     // "amsterdam" is in active_names (still has an active session) even though
@@ -119,7 +131,6 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
             .collect();
 
     let effects = collect_reviewer_effects_with_source(
-        &branch_owners,
         &registry,
         &active_names,
         &state,
