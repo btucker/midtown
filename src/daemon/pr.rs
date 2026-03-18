@@ -2367,38 +2367,88 @@ async fn collect_review_complete_effects(
         }
     }
 
-    // Bug !2124: For user-authored PRs (lead/* branches), skip coworker
-    // owner resolution entirely. The owner resolution chain can resolve
-    // to a coworker via task metadata, causing the daemon to spawn a
-    // coworker who sees a clean review, goes idle, and loops every
-    // cooldown period. Only the user can act on their own PRs.
-    //
-    // Bug !2137: For lead branches, use has_nudge() (one-shot) instead
-    // of should_nudge() (cooldown-based). The user can't act on the PR
-    // from within a Claude session, so re-nudging every 10 minutes is
-    // spam. Notify exactly once.
-    if is_lead_branch(pf.head_ref) {
-        let already_nudged = {
-            let tracker = state.pr_issue_tracker.lock().await;
-            tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
-        };
-        if already_nudged {
+    // Bug !2124 + !2137: One-shot nudging for all review-complete PRs.
+    // For lead branches, skip coworker owner resolution (the user must act).
+    // For coworker branches, try owner resolution first (nudge vs spawn).
+    let already_nudged = {
+        let tracker = state.pr_issue_tracker.lock().await;
+        tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
+    };
+    if already_nudged {
+        return Some(effects);
+    }
+
+    let nudge_msg = build_review_complete_nudge_msg(pr_number, title, pre_fetched_review_content);
+
+    // For coworker PRs, try to resolve an owner and nudge/spawn them.
+    if !is_lead_branch(pf.head_ref) {
+        let owner = resolve_pr_owner_from_session(
+            pr_number,
+            pr_task_associations,
+            session_task_map,
+            sessions,
+        );
+
+        if let Some(owner) = owner {
+            let action = crate::rules::decide_pr_action(
+                &owner,
+                active_coworkers,
+                idle_coworkers,
+                is_at_task_limit,
+                &nudge_msg,
+                crate::rules::PrActionContext::ReviewComplete,
+            );
+
+            effects.extend(action_to_effects(
+                action,
+                pr_number,
+                title,
+                PrIssueType::ReviewComplete,
+                state,
+                pr_ctx,
+            ));
+            effects.push(Effect::RecordPermanentPrNudge {
+                pr_number,
+                issue_type: PrIssueType::ReviewComplete,
+            });
             return Some(effects);
         }
+    }
 
-        let review_suffix = pre_fetched_review_content
-            .get(&pr_number)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let nudge_msg = format!(
-            "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-            pr_number,
-            truncate_str(title, 40),
-            review_suffix
-        );
-        let channel = pr_ctx.get_channel(pr_number);
-        let user_msg = format!("@user {}", nudge_msg);
-        effects.push(Effect::PostToChannel {
+    // Lead branch or no coworker owner found — notify the user.
+    effects.extend(user_review_complete_effects(pr_number, &nudge_msg, pr_ctx));
+
+    Some(effects)
+}
+
+/// Build the nudge message for a completed review.
+fn build_review_complete_nudge_msg(
+    pr_number: u64,
+    title: &str,
+    pre_fetched_review_content: &HashMap<u64, String>,
+) -> String {
+    let review_suffix = pre_fetched_review_content
+        .get(&pr_number)
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    format!(
+        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
+        pr_number,
+        truncate_str(title, 40),
+        review_suffix
+    )
+}
+
+/// Emit PostToChannel + RecordPermanentPrNudge effects for user-facing review-complete notification.
+fn user_review_complete_effects(
+    pr_number: u64,
+    nudge_msg: &str,
+    pr_ctx: &PrContext,
+) -> Vec<Effect> {
+    let channel = pr_ctx.get_channel(pr_number);
+    let user_msg = format!("@user {}", nudge_msg);
+    vec![
+        Effect::PostToChannel {
             sender: "midtown".to_string(),
             message: user_msg,
             channel,
@@ -2409,82 +2459,12 @@ async fn collect_review_complete_effects(
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
-        });
-        effects.push(Effect::RecordPermanentPrNudge {
+        },
+        Effect::RecordPermanentPrNudge {
             pr_number,
             issue_type: PrIssueType::ReviewComplete,
-        });
-        return Some(effects);
-    }
-
-    // Coworker PRs: one-shot nudging (same as lead-branch PRs)
-    let already_nudged = {
-        let tracker = state.pr_issue_tracker.lock().await;
-        tracker.has_nudge(pr_number, PrIssueType::ReviewComplete)
-    };
-    if already_nudged {
-        return Some(effects);
-    }
-    let review_suffix = pre_fetched_review_content
-        .get(&pr_number)
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let nudge_msg = format!(
-        "Your PR #{} ({}) has a completed review — please address any feedback and merge if appropriate.{}",
-        pr_number,
-        truncate_str(title, 40),
-        review_suffix
-    );
-
-    let owner =
-        resolve_pr_owner_from_session(pr_number, pr_task_associations, session_task_map, sessions);
-
-    if let Some(owner) = owner {
-        let action = crate::rules::decide_pr_action(
-            &owner,
-            active_coworkers,
-            idle_coworkers,
-            is_at_task_limit,
-            &nudge_msg,
-            crate::rules::PrActionContext::ReviewComplete,
-        );
-
-        effects.extend(action_to_effects(
-            action,
-            pr_number,
-            title,
-            PrIssueType::ReviewComplete,
-            state,
-            pr_ctx,
-        ));
-        effects.push(Effect::RecordPermanentPrNudge {
-            pr_number,
-            issue_type: PrIssueType::ReviewComplete,
-        });
-        return Some(effects);
-    }
-
-    let channel = pr_ctx.get_channel(pr_number);
-    // No coworker owns this PR — @mention the user so they see it
-    let user_msg = format!("@user {}", nudge_msg);
-    effects.push(Effect::PostToChannel {
-        sender: "midtown".to_string(),
-        message: user_msg,
-        channel,
-        auto_output: false,
-        message_type: None,
-        nudge_type: None,
-        tool_data: None,
-        provider: None,
-        tool_use_id: None,
-        parent_tool_use_id: None,
-    });
-    effects.push(Effect::RecordPermanentPrNudge {
-        pr_number,
-        issue_type: PrIssueType::ReviewComplete,
-    });
-
-    Some(effects)
+        },
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]
