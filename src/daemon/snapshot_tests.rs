@@ -934,3 +934,60 @@ fn test_task_limit_excludes_dead_owner_tasks() {
         "Snapshot default is_at_task_limit should be false"
     );
 }
+
+/// Fork sessions (bound_thread_id set) should be excluded from session_task_map
+/// so find_session_for_task does not resolve them as task owners.
+#[test]
+fn find_session_for_task_skips_fork_sessions() {
+    use crate::daemon::state::SessionRecord;
+
+    // Build session_task_map the same way collect_world_snapshot does,
+    // filtering fork sessions.
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "coworker-sess".to_string(),
+        SessionRecord {
+            session_id: "coworker-sess".to_string(),
+            task_id: Some("500".to_string()),
+            current_name: Some("madison".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            ..Default::default()
+        },
+    );
+    sessions.insert(
+        "fork-sess".to_string(),
+        SessionRecord {
+            session_id: "fork-sess".to_string(),
+            task_id: Some("500".to_string()),
+            current_name: Some("fork-research-1234".to_string()),
+            bound_thread_id: Some("thread-xyz".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            ..Default::default()
+        },
+    );
+
+    // Build session_task_map filtering forks (as the real code does)
+    let session_task_map: HashMap<String, String> = sessions
+        .iter()
+        .filter(|(_, record)| !record.is_fork_session())
+        .filter_map(|(session_id, record)| {
+            record
+                .task_id
+                .as_ref()
+                .map(|task_id| (task_id.clone(), session_id.clone()))
+        })
+        .collect();
+
+    // Should resolve to the coworker session, not the fork
+    let session_id = session_task_map.get("500").unwrap();
+    let resolved = sessions.get(session_id).unwrap();
+    assert_eq!(
+        resolved.current_name.as_deref(),
+        Some("madison"),
+        "Should resolve to coworker session, not the fork"
+    );
+    assert!(
+        !resolved.is_fork_session(),
+        "Resolved session should not be a fork"
+    );
+}

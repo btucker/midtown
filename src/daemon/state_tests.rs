@@ -1322,3 +1322,24 @@ fn test_task_parent_default_empty() {
         "task_parent should default to empty for old state files"
     );
 }
+
+#[test]
+fn test_is_fork_session() {
+    let regular = SessionRecord {
+        bound_thread_id: None,
+        ..Default::default()
+    };
+    assert!(
+        !regular.is_fork_session(),
+        "Regular session should not be a fork"
+    );
+
+    let fork = SessionRecord {
+        bound_thread_id: Some("thread-123".to_string()),
+        ..Default::default()
+    };
+    assert!(
+        fork.is_fork_session(),
+        "Session with bound_thread_id is a fork"
+    );
+}

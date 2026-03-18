@@ -5700,3 +5700,52 @@ fn action_to_effects_taskless_nudge_owner_uses_permanent_nudge() {
         effects
     );
 }
+
+/// Fork sessions (bound_thread_id set) should be excluded from PR owner resolution.
+/// They inherit task_id from the parent session but are not the actual task owner.
+#[test]
+fn test_resolve_pr_owner_skips_fork_sessions() {
+    let pr_task_associations: HashMap<u64, String> =
+        [(42, "100".to_string())].into_iter().collect();
+
+    // Fork session has the task_id but also has bound_thread_id set
+    let sessions: HashMap<String, crate::daemon::state::SessionRecord> = [(
+        "fork-sess".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "fork-sess".to_string(),
+            task_id: Some("100".to_string()),
+            current_name: Some("fork-elastic-ceiling-7492".to_string()),
+            bound_thread_id: Some("thread-abc".to_string()),
+            working_dir: "/tmp/test".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    )]
+    .into_iter()
+    .collect();
+
+    // The fork session should NOT be resolved as the PR owner because
+    // resolve_pr_owner_from_state filters fork sessions when building
+    // session_task_map. Simulate that filtering here.
+    let filtered_session_task_map: HashMap<String, String> = sessions
+        .iter()
+        .filter(|(_, record)| !record.is_fork_session())
+        .filter_map(|(session_id, record)| {
+            record
+                .task_id
+                .as_ref()
+                .map(|task_id| (task_id.clone(), session_id.clone()))
+        })
+        .collect();
+
+    let result = resolve_pr_owner_from_session(
+        42,
+        &pr_task_associations,
+        &filtered_session_task_map,
+        &sessions,
+    );
+    assert_eq!(
+        result, None,
+        "Fork sessions should not resolve as PR owners"
+    );
+}

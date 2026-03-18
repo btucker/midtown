@@ -366,6 +366,7 @@ async fn resolve_pr_owner_from_state(state: &DaemonState, pr_number: u64) -> Opt
     let session_task_map: HashMap<String, String> = ps
         .sessions
         .iter()
+        .filter(|(_, record)| !record.is_fork_session())
         .filter_map(|(session_id, record)| {
             record
                 .task_id

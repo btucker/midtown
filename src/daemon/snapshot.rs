@@ -1553,7 +1553,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         let mut session_name_map: HashMap<String, String> = HashMap::new();
         let mut name_session_map: HashMap<String, String> = HashMap::new();
         for (session_id, record) in &sessions {
-            if let Some(task_id) = &record.task_id {
+            // Skip fork sessions — they inherit task_id from the parent but
+            // should not be treated as the task's owner for dispatch/PR resolution.
+            if let Some(task_id) = &record.task_id
+                && !record.is_fork_session()
+            {
                 session_task_map.insert(task_id.clone(), session_id.clone());
             }
             if let Some(name) = &record.current_name {
