@@ -458,7 +458,7 @@ pub fn get_coworkers_with_unblocked_dependents_for_repo(
 /// Extract coworkers with unblocked dependents from a given task list.
 ///
 /// Shared implementation for both cwd-based and repo-specific variants.
-fn get_coworkers_with_unblocked_dependents_from_tasks(
+pub fn get_coworkers_with_unblocked_dependents_from_tasks(
     all_tasks: &[Task],
 ) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
